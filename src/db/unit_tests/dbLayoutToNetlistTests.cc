@@ -3493,6 +3493,113 @@ TEST(15_JoinNetsAfterExtraction)
   EXPECT_EQ (top_cc.find_cluster_with_connection (ab_conn.front ()), top_netab->cluster_id ());
 }
 
+TEST(16_IncrementalExtraction)
+{
+  //  Exactness harness for incremental netlist extraction: widening the
+  //  connectivity of an already-extracted LayoutToNetlist and re-extracting
+  //  must produce results identical to a fresh full build. This holds for
+  //  any implementation (full rebuild today, edge replay tomorrow).
+
+  db::Layout ly;
+  db::LayerMap lmap;
+
+  unsigned int poly       = define_layer (ly, lmap, 6);
+  unsigned int cont       = define_layer (ly, lmap, 8);
+  unsigned int metal1     = define_layer (ly, lmap, 9);
+  unsigned int via1       = define_layer (ly, lmap, 11);
+  unsigned int metal2     = define_layer (ly, lmap, 12);
+  unsigned int diode      = define_layer (ly, lmap, 1);
+
+  {
+    db::LoadLayoutOptions options;
+    options.get_options<db::CommonReaderOptions> ().layer_map = lmap;
+    options.get_options<db::CommonReaderOptions> ().create_other_layers = false;
+
+    std::string fn (tl::testdata ());
+    fn = tl::combine_path (fn, "algo");
+    fn = tl::combine_path (fn, "antenna_l1.gds");
+
+    tl::InputStream stream (fn);
+    db::Reader reader (stream);
+    reader.read (ly, options);
+  }
+
+  db::Cell &tc = ly.cell (*ly.begin_top_down ());
+
+  db::DeepShapeStore dss;
+
+  std::unique_ptr<db::Region> rdiode (new db::Region (db::RecursiveShapeIterator (ly, tc, diode), dss));
+  std::unique_ptr<db::Region> rpoly (new db::Region (db::RecursiveShapeIterator (ly, tc, poly), dss));
+  std::unique_ptr<db::Region> rcont (new db::Region (db::RecursiveShapeIterator (ly, tc, cont), dss));
+  std::unique_ptr<db::Region> rmetal1 (new db::Region (db::RecursiveShapeIterator (ly, tc, metal1), dss));
+  std::unique_ptr<db::Region> rvia1 (new db::Region (db::RecursiveShapeIterator (ly, tc, via1), dss));
+  std::unique_ptr<db::Region> rmetal2 (new db::Region (db::RecursiveShapeIterator (ly, tc, metal2), dss));
+
+  db::Region a_inc_10, nl_inc, nl_inc_text;
+  std::string nl_inc_string;
+  {
+    db::LayoutToNetlist l2n (&dss);
+
+    l2n.register_layer (*rpoly, "poly");
+    l2n.register_layer (*rcont, "cont");
+    l2n.register_layer (*rmetal1, "metal1");
+    l2n.register_layer (*rvia1, "via1");
+    l2n.register_layer (*rmetal2, "metal2");
+
+    //  stage 1: connectivity up to metal1
+    l2n.connect (*rpoly);
+    l2n.connect (*rcont);
+    l2n.connect (*rmetal1);
+    l2n.connect (*rpoly,      *rcont);
+    l2n.connect (*rcont,      *rmetal1);
+
+    l2n.extract_netlist ();
+
+    //  stage 2: widen the connectivity (today: full rebuild; with edge
+    //  replay: incremental update - results must be identical either way)
+    l2n.connect (*rvia1);
+    l2n.connect (*rmetal2);
+    l2n.connect (*rmetal1,    *rvia1);
+    l2n.connect (*rvia1,      *rmetal2);
+
+    l2n.extract_netlist ();
+
+    a_inc_10 = l2n.antenna_check (*rpoly, *rmetal2, 10);
+    nl_inc_string = l2n.netlist ()->to_string ();
+  }
+
+  db::Region a_ref_10;
+  std::string nl_ref_string;
+  {
+    db::LayoutToNetlist l2n (&dss);
+
+    l2n.register_layer (*rpoly, "poly");
+    l2n.register_layer (*rcont, "cont");
+    l2n.register_layer (*rmetal1, "metal1");
+    l2n.register_layer (*rvia1, "via1");
+    l2n.register_layer (*rmetal2, "metal2");
+
+    //  reference: full connectivity in one go
+    l2n.connect (*rpoly);
+    l2n.connect (*rcont);
+    l2n.connect (*rmetal1);
+    l2n.connect (*rvia1);
+    l2n.connect (*rmetal2);
+    l2n.connect (*rpoly,      *rcont);
+    l2n.connect (*rcont,      *rmetal1);
+    l2n.connect (*rmetal1,    *rvia1);
+    l2n.connect (*rvia1,      *rmetal2);
+
+    l2n.extract_netlist ();
+
+    a_ref_10 = l2n.antenna_check (*rpoly, *rmetal2, 10);
+    nl_ref_string = l2n.netlist ()->to_string ();
+  }
+
+  EXPECT_EQ ((a_inc_10 ^ a_ref_10).empty (), true);
+  EXPECT_EQ (nl_inc_string, nl_ref_string);
+}
+
 TEST(20_MeasureNet)
 {
   db::Layout ly;
