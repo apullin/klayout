@@ -706,6 +706,24 @@ public:
   void extract_netlist ();
 
   /**
+   *  @brief Runs only the shape cluster computation of the netlist extraction
+   *
+   *  The resulting cluster hierarchy is identical to the one a full
+   *  extract_netlist produces, but no circuits, soft connections or joined
+   *  nets are built. Operations which only need the clusters (e.g.
+   *  antenna_check) can use this cheaper path.
+   */
+  void extract_clusters ();
+
+  /**
+   *  @brief Gets a value indicating whether the shape clusters were built
+   */
+  bool is_clusters_built () const
+  {
+    return m_clusters_built;
+  }
+
+  /**
    *  @brief Throws an exception if the extractor contains errors
    */
   void check_extraction_errors ();
@@ -1232,6 +1250,7 @@ private:
   std::map<tl::id_type, db::DeepLayer> m_dl_by_original;
   std::map<unsigned int, db::DeepLayer> m_dl_of_layer;
   bool m_netlist_extracted;
+  bool m_clusters_built;
   bool m_is_flat;
   double m_device_scaling;
   db::DeepLayer m_dummy_layer;

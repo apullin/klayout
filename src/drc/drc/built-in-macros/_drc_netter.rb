@@ -72,6 +72,9 @@ module DRC
       @device_scaling = 1.0
       @ignore_extraction_errors = false
       @top_level = false
+      # When true, antenna_check needs a full netlist extraction because
+      # soft connections or net joining change the cluster composition
+      @needs_full_extraction = false
     end
     
     # %DRC%
@@ -157,6 +160,7 @@ module DRC
         a.data.is_a?(RBA::Region) && @l2n.connect(a.data)
         b.data.is_a?(RBA::Region) && @l2n.connect(b.data)
         @l2n.soft_connect(a.data, b.data)
+        @needs_full_extraction = true
 
       end
 
@@ -208,6 +212,7 @@ module DRC
         _register_layer(l.data, "soft_connect_global")
         l.data.is_a?(RBA::Region) && @l2n.connect(l.data)
         @l2n.soft_connect_global(l.data, name)
+        @needs_full_extraction = true
 
       end
 
@@ -487,6 +492,7 @@ module DRC
           arg1.is_a?(String) || raise("The argument has to be a string")
           @pre_extract_config << lambda { |l2n| l2n.join_net_names(arg1) }
         end
+        @needs_full_extraction = true
 
       end
 
@@ -550,6 +556,7 @@ module DRC
           arg1.find { |a| !a.is_a?(String) } && raise("The argument has to be an array of strings")
           @pre_extract_config << lambda { |l2n| l2n.join_nets(arg1) }
         end
+        @needs_full_extraction = true
 
       end
 
@@ -765,7 +772,7 @@ module DRC
           n += 1
         end
 
-        DRC::DRCLayer::new(@engine, @engine._cmd(l2n_data, :antenna_check, gate.data, gate_area_factor, gate_perimeter_factor, metal.data, metal_area_factor, metal_perimeter_factor, ratio, dl, texts))
+        DRC::DRCLayer::new(@engine, @engine._cmd(l2n_data_clusters, :antenna_check, gate.data, gate_area_factor, gate_perimeter_factor, metal.data, metal_area_factor, metal_perimeter_factor, ratio, dl, texts))
 
       end
 
@@ -943,6 +950,32 @@ module DRC
           # checks for errors if needed
           if !@ignore_extraction_errors
             @l2n.check_extraction_errors
+          end
+
+        end
+
+        @l2n
+
+      end
+
+    end
+
+    # Like l2n_data, but ensures only the shape clusters are built.
+    # Used by antenna_check, which needs the clusters but not the circuits,
+    # unless soft connections or net joining changed the cluster composition
+    # (then a full extraction is required).
+    def l2n_data_clusters
+
+      @engine._context("l2n_data") do
+
+        ensure_data
+
+        if ! @l2n.is_extracted? && ! @l2n.is_clusters_built?
+
+          if @needs_full_extraction
+            l2n_data
+          else
+            @engine._cmd(@l2n, :extract_clusters)
           end
 
         end

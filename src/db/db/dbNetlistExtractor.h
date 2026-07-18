@@ -94,6 +94,26 @@ public:
   void set_include_floating_subcircuits (bool f);
 
   /**
+   *  @brief Sets a flag indicating whether only the shape clusters shall be built
+   *
+   *  With this flag set to true, extract_nets stops after computing the shape
+   *  clusters and does not build circuits, subcircuits, pins or nets. The
+   *  resulting cluster hierarchy is identical to a full extraction run.
+   */
+  void set_clusters_only (bool f)
+  {
+    m_clusters_only = f;
+  }
+
+  /**
+   *  @brief Returns true if only the shape clusters will be built
+   */
+  bool clusters_only () const
+  {
+    return m_clusters_only;
+  }
+
+  /**
    *  @brief Gets a flag indicating whether floating circuits shall be included as subcircuits
    */
   bool include_floating_subcircuits () const
@@ -156,6 +176,7 @@ private:
   std::list<std::set<std::string> > m_joined_nets;
   std::list<std::pair<std::string, std::list<std::set<std::string> > > > m_joined_nets_per_cell;
   bool m_include_floating_subcircuits;
+  bool m_clusters_only;
 
   bool instance_is_device (db::properties_id_type prop_id) const;
   db::Device *device_from_instance (db::properties_id_type prop_id, db::Circuit *circuit) const;

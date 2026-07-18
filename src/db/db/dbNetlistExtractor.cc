@@ -30,7 +30,7 @@ namespace db
 {
 
 NetlistExtractor::NetlistExtractor ()
-  : mp_clusters (0), mp_layout (0), mp_cell (0), m_include_floating_subcircuits (false)
+  : mp_clusters (0), mp_layout (0), mp_cell (0), m_include_floating_subcircuits (false), m_clusters_only (false)
 {
   //  .. nothing yet ..
 }
@@ -213,6 +213,10 @@ NetlistExtractor::extract_nets (const db::DeepShapeStore &dss, unsigned int layo
   //  the big part: actually extract the nets
 
   mp_clusters->build (*mp_layout, *mp_cell, conn, &net_name_equivalence);
+
+  if (m_clusters_only) {
+    return;
+  }
 
   //  reverse lookup for Circuit vs. cell index
   std::map<db::cell_index_type, db::Circuit *> circuits;

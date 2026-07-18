@@ -837,6 +837,19 @@ Class<db::LayoutToNetlist> decl_dbLayoutToNetlist ("db", "LayoutToNetlist",
     "\n"
     "This method has been made parameter-less in version 0.27. Use \\include_floating_subcircuits= and \\join_net_names as substitutes for the arguments of previous versions."
   ) +
+  gsi::method ("extract_clusters", &db::LayoutToNetlist::extract_clusters,
+    "@brief Runs only the shape cluster computation of the netlist extraction\n"
+    "\n"
+    "The resulting cluster hierarchy is identical to the one a full\n"
+    "\\extract_netlist produces, but no circuits, soft connections or joined\n"
+    "nets are built. Operations which only need the clusters (e.g.\n"
+    "\\antenna_check) can use this cheaper path.\n"
+  ) +
+  gsi::method ("is_clusters_built?", &db::LayoutToNetlist::is_clusters_built,
+    "@brief Gets a value indicating whether the shape clusters were built\n"
+    "\n"
+    "A full \\extract_netlist implies the clusters are built as well.\n"
+  ) +
   gsi::method ("check_extraction_errors", &db::LayoutToNetlist::check_extraction_errors,
     "@brief Raises an exception if extraction errors are present\n"
     "\n"

@@ -47,7 +47,7 @@ namespace db
 //  Note: the iterator provides the hierarchical selection (enabling/disabling cells etc.)
 
 LayoutToNetlist::LayoutToNetlist (const db::RecursiveShapeIterator &iter)
-  : m_iter (iter), m_layout_index (0), m_netlist_extracted (false), m_is_flat (false), m_device_scaling (1.0), m_include_floating_subcircuits (false), m_top_level_mode (false), m_make_soft_connection_diodes (false)
+  : m_iter (iter), m_layout_index (0), m_netlist_extracted (false), m_clusters_built (false), m_is_flat (false), m_device_scaling (1.0), m_include_floating_subcircuits (false), m_top_level_mode (false), m_make_soft_connection_diodes (false)
 {
   //  check the iterator
   if (iter.has_complex_region () || iter.region () != db::Box::world ()) {
@@ -67,7 +67,7 @@ LayoutToNetlist::LayoutToNetlist (const db::RecursiveShapeIterator &iter)
 }
 
 LayoutToNetlist::LayoutToNetlist (db::DeepShapeStore *dss, unsigned int layout_index)
-  : mp_dss (dss), m_layout_index (layout_index), m_netlist_extracted (false), m_is_flat (false), m_device_scaling (1.0), m_include_floating_subcircuits (false), m_top_level_mode (false), m_make_soft_connection_diodes (false)
+  : mp_dss (dss), m_layout_index (layout_index), m_netlist_extracted (false), m_clusters_built (false), m_is_flat (false), m_device_scaling (1.0), m_include_floating_subcircuits (false), m_top_level_mode (false), m_make_soft_connection_diodes (false)
 {
   if (dss->is_valid_layout_index (m_layout_index)) {
     m_iter = db::RecursiveShapeIterator (dss->layout (m_layout_index), dss->initial_cell (m_layout_index), std::set<unsigned int> ());
@@ -75,7 +75,7 @@ LayoutToNetlist::LayoutToNetlist (db::DeepShapeStore *dss, unsigned int layout_i
 }
 
 LayoutToNetlist::LayoutToNetlist (const std::string &topcell_name, double dbu)
-  : m_iter (), m_netlist_extracted (false), m_is_flat (true), m_device_scaling (1.0), m_include_floating_subcircuits (false), m_top_level_mode (false), m_make_soft_connection_diodes (false)
+  : m_iter (), m_netlist_extracted (false), m_clusters_built (false), m_is_flat (true), m_device_scaling (1.0), m_include_floating_subcircuits (false), m_top_level_mode (false), m_make_soft_connection_diodes (false)
 {
   mp_internal_dss.reset (new db::DeepShapeStore (topcell_name, dbu));
   mp_dss.reset (mp_internal_dss.get ());
@@ -86,7 +86,7 @@ LayoutToNetlist::LayoutToNetlist (const std::string &topcell_name, double dbu)
 
 LayoutToNetlist::LayoutToNetlist ()
   : m_iter (), mp_internal_dss (new db::DeepShapeStore ()), mp_dss (mp_internal_dss.get ()), m_layout_index (0),
-    m_netlist_extracted (false), m_is_flat (false), m_device_scaling (1.0), m_include_floating_subcircuits (false), m_top_level_mode (false), m_make_soft_connection_diodes (false)
+    m_netlist_extracted (false), m_clusters_built (false), m_is_flat (false), m_device_scaling (1.0), m_include_floating_subcircuits (false), m_top_level_mode (false), m_make_soft_connection_diodes (false)
 {
   init ();
 }
@@ -289,6 +289,8 @@ void LayoutToNetlist::reset_extracted ()
     m_netlist_extracted = false;
 
   }
+
+  m_clusters_built = false;
 }
 
 void LayoutToNetlist::connect (const db::Region &l)
@@ -471,7 +473,23 @@ void LayoutToNetlist::extract_netlist ()
     m.print ();
   }
 
+  m_clusters_built = true;
   m_netlist_extracted = true;
+}
+
+void LayoutToNetlist::extract_clusters ()
+{
+  if (m_clusters_built || m_netlist_extracted) {
+    return;
+  }
+  ensure_netlist ();
+
+  db::NetlistExtractor netex;
+  netex.set_include_floating_subcircuits (m_include_floating_subcircuits);
+  netex.set_clusters_only (true);
+  netex.extract_nets (dss (), m_layout_index, m_conn, *mp_netlist, m_net_clusters);
+
+  m_clusters_built = true;
 }
 
 void LayoutToNetlist::check_extraction_errors ()
@@ -1970,8 +1988,8 @@ create_antenna_values (double agate, db::Polygon::area_type agate_int, double ga
 
 db::Region LayoutToNetlist::antenna_check (const db::Region &gate, double gate_area_factor, double gate_perimeter_factor, const db::Region &metal, double metal_area_factor, double metal_perimeter_factor, double ratio, const std::vector<std::pair<const db::Region *, double> > &diodes, db::Texts *values)
 {
-  //  TODO: that's basically too much .. we only need the clusters
-  if (! m_netlist_extracted) {
+  //  NOTE: the antenna check needs the shape clusters only, not the full netlist
+  if (! m_netlist_extracted && ! m_clusters_built) {
     throw tl::Exception (tl::to_string (tr ("The netlist has not been extracted yet")));
   }
 
