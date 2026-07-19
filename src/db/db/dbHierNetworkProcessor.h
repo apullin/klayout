@@ -40,7 +40,7 @@
 #include <vector>
 #include <set>
 #include <limits>
-#include <unordered_map>
+#include <utility>
 
 namespace tl {
   class RelativeProgress;
@@ -1344,23 +1344,95 @@ public:
 private:
   template<typename> friend class connected_clusters_iterator;
 
-  struct cluster_instance_hash
+  struct cluster_instance_bucket_hash
   {
-    size_t operator() (const ClusterInstance &inst) const
+    size_t operator() (const ClusterInstance &inst, db::Coord dx, db::Coord dy) const
     {
       size_t h = tl::hfunc (inst.id ());
       h = tl::hfunc (inst.inst_cell_index (), h);
-      //  ICplxTrans equality is fuzzy for angle and magnification.  Hashing
-      //  those components could place equal keys in different buckets near
-      //  an epsilon boundary.  Displacement is integral for ICplxTrans and
-      //  therefore safe (and typically provides the useful distribution).
-      h = tl::hfunc (inst.inst_trans ().disp ().x (), h);
-      h = tl::hfunc (inst.inst_trans ().disp ().y (), h);
+      h = tl::hfunc (dx, h);
+      h = tl::hfunc (dy, h);
       return tl::hfunc (inst.inst_prop_id (), h);
     }
   };
 
-  typedef std::unordered_map<ClusterInstance, typename local_cluster<T>::id_type, cluster_instance_hash> reverse_connections_type;
+  class reverse_connections_type
+  {
+  public:
+    typedef typename local_cluster<T>::id_type mapped_type;
+
+    reverse_connections_type ()
+      : m_size (0), m_used (0)
+    {
+      //  .. nothing yet ..
+    }
+
+    reverse_connections_type (const reverse_connections_type &) = default;
+    reverse_connections_type &operator= (const reverse_connections_type &) = default;
+
+    reverse_connections_type (reverse_connections_type &&other) noexcept
+      : m_entries (std::move (other.m_entries)), m_size (other.m_size), m_used (other.m_used)
+    {
+      other.m_size = 0;
+      other.m_used = 0;
+    }
+
+    reverse_connections_type &operator= (reverse_connections_type &&other) noexcept
+    {
+      if (this != &other) {
+        m_entries = std::move (other.m_entries);
+        m_size = other.m_size;
+        m_used = other.m_used;
+        other.m_size = 0;
+        other.m_used = 0;
+      }
+      return *this;
+    }
+
+    mapped_type *find (const ClusterInstance &inst);
+    const mapped_type *find (const ClusterInstance &inst) const;
+    void set (const ClusterInstance &inst, mapped_type id);
+    bool erase (const ClusterInstance &inst, mapped_type &id);
+
+    void mem_stat (MemStatistics *stat, MemStatistics::purpose_t purpose, int cat, void *parent) const;
+
+  private:
+    enum slot_state { Empty = 0, Occupied = 1, Deleted = 2 };
+
+    struct entry
+    {
+      entry ()
+        : value (0), state (Empty)
+      {
+        //  .. nothing yet ..
+      }
+
+      ClusterInstance key;
+      mapped_type value;
+      unsigned char state;
+    };
+
+    static size_t npos ()
+    {
+      return std::numeric_limits<size_t>::max ();
+    }
+
+    static size_t mix_hash (size_t hash);
+    static size_t bucket_hash (const ClusterInstance &inst, db::Coord dx, db::Coord dy);
+    static size_t candidate_hashes (const ClusterInstance &inst, size_t *hashes);
+
+    size_t find_at_hash (const ClusterInstance &inst, size_t hash) const;
+    size_t find_index (const ClusterInstance &inst) const;
+    void ensure_capacity ();
+    void rehash (size_t capacity);
+    void insert_new (const ClusterInstance &inst, mapped_type id);
+
+    //  The capacity is always a power of two and at least one slot stays Empty,
+    //  so a probe run terminates.  m_used counts both Occupied and Deleted slots;
+    //  m_size counts only Occupied slots.
+    std::vector<entry> m_entries;
+    size_t m_size, m_used;
+  };
 
   std::map<id_type, connections_type> m_connections;
   reverse_connections_type m_rev_connections;

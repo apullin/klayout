@@ -33,6 +33,9 @@
 #include "dbStream.h"
 #include "dbCommonReader.h"
 
+#include <limits>
+#include <utility>
+
 static std::string l2s (db::Connectivity::layer_iterator b, db::Connectivity::layer_iterator e)
 {
   std::string s;
@@ -977,6 +980,97 @@ TEST(31_ConnectedClustersReverseLookupHash)
   cc.add_connection (102, fuzzy);
   EXPECT_EQ (cc.find_cluster_with_connection (fuzzy_equivalent), size_t (102));
 
+  //  ICplxTrans retains its displacement as doubles even when its public
+  //  displacement accessor rounds to integer coordinates.  Exercise adjacent
+  //  rounded buckets on each axis, both signs and both lookup directions.
+  const double displacement_epsilon = db::coord_traits<double>::prec ();
+  const double boundary_delta = 0.4 * displacement_epsilon;
+  auto check_boundary = [&] (size_t serial, const db::DVector &da, const db::DVector &db_disp,
+                             const db::Vector &rounded_a, const db::Vector &rounded_b)
+  {
+    db::ICplxTrans ta (da, 0.0, 1.0, 1.0);
+    db::ICplxTrans tb (db_disp, 0.0, 1.0, 1.0);
+
+    EXPECT_EQ (ta.disp ().x (), rounded_a.x ());
+    EXPECT_EQ (ta.disp ().y (), rounded_a.y ());
+    EXPECT_EQ (tb.disp ().x (), rounded_b.x ());
+    EXPECT_EQ (tb.disp ().y (), rounded_b.y ());
+
+    for (size_t reverse = 0; reverse < 2; ++reverse) {
+      const size_t child_id = 20000 + serial * 2 + reverse;
+      const size_t parent_id = 10000 + serial * 2 + reverse;
+      db::ClusterInstance a (child_id, 41, ta, 43);
+      db::ClusterInstance b (child_id, 41, tb, 43);
+      EXPECT_EQ (a == b, true);
+      if (reverse == 0) {
+        cc.add_connection (parent_id, a);
+        EXPECT_EQ (cc.find_cluster_with_connection (b), parent_id);
+      } else {
+        cc.add_connection (parent_id, b);
+        EXPECT_EQ (cc.find_cluster_with_connection (a), parent_id);
+      }
+    }
+  };
+
+  check_boundary (0,
+                  db::DVector (0.5 - boundary_delta, 10.0), db::DVector (0.5 + boundary_delta, 10.0),
+                  db::Vector (0, 10), db::Vector (1, 10));
+  check_boundary (1,
+                  db::DVector (-0.5 - boundary_delta, 10.0), db::DVector (-0.5 + boundary_delta, 10.0),
+                  db::Vector (-1, 10), db::Vector (0, 10));
+  check_boundary (2,
+                  db::DVector (10.0, 0.5 - boundary_delta), db::DVector (10.0, 0.5 + boundary_delta),
+                  db::Vector (10, 0), db::Vector (10, 1));
+  check_boundary (3,
+                  db::DVector (10.0, -0.5 - boundary_delta), db::DVector (10.0, -0.5 + boundary_delta),
+                  db::Vector (10, -1), db::Vector (10, 0));
+  check_boundary (4,
+                  db::DVector (0.5 - boundary_delta, 0.5 - boundary_delta),
+                  db::DVector (0.5 + boundary_delta, 0.5 + boundary_delta),
+                  db::Vector (0, 0), db::Vector (1, 1));
+  check_boundary (5,
+                  db::DVector (-0.5 - boundary_delta, -0.5 - boundary_delta),
+                  db::DVector (-0.5 + boundary_delta, -0.5 + boundary_delta),
+                  db::Vector (-1, -1), db::Vector (0, 0));
+  check_boundary (6,
+                  db::DVector (0.5 - boundary_delta, -0.5 + boundary_delta),
+                  db::DVector (0.5 + boundary_delta, -0.5 - boundary_delta),
+                  db::Vector (0, 0), db::Vector (1, -1));
+
+  //  A displacement next to the coordinate endpoints still lies close enough
+  //  to a half-integer to request an adjacent bucket.  The absent bucket is
+  //  outside Coord's range and must not be formed through signed overflow.
+  //  This construction needs 32-bit coordinates: double cannot represent the
+  //  half-integer next to a 64-bit Coord endpoint.
+#if !HAVE_64BIT_COORD
+  const db::Coord coord_max = std::numeric_limits<db::Coord>::max ();
+  const db::Coord coord_min = std::numeric_limits<db::Coord>::min ();
+  const double raw_max = double (coord_max) + 0.5 - boundary_delta;
+  const double raw_min = double (coord_min) - 0.5 + boundary_delta;
+  db::ICplxTrans endpoint_max_t (db::DVector (raw_max, raw_max), 0.0, 1.0, 1.0);
+  db::ICplxTrans endpoint_min_t (db::DVector (raw_min, raw_min), 0.0, 1.0, 1.0);
+  EXPECT_EQ (endpoint_max_t.disp (), db::Vector (coord_max, coord_max));
+  EXPECT_EQ (endpoint_min_t.disp (), db::Vector (coord_min, coord_min));
+  db::ClusterInstance endpoint_max (31000, 41, endpoint_max_t, 43);
+  db::ClusterInstance endpoint_min (31001, 41, endpoint_min_t, 43);
+  cc.add_connection (31002, endpoint_max);
+  cc.add_connection (31003, endpoint_min);
+  EXPECT_EQ (cc.find_cluster_with_connection (endpoint_max), size_t (31002));
+  EXPECT_EQ (cc.find_cluster_with_connection (endpoint_min), size_t (31003));
+#endif
+
+  //  Adjacent rounded buckets alone are insufficient: the complete fuzzy
+  //  ClusterInstance equality check must still reject displacements over the
+  //  tolerance.
+  const double non_equal_delta = 0.6 * displacement_epsilon;
+  db::ICplxTrans negative_far_a (db::DVector (-0.5 - non_equal_delta, 20.0), 0.0, 1.0, 1.0);
+  db::ICplxTrans negative_far_b (db::DVector (-0.5 + non_equal_delta, 20.0), 0.0, 1.0, 1.0);
+  db::ClusterInstance negative_far_key_a (30000, 41, negative_far_a, 43);
+  db::ClusterInstance negative_far_key_b (30000, 41, negative_far_b, 43);
+  EXPECT_EQ (negative_far_key_a == negative_far_key_b, false);
+  cc.add_connection (30001, negative_far_key_a);
+  EXPECT_EQ (cc.find_cluster_with_connection (negative_far_key_b), size_t (0));
+
   //  Every component of ClusterInstance participates in the reverse lookup key.
   EXPECT_EQ (cc.find_cluster_with_connection (db::ClusterInstance (8, 11, t, 13)), size_t (0));
   EXPECT_EQ (cc.find_cluster_with_connection (db::ClusterInstance (7, 12, t, 13)), size_t (0));
@@ -1020,6 +1114,145 @@ TEST(31_ConnectedClustersReverseLookupHash)
   }
   for (size_t n = 0; n < array_members.size (); ++n) {
     EXPECT_EQ (cc.find_cluster_with_connection (array_members [n]), size_t (300 + n));
+  }
+}
+
+TEST(32_ConnectedClustersReverseLookupTableLifecycle)
+{
+  typedef db::connected_clusters<db::PolygonRef> clusters_type;
+
+  //  These keys differ only in magnification.  Magnification is intentionally
+  //  absent from the coarse hash because its equality is fuzzy, so this makes
+  //  one long probe sequence while preserving distinct full keys.
+  const size_t key_count = 320;
+  const size_t old_child_id = 700;
+  const size_t target_child_id = 701;
+  std::vector<db::ClusterInstance> old_keys;
+  old_keys.reserve (key_count);
+
+  clusters_type cc;
+  for (size_t n = 0; n < key_count; ++n) {
+    old_keys.push_back (db::ClusterInstance (old_child_id, 77,
+                                             db::ICplxTrans (1.0 + 0.01 * double (n), 0.0, false,
+                                                             db::Vector (-123, 456)),
+                                             99));
+    cc.add_connection (1000 + n, old_keys.back ());
+  }
+  for (size_t n = 0; n < key_count; ++n) {
+    EXPECT_EQ (cc.find_cluster_with_connection (old_keys [n]), size_t (1000 + n));
+  }
+
+  //  Precreate rename targets.  Renaming to an existing target erases the old
+  //  reverse entry without immediately filling that slot, leaving alternating
+  //  tombstones throughout the original probe sequence.
+  std::vector<db::ClusterInstance> target_keys;
+  target_keys.reserve ((key_count + 1) / 2);
+  for (size_t n = 0; n < key_count; n += 2) {
+    target_keys.push_back (db::ClusterInstance (target_child_id, old_keys [n]));
+    cc.add_connection (2000 + n, target_keys.back ());
+  }
+  for (size_t n = 0; n < key_count; n += 2) {
+    EXPECT_EQ (cc.find_cluster_with_connection (target_keys [n / 2]), size_t (2000 + n));
+  }
+
+  for (size_t n = 0; n < key_count; n += 2) {
+    cc.rename_connection (old_keys [n], target_child_id);
+  }
+  for (size_t n = 0; n < key_count; ++n) {
+    EXPECT_EQ (cc.find_cluster_with_connection (old_keys [n]), n % 2 == 0 ? size_t (0) : size_t (1000 + n));
+  }
+  for (size_t n = 0; n < key_count; n += 2) {
+    EXPECT_EQ (cc.find_cluster_with_connection (target_keys [n / 2]), size_t (2000 + n));
+  }
+
+  //  Reuse some of the tombstones with fresh keys from the same coarse bucket.
+  std::vector<db::ClusterInstance> replacement_keys;
+  replacement_keys.reserve (64);
+  for (size_t n = 0; n < 64; ++n) {
+    replacement_keys.push_back (db::ClusterInstance (old_child_id, 77,
+                                                     db::ICplxTrans (10.0 + 0.01 * double (n), 0.0, false,
+                                                                     db::Vector (-123, 456)),
+                                                     99));
+    cc.add_connection (3000 + n, replacement_keys.back ());
+  }
+
+  auto verify_bulk = [&] (const clusters_type &clusters)
+  {
+    for (size_t n = 0; n < key_count; ++n) {
+      EXPECT_EQ (clusters.find_cluster_with_connection (old_keys [n]), n % 2 == 0 ? size_t (0) : size_t (1000 + n));
+    }
+    for (size_t n = 0; n < key_count; n += 2) {
+      EXPECT_EQ (clusters.find_cluster_with_connection (target_keys [n / 2]), size_t (2000 + n));
+    }
+    for (size_t n = 0; n < replacement_keys.size (); ++n) {
+      EXPECT_EQ (clusters.find_cluster_with_connection (replacement_keys [n]), size_t (3000 + n));
+    }
+  };
+  verify_bulk (cc);
+
+  //  Adding the same fuzzy key updates the reverse mapping.  Joining the two
+  //  parent clusters retargets it and removes the duplicate forward connection.
+  clusters_type duplicates;
+  db::ICplxTrans duplicate_t (1.0, 30.0, false, db::Vector (700, 800));
+  db::ICplxTrans duplicate_t_equivalent (1.0 + 0.5 * db::epsilon, 30.0, false, db::Vector (700, 800));
+  db::ClusterInstance duplicate_key (900, 901, duplicate_t, 902);
+  db::ClusterInstance duplicate_key_equivalent (900, 901, duplicate_t_equivalent, 902);
+  EXPECT_EQ (duplicate_key == duplicate_key_equivalent, true);
+  duplicates.add_connection (41, duplicate_key);
+  duplicates.add_connection (42, duplicate_key_equivalent);
+  EXPECT_EQ (duplicates.find_cluster_with_connection (duplicate_key), size_t (42));
+  duplicates.join_cluster_with (41, 42);
+  EXPECT_EQ (duplicates.find_cluster_with_connection (duplicate_key_equivalent), size_t (41));
+  EXPECT_EQ (duplicates.connections_for_cluster (41).size (), size_t (1));
+  EXPECT_EQ (duplicates.connections_for_cluster (42).empty (), true);
+
+  //  The table is copied by value in extraction code.  Verify independent
+  //  copies, both move paths and valid reuse of moved-from objects.
+  clusters_type copied (cc);
+  clusters_type assigned;
+  assigned = cc;
+  verify_bulk (copied);
+  verify_bulk (assigned);
+
+  db::ClusterInstance source_only (910, 911, db::ICplxTrans (1.25, 15.0, false, db::Vector (12, 34)), 912);
+  cc.add_connection (9000, source_only);
+  EXPECT_EQ (cc.find_cluster_with_connection (source_only), size_t (9000));
+  EXPECT_EQ (copied.find_cluster_with_connection (source_only), size_t (0));
+  EXPECT_EQ (assigned.find_cluster_with_connection (source_only), size_t (0));
+
+  clusters_type moved (std::move (copied));
+  clusters_type move_assigned;
+  move_assigned = std::move (assigned);
+  verify_bulk (moved);
+  verify_bulk (move_assigned);
+
+  db::ClusterInstance reused_after_move_1 (920, 921, db::ICplxTrans (db::Vector (1, 2)), 922);
+  db::ClusterInstance reused_after_move_2 (930, 931, db::ICplxTrans (db::Vector (3, 4)), 932);
+  copied.add_connection (9001, reused_after_move_1);
+  assigned.add_connection (9002, reused_after_move_2);
+  EXPECT_EQ (copied.find_cluster_with_connection (reused_after_move_1), size_t (9001));
+  EXPECT_EQ (assigned.find_cluster_with_connection (reused_after_move_2), size_t (9002));
+
+  //  Keep only a few entries live while repeatedly renaming them.  This creates
+  //  many deleted slots and drives same-capacity tombstone compaction.
+  clusters_type churn;
+  std::vector<db::ClusterInstance> live_keys;
+  for (size_t n = 0; n < 8; ++n) {
+    live_keys.push_back (db::ClusterInstance (50000 + n, 501,
+                                             db::ICplxTrans (1.0 + 0.1 * double (n), 0.0, false,
+                                                             db::Vector (-50, 60)),
+                                             502));
+    churn.add_connection (4000 + n, live_keys.back ());
+  }
+  for (size_t round = 0; round < 256; ++round) {
+    for (size_t n = 0; n < live_keys.size (); ++n) {
+      db::ClusterInstance old_key = live_keys [n];
+      db::ClusterInstance new_key (50000 + (round + 1) * live_keys.size () + n, old_key);
+      churn.rename_connection (old_key, new_key.id ());
+      EXPECT_EQ (churn.find_cluster_with_connection (old_key), size_t (0));
+      EXPECT_EQ (churn.find_cluster_with_connection (new_key), size_t (4000 + n));
+      live_keys [n] = new_key;
+    }
   }
 }
 

@@ -1690,6 +1690,257 @@ template class DB_PUBLIC connected_clusters_iterator<db::Edge>;
 //  connected_clusters implementation
 
 template <class T>
+size_t
+connected_clusters<T>::reverse_connections_type::mix_hash (size_t hash)
+{
+  uint64_t z = uint64_t (hash) + UINT64_C (0x9e3779b97f4a7c15);
+  z = (z ^ (z >> 30)) * UINT64_C (0xbf58476d1ce4e5b9);
+  z = (z ^ (z >> 27)) * UINT64_C (0x94d049bb133111eb);
+  return size_t (z ^ (z >> 31));
+}
+
+template <class T>
+size_t
+connected_clusters<T>::reverse_connections_type::bucket_hash (const ClusterInstance &inst, db::Coord dx, db::Coord dy)
+{
+  return mix_hash (cluster_instance_bucket_hash () (inst, dx, dy));
+}
+
+template <class T>
+size_t
+connected_clusters<T>::reverse_connections_type::candidate_hashes (const ClusterInstance &inst, size_t *hashes)
+{
+  //  ClusterInstance equality compares the transform's double displacement
+  //  fuzzily, while ICplxTrans::disp() rounds it to integer coordinates.  An
+  //  equal key can therefore occupy the bucket immediately across a rounding
+  //  boundary.  Probe that adjacent x/y bucket (and the diagonal) as needed.
+  const db::Vector rounded = inst.inst_trans ().disp ();
+  const db::DVector raw = db::DCplxTrans (inst.inst_trans ()).disp ();
+  const double displacement_epsilon = db::coord_traits<double>::prec ();
+
+  db::Coord x [2] = { rounded.x (), rounded.x () };
+  db::Coord y [2] = { rounded.y (), rounded.y () };
+  size_t nx = 1, ny = 1;
+
+  if (fabs (raw.x () - (floor (raw.x ()) + 0.5)) < displacement_epsilon) {
+    if (raw.x () < double (rounded.x ())) {
+      if (rounded.x () > std::numeric_limits<db::Coord>::min ()) {
+        x [nx++] = rounded.x () - 1;
+      }
+    } else if (rounded.x () < std::numeric_limits<db::Coord>::max ()) {
+      x [nx++] = rounded.x () + 1;
+    }
+  }
+  if (fabs (raw.y () - (floor (raw.y ()) + 0.5)) < displacement_epsilon) {
+    if (raw.y () < double (rounded.y ())) {
+      if (rounded.y () > std::numeric_limits<db::Coord>::min ()) {
+        y [ny++] = rounded.y () - 1;
+      }
+    } else if (rounded.y () < std::numeric_limits<db::Coord>::max ()) {
+      y [ny++] = rounded.y () + 1;
+    }
+  }
+
+  size_t n = 0;
+  for (size_t ix = 0; ix < nx; ++ix) {
+    for (size_t iy = 0; iy < ny; ++iy) {
+      const size_t hash = bucket_hash (inst, x [ix], y [iy]);
+      bool duplicate = false;
+      for (size_t i = 0; i < n && ! duplicate; ++i) {
+        duplicate = hashes [i] == hash;
+      }
+      if (! duplicate) {
+        hashes [n++] = hash;
+      }
+    }
+  }
+
+  return n;
+}
+
+template <class T>
+size_t
+connected_clusters<T>::reverse_connections_type::find_at_hash (const ClusterInstance &inst, size_t hash) const
+{
+  if (m_entries.empty ()) {
+    return npos ();
+  }
+
+  const size_t mask = m_entries.size () - 1;
+  size_t index = hash & mask;
+
+  for (size_t n = 0; n < m_entries.size (); ++n) {
+    const entry &e = m_entries [index];
+    if (e.state == Empty) {
+      return npos ();
+    } else if (e.state == Occupied && e.key == inst) {
+      return index;
+    }
+    index = (index + 1) & mask;
+  }
+
+  return npos ();
+}
+
+template <class T>
+size_t
+connected_clusters<T>::reverse_connections_type::find_index (const ClusterInstance &inst) const
+{
+  const db::Vector rounded = inst.inst_trans ().disp ();
+  const size_t primary_hash = bucket_hash (inst, rounded.x (), rounded.y ());
+  size_t index = find_at_hash (inst, primary_hash);
+  if (index != npos ()) {
+    return index;
+  }
+
+  size_t hashes [4];
+  const size_t n = candidate_hashes (inst, hashes);
+  for (size_t i = 0; i < n; ++i) {
+    if (hashes [i] != primary_hash) {
+      index = find_at_hash (inst, hashes [i]);
+      if (index != npos ()) {
+        return index;
+      }
+    }
+  }
+
+  return npos ();
+}
+
+template <class T>
+void
+connected_clusters<T>::reverse_connections_type::ensure_capacity ()
+{
+  if (m_entries.empty ()) {
+    rehash (4);
+  } else if ((m_used + 1) * 4 >= m_entries.size () * 3) {
+    if ((m_size + 1) * 4 < m_entries.size () * 3) {
+      rehash (m_entries.size ());
+    } else {
+      rehash (m_entries.size () * 2);
+    }
+  }
+}
+
+template <class T>
+void
+connected_clusters<T>::reverse_connections_type::rehash (size_t capacity)
+{
+  reverse_connections_type replacement;
+  replacement.m_entries.resize (capacity);
+
+  for (typename std::vector<entry>::const_iterator i = m_entries.begin (); i != m_entries.end (); ++i) {
+    if (i->state == Occupied) {
+      replacement.insert_new (i->key, i->value);
+    }
+  }
+
+  m_entries.swap (replacement.m_entries);
+  m_size = replacement.m_size;
+  m_used = replacement.m_used;
+}
+
+template <class T>
+void
+connected_clusters<T>::reverse_connections_type::insert_new (const ClusterInstance &inst, mapped_type id)
+{
+  const db::Vector rounded = inst.inst_trans ().disp ();
+  const size_t mask = m_entries.size () - 1;
+  size_t index = bucket_hash (inst, rounded.x (), rounded.y ()) & mask;
+  size_t deleted = npos ();
+
+  for (size_t n = 0; n < m_entries.size (); ++n) {
+    entry &e = m_entries [index];
+    if (e.state == Empty) {
+      const bool uses_empty = deleted == npos ();
+      entry &target = uses_empty ? e : m_entries [deleted];
+      target.key = inst;
+      target.value = id;
+      target.state = Occupied;
+      ++m_size;
+      if (uses_empty) {
+        ++m_used;
+      }
+      return;
+    } else if (e.state == Deleted && deleted == npos ()) {
+      deleted = index;
+    }
+    index = (index + 1) & mask;
+  }
+
+  tl_assert (deleted != npos ());
+  entry &target = m_entries [deleted];
+  target.key = inst;
+  target.value = id;
+  target.state = Occupied;
+  ++m_size;
+}
+
+template <class T>
+typename connected_clusters<T>::reverse_connections_type::mapped_type *
+connected_clusters<T>::reverse_connections_type::find (const ClusterInstance &inst)
+{
+  const size_t index = find_index (inst);
+  return index == npos () ? 0 : &m_entries [index].value;
+}
+
+template <class T>
+const typename connected_clusters<T>::reverse_connections_type::mapped_type *
+connected_clusters<T>::reverse_connections_type::find (const ClusterInstance &inst) const
+{
+  const size_t index = find_index (inst);
+  return index == npos () ? 0 : &m_entries [index].value;
+}
+
+template <class T>
+void
+connected_clusters<T>::reverse_connections_type::set (const ClusterInstance &inst, mapped_type id)
+{
+  mapped_type *existing = find (inst);
+  if (existing) {
+    *existing = id;
+  } else {
+    ensure_capacity ();
+    insert_new (inst, id);
+  }
+}
+
+template <class T>
+bool
+connected_clusters<T>::reverse_connections_type::erase (const ClusterInstance &inst, mapped_type &id)
+{
+  const size_t index = find_index (inst);
+  if (index == npos ()) {
+    return false;
+  }
+
+  entry &e = m_entries [index];
+  id = e.value;
+  e.state = Deleted;
+  --m_size;
+
+  if (m_size == 0) {
+    for (typename std::vector<entry>::iterator i = m_entries.begin (); i != m_entries.end (); ++i) {
+      i->state = Empty;
+    }
+    m_used = 0;
+  }
+
+  return true;
+}
+
+template <class T>
+void
+connected_clusters<T>::reverse_connections_type::mem_stat (MemStatistics *stat, MemStatistics::purpose_t purpose, int cat, void *parent) const
+{
+  if (! m_entries.empty ()) {
+    stat->add (typeid (entry []), (void *) &m_entries.front (),
+               sizeof (entry) * m_entries.capacity (), sizeof (entry) * m_size,
+               parent, purpose, cat);
+  }
+}
+
+template <class T>
 const typename connected_clusters<T>::connections_type &
 connected_clusters<T>::connections_for_cluster (typename local_cluster<T>::id_type id) const
 {
@@ -1707,7 +1958,7 @@ void
 connected_clusters<T>::add_connection (typename local_cluster<T>::id_type id, const ClusterInstance &inst)
 {
   m_connections [id].push_back (inst);
-  m_rev_connections [inst] = id;
+  m_rev_connections.set (inst, id);
 }
 
 template <class T>
@@ -1720,21 +1971,18 @@ connected_clusters<T>::rename_connection (const ClusterInstance &inst, typename 
 
   ClusterInstance new_inst (to_id, inst);
 
-  auto rc = m_rev_connections.find (inst);
-  if (rc == m_rev_connections.end ()) {
+  typename reverse_connections_type::mapped_type id = 0;
+  if (! m_rev_connections.erase (inst, id)) {
     return;  //  TODO: assert?
   }
 
-  auto id = rc->second;
-  m_rev_connections.erase (rc);
-
   auto &connections = m_connections [id];
 
-  auto rc_exists = m_rev_connections.find (new_inst);
-  if (rc_exists != m_rev_connections.end ()) {
+  const typename reverse_connections_type::mapped_type *rc_exists = m_rev_connections.find (new_inst);
+  if (rc_exists) {
 
     //  NOTE: possibly a different connection to the new cluster already exists (i.e.
-    //  rc_exists->second != id).
+    //  *rc_exists != id).
     //  This may mean we are connecting two clusters here on parent level. In the netlist, this
     //  is reflected by having multiple upward pins. Right now, we cannot reflect this case
     //  in the reverse connection structures and keep the existing one only in the reverse
@@ -1755,7 +2003,7 @@ connected_clusters<T>::rename_connection (const ClusterInstance &inst, typename 
 
   } else {
 
-    m_rev_connections.insert (std::make_pair (new_inst, id));
+    m_rev_connections.set (new_inst, id);
 
     //  Replace connections downwards
     //  TODO: this linear search may be slow
@@ -1788,7 +2036,7 @@ connected_clusters<T>::join_cluster_with (typename local_cluster<T>::id_type id,
     connections_type &to_join = tc->second;
 
     for (connections_type::const_iterator c = to_join.begin (); c != to_join.end (); ++c) {
-      m_rev_connections [*c] = id;
+      m_rev_connections.set (*c, id);
     }
 
     connections_type &target = m_connections [id];
@@ -1846,7 +2094,7 @@ connected_clusters<T>::join_clusters_with (typename local_cluster<T>::id_type id
       connections_type &to_join = tc->second;
 
       for (connections_type::const_iterator c = to_join.begin (); c != to_join.end (); ++c) {
-        m_rev_connections [*c] = id;
+        m_rev_connections.set (*c, id);
       }
 
       if (target.empty ()) {
@@ -1886,12 +2134,8 @@ template <class T>
 typename local_cluster<T>::id_type
 connected_clusters<T>::find_cluster_with_connection (const ClusterInstance &inst) const
 {
-  typename connected_clusters<T>::reverse_connections_type::const_iterator rc = m_rev_connections.find (inst);
-  if (rc != m_rev_connections.end ()) {
-    return rc->second;
-  } else {
-    return 0;
-  }
+  const typename connected_clusters<T>::reverse_connections_type::mapped_type *rc = m_rev_connections.find (inst);
+  return rc ? *rc : 0;
 }
 
 template <class T>
@@ -1905,7 +2149,7 @@ connected_clusters<T>::mem_stat (MemStatistics *stat, MemStatistics::purpose_t p
   local_clusters<T>::mem_stat (stat, purpose, cat, true, parent);
 
   db::mem_stat (stat, purpose, cat, m_connections, true, (void *) this);
-  db::mem_stat (stat, purpose, cat, m_rev_connections, true, (void *) this);
+  m_rev_connections.mem_stat (stat, purpose, cat, (void *) this);
   db::mem_stat (stat, purpose, cat, m_connected_clusters, true, (void *) this);
 }
 
