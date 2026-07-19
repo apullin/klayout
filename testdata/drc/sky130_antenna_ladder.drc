@@ -1,0 +1,48 @@
+# Connectivity/antenna microbenchmark for routed Sky130 logic.
+# This is a performance/exactness workload, not a foundry signoff deck.
+
+source($input, $top_cell)
+report("Sky130 connectivity/antenna benchmark", $report)
+
+deep
+threads(4)
+
+diff  = polygons(65, 20)
+poly  = polygons(66, 20)
+licon = polygons(66, 44)
+li    = polygons(67, 20)
+mcon  = polygons(67, 44)
+m1    = polygons(68, 20)
+via1  = polygons(68, 44)
+m2    = polygons(69, 20)
+via2  = polygons(69, 44)
+m3    = polygons(70, 20)
+via3  = polygons(70, 44)
+m4    = polygons(71, 20)
+via4  = polygons(71, 44)
+m5    = polygons(72, 20)
+
+gate = poly & diff
+
+connect(gate, poly)
+connect(poly, licon)
+connect(licon, li)
+connect(li, mcon)
+connect(mcon, m1)
+antenna_check(gate, m1, 1.0e12).output("ANT_M1", "M1 connectivity")
+
+connect(m1, via1)
+connect(via1, m2)
+antenna_check(gate, m2, 1.0e12).output("ANT_M2", "M2 connectivity")
+
+connect(m2, via2)
+connect(via2, m3)
+antenna_check(gate, m3, 1.0e12).output("ANT_M3", "M3 connectivity")
+
+connect(m3, via3)
+connect(via3, m4)
+antenna_check(gate, m4, 1.0e12).output("ANT_M4", "M4 connectivity")
+
+connect(m4, via4)
+connect(via4, m5)
+antenna_check(gate, m5, 1.0e12).output("ANT_M5", "M5 connectivity")
