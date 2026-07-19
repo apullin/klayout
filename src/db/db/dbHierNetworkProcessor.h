@@ -32,6 +32,7 @@
 #include "dbInstElement.h"
 #include "tlEquivalenceClusters.h"
 #include "tlAssert.h"
+#include "tlHash.h"
 #include "tlSList.h"
 
 #include <map>
@@ -39,6 +40,7 @@
 #include <vector>
 #include <set>
 #include <limits>
+#include <unordered_map>
 
 namespace tl {
   class RelativeProgress;
@@ -1342,8 +1344,26 @@ public:
 private:
   template<typename> friend class connected_clusters_iterator;
 
+  struct cluster_instance_hash
+  {
+    size_t operator() (const ClusterInstance &inst) const
+    {
+      size_t h = tl::hfunc (inst.id ());
+      h = tl::hfunc (inst.inst_cell_index (), h);
+      //  ICplxTrans equality is fuzzy for angle and magnification.  Hashing
+      //  those components could place equal keys in different buckets near
+      //  an epsilon boundary.  Displacement is integral for ICplxTrans and
+      //  therefore safe (and typically provides the useful distribution).
+      h = tl::hfunc (inst.inst_trans ().disp ().x (), h);
+      h = tl::hfunc (inst.inst_trans ().disp ().y (), h);
+      return tl::hfunc (inst.inst_prop_id (), h);
+    }
+  };
+
+  typedef std::unordered_map<ClusterInstance, typename local_cluster<T>::id_type, cluster_instance_hash> reverse_connections_type;
+
   std::map<id_type, connections_type> m_connections;
-  std::map<ClusterInstance, typename local_cluster<T>::id_type> m_rev_connections;
+  reverse_connections_type m_rev_connections;
   std::set<id_type> m_connected_clusters;
 };
 

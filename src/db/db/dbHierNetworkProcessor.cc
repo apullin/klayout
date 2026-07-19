@@ -1880,7 +1880,7 @@ template <class T>
 typename local_cluster<T>::id_type
 connected_clusters<T>::find_cluster_with_connection (const ClusterInstance &inst) const
 {
-  typename std::map<ClusterInstance, typename local_cluster<T>::id_type>::const_iterator rc = m_rev_connections.find (inst);
+  typename connected_clusters<T>::reverse_connections_type::const_iterator rc = m_rev_connections.find (inst);
   if (rc != m_rev_connections.end ()) {
     return rc->second;
   } else {

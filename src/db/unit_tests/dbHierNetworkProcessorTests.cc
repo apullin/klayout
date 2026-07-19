@@ -951,6 +951,78 @@ TEST(30_LocalConnectedClusters)
   EXPECT_EQ (x.size (), size_t (0));
 }
 
+TEST(31_ConnectedClustersReverseLookupHash)
+{
+  typedef db::connected_clusters<db::PolygonRef> clusters_type;
+
+  clusters_type cc;
+
+  db::ICplxTrans t (1.0, 90.0, false, db::Vector (100, 200));
+  db::ICplxTrans t_equivalent (db::Trans (1, false, db::Vector (100, 200)));
+  db::ClusterInstance base (7, 11, t, 13);
+  db::ClusterInstance equivalent (7, 11, t_equivalent, 13);
+
+  EXPECT_EQ (base == equivalent, true);
+  cc.add_connection (101, base);
+  EXPECT_EQ (cc.find_cluster_with_connection (base), size_t (101));
+  EXPECT_EQ (cc.find_cluster_with_connection (equivalent), size_t (101));
+
+  //  Fuzzy-equal transformations must remain interchangeable as hash keys,
+  //  even when magnification straddles a would-be epsilon-sized hash bin.
+  db::ICplxTrans fuzzy_t (1.0, 30.0, false, db::Vector (500, 600));
+  db::ICplxTrans fuzzy_t_equivalent (1.0 + 0.75 * db::epsilon, 30.0, false, db::Vector (500, 600));
+  db::ClusterInstance fuzzy (27, 29, fuzzy_t, 31);
+  db::ClusterInstance fuzzy_equivalent (27, 29, fuzzy_t_equivalent, 31);
+  EXPECT_EQ (fuzzy == fuzzy_equivalent, true);
+  cc.add_connection (102, fuzzy);
+  EXPECT_EQ (cc.find_cluster_with_connection (fuzzy_equivalent), size_t (102));
+
+  //  Every component of ClusterInstance participates in the reverse lookup key.
+  EXPECT_EQ (cc.find_cluster_with_connection (db::ClusterInstance (8, 11, t, 13)), size_t (0));
+  EXPECT_EQ (cc.find_cluster_with_connection (db::ClusterInstance (7, 12, t, 13)), size_t (0));
+  EXPECT_EQ (cc.find_cluster_with_connection (db::ClusterInstance (7, 11, db::ICplxTrans (1.0, 90.0, false, db::Vector (101, 200)), 13)), size_t (0));
+  EXPECT_EQ (cc.find_cluster_with_connection (db::ClusterInstance (7, 11, db::ICplxTrans (1.0, 0.0, false, db::Vector (100, 200)), 13)), size_t (0));
+  EXPECT_EQ (cc.find_cluster_with_connection (db::ClusterInstance (7, 11, db::ICplxTrans (1.0, 90.0, true, db::Vector (100, 200)), 13)), size_t (0));
+  EXPECT_EQ (cc.find_cluster_with_connection (db::ClusterInstance (7, 11, db::ICplxTrans (2.0, 90.0, false, db::Vector (100, 200)), 13)), size_t (0));
+  EXPECT_EQ (cc.find_cluster_with_connection (db::ClusterInstance (7, 11, t, 14)), size_t (0));
+
+  //  Renaming changes the child cluster ID in both lookup directions.
+  cc.rename_connection (equivalent, 9);
+  db::ClusterInstance renamed (9, 11, t, 13);
+  EXPECT_EQ (cc.find_cluster_with_connection (base), size_t (0));
+  EXPECT_EQ (cc.find_cluster_with_connection (renamed), size_t (101));
+  EXPECT_EQ (cc.connections_for_cluster (101).front () == renamed, true);
+
+  //  Joining parent clusters retargets every reverse entry from the joined cluster.
+  db::ClusterInstance joined (17, 19, db::ICplxTrans (1.5, 45.0, true, db::Vector (-300, 400)), 23);
+  cc.add_connection (202, joined);
+  cc.join_cluster_with (101, 202);
+  EXPECT_EQ (cc.find_cluster_with_connection (renamed), size_t (101));
+  EXPECT_EQ (cc.find_cluster_with_connection (joined), size_t (101));
+  EXPECT_EQ (cc.connections_for_cluster (202).empty (), true);
+
+  //  Array members share cell, property and child-cluster IDs, but their member
+  //  transformations must remain distinct keys.
+  db::Layout layout;
+  db::Cell &top = layout.cell (layout.add_cell ("TOP"));
+  db::Cell &child = layout.cell (layout.add_cell ("CHILD"));
+  db::Instance array = top.insert (db::CellInstArray (db::CellInst (child.cell_index ()), db::Trans (),
+                                                     db::Vector (1000, 0), db::Vector (0, 2000), 2, 2));
+
+  std::vector<db::ClusterInstance> array_members;
+  for (db::CellInstArray::iterator ai = array.begin (); ! ai.at_end (); ++ai) {
+    array_members.push_back (db::ClusterInstance (31, db::InstElement (array, ai)));
+  }
+  EXPECT_EQ (array_members.size (), size_t (4));
+
+  for (size_t n = 0; n < array_members.size (); ++n) {
+    cc.add_connection (300 + n, array_members [n]);
+  }
+  for (size_t n = 0; n < array_members.size (); ++n) {
+    EXPECT_EQ (cc.find_cluster_with_connection (array_members [n]), size_t (300 + n));
+  }
+}
+
 static db::PolygonRef make_box (db::Layout &ly, const db::Box &box)
 {
   return db::PolygonRef (db::Polygon (box), ly.shape_repository ());
