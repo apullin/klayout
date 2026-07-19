@@ -38,6 +38,7 @@
 #include <list>
 #include <set>
 #include <cstring>
+#include <utility>
 
 namespace db
 {
@@ -949,12 +950,12 @@ size_t split_cluster (const local_cluster<T> &cl, double max_area_ratio, Iter &o
   size_t nb = split_cluster (b, max_area_ratio, output);
 
   if (na == 0) {
-    *output++ = a;
+    *output++ = std::move (a);
     na = 1;
   }
 
   if (nb == 0) {
-    *output++ = b;
+    *output++ = std::move (b);
     nb = 1;
   }
 
@@ -1222,6 +1223,11 @@ struct cluster_building_receiver
   void finalize (bool) { }
   bool stop () const { return false; }
 
+  size_t cluster_count () const
+  {
+    return m_clusters.size ();
+  }
+
   void generate_clusters (local_clusters<T> &clusters)
   {
     std::map<const cluster_value *, typename local_cluster<T>::id_type> in_to_out;
@@ -1229,7 +1235,6 @@ struct cluster_building_receiver
     //  build the resulting clusters
     for (typename std::list<cluster_value>::const_iterator c = m_clusters.begin (); c != m_clusters.end (); ++c) {
 
-      //  TODO: reserve?
       local_cluster<T> *cluster = clusters.insert ();
       for (typename shape_vector::const_iterator s = c->first.begin (); s != c->first.end (); ++s) {
         cluster->add (*s->first, s->second.first);
@@ -1606,6 +1611,7 @@ local_clusters<T>::build_clusters (const db::Cell &cell, const db::Connectivity 
   cluster_building_receiver<T, box_type> rec (conn, attr_equivalence, separate_attributes);
   hnp_scanner_box_adaptor<T, shape_property, db::box_convert<T> > bca (bc);
   bs.process_with_adaptor (rec, 1 /*==touching*/, bca);
+  m_clusters.reserve (m_clusters.size () + rec.cluster_count ());
   rec.generate_clusters (*this);
 
   if (attr_equivalence && attr_equivalence->size () > 0) {
