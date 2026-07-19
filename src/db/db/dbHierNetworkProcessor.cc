@@ -764,6 +764,16 @@ template <class T>
 bool
 local_cluster<T>::interacts (const local_cluster<T> &other, const db::ICplxTrans &trans, const Connectivity &conn, int &soft, std::map<unsigned int, std::vector<const T *> > *interacting_this, std::map<unsigned int, std::vector<const T *> > *interacting_other) const
 {
+  struct candidate_layer
+  {
+    candidate_layer (unsigned int l) : layer (l), active (false) { }
+
+    unsigned int layer;
+    bool active;
+  };
+
+  typedef std::vector<candidate_layer> candidate_layers;
+
   db::box_convert<T> bc;
 
   const_cast<local_cluster<T> *> (this)->ensure_sorted ();
@@ -779,10 +789,13 @@ local_cluster<T>::interacts (const local_cluster<T> &other, const db::ICplxTrans
   //  conservative: they may admit a sparse layer whose shapes miss the common
   //  region, but the detailed tree scan below remains the exact gate.
 
-  std::set<unsigned int> ll1;
+  candidate_layers ll1;
   for (typename shapes_type::const_iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
     if (s->second.second.touches (common)) {
-      ll1.insert (s->first);
+      if (ll1.empty ()) {
+        ll1.reserve (m_shapes.size ());
+      }
+      ll1.push_back (candidate_layer (s->first));
     }
   }
 
@@ -790,10 +803,13 @@ local_cluster<T>::interacts (const local_cluster<T> &other, const db::ICplxTrans
     return false;
   }
 
-  std::set<unsigned int> ll2;
+  candidate_layers ll2;
   for (typename shapes_type::const_iterator s = other.m_shapes.begin (); s != other.m_shapes.end (); ++s) {
     if (s->second.second.touches (common_for_other)) {
-      ll2.insert (s->first);
+      if (ll2.empty ()) {
+        ll2.reserve (other.m_shapes.size ());
+      }
+      ll2.push_back (candidate_layer (s->first));
     }
   }
 
@@ -808,25 +824,43 @@ local_cluster<T>::interacts (const local_cluster<T> &other, const db::ICplxTrans
   //  are requested: in that path the legacy callback order is observable for
   //  mixed soft connections.
   const bool boolean_only = ! interacting_this && ! interacting_other;
-  std::set<unsigned int> active_ll1, active_ll2;
 
-  if (boolean_only) {
+  //  Both candidate vectors are ordered because m_shapes is a map.  Intersect
+  //  the second vector with each (also ordered) connectivity list directly.
+  //  This avoids four node-allocating sets on every interaction while retaining
+  //  the original ascending layer traversal.
+  bool any_connected = false;
+  for (typename candidate_layers::iterator i = ll1.begin (); i != ll1.end (); ++i) {
 
-    for (std::set<unsigned int>::const_iterator i = ll1.begin (); i != ll1.end (); ++i) {
-      Connectivity::layer_iterator le = conn.end_connected (*i);
-      for (Connectivity::layer_iterator l = conn.begin_connected (*i); l != le; ++l) {
-        if (ll2.find (l->first) != ll2.end ()) {
-          active_ll1.insert (*i);
-          active_ll2.insert (l->first);
+    typename candidate_layers::iterator j = ll2.begin ();
+    Connectivity::layer_iterator l = conn.begin_connected (i->layer);
+    Connectivity::layer_iterator le = conn.end_connected (i->layer);
+
+    while (l != le && j != ll2.end ()) {
+      if (l->first < j->layer) {
+        ++l;
+      } else if (j->layer < l->first) {
+        ++j;
+      } else {
+        any_connected = true;
+        if (boolean_only) {
+          i->active = true;
+          j->active = true;
+        } else {
+          break;
         }
+        ++l;
+        ++j;
       }
     }
 
-    if (active_ll1.empty ()) {
-      return false;
+    if (any_connected && ! boolean_only) {
+      break;
     }
 
-  } else if (! conn.interacts (ll1, ll2)) {
+  }
+
+  if (! any_connected) {
     return false;
   }
 
@@ -836,18 +870,30 @@ local_cluster<T>::interacts (const local_cluster<T> &other, const db::ICplxTrans
   db::box_scanner2<T, scanner_property, T, scanner_property> scanner;
   transformed_box <T, db::ICplxTrans> bc_t (trans);
 
+  typename candidate_layers::const_iterator active1 = ll1.begin ();
   for (typename shapes_type::const_iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
-    if (boolean_only && active_ll1.find (s->first) == active_ll1.end ()) {
-      continue;
+    if (boolean_only) {
+      while (active1 != ll1.end () && active1->layer < s->first) {
+        ++active1;
+      }
+      if (active1 == ll1.end () || active1->layer != s->first || ! active1->active) {
+        continue;
+      }
     }
     for (typename tree_type::touching_iterator i = s->second.first.begin_touching (common, bc); ! i.at_end (); ++i) {
       scanner.insert1 (i.operator-> (), hnp_scanner_property_factory<T, unsigned int, db::box_convert<T> >::make (*i, s->first, bc));
     }
   }
 
+  typename candidate_layers::const_iterator active2 = ll2.begin ();
   for (typename shapes_type::const_iterator s = other.m_shapes.begin (); s != other.m_shapes.end (); ++s) {
-    if (boolean_only && active_ll2.find (s->first) == active_ll2.end ()) {
-      continue;
+    if (boolean_only) {
+      while (active2 != ll2.end () && active2->layer < s->first) {
+        ++active2;
+      }
+      if (active2 == ll2.end () || active2->layer != s->first || ! active2->active) {
+        continue;
+      }
     }
     for (typename tree_type::touching_iterator i = s->second.first.begin_touching (common_for_other, bc); ! i.at_end (); ++i) {
       scanner.insert2 (i.operator-> (), hnp_scanner_property_factory<T, unsigned int, transformed_box<T, db::ICplxTrans> >::make (*i, s->first, bc_t));

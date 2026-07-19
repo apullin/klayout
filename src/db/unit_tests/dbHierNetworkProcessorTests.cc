@@ -513,6 +513,51 @@ TEST(13_LocalClusterInteractLayerBboxCache)
   EXPECT_EQ (dirty_copy.interacts (other, db::ICplxTrans (), gap_connection, soft), true);
 }
 
+TEST(14_LocalClusterInteractSparseCandidateLayers)
+{
+  db::GenericRepository repo;
+
+  const unsigned int source_layer = std::numeric_limits<unsigned int>::max () - 1;
+  const unsigned int exact_layer = std::numeric_limits<unsigned int>::max ();
+
+  db::local_cluster<db::PolygonRef> cluster;
+  db::local_cluster<db::PolygonRef> other;
+
+  cluster.add (db::PolygonRef (db::Polygon (db::Box (45, 0, 55, 10)), repo), source_layer);
+
+  //  This connected layer's aggregate box touches the common region, but its
+  //  individual shapes do not.  A boolean scan must continue to the later
+  //  connected layer containing the only exact interaction.
+  other.add (db::PolygonRef (db::Polygon (db::Box (0, 0, 10, 10)), repo), 3);
+  other.add (db::PolygonRef (db::Polygon (db::Box (90, 0, 100, 10)), repo), 3);
+
+  //  An exact but disconnected layer exercises gaps in the sorted candidate
+  //  vectors without relying on dense layer IDs.
+  other.add (db::PolygonRef (db::Polygon (db::Box (45, 0, 55, 10)), repo), 4);
+  other.add (db::PolygonRef (db::Polygon (db::Box (45, 0, 55, 10)), repo), exact_layer);
+
+  db::Connectivity conn;
+  conn.connect (source_layer, 1);  //  Connected, but absent from other.
+  conn.connect (source_layer, 3);
+  conn.soft_connect (source_layer, exact_layer);
+
+  int soft = std::numeric_limits<int>::max ();
+  EXPECT_EQ (cluster.interacts (other, db::ICplxTrans (), conn, soft), true);
+  EXPECT_EQ (soft, -1);
+
+  //  Reporting intentionally retains the all-layer scanner path.  It must
+  //  still reject the disconnected shape and collect the sparse-ID pair.
+  std::map<unsigned int, std::vector<const db::PolygonRef *> > interacting_this, interacting_other;
+  soft = std::numeric_limits<int>::max ();
+  EXPECT_EQ (cluster.interacts (other, db::ICplxTrans (), conn, soft,
+                                &interacting_this, &interacting_other), true);
+  EXPECT_EQ (soft, -1);
+  EXPECT_EQ (interacting_this.size (), size_t (1));
+  EXPECT_EQ (interacting_this [source_layer].size (), size_t (1));
+  EXPECT_EQ (interacting_other.size (), size_t (1));
+  EXPECT_EQ (interacting_other [exact_layer].size (), size_t (1));
+}
+
 static std::string obj2string (const db::PolygonRef &ref)
 {
   return ref.obj ().transformed (ref.trans ()).to_string ();
