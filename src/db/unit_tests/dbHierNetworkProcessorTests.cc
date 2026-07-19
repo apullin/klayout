@@ -440,6 +440,79 @@ TEST(12_LocalClusterInteractLayerPruning)
   EXPECT_EQ (interacting [3].size (), size_t (1));
 }
 
+TEST(13_LocalClusterInteractLayerBboxCache)
+{
+  db::GenericRepository repo;
+
+  db::local_cluster<db::PolygonRef> cluster;
+  db::local_cluster<db::PolygonRef> other;
+
+  //  Layer 0's aggregate box spans the common region, but neither of its
+  //  actual shapes does.  Layer 2 contains the only exact interaction.
+  cluster.add (db::PolygonRef (db::Polygon (db::Box (0, 0, 10, 10)), repo), 0);
+  cluster.add (db::PolygonRef (db::Polygon (db::Box (90, 0, 100, 10)), repo), 0);
+  cluster.add (db::PolygonRef (db::Polygon (db::Box (45, 0, 55, 10)), repo), 2);
+  other.add (db::PolygonRef (db::Polygon (db::Box (45, 0, 55, 10)), repo), 1);
+
+  db::Connectivity gap_connection;
+  gap_connection.connect (0, 1);
+
+  int soft = std::numeric_limits<int>::max ();
+  EXPECT_EQ (cluster.interacts (other, db::ICplxTrans (), gap_connection, soft), false);
+  EXPECT_EQ (soft, std::numeric_limits<int>::max ());
+
+  std::map<unsigned int, std::vector<const db::PolygonRef *> > interacting_this, interacting_other;
+  EXPECT_EQ (cluster.interacts (other, db::ICplxTrans (), gap_connection, soft,
+                                &interacting_this, &interacting_other), false);
+  EXPECT_EQ (interacting_this.empty (), true);
+  EXPECT_EQ (interacting_other.empty (), true);
+
+  //  The false-positive hard pair must not override the only real, soft pair.
+  db::Connectivity mixed_connection;
+  mixed_connection.connect (0, 1);
+  mixed_connection.soft_connect (2, 1);
+  soft = std::numeric_limits<int>::max ();
+  EXPECT_EQ (cluster.interacts (other, db::ICplxTrans (), mixed_connection, soft), true);
+  EXPECT_EQ (soft, -1);
+
+  soft = std::numeric_limits<int>::max ();
+  EXPECT_EQ (cluster.interacts (other, db::ICplxTrans (), mixed_connection, soft,
+                                &interacting_this, &interacting_other), true);
+  EXPECT_EQ (soft, -1);
+  EXPECT_EQ (interacting_this.size (), size_t (1));
+  EXPECT_EQ (interacting_this [2].size (), size_t (1));
+  EXPECT_EQ (interacting_other.size (), size_t (1));
+  EXPECT_EQ (interacting_other [1].size (), size_t (1));
+
+  //  Warm the caches, then verify every mutating and copying path rebuilds or
+  //  preserves the per-layer boxes along with the cluster box.
+  db::local_cluster<db::PolygonRef> changing;
+  changing.add (db::PolygonRef (db::Polygon (db::Box (0, 0, 10, 10)), repo), 0);
+  EXPECT_EQ (changing.interacts (other, db::ICplxTrans (), gap_connection, soft), false);
+  changing.add (db::PolygonRef (db::Polygon (db::Box (45, 0, 55, 10)), repo), 0);
+  EXPECT_EQ (changing.interacts (other, db::ICplxTrans (), gap_connection, soft), true);
+
+  db::local_cluster<db::PolygonRef> sorted_copy (changing);
+  EXPECT_EQ (sorted_copy.interacts (other, db::ICplxTrans (), gap_connection, soft), true);
+
+  changing.clear ();
+  changing.add (db::PolygonRef (db::Polygon (db::Box (0, 0, 10, 10)), repo), 0);
+  EXPECT_EQ (changing.interacts (other, db::ICplxTrans (), gap_connection, soft), false);
+
+  db::local_cluster<db::PolygonRef> donor;
+  donor.add (db::PolygonRef (db::Polygon (db::Box (45, 0, 55, 10)), repo), 0);
+  EXPECT_EQ (donor.bbox ().to_string (), "(45,0;55,10)");
+  changing.join_with (donor);
+  EXPECT_EQ (changing.interacts (other, db::ICplxTrans (), gap_connection, soft), true);
+
+  changing.clear ();
+  changing.add (db::PolygonRef (db::Polygon (db::Box (0, 0, 10, 10)), repo), 0);
+  EXPECT_EQ (changing.bbox ().to_string (), "(0,0;10,10)");
+  changing.add (db::PolygonRef (db::Polygon (db::Box (45, 0, 55, 10)), repo), 0);
+  db::local_cluster<db::PolygonRef> dirty_copy (changing);
+  EXPECT_EQ (dirty_copy.interacts (other, db::ICplxTrans (), gap_connection, soft), true);
+}
+
 static std::string obj2string (const db::PolygonRef &ref)
 {
   return ref.obj ().transformed (ref.trans ()).to_string ();

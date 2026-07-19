@@ -467,6 +467,9 @@ private:
   template <typename> friend class local_clusters;
   template <typename> friend class hnp_interaction_receiver;
 
+  typedef std::pair<tree_type, box_type> layer_shapes_type;
+  typedef std::map<unsigned int, layer_shapes_type> shapes_type;
+
   void set_id (id_type id)
   {
     m_id = id;
@@ -474,16 +477,16 @@ private:
 
   const T &shape (unsigned int l, size_t index) const
   {
-    typename std::map<unsigned int, tree_type>::const_iterator s = m_shapes.find (l);
+    typename shapes_type::const_iterator s = m_shapes.find (l);
     tl_assert (s != m_shapes.end ());
-    return s->second.objects () [index];
+    return s->second.first.objects () [index];
   }
 
   void ensure_sorted ();
 
   id_type m_id;
   bool m_needs_update;
-  std::map<unsigned int, tree_type> m_shapes;
+  shapes_type m_shapes;
   box_type m_bbox;
   attr_set m_attrs;
   global_nets m_global_nets;

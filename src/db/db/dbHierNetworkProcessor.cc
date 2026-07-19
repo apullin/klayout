@@ -479,8 +479,8 @@ template <class T>
 void
 local_cluster<T>::add (const T &s, unsigned int la)
 {
-  m_shapes[la].insert (s);
   m_needs_update = true;
+  m_shapes[la].first.insert (s);
   ++m_size;
 }
 
@@ -488,16 +488,16 @@ template <class T>
 void
 local_cluster<T>::join_with (const local_cluster<T> &other)
 {
-  for (typename std::map<unsigned int, tree_type>::const_iterator s = other.m_shapes.begin (); s != other.m_shapes.end (); ++s) {
-    tree_type &tree = m_shapes[s->first];
-    tree.insert (s->second.begin (), s->second.end ());
+  m_needs_update = true;
+
+  for (typename shapes_type::const_iterator s = other.m_shapes.begin (); s != other.m_shapes.end (); ++s) {
+    tree_type &tree = m_shapes[s->first].first;
+    tree.insert (s->second.first.begin (), s->second.first.end ());
   }
 
   m_attrs.insert (other.m_attrs.begin (), other.m_attrs.end ());
   m_global_nets.insert (other.m_global_nets.begin (), other.m_global_nets.end ());
   m_size += other.size ();
-
-  m_needs_update = true;
 }
 
 template <class T>
@@ -509,17 +509,22 @@ local_cluster<T>::ensure_sorted ()
   }
 
   //  sort the shape trees
-  for (typename std::map<unsigned int, tree_type>::iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
-    s->second.sort (db::box_convert<T> ());
+  for (typename shapes_type::iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
+    s->second.first.sort (db::box_convert<T> ());
   }
 
-  //  recompute bounding box
+  //  Recompute the cluster and per-layer bounding boxes in the same pass.  The
+  //  latter let interaction pruning avoid an exact tree lookup which would be
+  //  repeated immediately by the detailed scan for every surviving layer.
   m_bbox = box_type ();
   db::box_convert<T> bc;
-  for (typename std::map<unsigned int, tree_type>::const_iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
-    for (typename tree_type::const_iterator i = s->second.begin (); i != s->second.end (); ++i) {
-      m_bbox += bc (*i);
+  for (typename shapes_type::iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
+    box_type layer_bbox;
+    for (typename tree_type::const_iterator i = s->second.first.begin (); i != s->second.first.end (); ++i) {
+      layer_bbox += bc (*i);
     }
+    s->second.second = layer_bbox;
+    m_bbox += layer_bbox;
   }
 
   m_needs_update = false;
@@ -701,11 +706,11 @@ typename local_cluster<T>::shape_iterator local_cluster<T>::begin (unsigned int 
 {
   static tree_type s_empty_tree;
 
-  typename std::map<unsigned int, tree_type>::const_iterator i = m_shapes.find (l);
+  typename shapes_type::const_iterator i = m_shapes.find (l);
   if (i == m_shapes.end ()) {
     return s_empty_tree.begin_flat ();
   } else {
-    return i->second.begin_flat ();
+    return i->second.first.begin_flat ();
   }
 }
 
@@ -715,7 +720,7 @@ local_cluster<T>::interacts (const db::Cell &cell, const db::ICplxTrans &trans, 
 {
   db::box_convert<T> bc;
 
-  for (typename std::map<unsigned int, tree_type>::const_iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
+  for (typename shapes_type::const_iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
 
     db::Box box;
 
@@ -724,7 +729,7 @@ local_cluster<T>::interacts (const db::Cell &cell, const db::ICplxTrans &trans, 
       box += cell.bbox (l->first);
     }
 
-    if (! box.empty () && ! s->second.begin_touching (box.transformed (trans), bc).at_end ()) {
+    if (! box.empty () && ! s->second.first.begin_touching (box.transformed (trans), bc).at_end ()) {
       return true;
     }
 
@@ -733,20 +738,20 @@ local_cluster<T>::interacts (const db::Cell &cell, const db::ICplxTrans &trans, 
   return false;
 }
 
-template <class T>
+template <class T, class Shapes>
 static
-void collect_interactions_in_original_order (const std::map<unsigned int, typename local_cluster<T>::tree_type> &shapes, const std::map<unsigned int, std::set<const T *> > &interacting, std::map<unsigned int, std::vector<const T *> > &interacting_out)
+void collect_interactions_in_original_order (const Shapes &shapes, const std::map<unsigned int, std::set<const T *> > &interacting, std::map<unsigned int, std::vector<const T *> > &interacting_out)
 {
   for (typename std::map<unsigned int, std::set<const T *> >::const_iterator i = interacting.begin (); i != interacting.end (); ++i) {
 
     std::vector<const T *> &t = interacting_out [i->first];
-    auto s = shapes.find (i->first);
+    typename Shapes::const_iterator s = shapes.find (i->first);
     if (s == shapes.end ()) {
       continue;
     }
 
     t.reserve (t.size () + i->second.size ());
-    for (auto j = s->second.begin (); j != s->second.end (); ++j) {
+    for (typename local_cluster<T>::tree_type::const_iterator j = s->second.first.begin (); j != s->second.first.end (); ++j) {
       if (i->second.find (j.operator-> ()) != i->second.end ()) {
         t.push_back (j.operator-> ());
       }
@@ -770,11 +775,13 @@ local_cluster<T>::interacts (const local_cluster<T> &other, const db::ICplxTrans
 
   box_type common_for_other = common.transformed (trans.inverted ());
 
-  //  shortcut evaluation for disjunct layers
+  //  Shortcut evaluation for disjunct layers.  Per-layer aggregate boxes are
+  //  conservative: they may admit a sparse layer whose shapes miss the common
+  //  region, but the detailed tree scan below remains the exact gate.
 
   std::set<unsigned int> ll1;
-  for (typename std::map<unsigned int, tree_type>::const_iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
-    if (! s->second.begin_touching (common, bc).at_end ()) {
+  for (typename shapes_type::const_iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
+    if (s->second.second.touches (common)) {
       ll1.insert (s->first);
     }
   }
@@ -784,8 +791,8 @@ local_cluster<T>::interacts (const local_cluster<T> &other, const db::ICplxTrans
   }
 
   std::set<unsigned int> ll2;
-  for (typename std::map<unsigned int, tree_type>::const_iterator s = other.m_shapes.begin (); s != other.m_shapes.end (); ++s) {
-    if (! s->second.begin_touching (common_for_other, bc).at_end ()) {
+  for (typename shapes_type::const_iterator s = other.m_shapes.begin (); s != other.m_shapes.end (); ++s) {
+    if (s->second.second.touches (common_for_other)) {
       ll2.insert (s->first);
     }
   }
@@ -829,20 +836,20 @@ local_cluster<T>::interacts (const local_cluster<T> &other, const db::ICplxTrans
   db::box_scanner2<T, scanner_property, T, scanner_property> scanner;
   transformed_box <T, db::ICplxTrans> bc_t (trans);
 
-  for (typename std::map<unsigned int, tree_type>::const_iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
+  for (typename shapes_type::const_iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
     if (boolean_only && active_ll1.find (s->first) == active_ll1.end ()) {
       continue;
     }
-    for (typename tree_type::touching_iterator i = s->second.begin_touching (common, bc); ! i.at_end (); ++i) {
+    for (typename tree_type::touching_iterator i = s->second.first.begin_touching (common, bc); ! i.at_end (); ++i) {
       scanner.insert1 (i.operator-> (), hnp_scanner_property_factory<T, unsigned int, db::box_convert<T> >::make (*i, s->first, bc));
     }
   }
 
-  for (typename std::map<unsigned int, tree_type>::const_iterator s = other.m_shapes.begin (); s != other.m_shapes.end (); ++s) {
+  for (typename shapes_type::const_iterator s = other.m_shapes.begin (); s != other.m_shapes.end (); ++s) {
     if (boolean_only && active_ll2.find (s->first) == active_ll2.end ()) {
       continue;
     }
-    for (typename tree_type::touching_iterator i = s->second.begin_touching (common_for_other, bc); ! i.at_end (); ++i) {
+    for (typename tree_type::touching_iterator i = s->second.first.begin_touching (common_for_other, bc); ! i.at_end (); ++i) {
       scanner.insert2 (i.operator-> (), hnp_scanner_property_factory<T, unsigned int, transformed_box<T, db::ICplxTrans> >::make (*i, s->first, bc_t));
     }
   }
@@ -889,8 +896,8 @@ double local_cluster<T>::area_ratio () const
   //  algorithm and still be fine enough - consider that we a planning to use splitted polygons for
   //  which the bbox is a fairly good approximation.
   typename box_type::area_type a = 0;
-  for (typename std::map<unsigned int, tree_type>::const_iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
-    for (typename tree_type::const_iterator i = s->second.begin (); i != s->second.end (); ++i) {
+  for (typename shapes_type::const_iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
+    for (typename tree_type::const_iterator i = s->second.first.begin (); i != s->second.first.end (); ++i) {
       a += bc (*i).area ();
     }
   }
@@ -904,7 +911,7 @@ local_cluster<T>::layers () const
 {
   std::vector<unsigned int> l;
   l.reserve (m_shapes.size ());
-  for (typename std::map<unsigned int, tree_type>::const_iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
+  for (typename shapes_type::const_iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
     l.push_back (s->first);
   }
   return l;
