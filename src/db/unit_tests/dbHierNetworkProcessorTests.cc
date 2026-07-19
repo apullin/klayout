@@ -25,6 +25,7 @@
 #include "dbHierNetworkProcessor.h"
 #include "dbTestSupport.h"
 #include "dbShapeRepository.h"
+#include "dbNetShape.h"
 #include "dbPolygon.h"
 #include "dbPath.h"
 #include "dbText.h"
@@ -352,6 +353,31 @@ TEST(11_LocalClusterInteractDifferentLayers)
   EXPECT_EQ (cluster.interacts (cluster2, db::ICplxTrans (), conn, soft), true);
 }
 
+TEST(11_LocalClusterInteractNetShapeScanner)
+{
+  db::GenericRepository repo;
+  db::Polygon poly (db::Box (0, 0, 10, 10));
+
+  db::local_cluster<db::NetShape> cluster;
+  db::local_cluster<db::NetShape> cluster2;
+  for (db::Coord x = 0; x < 6000; x += 100) {
+    db::PolygonRef ref (poly, repo);
+    ref.transform (db::Disp (db::Vector (x, 0)));
+    cluster.add (db::NetShape (ref), 0);
+    cluster2.add (db::NetShape (ref), 1);
+  }
+
+  db::Connectivity conn;
+  conn.connect (0, 1);
+
+  int soft = std::numeric_limits<int>::max ();
+  EXPECT_EQ (cluster.interacts (cluster2, db::ICplxTrans (db::Trans (db::Vector (10, 0))), conn, soft), true);
+  EXPECT_EQ (soft, 0);
+
+  soft = std::numeric_limits<int>::max ();
+  EXPECT_EQ (cluster.interacts (cluster2, db::ICplxTrans (db::Trans (db::Vector (20, 0))), conn, soft), false);
+}
+
 TEST(12_LocalClusterInteractLayerPruning)
 {
   db::GenericRepository repo;
@@ -555,6 +581,26 @@ TEST(20_LocalClustersBasic)
     "#1:[0](0,0;0,1000;1000,1000;1000,0);[0](10,20;10,1020;1010,1020;1010,20);[2](0,1000;0,2000;1000,2000;1000,1000);[2](0,1100;0,2100;1000,2100;1000,1100)\n"
     "#2:[1](0,1100;0,2100;1000,2100;1000,1100)"
   );
+}
+
+TEST(20_LocalClustersNetShapeScanner)
+{
+  db::Layout layout;
+  unsigned int layer = layout.insert_layer (db::LayerProperties (1, 0));
+  db::Cell &cell = layout.cell (layout.add_cell ("TOP"));
+
+  for (db::Coord x = 0; x < 12000; x += 100) {
+    db::Polygon poly (db::Box (x, 0, x + 10, 10));
+    cell.shapes (layer).insert (db::PolygonRef (poly, layout.shape_repository ()));
+  }
+
+  db::Connectivity conn;
+  conn.connect (layer);
+
+  db::local_clusters<db::NetShape> clusters;
+  clusters.build_clusters (cell, conn);
+  EXPECT_EQ (clusters.size (), size_t (120));
+  EXPECT_EQ (clusters.bbox ().to_string (), "(0,0;11910,10)");
 }
 
 TEST(21_LocalClustersBasicWithAttributes)

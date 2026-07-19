@@ -537,12 +537,91 @@ local_cluster<T>::mem_stat (MemStatistics *stat, MemStatistics::purpose_t purpos
   db::mem_stat (stat, purpose, cat, m_global_nets, true, (void *) this);
 }
 
+//  The box scanners evaluate their box converter repeatedly while sorting and
+//  partitioning their input.  This is cheap for most shape types, but a
+//  NetShape box has to be reconstructed from its referenced polygon or text.
+//  Cache that box in the scanner property without adding storage or changing
+//  the converter path for the other shape types.
+template <class T, class Payload>
+struct hnp_scanner_property
+{
+  hnp_scanner_property (const Payload &_payload)
+    : payload (_payload)
+  { }
+
+  Payload payload;
+};
+
+template <class Payload>
+struct hnp_scanner_property<db::NetShape, Payload>
+{
+  hnp_scanner_property (const Payload &_payload, const db::Box &_box)
+    : payload (_payload), box (_box)
+  { }
+
+  Payload payload;
+  db::Box box;
+};
+
+template <class T, class Payload, class BoxConvert>
+struct hnp_scanner_property_factory
+{
+  static hnp_scanner_property<T, Payload> make (const T &, const Payload &payload, const BoxConvert &)
+  {
+    return hnp_scanner_property<T, Payload> (payload);
+  }
+};
+
+template <class Payload, class BoxConvert>
+struct hnp_scanner_property_factory<db::NetShape, Payload, BoxConvert>
+{
+  static hnp_scanner_property<db::NetShape, Payload> make (const db::NetShape &shape, const Payload &payload, const BoxConvert &bc)
+  {
+    return hnp_scanner_property<db::NetShape, Payload> (payload, bc (shape));
+  }
+};
+
+template <class T, class Payload, class BoxConvert>
+struct hnp_scanner_box_adaptor
+{
+  typedef typename BoxConvert::box_type box_type;
+  typedef hnp_scanner_property<T, Payload> property_type;
+
+  hnp_scanner_box_adaptor (const BoxConvert &bc)
+    : m_bc (bc)
+  { }
+
+  box_type operator() (const std::pair<const T *, property_type> &p) const
+  {
+    return m_bc (*p.first);
+  }
+
+private:
+  BoxConvert m_bc;
+};
+
+template <class Payload, class BoxConvert>
+struct hnp_scanner_box_adaptor<db::NetShape, Payload, BoxConvert>
+{
+  typedef typename BoxConvert::box_type box_type;
+  typedef hnp_scanner_property<db::NetShape, Payload> property_type;
+
+  hnp_scanner_box_adaptor (const BoxConvert &)
+  { }
+
+  const box_type &operator() (const std::pair<const db::NetShape *, property_type> &p) const
+  {
+    return p.second.box;
+  }
+};
+
 template <class T>
 class DB_PUBLIC hnp_interaction_receiver
-  : public box_scanner_receiver2<T, unsigned int, T, unsigned int>
+  : public box_scanner_receiver2<T, hnp_scanner_property<T, unsigned int>, T, hnp_scanner_property<T, unsigned int> >
 {
 public:
   typedef typename local_cluster<T>::box_type box_type;
+  typedef hnp_scanner_property<T, unsigned int> scanner_property;
 
   hnp_interaction_receiver (const Connectivity &conn, const db::ICplxTrans &trans, std::map<unsigned int, std::set<const T *> > *interacting_this, std::map<unsigned int, std::set<const T *> > *interacting_other)
     : mp_conn (&conn), m_any (false), m_soft_mode (0), m_trans (trans), mp_interacting_this (interacting_this), mp_interacting_other (interacting_other)
@@ -550,8 +629,10 @@ public:
     //  .. nothing yet ..
   }
 
-  void add (const T *s1, unsigned int l1, const T *s2, unsigned int l2)
+  void add (const T *s1, const scanner_property &p1, const T *s2, const scanner_property &p2)
   {
+    unsigned int l1 = p1.payload;
+    unsigned int l2 = p2.payload;
     int soft = 0;
     if (mp_conn->interacts (*s1, l1, *s2, l2, m_trans, soft)) {
       if (mp_interacting_this) {
@@ -743,7 +824,8 @@ local_cluster<T>::interacts (const local_cluster<T> &other, const db::ICplxTrans
 
   //  detailed analysis
 
-  db::box_scanner2<T, unsigned int, T, unsigned int> scanner;
+  typedef hnp_scanner_property<T, unsigned int> scanner_property;
+  db::box_scanner2<T, scanner_property, T, scanner_property> scanner;
   transformed_box <T, db::ICplxTrans> bc_t (trans);
 
   for (typename std::map<unsigned int, tree_type>::const_iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
@@ -751,7 +833,7 @@ local_cluster<T>::interacts (const local_cluster<T> &other, const db::ICplxTrans
       continue;
     }
     for (typename tree_type::touching_iterator i = s->second.begin_touching (common, bc); ! i.at_end (); ++i) {
-      scanner.insert1 (i.operator-> (), s->first);
+      scanner.insert1 (i.operator-> (), hnp_scanner_property_factory<T, unsigned int, db::box_convert<T> >::make (*i, s->first, bc));
     }
   }
 
@@ -760,7 +842,7 @@ local_cluster<T>::interacts (const local_cluster<T> &other, const db::ICplxTrans
       continue;
     }
     for (typename tree_type::touching_iterator i = s->second.begin_touching (common_for_other, bc); ! i.at_end (); ++i) {
-      scanner.insert2 (i.operator-> (), s->first);
+      scanner.insert2 (i.operator-> (), hnp_scanner_property_factory<T, unsigned int, transformed_box<T, db::ICplxTrans> >::make (*i, s->first, bc_t));
     }
   }
 
@@ -769,7 +851,9 @@ local_cluster<T>::interacts (const local_cluster<T> &other, const db::ICplxTrans
   std::map<unsigned int, std::set<const T *> > *p_is_other = interacting_other ? &is_other : 0;
 
   hnp_interaction_receiver<T> rec (conn, trans, p_is_this, p_is_other);
-  scanner.process (rec, 1 /*==touching*/, bc, bc_t);
+  hnp_scanner_box_adaptor<T, unsigned int, db::box_convert<T> > bca (bc);
+  hnp_scanner_box_adaptor<T, unsigned int, transformed_box<T, db::ICplxTrans> > bca_t (bc_t);
+  scanner.process_with_adaptor (rec, 1 /*==touching*/, bca, bca_t);
 
   if (rec.any ()) {
 
@@ -1111,9 +1195,10 @@ namespace
 
 template <class T, class BoxTree>
 struct cluster_building_receiver
-  : public db::box_scanner_receiver<T, std::pair<unsigned int, size_t> >
 {
   typedef typename local_cluster<T>::id_type id_type;
+  typedef std::pair<unsigned int, size_t> shape_property;
+  typedef hnp_scanner_property<T, shape_property> scanner_property;
   typedef std::pair<const T *, std::pair<unsigned int, size_t> > shape_value;
   typedef std::vector<shape_value> shape_vector;
   typedef std::set<size_t> global_nets;
@@ -1132,6 +1217,10 @@ struct cluster_building_receiver
       }
     }
   }
+
+  void initialize () { }
+  void finalize (bool) { }
+  bool stop () const { return false; }
 
   void generate_clusters (local_clusters<T> &clusters)
   {
@@ -1193,8 +1282,10 @@ struct cluster_building_receiver
     }
   }
 
-  void add (const T *s1, std::pair<unsigned int, size_t> p1, const T *s2, std::pair<unsigned int, size_t> p2)
+  void add (const T *s1, const scanner_property &sp1, const T *s2, const scanner_property &sp2)
   {
+    const shape_property &p1 = sp1.payload;
+    const shape_property &p2 = sp2.payload;
     if (m_separate_attributes && p1.second != p2.second) {
       return;
     }
@@ -1297,8 +1388,9 @@ struct cluster_building_receiver
     }
   }
 
-  void finish (const T *s, std::pair<unsigned int, size_t> p)
+  void finish (const T *s, const scanner_property &sp)
   {
+    const shape_property &p = sp.payload;
     //  if the shape has not been handled yet, insert a single cluster with only this shape
     typename std::map<const T *, typename std::list<cluster_value>::iterator>::iterator ic = m_shape_to_clusters.find (s);
     if (ic == m_shape_to_clusters.end ()) {
@@ -1494,7 +1586,9 @@ local_clusters<T>::build_clusters (const db::Cell &cell, const db::Connectivity 
 {
   static std::string desc = tl::to_string (tr ("Building local clusters"));
 
-  db::box_scanner<T, std::pair<unsigned int, size_t> > bs (report_progress, desc);
+  typedef std::pair<unsigned int, size_t> shape_property;
+  typedef hnp_scanner_property<T, shape_property> scanner_property;
+  db::box_scanner<T, scanner_property> bs (report_progress, desc);
   db::box_convert<T> bc;
   addressable_object_from_shape<T> heap;
   attr_accessor<T> attr;
@@ -1503,12 +1597,15 @@ local_clusters<T>::build_clusters (const db::Cell &cell, const db::Connectivity 
   for (db::Connectivity::all_layer_iterator l = conn.begin_layers (); l != conn.end_layers (); ++l) {
     const db::Shapes &shapes = cell.shapes (*l);
     for (db::Shapes::shape_iterator s = shapes.begin (shape_flags); ! s.at_end (); ++s) {
-      bs.insert (heap (*s), std::make_pair (*l, attr (*s)));
+      const T *shape = heap (*s);
+      shape_property p (*l, attr (*s));
+      bs.insert (shape, hnp_scanner_property_factory<T, shape_property, db::box_convert<T> >::make (*shape, p, bc));
     }
   }
 
   cluster_building_receiver<T, box_type> rec (conn, attr_equivalence, separate_attributes);
-  bs.process (rec, 1 /*==touching*/, bc);
+  hnp_scanner_box_adaptor<T, shape_property, db::box_convert<T> > bca (bc);
+  bs.process_with_adaptor (rec, 1 /*==touching*/, bca);
   rec.generate_clusters (*this);
 
   if (attr_equivalence && attr_equivalence->size () > 0) {
