@@ -95,9 +95,13 @@ void NetShape::transform (const db::Disp &tr)
 NetShape::box_type NetShape::bbox () const
 {
   if ((m_ptr & 1) != 0) {
-    return polygon_ref ().box ();
+    box_type box = reinterpret_cast<const db::Polygon *> (m_ptr - 1)->box ();
+    box.move (db::Vector (m_dx, m_dy));
+    return box;
   } else if (m_ptr != 0) {
-    return text_ref ().box ();
+    box_type box = reinterpret_cast<const db::Text *> (m_ptr)->box ();
+    box.move (db::Vector (m_dx, m_dy));
+    return box;
   } else {
     return box_type ();
   }
@@ -134,6 +138,23 @@ bool NetShape::interacts_with (const db::NetShape &other) const
       //  Polygon vs. polygon
       db::PolygonRef pr_other = other.polygon_ref ();
       db::PolygonRef pr = polygon_ref ();
+
+      //  Polygon references only carry a displacement.  Hence a box stays an
+      //  axis-aligned box and the bounding-box test above is exact when both
+      //  polygons are boxes.  If just one polygon is a box, use the cheaper
+      //  polygon-vs-box predicate without instantiating the other polygon.
+      const bool pr_is_box = pr.obj ().is_box ();
+      const bool pr_other_is_box = pr_other.obj ().is_box ();
+      if (pr_is_box && pr_other_is_box) {
+        return true;
+      } else if (pr_other_is_box) {
+        db::Box box = pr_other.obj ().box ().transformed (pr.trans ().inverted () * pr_other.trans ());
+        return db::interact_pb (pr.obj (), box);
+      } else if (pr_is_box) {
+        db::Box box = pr.obj ().box ().transformed (pr_other.trans ().inverted () * pr.trans ());
+        return db::interact_pb (pr_other.obj (), box);
+      }
+
       db::Polygon p = pr_other.obj ().transformed_ext (pr.trans ().inverted () * pr_other.trans (), false);
       return db::interact_pp (pr.obj (), p);
 
@@ -179,7 +200,25 @@ bool NetShape::interacts_with_transformed (const db::NetShape &other, const Tr &
       //  Polygon vs. polygon
       db::PolygonRef pr_other = other.polygon_ref ();
       db::PolygonRef pr = polygon_ref ();
-      db::Polygon p = pr_other.obj ().transformed (Tr (pr.trans ().inverted ()) * trans * Tr (pr_other.trans ()));
+      Tr relative_trans = Tr (pr.trans ().inverted ()) * trans * Tr (pr_other.trans ());
+
+      const bool pr_is_box = pr.obj ().is_box ();
+      const bool pr_other_is_box = pr_other.obj ().is_box ();
+
+      //  Orthogonal transformations keep boxes axis-aligned, making the
+      //  bounding-box test exact for two boxes and allowing a direct
+      //  polygon-vs-box test when only the transformed polygon is a box.
+      if (pr_other_is_box && relative_trans.is_ortho ()) {
+        if (pr_is_box) {
+          return true;
+        }
+        return db::interact_pb (pr.obj (), pr_other.obj ().box ().transformed (relative_trans));
+      }
+
+      db::Polygon p = pr_other.obj ().transformed (relative_trans);
+      if (pr_is_box) {
+        return db::interact_pb (p, pr.obj ().box ());
+      }
       return db::interact_pp (pr.obj (), p);
 
     } else {

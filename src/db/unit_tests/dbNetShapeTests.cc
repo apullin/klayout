@@ -25,6 +25,8 @@
 #include "dbShapes.h"
 #include "tlUnitTest.h"
 
+#include <vector>
+
 
 TEST(1)
 {
@@ -181,4 +183,56 @@ TEST(5)
   EXPECT_EQ (st1.interacts_with_transformed (st1, db::Trans (db::Vector (-5, -20))), false);
   EXPECT_EQ (st2.interacts_with (st1), false);
   EXPECT_EQ (st2.interacts_with_transformed (st1, db::Trans (db::Vector (50, 60))), true);
+}
+
+TEST(6)
+{
+  db::GenericRepository repo;
+
+  db::NetShape box1 (db::Polygon (db::Box (0, 0, 10, 10)), repo);
+  db::NetShape box2 (db::Polygon (db::Box (0, 0, 10, 10)), repo);
+
+  //  Touching at an edge is an interaction; a one-unit gap is not.
+  EXPECT_EQ (box1.interacts_with_transformed (box2, db::Trans (db::Vector (10, 0))), true);
+  EXPECT_EQ (box1.interacts_with_transformed (box2, db::Trans (db::Vector (11, 0))), false);
+
+  //  An orthogonal complex transform keeps the transformed polygon a box.
+  EXPECT_EQ (box1.interacts_with_transformed (box2, db::ICplxTrans (1.0, 90.0, false, db::Vector (20, 0))), true);
+  EXPECT_EQ (box1.interacts_with_transformed (box2, db::ICplxTrans (1.0, 90.0, false, db::Vector (21, 0))), false);
+
+  //  NetShape's own displacement is part of both the bbox and exact test.
+  box2.transform (db::Disp (db::Vector (10, 10)));
+  EXPECT_EQ (box1.interacts_with (box2), true);
+  box2.transform (db::Disp (db::Vector (1, 1)));
+  EXPECT_EQ (box1.interacts_with (box2), false);
+
+  std::vector<db::Point> points;
+  points.push_back (db::Point (0, 0));
+  points.push_back (db::Point (10, 0));
+  points.push_back (db::Point (0, 10));
+  db::Polygon triangle;
+  triangle.assign_hull (points.begin (), points.end ());
+  db::NetShape triangle_shape (triangle, repo);
+
+  db::NetShape box_outside_triangle (db::Polygon (db::Box (8, 8, 9, 9)), repo);
+  db::NetShape box_touching_triangle (db::Polygon (db::Box (5, 5, 6, 6)), repo);
+
+  //  A shared bbox is not sufficient for a non-box polygon.  Exercise both
+  //  polygon-vs-box orientations, including contact with the triangle rim.
+  EXPECT_EQ (triangle_shape.interacts_with (box_outside_triangle), false);
+  EXPECT_EQ (box_outside_triangle.interacts_with (triangle_shape), false);
+  EXPECT_EQ (triangle_shape.interacts_with (box_touching_triangle), true);
+  EXPECT_EQ (box_touching_triangle.interacts_with (triangle_shape), true);
+
+  db::NetShape text_outside_triangle (db::Text ("outside", db::Trans (db::Vector (8, 8))), repo);
+  db::NetShape text_touching_triangle (db::Text ("touching", db::Trans (db::Vector (5, 5))), repo);
+  EXPECT_EQ (triangle_shape.interacts_with (text_outside_triangle), false);
+  EXPECT_EQ (text_outside_triangle.interacts_with (triangle_shape), false);
+  EXPECT_EQ (triangle_shape.interacts_with (text_touching_triangle), true);
+  EXPECT_EQ (text_touching_triangle.interacts_with (triangle_shape), true);
+
+  //  At 45 degrees the transformed box is a diamond.  Its bbox only touches
+  //  box1 at (10,10), but the polygons remain disjoint.
+  EXPECT_EQ (box1.interacts_with_transformed (db::NetShape (db::Polygon (db::Box (0, 0, 10, 10)), repo),
+                                               db::ICplxTrans (1.0, 45.0, false, db::Vector (17, 10))), false);
 }
