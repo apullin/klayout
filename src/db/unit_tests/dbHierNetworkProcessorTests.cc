@@ -352,6 +352,65 @@ TEST(11_LocalClusterInteractDifferentLayers)
   EXPECT_EQ (cluster.interacts (cluster2, db::ICplxTrans (), conn, soft), true);
 }
 
+TEST(12_LocalClusterInteractLayerPruning)
+{
+  db::GenericRepository repo;
+
+  db::Polygon poly;
+  tl::from_string ("(0,0;0,1000;1000,1000;1000,0)", poly);
+
+  db::local_cluster<db::PolygonRef> cluster;
+  db::local_cluster<db::PolygonRef> cluster2;
+
+  //  Layers 1/2 and 4/5 are overlapping spatial clutter.  Only layers 0/3
+  //  participate in the first connectivity graph.
+  cluster.add (db::PolygonRef (poly, repo), 0);
+  cluster.add (db::PolygonRef (poly, repo), 1);
+  cluster.add (db::PolygonRef (poly, repo), 2);
+  cluster2.add (db::PolygonRef (poly, repo), 3);
+  cluster2.add (db::PolygonRef (poly, repo), 4);
+  cluster2.add (db::PolygonRef (poly, repo), 5);
+
+  int soft = std::numeric_limits<int>::max ();
+
+  db::Connectivity hard;
+  hard.connect (0, 3);
+  EXPECT_EQ (cluster.interacts (cluster2, db::ICplxTrans (), hard, soft), true);
+  EXPECT_EQ (soft, 0);
+
+  db::Connectivity one_soft;
+  one_soft.soft_connect (0, 3);
+  soft = std::numeric_limits<int>::max ();
+  EXPECT_EQ (cluster.interacts (cluster2, db::ICplxTrans (), one_soft, soft), true);
+  EXPECT_EQ (soft, -1);
+
+  //  Opposite soft directions collapse to a hard interaction regardless of
+  //  callback order.
+  db::Connectivity conflicting_soft;
+  conflicting_soft.soft_connect (0, 3);
+  conflicting_soft.soft_connect (4, 1);
+  soft = std::numeric_limits<int>::max ();
+  EXPECT_EQ (cluster.interacts (cluster2, db::ICplxTrans (), conflicting_soft, soft), true);
+  EXPECT_EQ (soft, 0);
+
+  //  A hard interaction likewise dominates a soft one.
+  db::Connectivity hard_and_soft;
+  hard_and_soft.connect (0, 3);
+  hard_and_soft.soft_connect (4, 1);
+  soft = std::numeric_limits<int>::max ();
+  EXPECT_EQ (cluster.interacts (cluster2, db::ICplxTrans (), hard_and_soft, soft), true);
+  EXPECT_EQ (soft, 0);
+
+  //  Shape collection intentionally follows the unpruned legacy path.  It
+  //  must report only the connected target shape, in its original layer.
+  std::map<unsigned int, std::vector<const db::PolygonRef *> > interacting;
+  soft = std::numeric_limits<int>::max ();
+  EXPECT_EQ (cluster.interacts (cluster2, db::ICplxTrans (), hard, soft, 0, &interacting), true);
+  EXPECT_EQ (soft, 0);
+  EXPECT_EQ (interacting.size (), size_t (1));
+  EXPECT_EQ (interacting [3].size (), size_t (1));
+}
+
 static std::string obj2string (const db::PolygonRef &ref)
 {
   return ref.obj ().transformed (ref.trans ()).to_string ();
@@ -1566,4 +1625,3 @@ TEST(201_issue1126)
   //  detailed test:
   run_hc_test (_this, "issue-1126.gds.gz", "issue-1126_au.gds");
 }
-

@@ -712,7 +712,32 @@ local_cluster<T>::interacts (const local_cluster<T> &other, const db::ICplxTrans
     return false;
   }
 
-  if (! conn.interacts (ll1, ll2)) {
+  //  In the boolean-only path, layers without a possible partner can be
+  //  removed before the spatial scan.  Such layers can only produce receiver
+  //  callbacks which Connectivity::interacts rejects, so they cannot affect
+  //  the result.  This is deliberately not applied when interacting shapes
+  //  are requested: in that path the legacy callback order is observable for
+  //  mixed soft connections.
+  const bool boolean_only = ! interacting_this && ! interacting_other;
+  std::set<unsigned int> active_ll1, active_ll2;
+
+  if (boolean_only) {
+
+    for (std::set<unsigned int>::const_iterator i = ll1.begin (); i != ll1.end (); ++i) {
+      Connectivity::layer_iterator le = conn.end_connected (*i);
+      for (Connectivity::layer_iterator l = conn.begin_connected (*i); l != le; ++l) {
+        if (ll2.find (l->first) != ll2.end ()) {
+          active_ll1.insert (*i);
+          active_ll2.insert (l->first);
+        }
+      }
+    }
+
+    if (active_ll1.empty ()) {
+      return false;
+    }
+
+  } else if (! conn.interacts (ll1, ll2)) {
     return false;
   }
 
@@ -722,12 +747,18 @@ local_cluster<T>::interacts (const local_cluster<T> &other, const db::ICplxTrans
   transformed_box <T, db::ICplxTrans> bc_t (trans);
 
   for (typename std::map<unsigned int, tree_type>::const_iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
+    if (boolean_only && active_ll1.find (s->first) == active_ll1.end ()) {
+      continue;
+    }
     for (typename tree_type::touching_iterator i = s->second.begin_touching (common, bc); ! i.at_end (); ++i) {
       scanner.insert1 (i.operator-> (), s->first);
     }
   }
 
   for (typename std::map<unsigned int, tree_type>::const_iterator s = other.m_shapes.begin (); s != other.m_shapes.end (); ++s) {
+    if (boolean_only && active_ll2.find (s->first) == active_ll2.end ()) {
+      continue;
+    }
     for (typename tree_type::touching_iterator i = s->second.begin_touching (common_for_other, bc); ! i.at_end (); ++i) {
       scanner.insert2 (i.operator-> (), s->first);
     }
