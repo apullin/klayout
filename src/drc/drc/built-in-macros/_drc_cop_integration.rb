@@ -423,6 +423,48 @@ module DRC
         end
       end
     end
+
+    # %DRC%
+    # @name drc_batch
+    # @brief Batches multiple universal DRC expressions
+    # @synopsis layer.drc_batch(expressions [, prop_constraint ])
+    #
+    # The expressions must produce the same kind of result and have compatible
+    # hierarchy-variant requirements.  The returned array contains one layer per
+    # expression, in the same order.  Compatible deep-mode expressions share one
+    # hierarchical traversal.  Flat and tiled execution preserves the same
+    # result semantics through the established sequential path.
+    def drc_batch(ops, prop_constraint = DRCPropertiesConstraint::new(RBA::Region::IgnoreProperties))
+      @engine._context("drc_batch") do
+        requires_region
+        ops.is_a?(Array) || raise("An array of DRC expressions is required for the first argument (got #{ops.inspect})")
+        ops.empty? && raise("At least one DRC expression is required")
+        prop_constraint.is_a?(DRCPropertiesConstraint) || raise("A properties constraint is required for the second argument (got #{prop_constraint.inspect})")
+        ops.each do |op|
+          op.is_a?(DRCOpNode) || raise("A DRC expression is required for every array element (got #{op.inspect})")
+        end
+
+        node_cache = {}
+        nodes = ops.collect { |op| op.create_node(node_cache) }
+        result_types = nodes.collect { |node| node.result_type }.uniq
+        result_types.size == 1 || raise("All DRC expressions in a batch must have the same result type")
+
+        result_cls = nil
+        if result_types.first == RBA::CompoundRegionOperationNode::ResultType::Region
+          result_cls = RBA::Region
+        elsif result_types.first == RBA::CompoundRegionOperationNode::ResultType::Edges
+          result_cls = RBA::Edges
+        elsif result_types.first == RBA::CompoundRegionOperationNode::ResultType::EdgePairs
+          result_cls = RBA::EdgePairs
+        end
+
+        if result_cls
+          border = nodes.collect { |node| node.distance }.max
+          results = @engine._tcmd_an(self.data, border, Array.new(nodes.size, result_cls), :complex_ops, nodes, prop_constraint.value)
+          results.collect { |result| DRCLayer::new(@engine, result) }
+        end
+      end
+    end
     
   end
 
@@ -1588,4 +1630,3 @@ CODE
   end
 
 end
-

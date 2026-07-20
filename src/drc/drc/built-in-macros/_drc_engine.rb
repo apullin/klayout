@@ -2808,6 +2808,58 @@ CODE
       
     end
 
+    # used for arbitrary-length array output methods
+    def _tcmd_an(obj, border, result_clss, method, *args)
+
+      if @tx && @ty
+
+        tp = RBA::TilingProcessor::new
+        tp.dbu = self.dbu
+        tp.scale_to_dbu = false
+        tp.tile_size(@tx, @ty)
+        bx = [ @bx || 0.0, border * self.dbu ].max
+        by = [ @by || 0.0, border * self.dbu ].max
+        tp.tile_border(bx, by)
+
+        res = result_clss.each_with_index.collect do |result_cls, i|
+          r = result_cls.new
+          tp.output("res#{i}", r)
+          r
+        end
+        tp.input("self", obj)
+        tp.threads = (@tt || 1)
+        args.each_with_index do |a,i|
+          if a.is_a?(RBA::Edges) || a.is_a?(RBA::Region) || a.is_a?(RBA::EdgePairs) || a.is_a?(RBA::Texts)
+            tp.input("a#{i}", a)
+          else
+            tp.var("a#{i}", a)
+          end
+        end
+        av = args.size.times.collect { |i| "a#{i}" }.join(", ")
+        outputs = result_clss.size.times.collect { |i| "_output(res#{i}, rr[#{i}])" }.join("; ")
+        tp.queue("var rr = self.#{method}(#{av}); #{outputs}")
+        run_timed("\"#{@in_context || method}\" in: #{src_line}", obj) do
+          tp.execute("Tiled \"#{method}\" in: #{src_line}")
+          res
+        end
+
+      else
+
+        if @dss
+          @dss.threads = (@tt || 1)
+        end
+
+        res = nil
+        run_timed("\"#{@in_context || method}\" in: #{src_line}", obj) do
+          res = obj.send(method, *args)
+        end
+
+      end
+
+      res
+
+    end
+
     # used for area and perimeter only    
     def _tdcmd(obj, border, method)
     
@@ -3628,4 +3680,3 @@ CODE
   end
  
 end
-

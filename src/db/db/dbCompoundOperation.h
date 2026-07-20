@@ -534,6 +534,50 @@ private:
 };
 
 
+/**
+ *  @brief A compound operation root producing one separate result per child
+ *
+ *  All children must have the same result type and compatible transformation
+ *  reducers. Child n contributes exclusively to result slot n. Inputs, interaction
+ *  distance and transformation reducers are combined by
+ *  CompoundRegionMultiInputOperationNode.
+ */
+class DB_PUBLIC CompoundRegionMultiOutputOperationNode
+  : public CompoundRegionMultiInputOperationNode
+{
+public:
+  explicit CompoundRegionMultiOutputOperationNode (const std::vector<CompoundRegionOperationNode *> &nodes);
+
+  size_t outputs () const
+  {
+    return children ();
+  }
+
+  virtual ResultType result_type () const
+  {
+    return m_result_type;
+  }
+
+  virtual OnEmptyIntruderHint on_empty_intruder_hint () const;
+
+protected:
+  virtual bool wants_caching () const { return false; }
+
+  virtual void do_compute_local (CompoundRegionOperationCache *cache, db::Layout *layout, db::Cell *cell, const shape_interactions<db::PolygonWithProperties, db::PolygonWithProperties> &interactions, std::vector<std::unordered_set<db::PolygonWithProperties> > &results, const db::LocalProcessorBase *proc) const;
+  virtual void do_compute_local (CompoundRegionOperationCache *cache, db::Layout *layout, db::Cell *cell, const shape_interactions<db::PolygonWithProperties, db::PolygonWithProperties> &interactions, std::vector<std::unordered_set<db::EdgeWithProperties> > &results, const db::LocalProcessorBase *proc) const;
+  virtual void do_compute_local (CompoundRegionOperationCache *cache, db::Layout *layout, db::Cell *cell, const shape_interactions<db::PolygonWithProperties, db::PolygonWithProperties> &interactions, std::vector<std::unordered_set<db::EdgePairWithProperties> > &results, const db::LocalProcessorBase *proc) const;
+  virtual void do_compute_local (CompoundRegionOperationCache *cache, db::Layout *layout, db::Cell *cell, const shape_interactions<db::PolygonRefWithProperties, db::PolygonRefWithProperties> &interactions, std::vector<std::unordered_set<db::PolygonRefWithProperties> > &results, const db::LocalProcessorBase *proc) const;
+  virtual void do_compute_local (CompoundRegionOperationCache *cache, db::Layout *layout, db::Cell *cell, const shape_interactions<db::PolygonRefWithProperties, db::PolygonRefWithProperties> &interactions, std::vector<std::unordered_set<db::EdgeWithProperties> > &results, const db::LocalProcessorBase *proc) const;
+  virtual void do_compute_local (CompoundRegionOperationCache *cache, db::Layout *layout, db::Cell *cell, const shape_interactions<db::PolygonRefWithProperties, db::PolygonRefWithProperties> &interactions, std::vector<std::unordered_set<db::EdgePairWithProperties> > &results, const db::LocalProcessorBase *proc) const;
+
+private:
+  ResultType m_result_type;
+
+  template <class TS, class TI, class TR>
+  void implement_compute_local (CompoundRegionOperationCache *cache, db::Layout *layout, db::Cell *cell, const shape_interactions<TS, TI> &interactions, std::vector<std::unordered_set<TR> > &results, const db::LocalProcessorBase *proc) const;
+};
+
+
 class DB_PUBLIC CompoundRegionLogicalBoolOperationNode
   : public CompoundRegionMultiInputOperationNode
 {

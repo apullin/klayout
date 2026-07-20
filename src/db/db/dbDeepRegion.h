@@ -31,6 +31,8 @@
 
 namespace db {
 
+class CompoundRegionMultiOutputOperationNode;
+
 /**
  *  @brief A deep, polygon-set delegate
  */
@@ -99,6 +101,10 @@ public:
   virtual EdgePairsDelegate *cop_to_edge_pairs (db::CompoundRegionOperationNode &node, db::PropertyConstraint prop_constraint);
   virtual RegionDelegate *cop_to_region (db::CompoundRegionOperationNode &node, db::PropertyConstraint prop_constraint);
   virtual EdgesDelegate *cop_to_edges (db::CompoundRegionOperationNode &node, db::PropertyConstraint prop_constraint);
+
+  std::vector<EdgePairsDelegate *> cop_to_edge_pairs_multi (db::CompoundRegionMultiOutputOperationNode &node, db::PropertyConstraint prop_constraint);
+  std::vector<RegionDelegate *> cop_to_region_multi (db::CompoundRegionMultiOutputOperationNode &node, db::PropertyConstraint prop_constraint);
+  std::vector<EdgesDelegate *> cop_to_edges_multi (db::CompoundRegionMultiOutputOperationNode &node, db::PropertyConstraint prop_constraint);
 
   virtual RegionDelegate *and_with (const Region &other, db::PropertyConstraint property_constraint) const;
   virtual RegionDelegate *not_with (const Region &other, db::PropertyConstraint property_constraint) const;
@@ -201,4 +207,3 @@ private:
 }
 
 #endif
-

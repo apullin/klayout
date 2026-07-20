@@ -1,0 +1,126 @@
+# Batched compound DRC correctness
+
+source($drc_test_source, "TOP")
+target($drc_test_target)
+
+deep if $drc_test_deep
+
+l2 = input(2, 0)
+l3 = input(3, 0)
+empty = input(99, 0)
+
+def expect_batch_error(label, message)
+  error = nil
+  begin
+    yield
+  rescue => ex
+    error = ex
+  end
+
+  raise("#{label}: expected an error") unless error
+  unless error.message.include?(message)
+    raise("#{label}: wrong error: #{error.message}")
+  end
+end
+
+def edge_pair_geometry(layer)
+  geometry = []
+  layer.data.each { |edge_pair| geometry << edge_pair.to_s }
+  geometry.sort
+end
+
+# Use edge results so equality can be checked through the public XOR operation.
+# The three operations have different interaction distances, and separation
+# introduces a secondary input which the batched root must map correctly.
+width_op = (width < 0.5.um).first_edges
+space_op = (space < 1.0.um).first_edges
+separation_op = (separation(l3) < 0.1.um).first_edges
+
+width_reference = l2.drc(width_op)
+space_reference = l2.drc(space_op)
+separation_reference = l2.drc(separation_op)
+references = [width_reference, space_reference, separation_reference]
+
+references.each_with_index do |reference, index|
+  raise("reference result ##{index} is empty") if reference.is_empty?
+end
+
+references.combination(2) do |a, b|
+  raise("reference results are not distinct") if (a ^ b).is_empty?
+end
+
+# Deliberately differ from definition order to detect crossed result slots.
+batched = l2.drc_batch([separation_op, width_op, space_op])
+raise("batched DRC returned the wrong number of results") unless batched.size == 3
+raise("batched separation result differs") unless (batched[0] ^ separation_reference).is_empty?
+raise("batched width result differs") unless (batched[1] ^ width_reference).is_empty?
+raise("batched space result differs") unless (batched[2] ^ space_reference).is_empty?
+
+# Keep direct EdgePairs coverage as well.  Edge-pair layers do not support XOR,
+# so compare a canonicalized list of complete pairs plus both independently
+# XOR-able edge projections.
+raw_width_op = width < 0.5.um
+raw_space_op = space < 1.0.um
+raw_width_reference = l2.drc(raw_width_op)
+raw_space_reference = l2.drc(raw_space_op)
+
+raise("raw width reference has the wrong type") unless raw_width_reference.edge_pairs?
+raise("raw space reference has the wrong type") unless raw_space_reference.edge_pairs?
+raise("raw width reference is empty") if raw_width_reference.is_empty?
+raise("raw space reference is empty") if raw_space_reference.is_empty?
+
+raw_batched = l2.drc_batch([raw_space_op, raw_width_op])
+raise("raw batch returned the wrong number of results") unless raw_batched.size == 2
+raise("raw space result has the wrong type") unless raw_batched[0].edge_pairs?
+raise("raw width result has the wrong type") unless raw_batched[1].edge_pairs?
+raise("raw space pairs differ") unless edge_pair_geometry(raw_batched[0]) == edge_pair_geometry(raw_space_reference)
+raise("raw width pairs differ") unless edge_pair_geometry(raw_batched[1]) == edge_pair_geometry(raw_width_reference)
+raise("raw space first edges differ") unless (raw_batched[0].first_edges ^ raw_space_reference.first_edges).is_empty?
+raise("raw space second edges differ") unless (raw_batched[0].second_edges ^ raw_space_reference.second_edges).is_empty?
+raise("raw width first edges differ") unless (raw_batched[1].first_edges ^ raw_width_reference.first_edges).is_empty?
+raise("raw width second edges differ") unless (raw_batched[1].second_edges ^ raw_width_reference.second_edges).is_empty?
+
+# An empty subject still returns one correctly typed empty layer per slot,
+# including when one expression carries a nonempty secondary input.
+empty_batched = empty.drc_batch([separation_op, width_op, space_op])
+raise("empty batch returned the wrong number of results") unless empty_batched.size == 3
+empty_batched.each_with_index do |result, index|
+  raise("empty result ##{index} has the wrong type") unless result.edges?
+  raise("empty result ##{index} is not empty") unless result.is_empty?
+end
+
+# Both expressions return regions, but their hierarchy-variant reducers are
+# incompatible.  This validation is deliberately before tiles() so both the
+# flat and deep test variants exercise the native public surface directly.
+expect_batch_error("incompatible transformation reducers", "compatible transformation reducers") do
+  l2.drc_batch([area < 1.0, bbox_width < 1.0.um])
+end
+
+# Exercise the arbitrary-length tiling bridge over multiple tiles as well.
+tiles(0.5.um)
+tiled_batched = l2.drc_batch([separation_op, width_op, space_op])
+raise("tiled batch returned the wrong number of results") unless tiled_batched.size == 3
+raise("tiled separation result differs") unless (tiled_batched[0] ^ separation_reference).is_empty?
+raise("tiled width result differs") unless (tiled_batched[1] ^ width_reference).is_empty?
+raise("tiled space result differs") unless (tiled_batched[2] ^ space_reference).is_empty?
+
+# Validate the Ruby surface before execution reaches the native operation.
+expect_batch_error("non-array expressions", "array") do
+  l2.drc_batch(width_op)
+end
+
+expect_batch_error("empty expression array", "At least one") do
+  l2.drc_batch([])
+end
+
+expect_batch_error("invalid array member", "every array element") do
+  l2.drc_batch([width_op, 17])
+end
+
+expect_batch_error("mixed result types", "same result type") do
+  l2.drc_batch([width_op, width < 0.5.um])
+end
+
+expect_batch_error("invalid properties constraint", "properties constraint") do
+  l2.drc_batch([width_op], "invalid")
+end

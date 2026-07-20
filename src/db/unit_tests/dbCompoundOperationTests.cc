@@ -914,3 +914,161 @@ TEST(16d_JoinAndMerged)
 {
   run_test16 (_this, true);
 }
+
+class CountingCompoundRegionPrimaryNode
+  : public db::CompoundRegionOperationPrimaryNode
+{
+public:
+  CountingCompoundRegionPrimaryNode ()
+    : m_compute_count (0)
+  { }
+
+  size_t compute_count () const
+  {
+    return m_compute_count;
+  }
+
+  virtual void do_compute_local (db::CompoundRegionOperationCache *cache, db::Layout *layout, db::Cell *cell, const db::shape_interactions<db::PolygonWithProperties, db::PolygonWithProperties> &interactions, std::vector<std::unordered_set<db::PolygonWithProperties> > &results, const db::LocalProcessorBase *proc) const
+  {
+    ++m_compute_count;
+    db::CompoundRegionOperationPrimaryNode::do_compute_local (cache, layout, cell, interactions, results, proc);
+  }
+
+private:
+  mutable size_t m_compute_count;
+};
+
+class CountingCompoundRegionMultiOutputNode
+  : public db::CompoundRegionMultiOutputOperationNode
+{
+public:
+  CountingCompoundRegionMultiOutputNode (const std::vector<db::CompoundRegionOperationNode *> &nodes)
+    : db::CompoundRegionMultiOutputOperationNode (nodes), m_compute_count (0)
+  { }
+
+  size_t compute_count () const
+  {
+    return m_compute_count;
+  }
+
+  virtual void do_compute_local (db::CompoundRegionOperationCache *cache, db::Layout *layout, db::Cell *cell, const db::shape_interactions<db::PolygonWithProperties, db::PolygonWithProperties> &interactions, std::vector<std::unordered_set<db::PolygonWithProperties> > &results, const db::LocalProcessorBase *proc) const
+  {
+    ++m_compute_count;
+    db::CompoundRegionMultiOutputOperationNode::do_compute_local (cache, layout, cell, interactions, results, proc);
+  }
+
+private:
+  mutable size_t m_compute_count;
+};
+
+TEST(17_MultiOutputRoot)
+{
+  db::Region other;
+  db::CompoundRegionOperationPrimaryNode *primary = new db::CompoundRegionOperationPrimaryNode ();
+  db::CompoundRegionOperationSecondaryNode *secondary = new db::CompoundRegionOperationSecondaryNode (&other);
+  primary->set_dist (10);
+  secondary->set_dist (25);
+
+  std::vector<db::CompoundRegionOperationNode *> nodes;
+  nodes.push_back (primary);
+  nodes.push_back (secondary);
+  db::CompoundRegionMultiOutputOperationNode multi (nodes);
+
+  EXPECT_EQ (multi.outputs (), size_t (2));
+  EXPECT_EQ (multi.result_type (), db::CompoundRegionOperationNode::Region);
+  EXPECT_EQ (multi.dist (), db::Coord (25));
+
+  std::vector<db::Region *> inputs = multi.inputs ();
+  EXPECT_EQ (inputs.size (), size_t (2));
+  EXPECT_EQ (inputs [0] == db::subject_regionptr (), true);
+  EXPECT_EQ (inputs [1] == &other, true);
+
+  db::PolygonWithProperties subject (db::Polygon (db::Box (0, 0, 100, 100)), 0);
+  db::PolygonWithProperties intruder (db::Polygon (db::Box (200, 200, 300, 300)), 0);
+  db::shape_interactions<db::PolygonWithProperties, db::PolygonWithProperties> interactions;
+  interactions.add_subject (1, subject);
+  interactions.add_intruder_shape (2, 1, intruder);
+  interactions.add_interaction (1, 2);
+
+  std::vector<std::unordered_set<db::PolygonWithProperties> > results (multi.outputs ());
+  db::CompoundRegionOperationCache cache;
+  multi.compute_local (&cache, 0, 0, interactions, results, 0);
+
+  EXPECT_EQ (results [0].size (), size_t (1));
+  EXPECT_EQ (results [0].count (subject), size_t (1));
+  EXPECT_EQ (results [1].size (), size_t (1));
+  EXPECT_EQ (results [1].count (intruder), size_t (1));
+}
+
+TEST(18_MultiOutputRootCacheAndValidation)
+{
+  CountingCompoundRegionPrimaryNode *shared = new CountingCompoundRegionPrimaryNode ();
+  std::vector<db::CompoundRegionOperationNode *> nodes;
+  nodes.push_back (shared);
+  nodes.push_back (shared);
+  CountingCompoundRegionMultiOutputNode multi (nodes);
+
+  db::PolygonWithProperties subject (db::Polygon (db::Box (0, 0, 100, 100)), 0);
+  db::shape_interactions<db::PolygonWithProperties, db::PolygonWithProperties> interactions;
+  interactions.add_subject (1, subject);
+
+  std::vector<std::unordered_set<db::PolygonWithProperties> > results (multi.outputs ());
+  db::CompoundRegionOperationCache cache;
+  multi.compute_local (&cache, 0, 0, interactions, results, 0);
+  multi.compute_local (&cache, 0, 0, interactions, results, 0);
+
+  EXPECT_EQ (multi.compute_count (), size_t (2));
+  EXPECT_EQ (shared->compute_count (), size_t (1));
+  EXPECT_EQ (results [0].count (subject), size_t (1));
+  EXPECT_EQ (results [1].count (subject), size_t (1));
+
+  bool caught = false;
+  try {
+    std::vector<db::CompoundRegionOperationNode *> empty;
+    db::CompoundRegionMultiOutputOperationNode invalid (empty);
+  } catch (const tl::Exception &) {
+    caught = true;
+  }
+  EXPECT_EQ (caught, true);
+
+  caught = false;
+  try {
+    std::vector<db::CompoundRegionOperationNode *> mixed;
+    mixed.push_back (new db::CompoundRegionOperationPrimaryNode ());
+    mixed.push_back (new db::CompoundRegionOperationEmptyNode (db::CompoundRegionOperationNode::Edges));
+    db::CompoundRegionMultiOutputOperationNode invalid (mixed);
+  } catch (const tl::Exception &) {
+    caught = true;
+  }
+  EXPECT_EQ (caught, true);
+
+  db::RegionCheckOptions check_options;
+  std::vector<db::CompoundRegionOperationNode *> all_drop;
+  all_drop.push_back (new db::CompoundRegionCheckOperationNode (db::SpaceRelation, true, 100, check_options));
+  all_drop.push_back (new db::CompoundRegionCheckOperationNode (db::SpaceRelation, true, 200, check_options));
+  db::CompoundRegionMultiOutputOperationNode drop_multi (all_drop);
+  EXPECT_EQ (drop_multi.on_empty_intruder_hint (), db::OnEmptyIntruderHint::Drop);
+
+  std::vector<db::CompoundRegionOperationNode *> mixed_hint;
+  mixed_hint.push_back (new db::CompoundRegionCheckOperationNode (db::SpaceRelation, true, 100, check_options));
+  mixed_hint.push_back (new db::CompoundRegionCheckOperationNode (db::WidthRelation, false, 200, check_options));
+  db::CompoundRegionMultiOutputOperationNode ignore_multi (mixed_hint);
+  EXPECT_EQ (ignore_multi.on_empty_intruder_hint (), db::OnEmptyIntruderHint::Ignore);
+
+  std::vector<db::CompoundRegionOperationNode *> null_and_one_vars;
+  null_and_one_vars.push_back (new db::CompoundRegionOperationPrimaryNode ());
+  null_and_one_vars.push_back (new db::CompoundRegionFilterOperationNode (new db::RegionAreaFilter (0, 10000, false), new db::CompoundRegionOperationPrimaryNode (), true));
+  db::CompoundRegionMultiOutputOperationNode compatible_vars (null_and_one_vars);
+  EXPECT_EQ (compatible_vars.outputs (), size_t (2));
+
+  caught = false;
+  try {
+    std::vector<db::CompoundRegionOperationNode *> incompatible_vars;
+    incompatible_vars.push_back (new db::CompoundRegionFilterOperationNode (new db::RegionAreaFilter (0, 10000, false), new db::CompoundRegionOperationPrimaryNode (), true));
+    incompatible_vars.push_back (new db::CompoundRegionFilterOperationNode (new db::RegionBBoxFilter (0, 10000, false, db::RegionBBoxFilter::BoxWidth), new db::CompoundRegionOperationPrimaryNode (), true));
+    db::CompoundRegionMultiOutputOperationNode invalid (incompatible_vars);
+  } catch (const tl::Exception &) {
+    caught = true;
+  }
+  EXPECT_EQ (caught, true);
+}

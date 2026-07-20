@@ -436,6 +436,96 @@ CompoundRegionMultiInputOperationNode::wants_variants () const
 
 // ---------------------------------------------------------------------------------------------
 
+CompoundRegionMultiOutputOperationNode::CompoundRegionMultiOutputOperationNode (const std::vector<CompoundRegionOperationNode *> &nodes)
+  : CompoundRegionMultiInputOperationNode (nodes, true), m_result_type (Region)
+{
+  if (nodes.empty ()) {
+    throw tl::Exception ("A multi-output compound operation requires at least one node");
+  }
+
+  m_result_type = child (0)->result_type ();
+  const TransformationReducer *common_vars = child (0)->vars ();
+  for (size_t n = 1; n < nodes.size (); ++n) {
+    if (child ((unsigned int) n)->result_type () != m_result_type) {
+      throw tl::Exception ("All nodes of a multi-output compound operation must have the same result type");
+    }
+
+    const TransformationReducer *vars = child ((unsigned int) n)->vars ();
+    if (! common_vars) {
+      common_vars = vars;
+    } else if (vars && vars != common_vars && (! common_vars->equals (vars) || ! vars->equals (common_vars))) {
+      throw tl::Exception ("All nodes of a multi-output compound operation must use compatible transformation reducers");
+    }
+  }
+
+  init ();
+}
+
+OnEmptyIntruderHint
+CompoundRegionMultiOutputOperationNode::on_empty_intruder_hint () const
+{
+  for (size_t n = 0; n < outputs (); ++n) {
+    if (child ((unsigned int) n)->on_empty_intruder_hint () != OnEmptyIntruderHint::Drop) {
+      return OnEmptyIntruderHint::Ignore;
+    }
+  }
+  return OnEmptyIntruderHint::Drop;
+}
+
+template <class TS, class TI, class TR>
+void
+CompoundRegionMultiOutputOperationNode::implement_compute_local (CompoundRegionOperationCache *cache, db::Layout *layout, db::Cell *cell, const shape_interactions<TS, TI> &interactions, std::vector<std::unordered_set<TR> > &results, const db::LocalProcessorBase *proc) const
+{
+  tl_assert (results.size () == outputs ());
+
+  for (size_t n = 0; n < outputs (); ++n) {
+    shape_interactions<TS, TI> child_interactions_computed;
+    const shape_interactions<TS, TI> &child_interactions = interactions_for_child (interactions, (unsigned int) n, child_interactions_computed);
+
+    std::vector<std::unordered_set<TR> > child_results (1);
+    child ((unsigned int) n)->compute_local (cache, layout, cell, child_interactions, child_results, proc);
+    results [n].insert (child_results.front ().begin (), child_results.front ().end ());
+  }
+}
+
+void
+CompoundRegionMultiOutputOperationNode::do_compute_local (CompoundRegionOperationCache *cache, db::Layout *layout, db::Cell *cell, const shape_interactions<db::PolygonWithProperties, db::PolygonWithProperties> &interactions, std::vector<std::unordered_set<db::PolygonWithProperties> > &results, const db::LocalProcessorBase *proc) const
+{
+  implement_compute_local (cache, layout, cell, interactions, results, proc);
+}
+
+void
+CompoundRegionMultiOutputOperationNode::do_compute_local (CompoundRegionOperationCache *cache, db::Layout *layout, db::Cell *cell, const shape_interactions<db::PolygonWithProperties, db::PolygonWithProperties> &interactions, std::vector<std::unordered_set<db::EdgeWithProperties> > &results, const db::LocalProcessorBase *proc) const
+{
+  implement_compute_local (cache, layout, cell, interactions, results, proc);
+}
+
+void
+CompoundRegionMultiOutputOperationNode::do_compute_local (CompoundRegionOperationCache *cache, db::Layout *layout, db::Cell *cell, const shape_interactions<db::PolygonWithProperties, db::PolygonWithProperties> &interactions, std::vector<std::unordered_set<db::EdgePairWithProperties> > &results, const db::LocalProcessorBase *proc) const
+{
+  implement_compute_local (cache, layout, cell, interactions, results, proc);
+}
+
+void
+CompoundRegionMultiOutputOperationNode::do_compute_local (CompoundRegionOperationCache *cache, db::Layout *layout, db::Cell *cell, const shape_interactions<db::PolygonRefWithProperties, db::PolygonRefWithProperties> &interactions, std::vector<std::unordered_set<db::PolygonRefWithProperties> > &results, const db::LocalProcessorBase *proc) const
+{
+  implement_compute_local (cache, layout, cell, interactions, results, proc);
+}
+
+void
+CompoundRegionMultiOutputOperationNode::do_compute_local (CompoundRegionOperationCache *cache, db::Layout *layout, db::Cell *cell, const shape_interactions<db::PolygonRefWithProperties, db::PolygonRefWithProperties> &interactions, std::vector<std::unordered_set<db::EdgeWithProperties> > &results, const db::LocalProcessorBase *proc) const
+{
+  implement_compute_local (cache, layout, cell, interactions, results, proc);
+}
+
+void
+CompoundRegionMultiOutputOperationNode::do_compute_local (CompoundRegionOperationCache *cache, db::Layout *layout, db::Cell *cell, const shape_interactions<db::PolygonRefWithProperties, db::PolygonRefWithProperties> &interactions, std::vector<std::unordered_set<db::EdgePairWithProperties> > &results, const db::LocalProcessorBase *proc) const
+{
+  implement_compute_local (cache, layout, cell, interactions, results, proc);
+}
+
+// ---------------------------------------------------------------------------------------------
+
 CompoundRegionLogicalBoolOperationNode::CompoundRegionLogicalBoolOperationNode (LogicalOp op, bool invert, const std::vector<CompoundRegionOperationNode *> &inputs)
   : CompoundRegionMultiInputOperationNode (inputs), m_op (op), m_invert (invert)
 {
@@ -1716,4 +1806,3 @@ CompoundRegionCheckOperationNode::do_compute_local (CompoundRegionOperationCache
 }
 
 }
-

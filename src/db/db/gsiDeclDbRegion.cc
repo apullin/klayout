@@ -1307,6 +1307,88 @@ tl::Variant complex_op (db::Region *region, db::CompoundRegionOperationNode *nod
   }
 }
 
+tl::Variant complex_ops (db::Region *region, const std::vector<db::CompoundRegionOperationNode *> &nodes, db::PropertyConstraint prop_constraint)
+{
+  tl::Variant result = tl::Variant (std::vector<tl::Variant> ());
+
+  if (nodes.empty ()) {
+    return result;
+  }
+
+  for (std::vector<db::CompoundRegionOperationNode *>::const_iterator n = nodes.begin (); n != nodes.end (); ++n) {
+    if (! *n) {
+      throw tl::Exception (tl::to_string (tr ("Compound operation nodes must not be null")));
+    }
+  }
+
+  db::CompoundRegionOperationNode::ResultType result_type = nodes.front ()->result_type ();
+  const db::TransformationReducer *common_vars = nodes.front ()->vars ();
+  for (std::vector<db::CompoundRegionOperationNode *>::const_iterator n = nodes.begin (); n != nodes.end (); ++n) {
+    if ((*n)->result_type () != result_type) {
+      throw tl::Exception (tl::to_string (tr ("Batched compound operations must have the same result type")));
+    }
+
+    const db::TransformationReducer *vars = (*n)->vars ();
+    if (! common_vars) {
+      common_vars = vars;
+    } else if (vars && vars != common_vars && (! common_vars->equals (vars) || ! vars->equals (common_vars))) {
+      throw tl::Exception (tl::to_string (tr ("All nodes of a multi-output compound operation must use compatible transformation reducers")));
+    }
+  }
+
+  db::DeepRegion *deep_region = dynamic_cast<db::DeepRegion *> (region->delegate ());
+  if (deep_region) {
+
+    db::CompoundRegionMultiOutputOperationNode multi_node (nodes);
+
+    if (result_type == db::CompoundRegionOperationNode::Region) {
+      std::vector<db::RegionDelegate *> outputs = deep_region->cop_to_region_multi (multi_node, prop_constraint);
+      if (outputs.size () == nodes.size ()) {
+        for (std::vector<db::RegionDelegate *>::iterator o = outputs.begin (); o != outputs.end (); ++o) {
+          result.push (tl::Variant::make_variant (new db::Region (*o)));
+        }
+        return result;
+      } else {
+        for (std::vector<db::RegionDelegate *>::iterator o = outputs.begin (); o != outputs.end (); ++o) {
+          delete *o;
+        }
+      }
+    } else if (result_type == db::CompoundRegionOperationNode::Edges) {
+      std::vector<db::EdgesDelegate *> outputs = deep_region->cop_to_edges_multi (multi_node, prop_constraint);
+      if (outputs.size () == nodes.size ()) {
+        for (std::vector<db::EdgesDelegate *>::iterator o = outputs.begin (); o != outputs.end (); ++o) {
+          result.push (tl::Variant::make_variant (new db::Edges (*o)));
+        }
+        return result;
+      } else {
+        for (std::vector<db::EdgesDelegate *>::iterator o = outputs.begin (); o != outputs.end (); ++o) {
+          delete *o;
+        }
+      }
+    } else if (result_type == db::CompoundRegionOperationNode::EdgePairs) {
+      std::vector<db::EdgePairsDelegate *> outputs = deep_region->cop_to_edge_pairs_multi (multi_node, prop_constraint);
+      if (outputs.size () == nodes.size ()) {
+        for (std::vector<db::EdgePairsDelegate *>::iterator o = outputs.begin (); o != outputs.end (); ++o) {
+          result.push (tl::Variant::make_variant (new db::EdgePairs (*o)));
+        }
+        return result;
+      } else {
+        for (std::vector<db::EdgePairsDelegate *>::iterator o = outputs.begin (); o != outputs.end (); ++o) {
+          delete *o;
+        }
+      }
+    }
+
+  }
+
+  //  Flat inputs, or mixed flat/deep inputs, use the established single-output path.
+  for (std::vector<db::CompoundRegionOperationNode *>::const_iterator n = nodes.begin (); n != nodes.end (); ++n) {
+    result.push (region->cop (**n, prop_constraint));
+  }
+
+  return result;
+}
+
 static void
 fill_region (const db::Region *fr, db::Cell *cell, db::cell_index_type fill_cell_index, const db::Box &fc_box, const db::Point *origin,
              db::Region *remaining_parts, const db::Vector &fill_margin, db::Region *remaining_polygons, const db::Box &glue_box, const db::Region &exclude_area)
@@ -1805,6 +1887,14 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "The 'property_constraint' parameter controls whether properties are considered: with 'SamePropertiesConstraint' "
     "the operation is only applied between shapes with identical properties. With 'DifferentPropertiesConstraint' only "
     "between shapes with different properties. This option has been introduced in version 0.28.4."
+  ) +
+  method_ext ("complex_ops", &complex_ops, gsi::arg ("nodes"), gsi::arg ("property_constraint", db::IgnoreProperties, "IgnoreProperties"),
+    "@brief Executes multiple homogeneous complex operations\n"
+    "The results are returned in the same order as the operation nodes. Compatible deep-region operations execute in "
+    "one hierarchical traversal. Flat regions use the equivalent sequence of single operations.\n"
+    "\n"
+    "All operation nodes must have the same result type, compatible hierarchy-variant requirements and the same "
+    "property constraint."
   ) +
   method_ext ("with_perimeter", with_perimeter1, gsi::arg ("perimeter"), gsi::arg ("inverse"),
     "@brief Filter the polygons by perimeter\n"

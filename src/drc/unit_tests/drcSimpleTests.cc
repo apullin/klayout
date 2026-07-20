@@ -2161,3 +2161,41 @@ TEST(150d_empty_antenna_pruning)
 {
   run_empty_antenna_pruning_test (_this, true);
 }
+
+static void run_drc_batch_test (tl::TestBase *_this, bool deep)
+{
+  std::string rs = tl::testdata ();
+  rs += "/drc/drcSimpleTests_151.drc";
+
+  std::string input = tl::testdata ();
+  input += "/drc/kissing_corners.gds";
+
+  std::string output = _this->tmp_file ("tmp.gds");
+
+  {
+    lym::Macro config;
+    config.set_text (tl::sprintf (
+        "$drc_force_gc = true\n"
+        "$drc_test_source = '%s'\n"
+        "$drc_test_target = '%s'\n"
+        "$drc_test_deep = %s\n"
+      , input, output, deep ? "true" : "false")
+    );
+    config.set_interpreter (lym::Macro::Ruby);
+    EXPECT_EQ (config.run (), 0);
+  }
+
+  lym::Macro drc;
+  drc.load_from (rs);
+  EXPECT_EQ (drc.run (), 0);
+}
+
+TEST(151_drc_batch)
+{
+  run_drc_batch_test (_this, false);
+}
+
+TEST(151d_drc_batch)
+{
+  run_drc_batch_test (_this, true);
+}

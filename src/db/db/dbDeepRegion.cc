@@ -2332,6 +2332,73 @@ Output *region_cop_with_properties_impl (DeepRegion *region, db::CompoundRegionO
   return res.release ();
 }
 
+template <class TR, class Output>
+static
+std::vector<Output *> region_cop_multi_with_properties_impl (DeepRegion *region, db::CompoundRegionMultiOutputOperationNode &node, db::PropertyConstraint prop_constraint)
+{
+  //  Fall back to flat mode if one of the inputs is flat.
+  std::vector<db::Region *> inputs = node.inputs ();
+  for (std::vector<db::Region *>::const_iterator i = inputs.begin (); i != inputs.end (); ++i) {
+    if (! is_subject_regionptr (*i) && ! dynamic_cast<const db::DeepRegion *> ((*i)->delegate ())) {
+      return std::vector<Output *> ();
+    }
+  }
+
+  const db::DeepLayer &polygons (region->merged_deep_layer ());
+  std::vector<std::unique_ptr<Output> > owned_outputs;
+  std::vector<unsigned int> output_layers;
+  owned_outputs.reserve (node.outputs ());
+  output_layers.reserve (node.outputs ());
+
+  for (size_t n = 0; n < node.outputs (); ++n) {
+    owned_outputs.push_back (std::unique_ptr<Output> (new Output (polygons.derived ())));
+    output_layers.push_back (owned_outputs.back ()->deep_layer ().layer ());
+  }
+
+  if (owned_outputs.empty ()) {
+    return std::vector<Output *> ();
+  }
+
+  db::local_processor<db::PolygonRefWithProperties, db::PolygonRefWithProperties, db::object_with_properties<TR> > proc (&owned_outputs.front ()->deep_layer ().layout (), &owned_outputs.front ()->deep_layer ().initial_cell (), region->deep_layer ().breakout_cells ());
+
+  proc.set_description (region->progress_desc ());
+  proc.set_report_progress (region->report_progress ());
+  proc.set_base_verbosity (region->base_verbosity ());
+  proc.set_threads (region->deep_layer ().store ()->threads ());
+
+  std::vector<unsigned int> other_layers;
+
+  for (std::vector<db::Region *>::const_iterator i = inputs.begin (); i != inputs.end (); ++i) {
+
+    if (is_subject_regionptr (*i)) {
+      if (*i == subject_regionptr ()) {
+        other_layers.push_back (subject_idlayer ());
+      } else {
+        other_layers.push_back (foreign_idlayer ());
+      }
+    } else {
+      const db::DeepRegion *other_deep = dynamic_cast<const db::DeepRegion *> ((*i)->delegate ());
+      tl_assert (other_deep != 0);
+      if (&other_deep->deep_layer ().layout () != &region->deep_layer ().layout () || &other_deep->deep_layer ().initial_cell () != &region->deep_layer ().initial_cell ()) {
+        throw tl::Exception (tl::to_string (tr ("Complex DeepRegion operations need to use the same layout and top cell for all inputs")));
+      }
+      other_layers.push_back (other_deep->deep_layer ().layer ());
+    }
+
+  }
+
+  compound_local_operation_with_properties<db::PolygonRef, db::PolygonRef, TR> op (&node, prop_constraint);
+  proc.run (&op, polygons.layer (), other_layers, output_layers, true /*make_variants*/);
+
+  std::vector<Output *> outputs;
+  outputs.reserve (owned_outputs.size ());
+  for (typename std::vector<std::unique_ptr<Output> >::iterator o = owned_outputs.begin (); o != owned_outputs.end (); ++o) {
+    outputs.push_back (o->release ());
+  }
+
+  return outputs;
+}
+
 EdgePairsDelegate *
 DeepRegion::cop_to_edge_pairs (db::CompoundRegionOperationNode &node, db::PropertyConstraint prop_constraint)
 {
@@ -2363,6 +2430,27 @@ DeepRegion::cop_to_edges (db::CompoundRegionOperationNode &node, db::PropertyCon
   } else {
     return output;
   }
+}
+
+std::vector<EdgePairsDelegate *>
+DeepRegion::cop_to_edge_pairs_multi (db::CompoundRegionMultiOutputOperationNode &node, db::PropertyConstraint prop_constraint)
+{
+  std::vector<DeepEdgePairs *> outputs = region_cop_multi_with_properties_impl<db::EdgePair, DeepEdgePairs> (this, node, prop_constraint);
+  return std::vector<EdgePairsDelegate *> (outputs.begin (), outputs.end ());
+}
+
+std::vector<RegionDelegate *>
+DeepRegion::cop_to_region_multi (db::CompoundRegionMultiOutputOperationNode &node, db::PropertyConstraint prop_constraint)
+{
+  std::vector<DeepRegion *> outputs = region_cop_multi_with_properties_impl<db::PolygonRef, DeepRegion> (this, node, prop_constraint);
+  return std::vector<RegionDelegate *> (outputs.begin (), outputs.end ());
+}
+
+std::vector<EdgesDelegate *>
+DeepRegion::cop_to_edges_multi (db::CompoundRegionMultiOutputOperationNode &node, db::PropertyConstraint prop_constraint)
+{
+  std::vector<DeepEdges *> outputs = region_cop_multi_with_properties_impl<db::Edge, DeepEdges> (this, node, prop_constraint);
+  return std::vector<EdgesDelegate *> (outputs.begin (), outputs.end ());
 }
 
 EdgePairsDelegate *
