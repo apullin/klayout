@@ -772,7 +772,15 @@ module DRC
           n += 1
         end
 
-        DRC::DRCLayer::new(@engine, @engine._cmd(l2n_data_clusters, :antenna_check, gate.data, gate_area_factor, gate_perimeter_factor, metal.data, metal_area_factor, metal_perimeter_factor, ratio, dl, texts))
+        # The result consists of copies of shapes from the metal layer, so an
+        # empty metal layer cannot produce a violation.  Keep the regular path
+        # for diagnostic texts (it clears/replaces that layer) and whenever
+        # soft connections require full extraction.
+        if texts.nil? && !@needs_full_extraction && metal.is_empty?
+          metal.dup
+        else
+          DRC::DRCLayer::new(@engine, @engine._cmd(l2n_data_clusters, :antenna_check, gate.data, gate_area_factor, gate_perimeter_factor, metal.data, metal_area_factor, metal_perimeter_factor, ratio, dl, texts))
+        end
 
       end
 
@@ -1090,4 +1098,3 @@ module DRC
   end
 
 end
-

@@ -1,0 +1,92 @@
+# Empty-target antenna pruning
+
+source($drc_test_source, "RINGO")
+report("Empty-target antenna pruning", $drc_test_report)
+
+deep if $drc_test_deep
+
+diff        = input(2, 0)
+poly        = input(3, 0)
+poly_cont   = input(5, 0)
+metal1      = input(6, 0)
+via1        = input(7, 0)
+metal2      = input(8, 0)
+empty_metal = input(99, 0)
+
+gate = diff & poly
+
+# Build clusters for a lower, nonempty metal, then invalidate them by adding
+# an empty target.  The empty antenna check must not rebuild the clusters.
+guarded = netter
+guarded.connect(gate, poly)
+guarded.connect(poly, poly_cont)
+guarded.connect(poly_cont, metal1)
+
+lower = guarded.antenna_check(gate, metal1, 1.0)
+raise("lower result unexpectedly empty") if lower.is_empty?
+raise("lower check did not build clusters") unless guarded._l2n_object.is_clusters_built?
+
+guarded.connect(metal1, empty_metal)
+raise("connect did not invalidate clusters") if guarded._l2n_object.is_clusters_built?
+
+empty_result = guarded.antenna_check(gate, empty_metal, 1.0)
+raise("empty target produced markers") unless empty_result.is_empty?
+raise("empty target rebuilt clusters") if guarded._l2n_object.is_clusters_built?
+
+# Connectivity added after the skipped stage must still be included in the
+# next nonempty check.  Compare against a fresh, one-shot extraction.
+guarded.connect(metal1, via1)
+guarded.connect(via1, metal2)
+upper = guarded.antenna_check(gate, metal2, 5.0)
+
+reference = netter
+reference.connect(gate, poly)
+reference.connect(poly, poly_cont)
+reference.connect(poly_cont, metal1)
+reference.connect(metal1, empty_metal)
+reference.connect(metal1, via1)
+reference.connect(via1, metal2)
+upper_reference = reference.antenna_check(gate, metal2, 5.0)
+
+raise("upper result unexpectedly empty") if upper.is_empty?
+raise("upper result changed after skipped stage") unless (upper ^ upper_reference).is_empty?
+
+# A diagnostic-text argument is observable output.  Keep this case on the
+# normal path so an empty check replaces prior diagnostics with an empty set.
+diagnostic = netter
+diagnostic.connect(gate, poly)
+diagnostic.connect(poly, poly_cont)
+diagnostic.connect(poly_cont, metal1)
+
+values = labels
+diagnostic.antenna_check(gate, metal1, 1.0, values)
+raise("nonempty diagnostic check produced no texts") if values.is_empty?
+
+diagnostic.connect(metal1, empty_metal)
+raise("diagnostic connect did not invalidate clusters") if diagnostic._l2n_object.is_clusters_built?
+diagnostic.antenna_check(gate, empty_metal, 1.0, values)
+raise("empty diagnostic target did not clear texts") unless values.is_empty?
+raise("diagnostic empty target skipped extraction") unless diagnostic._l2n_object.is_clusters_built?
+
+# Soft connections require a full netlist extraction even for an empty target.
+soft = netter
+soft.connect(gate, poly)
+soft.soft_connect(poly, poly_cont)
+soft.connect(poly_cont, metal1)
+soft.connect(metal1, empty_metal)
+
+soft_empty = soft.antenna_check(gate, empty_metal, 1.0)
+raise("soft-connected empty target produced markers") unless soft_empty.is_empty?
+raise("soft-connected empty target skipped full extraction") unless soft._l2n_object.is_extracted?
+
+# Empty outputs still need their report category and description.
+empty_result.output("EMPTY_TARGET", "Empty target category")
+upper.output("UPPER_TARGET", "Upper target category")
+
+empty_category = def_output.rdb.category_by_path("EMPTY_TARGET")
+upper_category = def_output.rdb.category_by_path("UPPER_TARGET")
+
+raise("missing empty target category") unless empty_category
+raise("wrong empty target description") unless empty_category.description == "Empty target category"
+raise("empty target category has items") unless empty_category.num_items == 0
+raise("upper target category has no items") unless upper_category && upper_category.num_items > 0

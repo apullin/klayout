@@ -2123,3 +2123,41 @@ TEST(149d_compound_drc_with_mag)
 {
   run_test (_this, "149", true);
 }
+
+static void run_empty_antenna_pruning_test (tl::TestBase *_this, bool deep)
+{
+  std::string rs = tl::testdata ();
+  rs += "/drc/drcSimpleTests_150.drc";
+
+  std::string input = tl::testdata ();
+  input += "/drc/antenna_l1.gds";
+
+  std::string report = _this->tmp_file ("tmp.lyrdb");
+
+  {
+    lym::Macro config;
+    config.set_text (tl::sprintf (
+        "$drc_force_gc = true\n"
+        "$drc_test_source = '%s'\n"
+        "$drc_test_report = '%s'\n"
+        "$drc_test_deep = %s\n"
+      , input, report, deep ? "true" : "false")
+    );
+    config.set_interpreter (lym::Macro::Ruby);
+    EXPECT_EQ (config.run (), 0);
+  }
+
+  lym::Macro drc;
+  drc.load_from (rs);
+  EXPECT_EQ (drc.run (), 0);
+}
+
+TEST(150_empty_antenna_pruning)
+{
+  run_empty_antenna_pruning_test (_this, false);
+}
+
+TEST(150d_empty_antenna_pruning)
+{
+  run_empty_antenna_pruning_test (_this, true);
+}
