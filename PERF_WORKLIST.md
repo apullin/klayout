@@ -44,12 +44,16 @@ questions:
   nonempty-fixture tests.  They are not long enough to accept small performance
   claims.
 - **Iteration/acceptance candidate (about 4 minutes):** native hierarchical
-  `hg0_s3_asic` (54,744,844 bytes, 155 cells).  Its older signoff run took
-  291.561 s wall and averaged 1.123 cores.  The 0.81–0.83 wall-time ratio of the
-  current LTO binary on FP4/FP16/DME1 projects 237–242 s, but this projection is
-  not a baseline: time and hash it once with the current binary before use.
-  Source GDS SHA-256:
+  `hg0_s3_asic` (54,744,844 bytes, 155 cells).  Its first current-binary serial
+  measurement is 223.94 s wall.  The older 291.561 s signoff record came from
+  LibreLane 3.0.4 invoking a different, unrecorded KLayout executable; it used
+  the same GDS and underlying deck content, but is historical context only.
+  The apparent **+30.2% throughput** from 291.561 to 223.94 s is therefore a
+  cumulative environment/build/code comparison, not statistical variation or
+  a controlled performance result.  Source GDS SHA-256:
   `a5aae78efed5a76e5f2c6c03762f4fc60d70132931028bb47f941f08d3184de7`.
+  Current serial report SHA-256:
+  `8fad6c51f6e96b2e1c79ab98446f8ad536527d33cc974096e41e71689ccb730f`.
 - **Heavy qualification:** `vmu_top_asic` (63 MB, historical 403.048 s) and
   FP64 (85 MB, historical 538.245 s).  Run after an optimization passes both
   smoke and the four-minute lane.
@@ -68,7 +72,12 @@ not just wall time.
    semantics quickly, then time `hg0_s3_asic`.  This is the first gate because
    it answers whether the +84.1% FreePDK result was a useful general mechanism
    or another one-benchmark optimization.  Preserve all FEOL, BEOL, off-grid,
-   seal, and floating-metal option semantics.
+   seal, and floating-metal option semantics.  Preliminary same-current-binary
+   results are 20.76 -> 12.079 s on FP4 (**+71.9% throughput**) and 223.94 ->
+   125.668 s on `hg0_s3_asic` (**+78.2% throughput**), with exact category,
+   cell, and item equality against the serial report.  These are one run per
+   mode and remain preliminary until repeated; do not mix the 291.561 s
+   historical record into this controlled comparison.
 2. [ ] **Measured 3/4-way process scheduling and automatic balancing**
    The launcher already accepts arbitrary shards and bounded jobs.  Profile
    independent category-producing chains and use longest-processing-time-first
