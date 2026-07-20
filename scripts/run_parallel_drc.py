@@ -25,6 +25,11 @@ Example::
       --manifest /path/to/freepdk45-shards.json \
       --shard active_m1 --shard other
 
+Decks using the common ``top_cell``/``report`` run-time variable convention
+(including the Sky130 deck in the performance corpus) additionally pass::
+
+    --top-cell-rd-key top_cell --output-rd-key report
+
 Only Python's standard library is used by this launcher.
 """
 
@@ -44,7 +49,11 @@ import time
 from typing import Callable, Mapping, Sequence, TextIO
 
 
-_RESERVED_RD_KEYS = frozenset({"input", "topcell", "output", "drc_shard"})
+_RESERVED_RD_KEYS = frozenset(
+    {"input", "topcell", "top_cell", "output", "report", "drc_shard"}
+)
+_TOP_CELL_RD_KEYS = ("topcell", "top_cell")
+_OUTPUT_RD_KEYS = ("output", "report")
 _POLL_INTERVAL_SECONDS = 0.05
 _TERMINATE_TIMEOUT_SECONDS = 5.0
 
@@ -129,9 +138,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
         epilog=(
             "Each shard receives -rd drc_shard=NAME. Additional --rd values "
-            "are forwarded to every child, but input, topcell, output and "
-            "drc_shard are reserved. Child stdout and stderr are combined in "
-            "one per-shard log."
+            "are forwarded to every child, but orchestration keys (input, "
+            "topcell/top_cell, output/report and drc_shard) are reserved. "
+            "Child stdout and stderr are combined in one per-shard log."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -157,13 +166,27 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--top-cell",
         required=True,
         metavar="CELL",
-        help="top cell passed to the deck as the topcell run-time variable",
+        help="top cell passed to the deck through --top-cell-rd-key",
+    )
+    parser.add_argument(
+        "--top-cell-rd-key",
+        choices=_TOP_CELL_RD_KEYS,
+        default="topcell",
+        metavar="KEY",
+        help="KLayout -rd variable used for the top cell",
     )
     parser.add_argument(
         "--output",
         required=True,
         metavar="REPORT",
         help="final merged .lyrdb/report path; never written by a child",
+    )
+    parser.add_argument(
+        "--output-rd-key",
+        choices=_OUTPUT_RD_KEYS,
+        default="output",
+        metavar="KEY",
+        help="KLayout -rd variable used for each private child report",
     )
     parser.add_argument(
         "--manifest",
@@ -267,9 +290,9 @@ def build_command(args: argparse.Namespace, spec: ShardSpec) -> list[str]:
         "-rd",
         f"input={args.input}",
         "-rd",
-        f"topcell={args.top_cell}",
+        f"{args.top_cell_rd_key}={args.top_cell}",
         "-rd",
-        f"output={spec.report}",
+        f"{args.output_rd_key}={spec.report}",
         "-rd",
         f"drc_shard={spec.name}",
     ]

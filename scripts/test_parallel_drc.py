@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import io
 import json
@@ -572,8 +573,17 @@ class LauncherTests(ReportFixture):
                     )
                     time.sleep(30)
 
+                top_cell_key = os.environ.get("FAKE_TOP_CELL_RD_KEY", "topcell")
+                output_key = os.environ.get("FAKE_OUTPUT_RD_KEY", "output")
+                if top_cell_key not in runtime:
+                    print(f"missing expected top-cell key {top_cell_key}")
+                    raise SystemExit(8)
+                if output_key not in runtime:
+                    print(f"missing expected output key {output_key}")
+                    raise SystemExit(9)
+
                 source = Path(os.environ["FAKE_DRC_REPORTS"]) / f"{shard}.lyrdb"
-                shutil.copyfile(source, runtime["output"])
+                shutil.copyfile(source, runtime[output_key])
                 """
             ),
             encoding="utf-8",
@@ -608,6 +618,44 @@ class LauncherTests(ReportFixture):
             arguments.extend(("--shard", shard))
         return arguments
 
+    def test_build_command_supports_top_cell_and_report_rd_keys(self) -> None:
+        output = self.directory / "sky-convention-output.lyrdb"
+        arguments = self.arguments(output, ("odd",))
+        arguments.extend(
+            (
+                "--top-cell-rd-key",
+                "top_cell",
+                "--output-rd-key",
+                "report",
+            )
+        )
+        args = launcher.parse_args(arguments)
+        private_report = self.directory / "private-report.lyrdb"
+        spec = launcher.ShardSpec(
+            index=0,
+            name="odd",
+            report=private_report,
+            log=self.directory / "private-report.log",
+        )
+
+        command = launcher.build_command(args, spec)
+        assignments = {
+            command[index + 1].split("=", 1)[0]: command[index + 1].split("=", 1)[1]
+            for index, value in enumerate(command)
+            if value == "-rd"
+        }
+        self.assertEqual(assignments["input"], str(self.layout))
+        self.assertEqual(assignments["top_cell"], "TOP")
+        self.assertEqual(assignments["report"], str(private_report))
+        self.assertEqual(assignments["drc_shard"], "odd")
+        self.assertNotIn("topcell", assignments)
+        self.assertNotIn("output", assignments)
+
+    def test_alternate_orchestration_rd_keys_are_reserved(self) -> None:
+        for key in ("top_cell", "report"):
+            with self.subTest(key=key), self.assertRaises(argparse.ArgumentTypeError):
+                launcher.parse_rd(f"{key}=must-not-override")
+
     def test_fake_executable_success_runs_and_merges(self) -> None:
         output = self.directory / "launcher-merged.lyrdb"
         output.write_bytes(b"existing report sentinel")
@@ -633,6 +681,51 @@ class LauncherTests(ReportFixture):
         )
         self.assertIn("merged report", stdout.getvalue())
         self.assertEqual(stderr.getvalue(), "")
+
+    def test_fake_executable_supports_sky130_rd_convention(self) -> None:
+        output = self.directory / "sky-convention-merged.lyrdb"
+        arguments = self.arguments(output, ("even", "odd"))
+        arguments.extend(
+            (
+                "--top-cell-rd-key",
+                "top_cell",
+                "--output-rd-key",
+                "report",
+            )
+        )
+        for assignment in (
+            "feol=true",
+            "beol=true",
+            "offgrid=true",
+            "seal=true",
+            "floating_met=false",
+            "sram_exclude=false",
+            "thr=4",
+        ):
+            arguments.extend(("--rd", assignment))
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "FAKE_DRC_REPORTS": str(self.fake_reports),
+                    "FAKE_TOP_CELL_RD_KEY": "top_cell",
+                    "FAKE_OUTPUT_RD_KEY": "report",
+                },
+            ),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            result = launcher.main(arguments)
+
+        self.assertEqual(result, 0, stderr.getvalue())
+        self.assertIn("merged report", stdout.getvalue())
+        self.assertEqual(
+            item_markers(output),
+            ["A-1", "A-2", "B-1", "C-1", "D-1"],
+        )
 
     def test_fake_executable_failure_is_reported_without_output(self) -> None:
         output = self.directory / "must-not-exist.lyrdb"
