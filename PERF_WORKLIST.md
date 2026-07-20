@@ -18,9 +18,14 @@ is measured, accepted, rejected, or re-ranked.
 
 ## Ranked work
 
-1. **Rule-DAG scheduling and parallel rule groups — next**
+1. **Rule-DAG scheduling and parallel rule groups — active**
    Schedule independent derived layers and checks concurrently while
-   preserving deterministic report contents and resource bounds.
+   preserving deterministic report contents and resource bounds.  A
+   two-process ceiling probe completed two full runs in 130.21 s versus
+   128.83 s for one: **+97.9% aggregate throughput**, byte-identical reports,
+   and only 0.8–1.1% added latency per job.  Start with an isolated two-shard
+   deck/process prototype; do not share a mutable `DeepShapeStore` across
+   workers.
 2. **Incremental antenna edge replay — re-profile first**
    The old estimate assumed ten cumulative rebuilds.  Empty-target pruning
    removed six, so its present ceiling is much smaller and must be measured
@@ -51,6 +56,12 @@ is measured, accepted, rejected, or re-ranked.
 - Disparate-rule batching: the aggregate uses the maximum interaction border
   and union of all external inputs.  Batch only rules with similar distance,
   metrics and inputs; unrelated rules can increase preprocessing work.
+- M1 enclosure batching: even the apparently ideal pair
+  `enclosing(cont, 35nm, projection)` + `enclosing(via1, 35nm, projection)`
+  regressed.  The pair took 31.66 s batched versus 30.67 s separately, and the
+  full run took 130.24 s versus the 128.83 s accepted mean (about 1.1% slower).
+  The report remained exact.  The unioned secondary interactions outweighed
+  any shared traversal, so do not revive this pair.
 - Mixed hierarchy reducers: sequential reducer composition can under-specify
   variants.  The batch API rejects incompatible reducer combinations rather
   than risking incorrect rotated or magnified hierarchy reuse.
