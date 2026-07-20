@@ -47,6 +47,7 @@ struct bs_side_compare_func
 #if __cplusplus < 201703L
   : std::binary_function<std::pair<const Obj *, Prop>, std::pair<const Obj *, Prop>, bool>
 #endif
+
 {
   typedef typename BoxConvertAdaptor::box_type box_type;
 
@@ -895,8 +896,10 @@ private:
 
     } else {
 
+      //  Only the forward pair index is queried for deduplication.  Tracking
+      //  the same pairs in reverse cannot affect that lookup or any receiver
+      //  callback.
       std::set<std::pair<const Obj1 *, const Obj2 *> > seen1;
-      std::set<std::pair<const Obj2 *, const Obj1 *> > seen2;
 
       std::sort (m_pp1.begin (), m_pp1.end (), bottom_side_compare_func1 (bc1));
       std::sort (m_pp2.begin (), m_pp2.end (), bottom_side_compare_func2 (bc2));
@@ -937,12 +940,6 @@ private:
 
         while (cc2 != current2) {
           rec.finish2 (cc2->first, cc2->second);
-          auto s = seen2.lower_bound (std::make_pair (cc2->first, (const Obj1 *)0));
-          auto s0 = s;
-          while (s != seen2.end () && s->first == cc2->first) {
-            ++s;
-          }
-          seen2.erase (s0, s);
           ++cc2;
         }
 
@@ -1006,7 +1003,6 @@ private:
                 for (iterator_type2 j = c2; j < f2; ++j) {
                   if (bs_boxes_overlap (bc1 (*i), bc2 (*j), enl)) {
                     if (seen1.insert (std::make_pair (i->first, j->first)).second) {
-                      seen2.insert (std::make_pair (j->first, i->first));
                       rec.add (i->first, i->second, j->first, j->second);
                       if (rec.stop ()) {
                         return false;
@@ -1297,4 +1293,3 @@ private:
 }
 
 #endif
-
