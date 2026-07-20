@@ -25,7 +25,13 @@ is measured, accepted, rejected, or re-ranked.
    128.83 s for one: **+97.9% aggregate throughput**, byte-identical reports,
    and only 0.8–1.1% added latency per job.  Start with an isolated two-shard
    deck/process prototype; do not share a mutable `DeepShapeStore` across
-   workers.
+   workers.  The first balanced split (`ACTIVE` + `METAL1` versus everything
+   else) finished in 68.91 s and 69.78 s concurrently, provisionally reducing
+   the 128.83 s run to 69.78 s: **+84.6% throughput**.  Its disjoint union is
+   exact for all 157 categories and for a hierarchical violation fixture with
+   99 nonempty markers (15 + 84), including cell references and complete item
+   payloads.  Repeat the timing, then replace the trusted report-template
+   proof with an explicit output-order/ownership manifest for production use.
 2. **Incremental antenna edge replay — re-profile first**
    The old estimate assumed ten cumulative rebuilds.  Empty-target pruning
    removed six, so its present ceiling is much smaller and must be measured
