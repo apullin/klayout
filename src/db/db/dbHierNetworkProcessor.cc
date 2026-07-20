@@ -839,7 +839,7 @@ local_cluster<T>::interacts (const local_cluster<T> &other, const db::ICplxTrans
     while (l != le && j != ll2.end ()) {
       if (l->first < j->layer) {
         ++l;
-      } else if (j->layer < l->first) {
+      } else if ((j->layer) < l->first) {
         ++j;
       } else {
         any_connected = true;
@@ -873,7 +873,7 @@ local_cluster<T>::interacts (const local_cluster<T> &other, const db::ICplxTrans
   typename candidate_layers::const_iterator active1 = ll1.begin ();
   for (typename shapes_type::const_iterator s = m_shapes.begin (); s != m_shapes.end (); ++s) {
     if (boolean_only) {
-      while (active1 != ll1.end () && active1->layer < s->first) {
+      while (active1 != ll1.end () && (active1->layer) < s->first) {
         ++active1;
       }
       if (active1 == ll1.end () || active1->layer != s->first || ! active1->active) {
@@ -888,7 +888,7 @@ local_cluster<T>::interacts (const local_cluster<T> &other, const db::ICplxTrans
   typename candidate_layers::const_iterator active2 = ll2.begin ();
   for (typename shapes_type::const_iterator s = other.m_shapes.begin (); s != other.m_shapes.end (); ++s) {
     if (boolean_only) {
-      while (active2 != ll2.end () && active2->layer < s->first) {
+      while (active2 != ll2.end () && (active2->layer) < s->first) {
         ++active2;
       }
       if (active2 == ll2.end () || active2->layer != s->first || ! active2->active) {
