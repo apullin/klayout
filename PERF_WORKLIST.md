@@ -92,11 +92,33 @@ questions:
   smoke and the four-minute lane.
 - **Pre-overnight stress:** the 139 MB `vmu_v1_top` (historical 1157.014 s,
   4 GiB peak RSS).  This is a release gate, not an iteration benchmark.
+- **FreePDK45 scale/capstone lane:** the 512-Kbit two-independent-tree SRAM
+  takes 46m09.49s on a fresh upstream-master stock build and 4m10.685s for the
+  current best five-shard DRC plus strict merge.  Use it to demonstrate and
+  re-profile cumulative scaling, not for routine iteration or single-patch
+  attribution.  The checked record under ranked item 2 binds its identities,
+  exactness evidence, and comparison scope.
 
 Every promoted lane needs a pinned input/deck hash, current-binary serial
 baseline, exact category/item/cell payload comparison, and at least one
 deliberately nonempty hierarchical fixture.  Record average CPU and peak RSS,
 not just wall time.
+
+## Search-budget and acceleration policy
+
+- Continue CPU work while a measured model projects more than **+5% whole-run
+  throughput**.  Consider +2% to +5% only when implementation and exactness
+  risk are low; defer work below +2%.
+- After two or three misses against those projections, shift primary effort to
+  acceleration instead of extending a weak CPU search indefinitely.
+- Build a device-neutral spatial-candidate replay harness.  Preserve exact
+  predicates on CPU and charge serialization plus host/device transfers to
+  every result.  Try CUDA first.
+- Proceed beyond the feasibility harness only when it demonstrates at least a
+  **+10% whole-run opportunity**.  Then port the proven kernel to TT-Metalium
+  for the para N300, using `tt-emule` locally before waking para.  SFPI is open
+  source; compiler defects are engineering issues to isolate and fix, not a
+  reason to weaken the exactness gate.
 
 ## Ranked work
 
@@ -316,6 +338,40 @@ not just wall time.
      and `evidence/freepdk45-five-way-m1-rebalanced-20260721/`.  This remains
      one provenance observation, not an identity-v3 three-observation cohort.
 
+   - [x] **512-Kbit independent-tree stock-vs-best capstone — completed
+     (exact cumulative comparison):** two physically independent clones of the
+     valid 256-Kbit one-bank SRAM form a 159,997,878-byte workload: 273 cells,
+     570,294 instance records, and 159,962,724 recursive shapes.  Input
+     SHA-256 is
+     `74911a2111a3421912e54538bf55cd12e50164f43cd1a8c47411602e64c91d98`.
+     Fresh upstream `7332de72604869f9e4a9235d8621c1a1632859e1`, KLayout
+     0.30.9, GCC release, the original deck (SHA-256
+     `fa7edcc47d92eee4195693796c5e35b913ca476f8457965029d12372aa187db0`),
+     and no allocator preload took 2769.49 s at 143% average CPU and
+     6,130,844 KiB peak RSS.
+
+     The clang/full-LTO+jemalloc binary (SHA-256
+     `cd01abf123ddd9c078b9cbf9c700238645266540be04a043f857904e59631745`)
+     and five-way deck/manifest took 250.685147 s child-plus-strict-merge;
+     merge alone was 0.006804 s.  The full provenance launcher took
+     261.823847 s internally, or 261.96 s by `/usr/bin/time`, including
+     11.126592 s of integrity work.  The DRC-plus-merge comparison is
+     **+1004.8% throughput** and 90.9% less wall time; charging all external
+     launcher wall to the optimized side still gives **+957.2% throughput**
+     and 90.5% less wall time.
+
+     The complete semantic result is exact at 157 categories, one cell, zero
+     items, SHA-256
+     `dd7b3a6f3c8303e105d5ac882261caf68f7f119da90ed40f801fb71800c46a47`.
+     The nonempty sentinel is also exact at 157 categories, two cells, 99
+     items, SHA-256
+     `265a2e1c58aed60bc89e8bd2ad2904147a1e53fcd7a2a7c8bfa8ddaa339cd1a2`.
+     This is one cumulative best-configuration-versus-fresh-stock observation,
+     not single-patch attribution or an identity-v3 promoted cohort.  Evidence
+     is under
+     `evidence/freepdk45-capstone-stock-7332de7-20260721/` in the external
+     corpus.
+
    - [ ] **Optional final five-way balancing nibble:** moving the intact
      `METAL1.5-1.9` classification block (about 0.70 s) from `m1_rest` into the
      enclosure shard projects only about **+1% to +1.4% throughput** before
@@ -408,14 +464,17 @@ not just wall time.
     The old estimate assumed ten cumulative rebuilds.  Empty-target pruning
     removed six, so its present ceiling is much smaller and must be measured
     before implementation.
-14. [ ] **GPU broad-phase feasibility gate — later, orthogonal project**
-    Do not translate the Ruby PDK deck to CUDA.  The credible first kernel is
-    spatial bin/sort plus candidate filtering for the millions of M1 enclosure
-    edge pairs, with exact predicates and hierarchy reduction retained on CPU.
-    Instrument serialized bytes, candidate-reduction ratio, transfer time, and
-    CPU fallback first; proceed only if transfer plus kernel time is comfortably
-    below the roughly 22 s producer ceiling.  A realistic whole-run opportunity
-    is 5–15 s, but CPU rule scheduling has much better evidence and lower risk.
+14. [ ] **Device-neutral accelerator replay gate — later, orthogonal project**
+    Do not translate the Ruby PDK deck to an accelerator language.  Build a
+    device-neutral replay harness around spatial bin/sort plus candidate
+    filtering, initially for a measured high-cardinality geometry kernel.
+    Retain exact predicates and hierarchy reduction on CPU.  Instrument
+    serialized bytes, candidate-reduction ratio, serialization, transfers,
+    kernel time, and CPU fallback.  Try CUDA first; require at least a **+10%
+    whole-run opportunity** after all overhead before continuing.  If it
+    passes, port the proven kernel to TT-Metalium on the para N300, testing
+    locally with `tt-emule` before waking para.  Treat SFPI/compiler defects as
+    fixable engineering work while preserving the CPU exactness oracle.
 
 ## Measured lower-priority paths
 
