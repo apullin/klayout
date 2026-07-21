@@ -54,7 +54,7 @@ bounded, or judged not worth doing.
   fresh per-sample homes, exclusive output locking, atomic summaries, exact
   suite/argv/artifact identities, three-observation qualification, direct-process
   RSS and average CPU, and distinct isolated-latency versus concurrent-batch
-  throughput semantics.  Eighty-three focused tests pass (30 benchmark, 34
+  throughput semantics.  Eighty-four focused tests pass (31 benchmark, 34
   launcher/merger, 19 runtime identity).  Real nonempty sentinels produced the
   exact 99 FreePDK45 and 25 Sky130 items under comparison-identity v3; a real
   two-shard Sky130 launcher smoke also produced all 25 items while recording 113
@@ -87,15 +87,32 @@ questions:
   `a5aae78efed5a76e5f2c6c03762f4fc60d70132931028bb47f941f08d3184de7`.
   Current serial report SHA-256:
   `8fad6c51f6e96b2e1c79ab98446f8ad536527d33cc974096e41e71689ccb730f`.
-- **Recognizable non-SRAM head-check (about 3–5 minutes):** Sky130 HG0 S5,
-  a custom RV32 core with 35,938 standard cells in a 788.23 by 798.95 um die.
-  Its clean final GDS is 54,154,630 bytes, top `hg0_s5_asic`, SHA-256
+- [x] **Recognizable non-SRAM head-check baseline — completed (about 3–5
+  minutes):** Sky130 HG0 S5, a custom RV32 core with 35,938 standard cells in
+  a 788.23 by 798.95 um die.  Its clean final GDS is 54,154,630 bytes, top
+  `hg0_s5_asic`, SHA-256
   `03b62132c3f85b66664101fa90faacee6a952cc196cc246633e1c9e298c45911`.
-  The source LibreLane run recorded 282.843 s and zero KLayout DRC errors;
-  establish a current identity-v3 baseline before using it for comparisons.
-  Run this lane before promoting engine-level wins as broadly useful.  A
-  FreePDK-only owner/deck scheduling change may remain PDK-specific, but must
-  be labeled that way rather than borrowing this lane's generality.
+  Three sequential identity-v3 observations are 199.803983, 199.567681, and
+  200.649140 s: **199.803983 s median (3m19.804s)**, 200.006935 s mean, and
+  0.541% full-range spread.  Mean CPU use is 1.1574 cores and maximum
+  direct-process RSS is 1,104,268 KiB.  All reports are raw-byte identical at
+  256 categories, one cell, zero items, raw SHA-256
+  `87613d325082e7bb52473a24043d8c681aed46b68890d6367092039b3d6df2fd`,
+  and normalized SHA-256
+  `2c9f660d7b2d7186329c510333083bfe19ab17779fe42d66c936feac0b45fdb4`.
+  The nonempty Sky130 sentinel also passed three times at 256 categories, two
+  cells, and 25 items.  Runner support is committed at `00a82e3`/`bcf4d1a`;
+  durable evidence is under
+  `evidence/sky130-hg0-s5-identity-v3-20260721/` in the external corpus.
+
+  The retained historical run is 282.433 s for the direct KLayout process and
+  282.843 s for the whole LibreLane step.  Against the direct-process record,
+  the controlled current median is **29.3% less wall time** and **+41.4%
+  throughput**, but that remains cumulative environment/build/code context,
+  not single-patch attribution.  Use this lane before promoting engine-level
+  wins as broadly useful.  A FreePDK-only owner/deck scheduling change may
+  remain PDK-specific, but must be labeled that way rather than borrowing this
+  lane's generality.
 - **Heavy qualification:** `vmu_top_asic` (63 MB, historical 403.048 s) and
   FP64 (85 MB, historical 538.245 s).  Run after an optimization passes both
   smoke and the four-minute lane.
@@ -420,10 +437,18 @@ not just wall time.
      FreePDK45/x2 scheduling result, not cross-design evidence for an engine
      change.
 
-   - [ ] **Nine-way Metal2 follow-up:** split the current critical owner into
-     its intact `METAL2.1-.9` block and the remaining Active1/2 plus Via2/upper
-     metal block.  The eight-way Metal2 mean is 207.778 s and the next measured
-     floor is M1 enclosure at 189.344 s, so the whole-run ceiling is about
+   - [x] **Nine-way Metal2 follow-up — superseded by a 32-thread-budget
+     repack:** splitting the current critical owner into its intact
+     `METAL2.1-.9` block and the remaining Active1/2 plus Via2/upper metal block
+     would create nine four-thread processes and request 36 threads.  Preserve
+     the split idea, but do not exceed the user's 32-thread ceiling.
+
+   - [ ] **Eight-way Metal2 follow-up:** isolate `METAL2.1-.9`, then combine
+     Active1/2 plus Via1 and Via2/upper metal into one smaller owner.  Keep the
+     other six owners unchanged, for eight processes times four requested
+     threads.  The current Metal2 mean is 207.778 s and the next measured floor
+     is M1 enclosure at 189.344 s; profiling predicts about 167 s for Metal2
+     and 125–135 s for the combined owner.  The whole-run ceiling remains about
      **8.9% less wall time** or **+9.7% throughput**.  This clears the +5%
      search threshold; require the same sentinel, mixed hierarchy, and three
      real-report gates.
