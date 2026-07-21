@@ -202,9 +202,10 @@ not just wall time.
      and `decks/freepdk45-four-way-bound.json` (SHA-256
      `b24b41d7d9068f51b9baed12a9fc106b2f8d52188a08bac77ff8c2bbc6504688`);
      complete run metadata, reports, and shard/sentinel logs are under
-     `evidence/freepdk45-four-way-20260721/`.  This remains one identity-v3
-     four-way observation compared with pre-gate baselines, so it is not a
-     promoted benchmark.  Automatic partition generation, a matched current
+     `evidence/freepdk45-four-way-20260721/`.  This remains one provenance-
+     enforced four-way observation compared with pre-gate baselines, not a
+     matched comparison-identity-v3 cohort, so it is not a promoted benchmark.
+     Automatic partition generation, a matched current
      two-shard cohort, and three independent four-way observations keep the
      parent item open.
 3. [ ] **Thread/core-budget sweep and affinity**
