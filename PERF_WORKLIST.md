@@ -164,9 +164,49 @@ not just wall time.
      and
      `88abf640d394354438475ed5978616475fb28d95390f347ecfcee6ddf3beffc8`.
      This direct manual gate has one isolated observation and one concurrent
-     batch, so it is not an identity-v3 promoted benchmark.  The next step in
-     this still-open item is rule-chain profiling and deterministic LPT
-     partitioning, followed by exact report-union validation.
+     batch, so it is not an identity-v3 promoted benchmark.  Its proposed
+     rule-chain profiling, partitioning, and exact report-union validation are
+     completed by the checked prototype below.
+
+   - [x] **Four useful-rule shards and measured balancing — completed
+     (exploratory):** two verbose repeats modeled 135.180 s of unique rule
+     work plus 2.8125 s of eager setup per process.  Keeping producer/consumer
+     chains atomic, the four-way deck assigns the Metal1/contact enclosure,
+     remaining Active/Metal1 work, Metal2–10 plus the cumulative antenna graph,
+     and front-end rules to separate processes.  Four independent grid-layer
+     checks were moved from the critical enclosure shard to the second shard
+     after the first real 45.958 s result.  The rebalanced per-shard walls were
+     40.585, 38.578, 37.473, and 37.069 s; merge cost 0.007 s and the complete
+     child-plus-merge workload took 40.592 s.  Against the existing 69.966 s
+     two-shard mean, this is **+72.4% throughput** and 42.0% less wall time.
+     Against the 128.83 s legacy serial mean, the cumulative engineering result
+     is **+217.4% throughput** and 68.5% less wall time.  The full provenance-
+     checked launcher took 51.499 s separately, including 5.471 s of prehash
+     and 5.424 s of post-run verification; never charge that integrity work to
+     the DRC child/merge comparison.  The grid rebalance alone delivered
+     **+13.2% throughput** over the first four-way result.
+
+     Every child exited zero.  Direct-child peak RSS values were 734,148,
+     630,896, 633,228, and 1,213,748 KiB; their conservative, non-time-correlated
+     sum is 3.06 GiB.  The full invocation averaged 3.30 CPU cores.  The merged
+     real macro has 157 categories, one cell, zero items, and the same
+     path-normalized SHA-256 as the established two-way result:
+     `305364bd55b0337444adfb482f09e4e139f901c5612e5c030b7aae7fe7ea7f7b`.
+     More importantly, the hierarchical nonempty sentinel strictly proved the
+     exact 157-category, two-cell, 99-item XML payload union and matched the
+     established normalized SHA-256
+     `886b50da71b00fb2b3eb4fb118f0b0759a8855b2207f64c0afda3a54dc3ba893`.
+
+     Durable corpus artifacts are `decks/freepdk45-four-way.lydrc` (SHA-256
+     `2d4371c4e35d06850c05854cd7c799c8360f77b985b5bdcc756c646a0bf405dd`)
+     and `decks/freepdk45-four-way-bound.json` (SHA-256
+     `b24b41d7d9068f51b9baed12a9fc106b2f8d52188a08bac77ff8c2bbc6504688`);
+     complete run metadata, reports, and shard/sentinel logs are under
+     `evidence/freepdk45-four-way-20260721/`.  This remains one identity-v3
+     four-way observation compared with pre-gate baselines, so it is not a
+     promoted benchmark.  Automatic partition generation, a matched current
+     two-shard cohort, and three independent four-way observations keep the
+     parent item open.
 3. [ ] **Thread/core-budget sweep and affinity**
    Sweep 1/2/4 inner threads per shard and restrict the complete launch to
    2/4/8 physical CPUs.  Today, two processes request eight worker threads but
