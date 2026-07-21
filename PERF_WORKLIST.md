@@ -12,11 +12,14 @@ bounded, or judged not worth doing.
 
 - Workload: FreePDK45 `sram_1rw0r0w_64_1024_freepdk45_aref.gds`
 - Binary: clang + full LTO, jemalloc, batch mode
-- Accepted serial wall time: 128.68 s, 128.98 s; mean 128.83 s
+- Legacy pre-gate serial wall time: 128.68 s, 128.98 s; mean 128.83 s
 - Process-sharded wall time: 69.78 s, 70.43 s, and 69.689 s through the
   packaged launcher; three-run mean 69.966 s
-- Current end-to-end gain: **+84.1% throughput** versus the accepted serial
+- Legacy exact-output gain: **+84.1% throughput** versus the serial
   mean, with 1.06% full-range spread.  The packaged run alone is +84.9%.
+  These measurements predate the three-independent-observation and runtime-
+  identity gate below.  They remain useful engineering evidence, but are not
+  automatically eligible as an identity-v3 controlled comparison.
 - Baseline raw report SHA-256:
   `e9340a8d3cf3608cff5f87fe5c82aa9b122c215627dc9159a3d59f98bcaaedd0`
 - Path-normalized baseline and batched report SHA-256:
@@ -32,6 +35,33 @@ bounded, or judged not worth doing.
   `9b55135453bbdd9a9a0c28b583bee73d89af20cd499978c052fa991b8d1919ef`
 - Iteration target: 3–5 minutes; retain only exact, repeatable wins
 
+## Benchmark-integrity gate
+
+- [x] **Runtime-provenance enforcement and concurrent replication — completed:**
+  record the resolved executable and dynamic KLayout bundle hashes, deck/input/
+  manifest/report hashes, full child commands, allocator and thread environment,
+  host, per-shard timing, and RSS.  Repeat comparisons must match every identity
+  field; experiments must explicitly declare the dimensions allowed to differ;
+  historical comparisons remain contextual and cannot become accepted results.
+  Support 3–5 concurrent repetitions with optional disjoint CPU sets, but label
+  their aggregate designs/hour separately from isolated single-job latency.
+  The shared fail-closed collector now fingerprints the executable, actual ELF
+  loader closure, KLayout plugins and their dependency closure, ordered preloads,
+  4,869 loadable Ruby/Python files through compact tree manifests, and code-
+  bearing runtime controls twice before a run and again afterward.  It
+  rejects unresolved loader state, `LD_AUDIT`, uncovered plugin search paths,
+  nonempty implicit KLayout homes, and in-place mutations.  The benchmark uses
+  fresh per-sample homes, exclusive output locking, atomic summaries, exact
+  suite/argv/artifact identities, three-observation qualification, direct-process
+  RSS and average CPU, and distinct isolated-latency versus concurrent-batch
+  throughput semantics.  Eighty-three focused tests pass (30 benchmark, 34
+  launcher/merger, 19 runtime identity).  Real nonempty sentinels produced the
+  exact 99 FreePDK45 and 25 Sky130 items under comparison-identity v3; a real
+  two-shard Sky130 launcher smoke also produced all 25 items while recording 113
+  selected dependencies, 27 plugins, per-shard timing/RSS, and all three
+  orchestrator scripts.  One concurrent batch remains exploratory; acceptance
+  requires at least three independent batches.
+
 ## Benchmark ladder
 
 The accepted FreePDK45 SRAM remains the historical comparison point, but it is
@@ -44,13 +74,16 @@ questions:
   nonempty-fixture tests.  They are not long enough to accept small performance
   claims.
 - **Iteration/acceptance candidate (about 4 minutes):** native hierarchical
-  `hg0_s3_asic` (54,744,844 bytes, 155 cells).  Its first current-binary serial
-  measurement is 223.94 s wall.  The older 291.561 s signoff record came from
+  `hg0_s3_asic` (54,744,844 bytes, 155 cells).  Pre-gate no-preload
+  current-binary serial measurements are 223.94 and 224.97 s wall (224.455 s
+  mean; 0.46% full-range spread).  They need one complete identity-v3
+  three-observation cohort before serving as a new controlled baseline.  The
+  older 291.561 s signoff record came from
   LibreLane 3.0.4 invoking a different, unrecorded KLayout executable; it used
   the same GDS and underlying deck content, but is historical context only.
-  The apparent **+30.2% throughput** from 291.561 to 223.94 s is therefore a
-  cumulative environment/build/code comparison, not statistical variation or
-  a controlled performance result.  Source GDS SHA-256:
+  The apparent roughly **+30% throughput** from 291.561 to 224.455 s is
+  therefore a cumulative environment/build/code comparison, not statistical
+  variation or a controlled performance result.  Source GDS SHA-256:
   `a5aae78efed5a76e5f2c6c03762f4fc60d70132931028bb47f941f08d3184de7`.
   Current serial report SHA-256:
   `8fad6c51f6e96b2e1c79ab98446f8ad536527d33cc974096e41e71689ccb730f`.
@@ -67,17 +100,35 @@ not just wall time.
 
 ## Ranked work
 
-1. [ ] **Cross-PDK sharding on the Sky130 ladder — active**
+1. [x] **Cross-PDK sharding on the Sky130 ladder — completed**
    Make the Sky130 deck shard-aware, use FP4/FP16/DME1 to qualify report
    semantics quickly, then time `hg0_s3_asic`.  This is the first gate because
    it answers whether the +84.1% FreePDK result was a useful general mechanism
    or another one-benchmark optimization.  Preserve all FEOL, BEOL, off-grid,
-   seal, and floating-metal option semantics.  Preliminary same-current-binary
-   results are 20.76 -> 12.079 s on FP4 (**+71.9% throughput**) and 223.94 ->
-   125.668 s on `hg0_s3_asic` (**+78.2% throughput**), with exact category,
-   cell, and item equality against the serial report.  These are one run per
-   mode and remain preliminary until repeated; do not mix the 291.561 s
-   historical record into this controlled comparison.
+   seal, and floating-metal option semantics.  The pre-gate no-preload
+   controlled result is 224.455 s serial mean versus 126.463 s two-shard mean
+   on `hg0_s3_asic`:
+   **+77.5% throughput** and 43.7% less wall time.  Serial full-range spread is
+   0.46%; sharded spread is 1.26%.  All four reports have exact category, cell,
+   and item equality; both serial reports share SHA-256
+   `8fad6c51f6e96b2e1c79ab98446f8ad536527d33cc974096e41e71689ccb730f`,
+   and all sharded merged reports share SHA-256
+   `ae4d2bd9feabf689042d9208e77d8c9a1d4a07c1ee4cc9144e666cc4a1081f9f`.
+   A hierarchical nonempty fixture also proved the exact 25-item union and
+   deterministic merge.  Durable corpus artifacts are
+   `decks/sky130A_mr-sharded.drc` (SHA-256
+   `9f8c1cffe597c69cd217c3c8c70cb9ece749e40b4170b10f45fd6dc2b7ddbec9`),
+   `decks/sky130A-shards-bound.json` (SHA-256
+   `597c872aca92b310c6ffca8aff0993542129c89dce05fd038192eb6dd8797cc3`),
+   and `inputs/generated/sky130_shard_violating.gds` (SHA-256
+   `d357ccb312ce5c4a6964475c127765ea031ad1148b37c28ffd75d1ec7ff6c236`).
+   One explicit-jemalloc sharded run took 108.527 s,
+   suggesting another **+16.5% throughput** over the no-preload sharded mean,
+   but that is a separate exploratory configuration pending serial and repeated
+   measurements.  Never mix the 291.561 s historical record into either
+   controlled comparison.  The exact result is not invalidated, but its two
+   serial and two sharded observations predate identity v3 and do not satisfy
+   the new three-observation promotion rule.
 2. [ ] **Measured 3/4-way process scheduling and automatic balancing**
    The launcher already accepts arbitrary shards and bounded jobs.  Profile
    independent category-producing chains and use longest-processing-time-first
@@ -188,7 +239,7 @@ not just wall time.
   violation fixture has the exact 99-marker union (15 + 84), including full
   item payloads and cell references.  KLayout natively loads the merged output;
   merge overhead is 4 ms.  The manifest is bound to the shard-aware deck hash,
-  so a mismatched deck fails before expensive children launch.  Nineteen
+  so a mismatched deck fails before expensive children launch.  Thirty-one
   focused launcher/merger tests cover success, failure, SIGTERM cleanup,
   atomic publication, permissions, nested categories, cell variants/reference
   order, cross-layout reuse, determinism, and nonempty payload preservation.
