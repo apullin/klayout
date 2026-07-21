@@ -273,6 +273,19 @@ not just wall time.
      `evidence/freepdk45-five-way-lazy-20260721/`.  This is one exact,
      provenance-enforced observation compared with the prior exploratory run,
      not a promoted comparison-identity-v3 cohort.
+
+   - [ ] **Rebalance after the guarded `METAL1.3` fast path — in progress:**
+     the fast path leaves roughly 22.5 s of capacity in `m1_enclosure` while
+     `m2_upper_active3`, `active_grid_antenna`, and `front_end` become the
+     limiting shards.  Move only complete independent producer/consumer chains
+     while retaining their textual order in default `all` mode.  An initial
+     exact prototype assigns Wells/Poly and `ACTIVE.3/4` to the light shard,
+     `ACTIVE.1/2` to the upper-metal shard, and `VIA1.4` to front end; its first
+     real critical wall was about 27.1 s.  Repeat under the provenance launcher,
+     re-prove the nonempty sentinel union, package the deck/manifest/evidence,
+     then check this item off.  Keep the speculative-relation deep-store hazard
+     fail-closed by reloading pristine input for every dedicated-shard legacy
+     fallback.
 3. [ ] **Thread/core-budget sweep and affinity**
    Sweep 1/2/4 inner threads per shard and restrict the complete launch to
    2/4/8 physical CPUs.  Today, two processes request eight worker threads but
@@ -287,13 +300,41 @@ not just wall time.
    and `DeepShapeStore` outputs must never execute concurrently.  This removes
    process supervision and may reduce duplicated setup without weakening the
    isolation proof.
-5. [ ] **Fuse enclosure producer/consumer chains**
-   `metal1.enclosing(cont)` costs about 22.3 s and materializes roughly 2.6
-   million edge pairs before `.second_edges.width(...)` spends another 5.5 s.
-   Stream/filter candidates before materializing the intermediate, retaining
-   exact predicates and hierarchy reduction.  The 27.8 s ceiling suggests a
-   realistic **+4% to +13%** whole-run opportunity after rebalancing.  Require
-   a deliberately nonempty, transformed hierarchical fixture.
+5. [x] **Fuse enclosure producer/consumer chains — completed with a guarded
+   clean-result fast path (exploratory):** `metal1.enclosing(cont)` cost about
+   22.3 s and materialized roughly 2.6 million edge pairs before
+   `.second_edges.width(...)` spent another 5.5 s.  Instead of weakening that
+   generic relation, the dedicated `m1_enclosure` shard now proves that merged
+   contacts are isolated exact 65 nm squares, commutes the relation as a
+   cheaper negative probe, and uses its result only when it is empty.  A failed
+   domain guard runs the historical expression; a nonempty probe reloads a
+   pristine source and runs the historical chain so report hierarchy ownership
+   is exact.  Default `all` mode executes the original expression directly.
+
+   The real shard fell from 32.425886 s to 9.887987 s: **+227.9% shard
+   throughput**, 69.5% less wall time, and 22.538 s saved.  As expected, the
+   unbalanced child-plus-merge result moved only from 32.433202 s to 32.023385
+   s (**+1.3% whole-run throughput**) because the 32.014800 s
+   `m2_upper_active3` shard immediately became critical.  This establishes
+   spare capacity for the next rebalance; never report the shard gain as the
+   whole-run gain.  The real clean merge retains normalized SHA-256
+   `305364bd55b0337444adfb482f09e4e139f901c5612e5c030b7aae7fe7ea7f7b`.
+
+   The deliberately nonempty transformed hierarchy fixture takes the pristine
+   legacy fallback and is exact.  Five other deterministic fixtures cover the
+   empty fast path and each domain fallback.  A 300,000-case flat audit and a
+   10,000-case deep rotated/mirrored audit found no downstream geometry
+   mismatch inside the guarded domain.  The full and strict-merged 99-marker
+   sentinels retain 157 categories, two cells, 99 items, and normalized hashes
+   `e5bf625fda5eea31fc127870f837970396fe422f3940d9f4d65ca9e6da51d4da`
+   and
+   `886b50da71b00fb2b3eb4fb118f0b0759a8855b2207f64c0afda3a54dc3ba893`.
+   Durable artifacts are `decks/freepdk45-five-way-m1-gated.lydrc` (SHA-256
+   `03e3cfee2426dca824b8434843c443287faa72a196c8a0e746772fd46258a6ba`),
+   `decks/freepdk45-five-way-m1-gated-bound.json` (SHA-256
+   `6f849cb08d6a78c45228cccfc306aac68171d6683b9d533af6de058d65b13185`),
+   and `evidence/freepdk45-five-way-m1-gated-20260721/`.  This is one exact
+   provenance-enforced observation, not a promoted three-observation cohort.
 6. [ ] **Rectangular exact-size contact/via fast path**
    Exact-length edge filters cost about 5.1 s for contacts and 3.5 s for via1.
    For proven Manhattan boxes, compare transformed dimensions directly and
@@ -381,6 +422,23 @@ not just wall time.
 
 ## Rejected or bounded prototypes
 
+- [x] Direct rectangle predicate for `METAL1.3`: a universal
+  `cont.drc(if_any(enclosed(metal1, ...)))` prototype ran in about 8.24 s on
+  the real clean SRAM but was not equivalent.  The comprehensive fixture
+  exposed four false-positive classes, expanding to 135,792 false-positive
+  flat markers on the real hierarchy.  Do not substitute a per-contact
+  rectangle test for the edge-pair/corner rule.
+- [x] Conservative candidate prefilter before legacy `METAL1.3`: the real run
+  was exact and took about 13.04 s, but randomized shielding cases produced
+  both false positives and false negatives.  It is not a universal early
+  filter and must remain rejected.
+- [x] Unguarded `enclosing`/`enclosed` relation reversal for `METAL1.3`: the
+  real macro and initial fixtures were exact at about 9.52 s, but KLayout's
+  default shielding pass is input-order asymmetric.  Random flat cases found
+  geometry counterexamples, and a legal nonempty hierarchy produced different
+  logical marker ownership despite identical flattened markers.  `NO_SHIELD`
+  confirmed the cause.  Only the guarded empty-terminal form recorded in item
+  5 is accepted.
 - [x] Persistent hierarchy-context caching: context formation was only about
   12–14 s for the entire deck and the contexts contain mutable propagated
   results without a reliable `Shapes` revision token.  Do not revive this as
