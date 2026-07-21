@@ -274,18 +274,54 @@ not just wall time.
      provenance-enforced observation compared with the prior exploratory run,
      not a promoted comparison-identity-v3 cohort.
 
-   - [ ] **Rebalance after the guarded `METAL1.3` fast path — in progress:**
-     the fast path leaves roughly 22.5 s of capacity in `m1_enclosure` while
-     `m2_upper_active3`, `active_grid_antenna`, and `front_end` become the
-     limiting shards.  Move only complete independent producer/consumer chains
-     while retaining their textual order in default `all` mode.  An initial
-     exact prototype assigns Wells/Poly and `ACTIVE.3/4` to the light shard,
-     `ACTIVE.1/2` to the upper-metal shard, and `VIA1.4` to front end; its first
-     real critical wall was about 27.1 s.  Repeat under the provenance launcher,
-     re-prove the nonempty sentinel union, package the deck/manifest/evidence,
-     then check this item off.  Keep the speculative-relation deep-store hazard
-     fail-closed by reloading pristine input for every dedicated-shard legacy
-     fallback.
+   - [x] **Rebalance after the guarded `METAL1.3` fast path — completed
+     (exploratory):** the fast path left roughly 22.5 s of capacity in
+     `m1_enclosure`.  Complete Wells/Poly and `ACTIVE.3/4` blocks now run there;
+     `ACTIVE.1/2` run with upper metal, and `VIA1.4` joins the other Via1 rules
+     in front end.  Fine owner predicates leave every operation in its original
+     textual location, so default `all` order is unchanged.  Atomic batches,
+     enclosure/classification chains, and cumulative antenna connectivity stay
+     intact.  Updated derived-layer predicates cover every shard consumer.
+     Every dedicated-M1 legacy fallback reloads pristine file input so moved
+     rules cannot leak speculative deep-store state into `METAL1.3` ownership.
+
+     The provenance-enforced shard walls are 25.323, 27.683, 25.774, 25.372,
+     and 27.380 s.  Child-plus-merge is 27.691 s versus the preceding lazy-setup
+     five-way result of 32.433 s: **+17.1% throughput**, 14.6% less wall, and
+     4.743 s saved.  Versus the guarded-but-unbalanced 32.023 s run, the
+     rebalance adds **+15.6% throughput**.  A separate exact direct trial took
+     27.12 s; its 2.1% spread from the provenance observation is supporting
+     repeatability evidence, not a promoted matched cohort.  The real clean
+     report retains normalized SHA-256
+     `305364bd55b0337444adfb482f09e4e139f901c5612e5c030b7aae7fe7ea7f7b`.
+
+     Full and merged 99-marker sentinel hashes remain
+     `e5bf625fda5eea31fc127870f837970396fe422f3940d9f4d65ca9e6da51d4da`
+     and
+     `886b50da71b00fb2b3eb4fb118f0b0759a8855b2207f64c0afda3a54dc3ba893`.
+     A nonempty hierarchical union proves 157 categories, 18 cells, and 257
+     items including seven `METAL1.3` items.  A stronger mixed-layer,
+     transformed fixture exercises 31 nonempty Well/Poly/Active/Implant/
+     Contact/Metal/Via/Grid categories before a nonempty M1 fallback.  Fresh
+     manifest construction proves its exact 157-category, 7-cell, 1,587-item
+     shard union; a complete semantic normalizer gives identical SHA-256
+     `429d631ab89d9e0a54e4f6ed367223974b8caca564c461fda59ebda9dcbcd8d2`
+     for full mode and both merges, including the M1 marker's hierarchy owner.
+
+     Durable artifacts are `decks/freepdk45-five-way-m1-rebalanced.lydrc`
+     (SHA-256
+     `bcdd851dc4631c5f046cf189843bd8b23c7f3a13a8ce728313f62da129f0b825`),
+     `decks/freepdk45-five-way-m1-rebalanced-bound.json` (SHA-256
+     `270897bc71af1acfa57e01c7e4de50ead2339ffac8230b1eb6c129e2fb0ee47b`),
+     and `evidence/freepdk45-five-way-m1-rebalanced-20260721/`.  This remains
+     one provenance observation, not an identity-v3 three-observation cohort.
+
+   - [ ] **Optional final five-way balancing nibble:** moving the intact
+     `METAL1.5-1.9` classification block (about 0.70 s) from `m1_rest` into the
+     enclosure shard projects only about **+1% to +1.4% throughput** before
+     Grid/Antenna becomes critical.  Treat this as diminishing-returns work:
+     first preserve the exact rebalance above, then attempt it only with the
+     same mixed-layer and sentinel gates.
 3. [ ] **Thread/core-budget sweep and affinity**
    Sweep 1/2/4 inner threads per shard and restrict the complete launch to
    2/4/8 physical CPUs.  Today, two processes request eight worker threads but
