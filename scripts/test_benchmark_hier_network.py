@@ -212,6 +212,24 @@ class ArgumentTests(unittest.TestCase):
         self.assertEqual(args.comparison_mode, "repeat")
         self.assertEqual(args.treatment, [])
 
+    def test_s5_head_check_is_pinned_and_not_in_the_regular_smoke_group(self) -> None:
+        case = benchmark.CASE_BY_NAME["drc_sky130_hg0_s5"]
+        self.assertEqual(case.kind, "sky130")
+        self.assertEqual(case.top_cell, "hg0_s5_asic")
+        self.assertEqual(
+            case.input_sha256,
+            "03b62132c3f85b66664101fa90faacee6a952cc196cc246633e1c9e298c45911",
+        )
+        self.assertEqual(
+            case.normalized_report_sha256,
+            "2c9f660d7b2d7186329c510333083bfe19ab17779fe42d66c936feac0b45fdb4",
+        )
+        self.assertEqual(
+            benchmark.CASE_GROUPS["head_check"], ("drc_sky130_hg0_s5",)
+        )
+        self.assertNotIn("drc_sky130_hg0_s5", benchmark.CASE_GROUPS["regular"])
+        self.assertIn("drc_sky130_hg0_s5", benchmark.CASE_GROUPS["sky130_full"])
+
     def test_parallel_runs_are_bounded_and_form_full_batches(self) -> None:
         self.assertIn(
             "cannot exceed --runs",

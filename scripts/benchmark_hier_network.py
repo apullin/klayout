@@ -117,6 +117,9 @@ SKY130_SHARD_VIOLATIONS_SHA256 = (
 SKY130_HG0_S3_SHA256 = (
     "a5aae78efed5a76e5f2c6c03762f4fc60d70132931028bb47f941f08d3184de7"
 )
+SKY130_HG0_S5_SHA256 = (
+    "03b62132c3f85b66664101fa90faacee6a952cc196cc246633e1c9e298c45911"
+)
 
 FREEPDK45_DECK_SHA256 = (
     "fa7edcc47d92eee4195693796c5e35b913ca476f8457965029d12372aa187db0"
@@ -271,6 +274,18 @@ CASES = (
         ),
     ),
     Case(
+        name="drc_sky130_hg0_s5",
+        kind="sky130",
+        input_relative="inputs/domestic_micro/hg0_s5_asic.gds",
+        input_sha256=SKY130_HG0_S5_SHA256,
+        deck_relative="decks/sky130A_mr.drc",
+        deck_sha256=SKY130_DECK_SHA256,
+        top_cell="hg0_s5_asic",
+        normalized_report_sha256=(
+            "2c9f660d7b2d7186329c510333083bfe19ab17779fe42d66c936feac0b45fdb4"
+        ),
+    ),
+    Case(
         name="antenna_sky130_fpu_fp4_hier",
         kind="antenna",
         input_relative="inputs/domestic_micro/fpu_fp4_asic.gds",
@@ -310,11 +325,15 @@ CASES = (
 
 CASE_BY_NAME = {case.name: case for case in CASES}
 ACCEPTANCE_CASE_NAMES = ("drc_sky130_hg0_s3",)
+HEAD_CHECK_CASE_NAMES = ("drc_sky130_hg0_s5",)
 CASE_GROUPS = {
     "regular": tuple(
-        case.name for case in CASES if case.name not in ACCEPTANCE_CASE_NAMES
+        case.name
+        for case in CASES
+        if case.name not in ACCEPTANCE_CASE_NAMES + HEAD_CHECK_CASE_NAMES
     ),
     "acceptance": ACCEPTANCE_CASE_NAMES,
+    "head_check": HEAD_CHECK_CASE_NAMES,
     "full": tuple(case.name for case in CASES if case.kind != "antenna"),
     "antenna": tuple(case.name for case in CASES if case.kind == "antenna"),
     "sky130_full": tuple(case.name for case in CASES if case.kind == "sky130"),
