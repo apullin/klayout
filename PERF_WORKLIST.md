@@ -138,6 +138,35 @@ not just wall time.
    69.966 s now, or another **+55% to +100% throughput** before contention.
    First run a cheap four-process duplicate-shard contention probe and stop if
    per-job latency regresses more than 10–15%.
+
+   - [x] **Four-process duplicate-shard contention gate — passed
+     (exploratory):** on 2026-07-21, one fresh isolated `active_m1` run took
+     68.52 s, while four unpinned identical copies completed in a 69.61 s
+     batch.  Their 69.41–69.60 s per-job times had a 69.512 s mean and 69.520 s
+     median: **+1.45% mean latency**, +1.46% median latency, and +1.58% for
+     the slowest job versus the isolated reference, all well below the 10–15%
+     stop threshold.  This is **+293.7% aggregate throughput**
+     (3.937x) for four independent copies, not a projected full-deck speedup;
+     it establishes that host contention does not block four-way shard work.
+     The batch averaged 4.15 CPU cores total.  Per-process maximum RSS was
+     716,724–737,400 KiB; the conservative sum of individual maxima was
+     2,892,792 KiB (2.76 GiB).
+
+     All five processes exited zero and produced byte-identical 13-category,
+     zero-item reports: raw SHA-256
+     `9fedf1534490be8c52b0978ec48d36e423414e14f85d0d2cd6fbef96b5392744`
+     and path-normalized SHA-256
+     `f0c174fd03ffc5e8a97d98d004a52ea3b6cdacc0cd9244503a05a68a87cde9b7`.
+     The input, deck, binary, and jemalloc SHA-256 values were respectively
+     `8111ee46a40b34b1b6fb604e25c0fcaff42d574b686d3ebcb68861916e767358`,
+     `5b05b599f5af878364365136248177b63098e92ff18287d097274f54500ee2ce`,
+     `cd01abf123ddd9c078b9cbf9c700238645266540be04a043f857904e59631745`,
+     and
+     `88abf640d394354438475ed5978616475fb28d95390f347ecfcee6ddf3beffc8`.
+     This direct manual gate has one isolated observation and one concurrent
+     batch, so it is not an identity-v3 promoted benchmark.  The next step in
+     this still-open item is rule-chain profiling and deterministic LPT
+     partitioning, followed by exact report-union validation.
 3. [ ] **Thread/core-budget sweep and affinity**
    Sweep 1/2/4 inner threads per shard and restrict the complete launch to
    2/4/8 physical CPUs.  Today, two processes request eight worker threads but
