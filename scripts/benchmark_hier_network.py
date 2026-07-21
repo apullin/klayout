@@ -9,7 +9,7 @@ the requested output directory.
 The default ``regular`` group is one pass over five clean full-DRC cases, two
 nonempty correctness sentinels, and three focused antenna/connectivity cases.
 On the development host it takes roughly four minutes.  The larger HG0-S3
-acceptance lane is selected separately.
+acceptance lane and HG0-S5 non-SRAM head-check are selected separately.
 """
 
 from __future__ import annotations
@@ -326,11 +326,12 @@ CASES = (
 CASE_BY_NAME = {case.name: case for case in CASES}
 ACCEPTANCE_CASE_NAMES = ("drc_sky130_hg0_s3",)
 HEAD_CHECK_CASE_NAMES = ("drc_sky130_hg0_s5",)
+SEPARATE_LANE_CASE_NAMES = ACCEPTANCE_CASE_NAMES + HEAD_CHECK_CASE_NAMES
 CASE_GROUPS = {
     "regular": tuple(
         case.name
         for case in CASES
-        if case.name not in ACCEPTANCE_CASE_NAMES + HEAD_CHECK_CASE_NAMES
+        if case.name not in SEPARATE_LANE_CASE_NAMES
     ),
     "acceptance": ACCEPTANCE_CASE_NAMES,
     "head_check": HEAD_CHECK_CASE_NAMES,

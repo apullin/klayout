@@ -227,8 +227,15 @@ class ArgumentTests(unittest.TestCase):
         self.assertEqual(
             benchmark.CASE_GROUPS["head_check"], ("drc_sky130_hg0_s5",)
         )
+        self.assertEqual(
+            benchmark.CASE_GROUPS["acceptance"], ("drc_sky130_hg0_s3",)
+        )
         self.assertNotIn("drc_sky130_hg0_s5", benchmark.CASE_GROUPS["regular"])
+        self.assertNotIn("drc_sky130_hg0_s3", benchmark.CASE_GROUPS["regular"])
         self.assertIn("drc_sky130_hg0_s5", benchmark.CASE_GROUPS["sky130_full"])
+        self.assertEqual(case.deck_relative, "decks/sky130A_mr.drc")
+        self.assertEqual(case.expected_report_item_count, 0)
+        self.assertIsNone(case.shard_manifest_relative)
 
     def test_parallel_runs_are_bounded_and_form_full_batches(self) -> None:
         self.assertIn(
