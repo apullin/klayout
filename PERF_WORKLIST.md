@@ -87,6 +87,15 @@ questions:
   `a5aae78efed5a76e5f2c6c03762f4fc60d70132931028bb47f941f08d3184de7`.
   Current serial report SHA-256:
   `8fad6c51f6e96b2e1c79ab98446f8ad536527d33cc974096e41e71689ccb730f`.
+- **Recognizable non-SRAM head-check (about 3–5 minutes):** Sky130 HG0 S5,
+  a custom RV32 core with 35,938 standard cells in a 788.23 by 798.95 um die.
+  Its clean final GDS is 54,154,630 bytes, top `hg0_s5_asic`, SHA-256
+  `03b62132c3f85b66664101fa90faacee6a952cc196cc246633e1c9e298c45911`.
+  The source LibreLane run recorded 282.843 s and zero KLayout DRC errors;
+  establish a current identity-v3 baseline before using it for comparisons.
+  Run this lane before promoting engine-level wins as broadly useful.  A
+  FreePDK-only owner/deck scheduling change may remain PDK-specific, but must
+  be labeled that way rather than borrowing this lane's generality.
 - **Heavy qualification:** `vmu_top_asic` (63 MB, historical 403.048 s) and
   FP64 (85 MB, historical 538.245 s).  Run after an optimization passes both
   smoke and the four-minute lane.
@@ -109,6 +118,10 @@ not just wall time.
 - Continue CPU work while a measured model projects more than **+5% whole-run
   throughput**.  Consider +2% to +5% only when implementation and exactness
   risk are low; defer work below +2%.
+- Judge each new change against the immediately preceding accepted
+  configuration.  Lead with percent wall-time reduction and the corresponding
+  throughput change; keep cumulative stock-to-best multipliers as context, not
+  patch attribution.
 - After two or three misses against those projections, shift primary effort to
   acceleration instead of extending a weak CPU search indefinitely.
 - Build a device-neutral spatial-candidate replay harness.  Preserve exact
@@ -372,12 +385,56 @@ not just wall time.
      `evidence/freepdk45-capstone-stock-7332de7-20260721/` in the external
      corpus.
 
-   - [ ] **Optional final five-way balancing nibble:** moving the intact
+   - [x] **Eight-way 512-Kbit owner rebalance — completed (three exact
+     observations):** split the previous `m1_rest`, `front_end`, and
+     `active_grid_antenna` bundles into Metal1 width/space, Metal1 Via1/
+     classification, Implant/Contact, Via1, Grid, and Antenna owners.  Keep
+     the guarded M1 enclosure and Metal2/upper/Active owner atomic.  Eight
+     processes times four requested inner threads match the 32-thread budget;
+     default `all` mode retains historical textual rule order.
+
+     Child-plus-strict-merge walls are 208.427864, 207.237012, and
+     207.694970 s: mean **207.786616 s (3m27.787s)** and 0.573% full-range
+     spread.  Against the immediately preceding 250.685147 s five-way result,
+     this is **17.1% less DRC wall time** and **+20.6% throughput**, saving
+     42.899 s.  Full provenance-launcher walls average 218.900690 s versus
+     261.823847 s previously: **16.4% less wall time** and **+19.6%
+     throughput**.  The unchanged Metal2 owner is now critical at a 207.778 s
+     three-run shard mean, as projected.
+
+     All three real reports are raw-byte identical and retain the complete
+     semantic SHA-256
+     `dd7b3a6f3c8303e105d5ac882261caf68f7f119da90ed40f801fb71800c46a47`.
+     The hierarchical sentinel remains exact at 157 categories, two cells,
+     and 99 items, semantic SHA-256
+     `265a2e1c58aed60bc89e8bd2ad2904147a1e53fcd7a2a7c8bfa8ddaa339cd1a2`.
+     The transformed mixed-layer fixture remains exact at 157 categories,
+     seven cells, and 1,587 items, semantic SHA-256
+     `429d631ab89d9e0a54e4f6ed367223974b8caca564c461fda59ebda9dcbcd8d2`.
+
+     Durable artifacts are `decks/freepdk45-eight-way-x2.lydrc` (SHA-256
+     `a5dbd765477f7ae657bd5335eae231f685e605d16cd30e5d5a1058cdd0c3f4b2`),
+     `decks/freepdk45-eight-way-x2-bound.json` (SHA-256
+     `fde4d137881d497daf96a981530cd4d6f0ca6ffe0c3542e1ebd875c08d249ca0`),
+     and `evidence/freepdk45-eight-way-x2-20260721/`.  This is a qualified
+     FreePDK45/x2 scheduling result, not cross-design evidence for an engine
+     change.
+
+   - [ ] **Nine-way Metal2 follow-up:** split the current critical owner into
+     its intact `METAL2.1-.9` block and the remaining Active1/2 plus Via2/upper
+     metal block.  The eight-way Metal2 mean is 207.778 s and the next measured
+     floor is M1 enclosure at 189.344 s, so the whole-run ceiling is about
+     **8.9% less wall time** or **+9.7% throughput**.  This clears the +5%
+     search threshold; require the same sentinel, mixed hierarchy, and three
+     real-report gates.
+
+   - [x] **Optional final five-way balancing nibble — deferred below the search
+     threshold:** moving the intact
      `METAL1.5-1.9` classification block (about 0.70 s) from `m1_rest` into the
      enclosure shard projects only about **+1% to +1.4% throughput** before
-     Grid/Antenna becomes critical.  Treat this as diminishing-returns work:
-     first preserve the exact rebalance above, then attempt it only with the
-     same mixed-layer and sentinel gates.
+     Grid/Antenna becomes critical.  The eight-way split supersedes this move,
+     and the explicit below-2% policy now defers it.  Preserve this record so
+     the nibble is not repeatedly rediscovered.
 3. [ ] **Thread/core-budget sweep and affinity**
    Sweep 1/2/4 inner threads per shard and restrict the complete launch to
    2/4/8 physical CPUs.  Today, two processes request eight worker threads but
