@@ -244,12 +244,35 @@ not just wall time.
      critical shard, so five is the useful process-count ceiling until that
      chain or its eager setup changes.
 
-   - [ ] **Conditional derived-layer setup per shard:** `well`, `gate`, and
-     `implant` are still constructed eagerly in every process.  The critical
-     Metal1 enclosure shard needs none of them but pays roughly 2.7 s, giving a
-     possible next ceiling near **+8% throughput** without adding a process.
-     Preserve the default `all` ordering and require the exact 99-item sentinel
-     before timing.
+   - [x] **Conditional derived-layer setup per shard — completed
+     (exploratory):** `well`, `gate`, and `implant` were constructed eagerly in
+     every process.  Feature-aware guards now retain the original `all` order
+     while constructing only the layers each shard can consume.  The resulting
+     child-plus-merge wall is 32.433 s versus the prior 34.783 s five-way run:
+     **+7.2% throughput** and 6.8% less wall time.  Shard walls are 32.426,
+     27.953, 32.124, 29.210, and 30.265 s, so Metal1 enclosure remains critical
+     by only 0.30 s over Metal2–10 plus `ACTIVE.3`.  The full provenance-checked
+     launcher took 43.415 s separately, including 5.538 s of prehash and 5.431
+     s of verification, and averaged 3.87 CPU cores.  Direct-child peak RSS
+     values are 713,300, 547,312, 678,220, 1,213,744, and 610,664 KiB; their
+     conservative, non-time-correlated sum is 3.59 GiB.
+
+     The fresh deck-bound sentinel manifest proved the exact 157-category,
+     two-cell, 99-item union.  Full mode retained normalized SHA-256
+     `e5bf625fda5eea31fc127870f837970396fe422f3940d9f4d65ca9e6da51d4da`;
+     the merged sentinel retained
+     `886b50da71b00fb2b3eb4fb118f0b0759a8855b2207f64c0afda3a54dc3ba893`;
+     and the real clean macro retained
+     `305364bd55b0337444adfb482f09e4e139f901c5612e5c030b7aae7fe7ea7f7b`.
+     Durable corpus artifacts are `decks/freepdk45-five-way-lazy.lydrc`
+     (SHA-256
+     `8e7f39eaac4344eff0734703f90b4accc032bda14735253ceaccddca8e0c810f`)
+     and `decks/freepdk45-five-way-lazy-bound.json` (SHA-256
+     `4e0ce80e34a387afcefdbe8f696c75cb894c11865609afee00ba407caecc4635`);
+     reports, logs, timings, metadata, and retained shard artifacts are under
+     `evidence/freepdk45-five-way-lazy-20260721/`.  This is one exact,
+     provenance-enforced observation compared with the prior exploratory run,
+     not a promoted comparison-identity-v3 cohort.
 3. [ ] **Thread/core-budget sweep and affinity**
    Sweep 1/2/4 inner threads per shard and restrict the complete launch to
    2/4/8 physical CPUs.  Today, two processes request eight worker threads but
