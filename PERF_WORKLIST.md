@@ -208,6 +208,48 @@ not just wall time.
      Automatic partition generation, a matched current
      two-shard cohort, and three independent four-way observations keep the
      parent item open.
+
+   - [x] **Five useful-rule shards — completed (exploratory):** the fifth
+     process isolates the complete `METAL1.3` enclosure producer/consumer
+     chain.  The remaining shards own the rest of Metal1, Metal2–10 plus
+     `ACTIVE.3`, the remaining front end, and Active/Grid/Antenna.  Measured
+     shard walls were 34.776, 30.509, 33.973, 29.150, and 31.662 s.  Merge cost
+     0.007 s and child-plus-merge wall was 34.783 s.  This is another
+     **+16.7% throughput** and 14.3% less wall than the 40.592 s four-way run.
+     Relative to the existing 69.966 s two-shard mean it is **+101.2%
+     throughput** and 50.3% less wall; relative to the 128.83 s legacy serial
+     mean the cumulative engineering result is **+270.4% throughput** and
+     73.0% less wall.  The provenance-checked launcher took 45.719 s
+     separately, including 5.489 s of prehash and 5.435 s of post-run
+     verification.  The full invocation averaged 3.85 CPU cores.
+
+     All five children exited zero.  Direct-child peak RSS values were
+     715,940, 621,268, 749,760, 1,219,016, and 634,320 KiB; their conservative,
+     non-time-correlated sum is 3.76 GiB.  The clean real report again has 157
+     categories, one cell, zero items, and normalized SHA-256
+     `305364bd55b0337444adfb482f09e4e139f901c5612e5c030b7aae7fe7ea7f7b`.
+     A fresh deck-bound manifest strictly proved the exact 157-category,
+     two-cell, 99-item hierarchical sentinel union and the established
+     normalized SHA-256
+     `886b50da71b00fb2b3eb4fb118f0b0759a8855b2207f64c0afda3a54dc3ba893`.
+
+     Durable corpus artifacts are `decks/freepdk45-five-way.lydrc` (SHA-256
+     `ac1408f2ba9625529673b79663ae3659dddbbf73bb0ef66ab8cc39596b8210f0`)
+     and `decks/freepdk45-five-way-bound.json` (SHA-256
+     `f241b031a525353db5fcd3c67209a93f48d0147f7c0a7d85f9a9ba1dbff78885`);
+     metadata, reports, and shard/sentinel logs are under
+     `evidence/freepdk45-five-way-20260721/`.  This is one provenance-enforced
+     observation, not a matched comparison-identity-v3 cohort.  Purely adding
+     a sixth process cannot shorten the measured 34.776 s indivisible Metal1
+     critical shard, so five is the useful process-count ceiling until that
+     chain or its eager setup changes.
+
+   - [ ] **Conditional derived-layer setup per shard:** `well`, `gate`, and
+     `implant` are still constructed eagerly in every process.  The critical
+     Metal1 enclosure shard needs none of them but pays roughly 2.7 s, giving a
+     possible next ceiling near **+8% throughput** without adding a process.
+     Preserve the default `all` ordering and require the exact 99-item sentinel
+     before timing.
 3. [ ] **Thread/core-budget sweep and affinity**
    Sweep 1/2/4 inner threads per shard and restrict the complete launch to
    2/4/8 physical CPUs.  Today, two processes request eight worker threads but
