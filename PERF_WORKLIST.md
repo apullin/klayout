@@ -849,7 +849,7 @@ not just wall time.
     The old estimate assumed ten cumulative rebuilds.  Empty-target pruning
     removed six, so its present ceiling is much smaller and must be measured
     before implementation.
-14. [ ] **Device-neutral accelerator replay gate — later, orthogonal project**
+14. [ ] **Device-neutral accelerator replay gate — active, orthogonal project**
     Do not translate the Ruby PDK deck to an accelerator language.  Build a
     device-neutral replay harness around spatial bin/sort plus candidate
     filtering, initially for a measured high-cardinality geometry kernel.
@@ -866,15 +866,40 @@ not just wall time.
       about 25.7 GB/s in each direction with pinned host memory.  A packed
       83 MB candidate stream therefore costs only about 3.2 ms one-way when
       batched; serialization, working-set size, and CPU exact replay are the
-      meaningful overheads.  The first seam is the pointer-free candidate list
-      between `box_scanner<Edge, size_t>` and `Edge2EdgeCheckBase::add()`, with
-      hierarchy and exact predicates unchanged on CPU.  The current 156.69 s
+      meaningful overheads.  The initially proposed edge-only seam was the
+      pointer-free candidate list between `box_scanner<Edge, size_t>` and
+      `Edge2EdgeCheckBase::add()`, with hierarchy and exact predicates unchanged
+      on CPU.  The current 156.69 s
       full-run mean needs to reach at most 142.45 s to clear the +10%
       opportunity gate.  Accelerating M1 alone models only about +3.9%; a
       production win must benefit at least M1 enclosure, implant/contact, and
       M2 together.  Build and qualify the CPU recorder/replayer before adding
       the CUDA broad-phase, and charge packing, transfers, sorting/dedup,
       fallback, and simultaneous-shard contention.
+
+    - [x] **Correct the target ceiling and prove the standalone CUDA kernel:**
+      symbolized attribution showed the edge-only seam was too small and it was
+      abandoned before production integration.  Defensible removable shares
+      are 7.88% of the M1 shard, 11.29% of implant/contact, and 21.30% of M2;
+      even perfect removal models a 145.22 s whole run, only **+7.9%
+      throughput**, short of the +10% gate.  The larger device-neutral target is
+      now generic self/bipartite int64 AABB candidate generation, with a second
+      possible shielding-incidence sort/join kernel; exact predicates and
+      ordered publication stay on CPU.
+
+      `benchmarks/cuda_spatial_replay` provides a bounded, versioned,
+      pointer-free recorder/replayer and exact CPU oracles.  Boundary,
+      bipartite, signed-coordinate, replay, density, overflow, repeatability,
+      and million-record gates pass.  Five independent million-record launches
+      all returned the identical 2,552,846-pair hash; charged pack plus GPU
+      pipeline averaged 78.936 ms (78.107-80.236 ms), including per-call device
+      buffer teardown, versus 1,349.768 ms for
+      its CPU grid oracle.  That is a synthetic stage result, not a KLayout
+      speedup.  Three concurrent owner-like processes sustained 95-97% sampled
+      GPU activity but did not increase aggregate throughput, favoring a future
+      single broker with persistent buffers.  Production integration remains
+      gated on finding roughly two more percentage points of removable M1 work
+      and charging CPU replay plus broker overhead.
 15. [ ] **Lean headless DRC build and developer-turnaround path**
     The accepted runtime is headless, but the standard build still compiles the
     full KLayout distribution.  The current graph has 1,877 object files; 724
@@ -900,6 +925,30 @@ not just wall time.
     generation from runtime Python.  Prove that it does not link Qt, Python,
     GUI, LIB, LVS, or PEX before repeating the exact runtime ladder.  This is a
     build-productivity project and must not be mixed into PGO runtime claims.
+16. [ ] **Stable-key hierarchy translation cache**
+    `interaction_registration_shape2inst::add_shapes_from_intruder_inst()`
+    currently materializes and hashes a transformed polygon before discovering
+    that the same source shape and composed transform was already translated.
+    Its receiver is 8.14% of the post-PGO M1 profile, 4.61% of implant/contact,
+    and 1.88% of M2.  A symbolized non-LTO microscope attributes about 4.91
+    profile points to polygon transform, hash, equality, lookup, and insertion;
+    those non-LTO points are diagnostic attribution, not a runtime claim.
+
+    First instrument a bounded stable-key cache keyed by source identity,
+    composed transform, and properties.  On a hit, reuse the existing ID; on a
+    miss, retain today's transformed-geometry lookup so geometrically equal
+    shapes still deduplicate exactly.  KLayout's reverse inst2shape path already
+    uses `shape_reference_translator_with_trans` as a model.  Proceed to a
+    production patch only if the measured hit rate and charged lookup cost
+    model at least +5% whole-run opportunity, or if a smaller 2-5% result is
+    demonstrably low risk.
+
+    A secondary, overlapping trial is a no-update bounding-box converter after
+    an explicit layout update.  The non-LTO build exposes 7.46 profile points
+    in repeated `Layout::update()`/dirty checks, but the PGO binary attributes
+    only about 1% directly to named bbox conversion in M1.  Do not book that
+    ceiling until path-specific counters separate genuine repeated work from
+    PGO inlining and the already-counted outer scanner.
 
 ## Measured lower-priority paths
 
