@@ -48,7 +48,7 @@ RUNTIME_PROVENANCE_SCRIPT = Path(__file__).resolve().with_name(
     "klayout_runtime_provenance.py"
 )
 SCHEMA_VERSION = 2
-COMPARISON_IDENTITY_VERSION = 3
+COMPARISON_IDENTITY_VERSION = 4
 MINIMUM_INDEPENDENT_OBSERVATIONS = 3
 RUNTIME_NORMALIZATION_POLICY_ID = "hier-network-relocatable-runtime-v1"
 RSS_POLL_INTERVAL_SECONDS = 0.05
@@ -63,6 +63,7 @@ TREATMENT_DIMENSIONS = (
     "preload",
     "allocator-env",
     "thread-env",
+    "profiling-env",
     "input",
     "deck",
     "manifest",
@@ -89,6 +90,7 @@ THREAD_ENV_NAMES = frozenset(
     }
 )
 THREAD_ENV_PREFIXES = ("OMP_", "GOMP_", "KMP_", "TBB_", "RAYON_")
+PROFILING_ENV_NAMES = ("LLVM_PROFILE_FILE",)
 
 OPENRAM_SMALL_SHA256 = (
     "7f5a0ae375110399782667be3a40c9f2c9eb94deb087108ba134508554fd8a2e"
@@ -440,11 +442,12 @@ def runtime_bundle_identity(
         if key != "LD_PRELOAD"
         and not _is_allocator_environment_key(key)
         and not _is_thread_environment_key(key)
+        and not _is_profiling_environment_key(key)
     }
-    # Preserve every current and future shared-identity field except the two
+    # Preserve every current and future shared-identity field except the
     # dimensions deliberately classified on their own below (preload and
-    # allocator/thread environment).  This avoids silently dropping a newly
-    # added code-coverage policy from controlled comparisons.
+    # allocator/thread/profiling environment).  This avoids silently dropping
+    # a newly added runtime policy from controlled comparisons.
     filtered_runtime_identity = {
         key: value
         for key, value in identity.items()
@@ -495,8 +498,13 @@ def _is_thread_environment_key(key: str) -> bool:
     )
 
 
+def _is_profiling_environment_key(key: str) -> bool:
+    return key in PROFILING_ENV_NAMES
+
+
 def relevant_environment_identity(
     runtime_provenance: Mapping[str, object],
+    benchmark_environment: Mapping[str, str],
 ) -> dict[str, object]:
     raw_identity = runtime_provenance.get("identity")
     if not isinstance(raw_identity, dict) or not isinstance(
@@ -514,6 +522,15 @@ def relevant_environment_identity(
             key: value
             for key, value in sorted(environment.items())
             if _is_thread_environment_key(key)
+        },
+        # The shared runtime collector intentionally captures only variables
+        # that affect runtime selection.  Compiler profiling controls belong
+        # to this benchmark harness, so attest them directly from the exact
+        # environment passed to both provenance collection and every child.
+        # A missing variable is explicit JSON null and remains distinct from
+        # an explicitly empty value.
+        "profiling": {
+            key: benchmark_environment.get(key) for key in PROFILING_ENV_NAMES
         },
     }
 
@@ -1464,23 +1481,42 @@ def comparison_identity_differences(
         for key, dimension in (
             ("allocator", "allocator-env"),
             ("threads", "thread-env"),
+            ("profiling", "profiling-env"),
         ):
-            if not isinstance(baseline_environment.get(key), dict):
+            baseline_value = baseline_environment.get(key)
+            candidate_value = candidate_environment.get(key)
+            valid = isinstance(baseline_value, dict)
+            if key == "profiling":
+                valid = bool(
+                    valid
+                    and set(baseline_value) == set(PROFILING_ENV_NAMES)
+                    and all(
+                        value is None or isinstance(value, str)
+                        for value in baseline_value.values()
+                    )
+                    and isinstance(candidate_value, dict)
+                    and set(candidate_value) == set(PROFILING_ENV_NAMES)
+                    and all(
+                        value is None or isinstance(value, str)
+                        for value in candidate_value.values()
+                    )
+                )
+            if not valid:
                 differences.append(
                     _difference(
                         "provenance",
                         f"comparison_identity.environment.{key}",
                         "missing or invalid",
-                        candidate_environment.get(key),
+                        candidate_value,
                     )
                 )
-            elif baseline_environment.get(key) != candidate_environment.get(key):
+            elif baseline_value != candidate_value:
                 differences.append(
                     _difference(
                         dimension,
                         f"comparison_identity.environment.{key}",
-                        baseline_environment.get(key),
-                        candidate_environment.get(key),
+                        baseline_value,
+                        candidate_value,
                     )
                 )
 
@@ -2104,7 +2140,9 @@ def run_benchmark(args: argparse.Namespace, output_dir: Path) -> int:
     )
     runtime_provenance["version"] = version
     preload_fingerprint, preload_metadata = preload_identity(runtime_provenance)
-    environment_identity = relevant_environment_identity(runtime_provenance)
+    environment_identity = relevant_environment_identity(
+        runtime_provenance, environment
+    )
     host_metadata = current_host_identity()
     candidate_identity = build_comparison_identity(
         runtime_provenance,
@@ -2289,6 +2327,10 @@ def run_benchmark(args: argparse.Namespace, output_dir: Path) -> int:
         raise RuntimeError("KLayout runtime bundle changed during the benchmark")
     if post_preload_fingerprint != candidate_identity.get("preload"):
         raise RuntimeError("LD_PRELOAD contents changed during the benchmark")
+    if relevant_environment_identity(
+        post_runtime_provenance, environment
+    ) != candidate_identity.get("environment"):
+        raise RuntimeError("benchmark environment changed during the benchmark")
     if harness_comparison_identity() != candidate_identity.get("harness"):
         raise RuntimeError("benchmark harness changed during the benchmark")
     if taskset is not None and sha256_file(taskset) != execution_shape.get(
@@ -2395,6 +2437,7 @@ def run_benchmark(args: argparse.Namespace, output_dir: Path) -> int:
                 "QT_QPA_PLATFORM",
                 "OMP_NUM_THREADS",
                 "OMP_DYNAMIC",
+                "LLVM_PROFILE_FILE",
             )
         },
         "cpu_affinity": {

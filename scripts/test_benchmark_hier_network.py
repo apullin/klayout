@@ -123,7 +123,11 @@ def fixture_identity() -> dict[str, object]:
             "ordered_files": [],
             "fingerprint_sha256": "empty-preload",
         },
-        "environment": {"allocator": {}, "threads": {}},
+        "environment": {
+            "allocator": {},
+            "threads": {},
+            "profiling": {"LLVM_PROFILE_FILE": None},
+        },
         "host": {
             "node": "fixture",
             "platform": "Linux-fixture",
@@ -585,6 +589,7 @@ class ExecutionTests(unittest.TestCase):
 
     def test_sequential_mode_uses_fresh_state_and_cpu_accounting(self) -> None:
         calls: list[dict[str, object]] = []
+        self.environment["LLVM_PROFILE_FILE"] = ""
 
         def fake_run_sample(
             klayout: Path,
@@ -621,6 +626,12 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(len({call["working_directory"] for call in calls}), 2)
         self.assertTrue(
             all(call["environment"] is not self.environment for call in calls)
+        )
+        self.assertTrue(
+            all(
+                call["environment"]["LLVM_PROFILE_FILE"] == ""
+                for call in calls
+            )
         )
         self.assertTrue(
             all(Path(call["working_directory"]).is_dir() for call in calls)
@@ -729,7 +740,8 @@ class ComparisonIdentityTests(unittest.TestCase):
                     "GOMP_CPU_AFFINITY": "0-3",
                     "UNRELATED": "ignored",
                 }
-            )
+            ),
+            {"LLVM_PROFILE_FILE": "/profiles/train-%p.profraw"},
         )
         self.assertEqual(
             identity,
@@ -742,7 +754,53 @@ class ComparisonIdentityTests(unittest.TestCase):
                     "GOMP_CPU_AFFINITY": "0-3",
                     "OMP_NUM_THREADS": "4",
                 },
+                "profiling": {
+                    "LLVM_PROFILE_FILE": "/profiles/train-%p.profraw",
+                },
             },
+        )
+
+    def test_profiling_environment_distinguishes_unset_empty_and_value(
+        self,
+    ) -> None:
+        runtime = fixture_runtime_provenance()
+        states = (
+            ({}, None),
+            ({"LLVM_PROFILE_FILE": ""}, ""),
+            (
+                {"LLVM_PROFILE_FILE": "/profiles/train-%p.profraw"},
+                "/profiles/train-%p.profraw",
+            ),
+        )
+        identities = []
+        for environment, expected in states:
+            identity = benchmark.relevant_environment_identity(
+                runtime, environment
+            )
+            self.assertEqual(
+                identity["profiling"], {"LLVM_PROFILE_FILE": expected}
+            )
+            identities.append(identity)
+        self.assertEqual(
+            len(
+                {
+                    benchmark.canonical_json_sha256(identity)
+                    for identity in identities
+                }
+            ),
+            3,
+        )
+
+    def test_profiling_environment_is_not_double_counted_in_runtime_bundle(
+        self,
+    ) -> None:
+        absent = fixture_runtime_provenance()
+        present = fixture_runtime_provenance(
+            environment={"LLVM_PROFILE_FILE": "/profiles/train-%p.profraw"}
+        )
+        self.assertEqual(
+            benchmark.runtime_bundle_identity(absent),
+            benchmark.runtime_bundle_identity(present),
         )
 
     def test_argv_templates_are_path_normalized_and_keep_runtime_options(self) -> None:
@@ -814,6 +872,43 @@ class ComparisonIdentityTests(unittest.TestCase):
             {"suite"},
         )
 
+    def test_missing_or_invalid_profiling_identity_fails_closed(self) -> None:
+        candidate = fixture_identity()
+        for invalid in (None, {}, {"LLVM_PROFILE_FILE": 7}):
+            with self.subTest(invalid=invalid):
+                baseline = fixture_identity()
+                if invalid is None:
+                    baseline["environment"].pop("profiling")
+                else:
+                    baseline["environment"]["profiling"] = invalid
+                differences = benchmark.comparison_identity_differences(
+                    baseline, candidate
+                )
+                self.assertEqual(
+                    {difference["dimension"] for difference in differences},
+                    {"provenance"},
+                )
+                self.assertEqual(
+                    differences[0]["path"],
+                    "comparison_identity.environment.profiling",
+                )
+
+    def test_profiling_environment_changes_are_exact_treatments(self) -> None:
+        baseline = fixture_identity()
+        for value in ("", "/profiles/train-%p.profraw"):
+            with self.subTest(value=value):
+                candidate = fixture_identity()
+                candidate["environment"]["profiling"][
+                    "LLVM_PROFILE_FILE"
+                ] = value
+                differences = benchmark.comparison_identity_differences(
+                    baseline, candidate
+                )
+                self.assertEqual(
+                    {difference["dimension"] for difference in differences},
+                    {"profiling-env"},
+                )
+
     def test_repeat_and_exact_declared_experiment_policies(self) -> None:
         baseline_identity = fixture_identity()
         baseline = self.loaded(baseline_identity)
@@ -852,6 +947,9 @@ class ComparisonIdentityTests(unittest.TestCase):
             "thread-env": lambda value: value["environment"]["threads"].update(
                 OMP_NUM_THREADS="8"
             ),
+            "profiling-env": lambda value: value["environment"][
+                "profiling"
+            ].update(LLVM_PROFILE_FILE="/profiles/train-%p.profraw"),
             "input": lambda value: value["cases"]["fixture"]["artifacts"].update(
                 input_sha256="other-input"
             ),
@@ -973,8 +1071,19 @@ class SummaryAssemblyTests(unittest.TestCase):
                 for index, sample in enumerate(samples, start=1)
             ]
             runtime = fixture_runtime_provenance()
+            exact_environment = {
+                "LD_LIBRARY_PATH": str(root),
+                "KLAYOUT_HOME": str(output_dir / "klayout-home"),
+                "QT_QPA_PLATFORM": "offscreen",
+                "LLVM_PROFILE_FILE": "/profiles/train-%p.profraw",
+            }
 
             with (
+                mock.patch.object(
+                    benchmark,
+                    "benchmark_environment",
+                    return_value=exact_environment,
+                ),
                 mock.patch.object(
                     benchmark,
                     "preflight_case",
@@ -993,7 +1102,7 @@ class SummaryAssemblyTests(unittest.TestCase):
                     benchmark,
                     "run_case_samples",
                     return_value=(samples, batches),
-                ),
+                ) as run_samples,
                 mock.patch.object(
                     benchmark.subprocess,
                     "run",
@@ -1006,6 +1115,13 @@ class SummaryAssemblyTests(unittest.TestCase):
 
             self.assertEqual(result, 0)
             self.assertEqual(collect_runtime.call_count, 2)
+            self.assertTrue(
+                all(
+                    call.args[1] is exact_environment
+                    for call in collect_runtime.call_args_list
+                )
+            )
+            self.assertIs(run_samples.call_args.args[5], exact_environment)
             verify_artifacts.assert_called_once()
             summary = json.loads(
                 (output_dir / "benchmark-summary.json").read_text(
@@ -1022,6 +1138,14 @@ class SummaryAssemblyTests(unittest.TestCase):
             )
             self.assertEqual(summary["cases"][0]["peak_rss_kb_max"], 1003)
             self.assertIn("runtime_provenance", summary)
+            self.assertEqual(
+                summary["comparison_identity"]["environment"]["profiling"],
+                {"LLVM_PROFILE_FILE": "/profiles/train-%p.profraw"},
+            )
+            self.assertEqual(
+                summary["environment"]["LLVM_PROFILE_FILE"],
+                "/profiles/train-%p.profraw",
+            )
 
 
 if __name__ == "__main__":

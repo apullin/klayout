@@ -602,6 +602,7 @@ class LauncherTests(ReportFixture):
             textwrap.dedent(
                 """\
                 #!/usr/bin/env python3
+                import json
                 import os
                 from pathlib import Path
                 import shutil
@@ -622,8 +623,17 @@ class LauncherTests(ReportFixture):
                     capture = Path(os.environ["FAKE_DRC_ENV_CAPTURE"])
                     capture.mkdir(parents=True, exist_ok=True)
                     (capture / f"{shard}.txt").write_text(
-                        os.environ.get(
-                            "PYTHONDONTWRITEBYTECODE", "<missing>"
+                        json.dumps(
+                            {
+                                "LLVM_PROFILE_FILE": {
+                                    "present": "LLVM_PROFILE_FILE" in os.environ,
+                                    "value": os.environ.get("LLVM_PROFILE_FILE"),
+                                },
+                                "PYTHONDONTWRITEBYTECODE": os.environ.get(
+                                    "PYTHONDONTWRITEBYTECODE", "<missing>"
+                                ),
+                            },
+                            sort_keys=True,
                         ),
                         encoding="utf-8",
                     )
@@ -676,6 +686,7 @@ class LauncherTests(ReportFixture):
             "OMP_NUM_THREADS": "4",
             "GOMP_CPU_AFFINITY": "0-3",
             "KMP_AFFINITY": "compact",
+            "LLVM_PROFILE_FILE": "/profiles/%h-%p-%m.profraw",
             "TBB_NUM_THREADS": "4",
             "RAYON_NUM_THREADS": "4",
             "MKL_NUM_THREADS": "1",
@@ -711,6 +722,35 @@ class LauncherTests(ReportFixture):
         self.assertIsNone(environment["MALLOC_CONF"])
         self.assertIsNone(environment["NUMEXPR_MAX_THREADS"])
         self.assertIsNone(environment["PYTHONDONTWRITEBYTECODE"])
+
+    def test_profile_environment_identity_distinguishes_exact_values_and_unset(
+        self,
+    ) -> None:
+        records = []
+        identities = []
+        for value in (
+            None,
+            "",
+            "/profiles/a-%p-%m.profraw",
+            "/profiles/b-%p-%m.profraw",
+        ):
+            with self.subTest(value=value):
+                source = {}
+                if value is not None:
+                    source["LLVM_PROFILE_FILE"] = value
+                runtime_environment = launcher._klayout_environment(source)
+                record = launcher._environment_record(runtime_environment)
+                records.append(record)
+                identities.append(launcher._environment_identity(record))
+                self.assertEqual(record["LLVM_PROFILE_FILE"], value)
+                self.assertEqual(
+                    "LLVM_PROFILE_FILE" in runtime_environment,
+                    value is not None,
+                )
+
+        self.assertEqual(len({item["canonical_sha256"] for item in identities}), 4)
+        self.assertIsNone(records[0]["LLVM_PROFILE_FILE"])
+        self.assertEqual(records[1]["LLVM_PROFILE_FILE"], "")
 
     def test_klayout_environment_forces_bytecode_suppression(self) -> None:
         enabled_spellings = (
@@ -866,6 +906,7 @@ class LauncherTests(ReportFixture):
                     "FAKE_DRC_DELAY": "0.12",
                     "MALLOC_CONF": "background_thread:true",
                     "OMP_NUM_THREADS": "7",
+                    "LLVM_PROFILE_FILE": "/profiles/train-%h-%p-%m.profraw",
                     "PYTHONDONTWRITEBYTECODE": "0",
                     "FAKE_DRC_ENV_CAPTURE": str(environment_capture),
                 },
@@ -922,17 +963,38 @@ class LauncherTests(ReportFixture):
             provenance["environment"]["PYTHONDONTWRITEBYTECODE"], "1"
         )
         self.assertEqual(
-            sorted(
-                path.read_text(encoding="utf-8")
-                for path in environment_capture.iterdir()
-            ),
-            ["1", "1"],
+            provenance["environment"]["LLVM_PROFILE_FILE"],
+            "/profiles/train-%h-%p-%m.profraw",
         )
+        self.assertEqual(
+            provenance["environment_identity"],
+            launcher._environment_identity(provenance["environment"]),
+        )
+        child_environments = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in sorted(environment_capture.iterdir())
+        ]
+        self.assertEqual(len(child_environments), 2)
+        for child_environment in child_environments:
+            self.assertEqual(
+                child_environment,
+                {
+                    "LLVM_PROFILE_FILE": {
+                        "present": True,
+                        "value": "/profiles/train-%h-%p-%m.profraw",
+                    },
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                },
+            )
         self.assertEqual(self.runtime_collector.call_count, 2)
         first_environment = self.runtime_collector.call_args_list[0].args[1]
         second_environment = self.runtime_collector.call_args_list[1].args[1]
         self.assertIs(first_environment, second_environment)
         self.assertEqual(first_environment["PYTHONDONTWRITEBYTECODE"], "1")
+        self.assertEqual(
+            first_environment["LLVM_PROFILE_FILE"],
+            "/profiles/train-%h-%p-%m.profraw",
+        )
         self.assertEqual(provenance["configuration"]["shard_names"], ["even", "odd"])
         self.assertEqual(provenance["configuration"]["jobs_effective"], 2)
         self.assertEqual(
@@ -1006,6 +1068,7 @@ class LauncherTests(ReportFixture):
             ),
             contextlib.redirect_stderr(stderr),
         ):
+            os.environ.pop("LLVM_PROFILE_FILE", None)
             result = launcher.main(arguments)
 
         self.assertEqual(result, 0, stderr.getvalue())
@@ -1014,6 +1077,11 @@ class LauncherTests(ReportFixture):
             provenance["temporary_artifacts"]["directory"]
         )
         self.addCleanup(shutil.rmtree, temporary_directory, True)
+        self.assertIsNone(provenance["environment"]["LLVM_PROFILE_FILE"])
+        self.assertEqual(
+            provenance["environment_identity"],
+            launcher._environment_identity(provenance["environment"]),
+        )
         self.assertTrue(provenance["temporary_artifacts"]["retained"])
         self.assertTrue(temporary_directory.is_dir())
         for shard in provenance["shards"]:

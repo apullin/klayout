@@ -87,6 +87,7 @@ _FIXED_ENVIRONMENT_KEYS = (
     "GLIBC_TUNABLES",
     "MALLOC_CONF",
     "KLAYOUT_HOME",
+    "LLVM_PROFILE_FILE",
     "PYTHONDONTWRITEBYTECODE",
     "QT_QPA_PLATFORM",
     "MKL_NUM_THREADS",
@@ -490,7 +491,7 @@ def _klayout_environment(source: Mapping[str, str]) -> dict[str, str]:
 
 
 def _environment_record(environment: Mapping[str, str]) -> dict[str, object]:
-    """Capture allocator, loader, OpenMP, and KLayout runtime controls."""
+    """Capture allocator, loader, profiling, and KLayout runtime controls."""
 
     keys = set(_FIXED_ENVIRONMENT_KEYS)
     keys.update(
@@ -512,6 +513,23 @@ def _environment_record(environment: Mapping[str, str]) -> dict[str, object]:
         else:
             captured[key] = value
     return captured
+
+
+def _environment_identity(
+    environment_record: Mapping[str, object],
+) -> dict[str, str]:
+    """Content-address the exact environment values recorded for a run."""
+
+    encoded = json.dumps(
+        environment_record,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return {
+        "schema": "klayout-parallel-drc-environment-v1",
+        "canonical_sha256": hashlib.sha256(encoded).hexdigest(),
+    }
 
 
 def _preload_entries(value: str | None) -> list[str]:
@@ -988,6 +1006,7 @@ def _provenance_prefix(
     orchestrator: Mapping[str, Mapping[str, object]] | None,
     environment: Mapping[str, str],
 ) -> dict[str, object]:
+    environment_record = _environment_record(environment)
     return {
         "format": _PROVENANCE_FORMAT,
         "format_version": _PROVENANCE_VERSION,
@@ -1016,7 +1035,8 @@ def _provenance_prefix(
                 "replicate_count": getattr(args, "replicate_count", None),
             },
         },
-        "environment": _environment_record(environment),
+        "environment": environment_record,
+        "environment_identity": _environment_identity(environment_record),
         "host": _host_record(),
         "inputs": dict(inputs) if inputs is not None else None,
         "runtime_bundle": dict(runtime_bundle) if runtime_bundle is not None else None,
