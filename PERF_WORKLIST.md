@@ -534,11 +534,13 @@ not just wall time.
      historical all-mode rule order and moves each derived-layer producer,
      consumer, and `forget` together.  Regenerate the deck-bound manifest and
      pass sentinel, transformed mixed-hierarchy, and three-observation x2
-     gates before accepting the model.  `POLY.2` is a conditional category
-     absent from the existing 157-category manifest because current fixtures
-     do not fire it; add a focused nonempty fixture or explicitly retain that
-     pre-existing limitation rather than claiming it was exercised.  Try this
-     lower-overhead rebalance before a ten-owner/three-inner-thread sweep.
+     gates before accepting the model.  `POLY.2` is absent from the existing
+     157-category manifest because its pre-existing `polygons?` guard is a type
+     test on an edge-pair result and is therefore always false; even the mixed
+     fixture's 30 nm Poly/Active gap cannot fire it.  Do not fold a signoff-
+     semantics repair into this scheduling treatment or claim that category was
+     exercised.  Try this lower-overhead rebalance before a ten-owner/three-
+     inner-thread sweep.
 
    - [x] **Optional final five-way balancing nibble — deferred below the search
      threshold:** moving the intact
