@@ -860,6 +860,21 @@ not just wall time.
     passes, port the proven kernel to TT-Metalium on the para N300, testing
     locally with `tt-emule` before waking para.  Treat SFPI/compiler defects as
     fixable engineering work while preserving the CPU exactness oracle.
+
+    - [x] **CUDA environment and first-target audit:** the local RTX 3080
+      (compute capability 8.6, 9.64 GiB) ran a CUDA 12.4 kernel and sustained
+      about 25.7 GB/s in each direction with pinned host memory.  A packed
+      83 MB candidate stream therefore costs only about 3.2 ms one-way when
+      batched; serialization, working-set size, and CPU exact replay are the
+      meaningful overheads.  The first seam is the pointer-free candidate list
+      between `box_scanner<Edge, size_t>` and `Edge2EdgeCheckBase::add()`, with
+      hierarchy and exact predicates unchanged on CPU.  The current 156.69 s
+      full-run mean needs to reach at most 142.45 s to clear the +10%
+      opportunity gate.  Accelerating M1 alone models only about +3.9%; a
+      production win must benefit at least M1 enclosure, implant/contact, and
+      M2 together.  Build and qualify the CPU recorder/replayer before adding
+      the CUDA broad-phase, and charge packing, transfers, sorting/dedup,
+      fallback, and simultaneous-shard contention.
 15. [ ] **Lean headless DRC build and developer-turnaround path**
     The accepted runtime is headless, but the standard build still compiles the
     full KLayout distribution.  The current graph has 1,877 object files; 724
