@@ -54,6 +54,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import signal
 import socket
@@ -86,6 +87,7 @@ _FIXED_ENVIRONMENT_KEYS = (
     "GLIBC_TUNABLES",
     "MALLOC_CONF",
     "KLAYOUT_HOME",
+    "PYTHONDONTWRITEBYTECODE",
     "QT_QPA_PLATFORM",
     "MKL_NUM_THREADS",
     "OPENBLAS_NUM_THREADS",
@@ -468,18 +470,37 @@ def _resolved_executable(command: str) -> Path:
     return Path(resolved).resolve(strict=True)
 
 
-def _environment_record() -> dict[str, object]:
+def _klayout_environment(source: Mapping[str, str]) -> dict[str, str]:
+    """Return one environment for runtime attestation and child processes.
+
+    A fresh KLayout install contains importable Python sources below ``pymod``.
+    Letting the first child create ``__pycache__`` there would correctly change
+    the attested runtime bundle between the pre- and post-workload snapshots.
+    Normalize every CPython spelling that still enables bytecode writes while
+    preserving an explicit value that already disables them.
+    """
+
+    environment = dict(source)
+    bytecode_control = environment.get("PYTHONDONTWRITEBYTECODE")
+    if not bytecode_control or re.fullmatch(
+        r"[ \t\n\r\f\v]*[+-]?0+", bytecode_control
+    ):
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    return environment
+
+
+def _environment_record(environment: Mapping[str, str]) -> dict[str, object]:
     """Capture allocator, loader, OpenMP, and KLayout runtime controls."""
 
     keys = set(_FIXED_ENVIRONMENT_KEYS)
     keys.update(
         key
-        for key in os.environ
+        for key in environment
         if key.startswith(_ENVIRONMENT_PREFIXES) or key.endswith("_NUM_THREADS")
     )
     captured: dict[str, object] = {}
     for key in sorted(keys):
-        value = os.environ.get(key)
+        value = environment.get(key)
         if value is not None and any(
             fragment in key.upper()
             for fragment in _SENSITIVE_ENVIRONMENT_FRAGMENTS
@@ -526,12 +547,14 @@ def _resolve_preload(entry: str, executable_dir: Path) -> Path | None:
     return None
 
 
-def _runtime_bundle(command: str) -> dict[str, object]:
+def _runtime_bundle(
+    command: str, environment: Mapping[str, str]
+) -> dict[str, object]:
     """Fingerprint the exact loader-selected KLayout runtime, fail closed."""
 
     return collect_runtime_provenance(
         command,
-        os.environ,
+        environment,
         cwd=Path.cwd(),
     )
 
@@ -963,6 +986,7 @@ def _provenance_prefix(
     inputs: Mapping[str, Mapping[str, object]] | None,
     runtime_bundle: Mapping[str, object] | None,
     orchestrator: Mapping[str, Mapping[str, object]] | None,
+    environment: Mapping[str, str],
 ) -> dict[str, object]:
     return {
         "format": _PROVENANCE_FORMAT,
@@ -992,7 +1016,7 @@ def _provenance_prefix(
                 "replicate_count": getattr(args, "replicate_count", None),
             },
         },
-        "environment": _environment_record(),
+        "environment": _environment_record(environment),
         "host": _host_record(),
         "inputs": dict(inputs) if inputs is not None else None,
         "runtime_bundle": dict(runtime_bundle) if runtime_bundle is not None else None,
@@ -1223,6 +1247,7 @@ def run_shards(
     args: argparse.Namespace,
     specs: Sequence[ShardSpec],
     jobs: int,
+    environment: Mapping[str, str],
 ) -> tuple[list[ShardResult], float]:
     """Run shards with bounded concurrency and stop immediately on failure."""
 
@@ -1241,6 +1266,7 @@ def run_shards(
                 stderr=subprocess.STDOUT,
                 shell=False,
                 start_new_session=(os.name == "posix"),
+                env=environment,
             )
         except BaseException:
             log_file.close()
@@ -1360,6 +1386,7 @@ def run(args: argparse.Namespace) -> int:
     report_stage: Path | None = None
     metadata_stage: Path | None = None
     runtime_publication_targets_safe = False
+    runtime_environment = _klayout_environment(os.environ)
 
     try:
         validate_args(args)
@@ -1373,7 +1400,9 @@ def run(args: argparse.Namespace) -> int:
         validate_manifest, merge_reports = load_merger()
         prehash_started = time.monotonic()
         initial_inputs = _input_records(args)
-        initial_runtime_bundle = _runtime_bundle(args.klayout)
+        initial_runtime_bundle = _runtime_bundle(
+            args.klayout, runtime_environment
+        )
         _validate_runtime_publication_targets(args, initial_runtime_bundle)
         runtime_publication_targets_safe = True
         initial_orchestrator = _orchestrator_record()
@@ -1391,7 +1420,9 @@ def run(args: argparse.Namespace) -> int:
         ]
         jobs = min(args.jobs or len(specs), len(specs))
         workload_started = time.monotonic()
-        results, children_wall = run_shards(args, specs, jobs)
+        results, children_wall = run_shards(
+            args, specs, jobs, runtime_environment
+        )
 
         merge_started = time.monotonic()
         report_mode = _publication_mode(output)
@@ -1423,7 +1454,9 @@ def run(args: argparse.Namespace) -> int:
         # input or optimized runtime component changed underneath the workload.
         verification_started = time.monotonic()
         final_inputs = _input_records(args)
-        final_runtime_bundle = _runtime_bundle(args.klayout)
+        final_runtime_bundle = _runtime_bundle(
+            args.klayout, runtime_environment
+        )
         final_orchestrator = _orchestrator_record()
         _verify_runtime_unchanged(
             initial_inputs,
@@ -1459,6 +1492,7 @@ def run(args: argparse.Namespace) -> int:
             initial_inputs,
             initial_runtime_bundle,
             initial_orchestrator,
+            runtime_environment,
         )
         timing: dict[str, float | None] = {
             "provenance_prehash_wall_seconds": prehash_wall,
@@ -1525,6 +1559,7 @@ def run(args: argparse.Namespace) -> int:
                     initial_inputs,
                     initial_runtime_bundle,
                     initial_orchestrator,
+                    runtime_environment,
                 )
                 failed.update(
                     {

@@ -618,6 +618,15 @@ class LauncherTests(ReportFixture):
 
                 shard = runtime["drc_shard"]
                 print(f"fake shard {shard}")
+                if os.environ.get("FAKE_DRC_ENV_CAPTURE"):
+                    capture = Path(os.environ["FAKE_DRC_ENV_CAPTURE"])
+                    capture.mkdir(parents=True, exist_ok=True)
+                    (capture / f"{shard}.txt").write_text(
+                        os.environ.get(
+                            "PYTHONDONTWRITEBYTECODE", "<missing>"
+                        ),
+                        encoding="utf-8",
+                    )
                 if shard == "bad":
                     print("intentional fake failure")
                     raise SystemExit(7)
@@ -679,7 +688,7 @@ class LauncherTests(ReportFixture):
             "NOT_PERFORMANCE_RELEVANT": "omit-me",
         }
         with mock.patch.dict(os.environ, relevant, clear=True):
-            environment = launcher._environment_record()
+            environment = launcher._environment_record(os.environ)
 
         self.assertEqual(list(environment), sorted(environment))
         for key, value in relevant.items():
@@ -701,6 +710,38 @@ class LauncherTests(ReportFixture):
         self.assertIsNone(environment["LD_PRELOAD"])
         self.assertIsNone(environment["MALLOC_CONF"])
         self.assertIsNone(environment["NUMEXPR_MAX_THREADS"])
+        self.assertIsNone(environment["PYTHONDONTWRITEBYTECODE"])
+
+    def test_klayout_environment_forces_bytecode_suppression(self) -> None:
+        enabled_spellings = (
+            None,
+            "",
+            "0",
+            "00",
+            "+0",
+            "-0",
+            " \t-000",
+        )
+        for value in enabled_spellings:
+            with self.subTest(value=value):
+                source = {"UNCHANGED": "yes"}
+                if value is not None:
+                    source["PYTHONDONTWRITEBYTECODE"] = value
+                result = launcher._klayout_environment(source)
+                self.assertEqual(result["PYTHONDONTWRITEBYTECODE"], "1")
+                self.assertEqual(result["UNCHANGED"], "yes")
+                self.assertIsNot(result, source)
+                self.assertEqual(
+                    source.get("PYTHONDONTWRITEBYTECODE"), value
+                )
+
+    def test_klayout_environment_preserves_suppression_values(self) -> None:
+        for value in ("1", "2", "-1", "false", "custom", "0 "):
+            with self.subTest(value=value):
+                source = {"PYTHONDONTWRITEBYTECODE": value}
+                result = launcher._klayout_environment(source)
+                self.assertEqual(result["PYTHONDONTWRITEBYTECODE"], value)
+                self.assertEqual(source["PYTHONDONTWRITEBYTECODE"], value)
 
     def arguments(
         self,
@@ -801,6 +842,7 @@ class LauncherTests(ReportFixture):
 
     def test_fake_executable_success_runs_and_merges(self) -> None:
         output = self.directory / "launcher-merged.lyrdb"
+        environment_capture = self.directory / "child-environments"
         output.write_bytes(b"existing report sentinel")
         output.chmod(0o640)
         arguments = self.arguments(output, ("even", "odd"))
@@ -824,6 +866,8 @@ class LauncherTests(ReportFixture):
                     "FAKE_DRC_DELAY": "0.12",
                     "MALLOC_CONF": "background_thread:true",
                     "OMP_NUM_THREADS": "7",
+                    "PYTHONDONTWRITEBYTECODE": "0",
+                    "FAKE_DRC_ENV_CAPTURE": str(environment_capture),
                 },
             ),
             contextlib.redirect_stdout(stdout),
@@ -874,6 +918,21 @@ class LauncherTests(ReportFixture):
             provenance["environment"]["MALLOC_CONF"],
             "background_thread:true",
         )
+        self.assertEqual(
+            provenance["environment"]["PYTHONDONTWRITEBYTECODE"], "1"
+        )
+        self.assertEqual(
+            sorted(
+                path.read_text(encoding="utf-8")
+                for path in environment_capture.iterdir()
+            ),
+            ["1", "1"],
+        )
+        self.assertEqual(self.runtime_collector.call_count, 2)
+        first_environment = self.runtime_collector.call_args_list[0].args[1]
+        second_environment = self.runtime_collector.call_args_list[1].args[1]
+        self.assertIs(first_environment, second_environment)
+        self.assertEqual(first_environment["PYTHONDONTWRITEBYTECODE"], "1")
         self.assertEqual(provenance["configuration"]["shard_names"], ["even", "odd"])
         self.assertEqual(provenance["configuration"]["jobs_effective"], 2)
         self.assertEqual(
@@ -964,15 +1023,19 @@ class LauncherTests(ReportFixture):
             self.assertTrue(shard["log"]["retained"])
 
     def test_runtime_bundle_delegates_to_shared_fail_closed_collector(self) -> None:
-        before = launcher._runtime_bundle(str(self.executable))
+        environment = {"PYTHONDONTWRITEBYTECODE": "custom"}
+        before = launcher._runtime_bundle(str(self.executable), environment)
         self.executable.write_bytes(b"different executable implementation")
         self.executable.chmod(self.executable.stat().st_mode | stat.S_IXUSR)
-        after = launcher._runtime_bundle(str(self.executable))
+        after = launcher._runtime_bundle(str(self.executable), environment)
 
         self.assertEqual(self.runtime_collector.call_count, 2)
         self.assertEqual(
             self.runtime_collector.call_args_list[0].args[0],
             str(self.executable),
+        )
+        self.assertIs(
+            self.runtime_collector.call_args_list[0].args[1], environment
         )
         self.assertNotEqual(
             before["canonical_sha256"], after["canonical_sha256"]
