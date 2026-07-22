@@ -196,6 +196,42 @@ not just wall time.
    First run a cheap four-process duplicate-shard contention probe and stop if
    per-job latency regresses more than 10–15%.
 
+   - [x] **Sky130 S3 FEOL/LI three-way split — completed and rejected
+     (exact one-shot head check):** after PGO qualification, the established
+     two-way `feol_li`/`ct_up` split and the proposed three-way
+     `feol`/`li`/`ct_up` split ran concurrently on disjoint 16-CPU sets with
+     the same qualified PGO binary (SHA-256
+     `0e0ba390970b4cd4c888d48a2cac2fcbfed57133cf1b4aa0f0bd1bdbda8f27ae`),
+     S3 input, allocator, four engine threads per child, and provenance
+     harness.  Two-way child-plus-merge wall was 85.199454 s; three-way was
+     85.655893 s: **0.54% more wall time and -0.53% throughput**.  Full
+     launcher walls were 96.331464 and 96.915400 s respectively.
+
+     The two-way shard walls were 84.537319 s for `feol_li` and 85.189429 s
+     for `ct_up`; the three-way walls were 38.985423 s for `feol`, 50.393985 s
+     for `li`, and 85.645375 s for the unchanged `ct_up`.  Splitting FEOL/LI
+     therefore cannot shorten this workload's critical path.  Both merged
+     reports have 256 categories, one cell, and zero items.  Their raw SHA-256
+     values are respectively
+     `ae4d2bd9feabf689042d9208e77d8c9a1d4a07c1ee4cc9144e666cc4a1081f9f`
+     and
+     `53589b5b7516b6cb636bcaeed1fd703030f83c8eee3349dcfb7723ce6e45ae9f`;
+     generator-normalized SHA-256 is identically
+     `8b558a5ab8303a312cab554c3e271371acb1f1e42d0bf55f96e2307ec58c0001`
+     and semantic SHA-256 is identically
+     `7cba50625f1576cb98ffb79ddb46a93f04d4d5b1d2804aaee01ace34bc75b2ef`.
+
+     Input, three-way deck, and deck-bound manifest SHA-256 values are
+     `a5aae78efed5a76e5f2c6c03762f4fc60d70132931028bb47f941f08d3184de7`,
+     `0ffa8ea5de0fb4af0b96abf07d6b627487d24cadc9655c9f0d1b872aacf5445e`,
+     and
+     `f82392cc0581d57e38e826ce90c8794b2f2cd62b53bed0d6ed125c154639927b`.
+     Evidence is archived under
+     `evidence/klayout-pgo-qualification-20260722/sky130-s3/`.  This is one
+     paired exploratory observation, not a promoted cohort.  It is closed by
+     the sub-2% stopping rule; do not try alternate FEOL/LI groupings unless a
+     new split first reduces the `ct_up` critical shard.
+
    - [x] **Four-process duplicate-shard contention gate — passed
      (exploratory):** on 2026-07-21, one fresh isolated `active_m1` run took
      68.52 s, while four unpinned identical copies completed in a 69.61 s
@@ -659,7 +695,7 @@ not just wall time.
    traverses each hierarchical cell once while dispatching violations to
    separate per-layer report categories.  Confirm the same shape on Sky130 and
    GF180 before implementation.
-8. [ ] **Target-specific code generation and cross-PDK PGO**
+8. [x] **Target-specific code generation and cross-PDK PGO**
    Try a separate `znver2`-tuned build, then profile-guided optimization trained
    on FreePDK45 plus Sky130/GF180.  Plausible ranges are **+2% to +8%** for
    target tuning and **+3% to +8%** for PGO, but accept only exact reports on the
@@ -697,13 +733,87 @@ not just wall time.
      flag artifacts.  Twelve fake-tool tests and a real Zen-2 dry-run pass; the
      helper never silently publishes `-march=native` code.
 
-   - [ ] **Cross-PDK PGO — next low-semantic-risk CPU trial:** train with both
-     FreePDK45/x2 and Sky130 S5 so one deck cannot dominate the profile.  Use
-     same-source portable/full-LTO control and optimized bundles, exact
-     real/sentinel/mixed reports, and three interleaved observations per PDK.
-     Accept at +5% whole-run throughput, or at +2% to +5% only if both PDKs are
-     consistent and neither has a meaningful regression.  Keep portable as
-     the default and treat BOLT as contingent on the resulting counters.
+   - [x] **Cross-PDK PGO — completed and formally qualified:** source commit
+     `575a32b27db9e9474a4f829f277cdc5703afa3c5`, tree
+     `d6810f6fe72eddaf4a951a05d03708b373a24a0d`.  Instrumented mixed training
+     produced 504 FreePDK45/x2 and 96 Sky130 S5 raw profiles.  The selected
+     FreePDK45:Sky130 merge weights are 1:9, leaving 2.214711396% weighted
+     imbalance.  The merged profile SHA-256 is
+     `a31ad8f30edc10523fb59f3674bcd742a7f685697bd23314a840bb2edf472fce`;
+     its manifest SHA-256 is
+     `9e0e44d9ac6929fe6f855b4dfa342c92cdc46c768b605f8d313125b73a3177d6`.
+
+     The PGO-use build took 26:24.79 and produced executable SHA-256
+     `0e0ba390970b4cd4c888d48a2cac2fcbfed57133cf1b4aa0f0bd1bdbda8f27ae`,
+     build-manifest SHA-256
+     `4a637551fc7e20b3c2788803f0c201d922af8f6b11a3124517c883febe04526d`,
+     and lifecycle-state SHA-256
+     `c6b5ab6fe1fba669d7f181d017000a109fa0569a2b2981ec356d1ebd3d9b06cb`.
+     A fresh same-source non-PGO control took 28:06.43 and produced executable
+     SHA-256
+     `a2f707d341b07fe161bca1909d79e99dbf70489454ea105bdd43ce55ae7c627c`,
+     manifest SHA-256
+     `b37eed60f3bcf47afec3edffc22bcf54b480ecdf97987eae66db85c9ee3f5fc3`,
+     and lifecycle-state SHA-256
+     `bd8dd8f4bdbdf0a0f1c6c528de3e7e5bdff4fa63c91a5a9c6cfbe871fe07e493`.
+     The control receipt independently proves identical non-PGO configuration
+     and the absence of profile flags.
+
+     The explicitly preliminary one-pair predecessor screen measured
+     FreePDK45/x2 at 175.789468 s versus 158.288782 s, **9.955% less wall time
+     and +11.056% throughput**, and Sky130 S5 at 188.376887 s versus
+     161.667109 s, **14.179% less wall time and +16.521% throughput**.  It is
+     retained only as a screen; the accepted result is the formal same-source
+     control cohort below.
+
+     Formal ABBAAB/BAABBA qualification used three observations per treatment
+     and PDK.  FreePDK45/x2 control and PGO means were 180.559164 and
+     156.691627 s: **13.219% less wall time and +15.232% throughput**.  Its
+     control samples were 181.207872, 179.914453, and 180.555168 s; PGO samples
+     were 156.725157, 157.448170, and 155.901553 s.  Sky130 S5 control and PGO
+     means were 194.036149 and 161.527181 s: **16.754% less wall time and
+     +20.126% throughput**.  Its control samples were 193.578250, 194.047442,
+     and 194.482754 s; PGO samples were 161.443286, 161.402617, and 161.735640
+     s.  Both unrounded throughput gains exceed the +5% gate with sub-1%
+     full-range spread in every lane.
+
+     All twelve real reports and all sentinels were exact.  FreePDK45 retained
+     raw report SHA-256
+     `f79d15877d9029b45fe5711ff84d6a1d5f057573aaace98a4d4469933b53caec`
+     and semantic SHA-256
+     `dd7b3a6f3c8303e105d5ac882261caf68f7f119da90ed40f801fb71800c46a47`
+     at 157 categories, one cell, and zero items; its 99-item sentinel and
+     1,587-item transformed mixed-hierarchy gates also passed.  Sky130 S5
+     retained normalized SHA-256
+     `2c9f660d7b2d7186329c510333083bfe19ab17779fe42d66c936feac0b45fdb4`
+     with zero items, while every nonempty sentinel retained normalized
+     SHA-256
+     `22057d4a1882b23d7367fb99981c7de52f066c4ab4beebc792be2ca656bcb404`
+     and 25 items.
+
+     Training-campaign, profile-selection, PGO-use, screen, control, and formal
+     qualification receipt SHA-256 values are respectively
+     `a83c8a522bb6fed5d18d6d7c6dec7ca48383cbd0a28cc314be0b441164369f65`,
+     `7f79940da93cdcc0935aafe14b825ce718cd0a4f685fd14d5c820cccd5d73f31`,
+     `ec98cd9c2c4d1c5395273c0aa4634964401765888a8106089ae9c307daed0455`,
+     `6cd37e6a42c7303994d2504a64f2abc2e49511c27c92ffd2032ebbb2167cd298`,
+     `71e2080e79ac01291d52bc92a65cdb3ebe68775ab979173b14a14aff1f09c5dd`,
+     and
+     `fb09a1deb43389b3c85a3fed3e0daddf1a8baf5c3bf5e1ad524052ed40002428`.
+     Train, merge, PGO-use, screen, control-build, and qualification wrapper
+     SHA-256 values are respectively
+     `d27431070c8b8749673a45864cdd7bffd8c35f511233059e089538e29c111d80`,
+     `e74bbf1ec5d1282dcf488d4ce1f24edbe63b3cb249de017557f650e01337da97`,
+     `4f103fd007f147bdd68f414a293d5120f82c5d1d1ee7fa66c64c57b51728218f`,
+     `f642e4826d3c37710f9ba0e975aef001ae2bb48cbcd19f673581153cd0382774`,
+     `82222ed4f89ef07ee0a284093101f0f2279e8c47e40d51833929c9d2e8d6d6a8`,
+     and
+     `7ad7b99b64e280ff78852cdd46e4cde94b117dd35de66cf22bb308faa7aa57bb`.
+     Compact receipts, manifests, wrappers, and the final S3 head check are
+     archived under `evidence/klayout-pgo-qualification-20260722/`.
+     Portable full-LTO remains the default; PGO is a qualified specialized
+     bundle, and BOLT remains deferred unless a fresh residual profile clears
+     the whole-run threshold.
 9. [ ] **Generalized exact early pruning**
    Inventory operations whose required target or interaction layer is empty
    and prove that skipping extraction cannot change report categories or
@@ -743,6 +853,31 @@ not just wall time.
     passes, port the proven kernel to TT-Metalium on the para N300, testing
     locally with `tt-emule` before waking para.  Treat SFPI/compiler defects as
     fixable engineering work while preserving the CPU exactness oracle.
+15. [ ] **Lean headless DRC build and developer-turnaround path**
+    The accepted runtime is headless, but the standard build still compiles the
+    full KLayout distribution.  The current graph has 1,877 object files; 724
+    are Qt bindings that the batch DRC solver does not use.  First measure the
+    already-supported, low-risk configuration
+    `-without-qtbinding -nopython -nolstream -nolibgit2` while retaining Qt,
+    Ruby, the normal `klayout` executable, and GDS/OAS readers.  Inventory
+    predicts about 1,068 objects, **43.1% fewer compile actions**, but this is
+    explicitly not a wall-time claim.  Qualify it on Ruby DRC smoke, both
+    nonempty sentinels, FreePDK45/x2, Sky130 S5, and GDS/OAS format coverage
+    before using it for iteration builds.
+
+    If measured build turnaround warrants a source change, add a fail-closed
+    `-without-tests` qmake guard.  Roughly 206 test objects remain after the
+    supported reductions, for a projected total near 859 objects or **54.2%
+    fewer compile actions** than the full graph.  Keep release/full-feature
+    builds unchanged.
+
+    A genuinely Qt-free solver is a separate second stage, not a build flag
+    flip: `-without-qt` omits the normal `klayout` executable.  Base a dedicated
+    `drc-run` target on `strmrun`, retain TL/GSI/DB/Ruby/LYM/RDB/DRC plus only
+    GDS2/OASIS plugins, add non-Qt Expat support, and decouple embedded DRC QRC
+    generation from runtime Python.  Prove that it does not link Qt, Python,
+    GUI, LIB, LVS, or PEX before repeating the exact runtime ladder.  This is a
+    build-productivity project and must not be mixed into PGO runtime claims.
 
 ## Measured lower-priority paths
 
