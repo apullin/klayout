@@ -54,8 +54,13 @@ bounded, or judged not worth doing.
   fresh per-sample homes, exclusive output locking, atomic summaries, exact
   suite/argv/artifact identities, three-observation qualification, direct-process
   RSS and average CPU, and distinct isolated-latency versus concurrent-batch
-  throughput semantics.  Eighty-four focused tests pass (31 benchmark, 34
-  launcher/merger, 19 runtime identity).  Real nonempty sentinels produced the
+  throughput semantics.  Eighty-seven focused tests pass (31 benchmark, 36
+  launcher/merger, 20 runtime identity).  Fresh installs now use one normalized
+  environment for both provenance snapshots, every child, and metadata; it
+  suppresses first-run Python bytecode writes without excluding `.pyc` from the
+  fail-closed runtime identity.  A cache-free real runtime stayed cache-free and
+  produced the exact 99-item sentinel (commit `4843f23`).  Real nonempty
+  sentinels produced the
   exact 99 FreePDK45 and 25 Sky130 items under comparison-identity v3; a real
   two-shard Sky130 launcher smoke also produced all 25 items while recording 113
   selected dependencies, 27 plugins, per-shard timing/RSS, and all three
@@ -555,14 +560,28 @@ not just wall time.
    average only about 2.06 CPU cores total, so the +84.1% result probably does
    not require a 32-core machine.  Establish the minimum practical core budget,
    then test disjoint physical-core/CCD pinning only after four-way sharding.
-   Always bound outer jobs times inner threads and record RSS.
+   Always bound outer jobs times inner threads and record RSS.  The earlier
+   ten-owner/three-inner-thread proposal is only a finer process partition of
+   the same exact DRC deck and merged report, not a different workload; 10 x 3
+   merely fits 30 requested threads under the 32-thread ceiling.  It duplicates
+   ten runtimes and is demoted behind the modeled eight-owner/four-thread
+   critical-path rebalance unless this sweep proves three inner threads retain
+   enough per-shard performance to justify the extra owners.
 4. [ ] **Native bounded rule-DAG executor**
    Ruby declares dependencies and output order serially; only C++ terminal
    geometry tasks run in parallel, with private results and serial publication
    by deck ordinal.  Arbitrary Ruby blocks, mutable report databases, layouts,
    and `DeepShapeStore` outputs must never execute concurrently.  This removes
    process supervision and may reduce duplicated setup without weakening the
-   isolation proof.
+   isolation proof.  Current verbose profiles expose genuinely independent
+   terminal work on both tied owners: M1 has stable enclosure operations around
+   44.65-50.33 and 65.61-66.00 aggregate seconds; M2 has a 41.02-41.15-second
+   width/space batch plus roughly 22.2 seconds of classification.  Their
+   overlap models a possible double-digit ceiling, but that is not a measured
+   whole-run win and implementation risk is high.  Require an exact shadow
+   schedule demonstrating at least +5% whole-run opportunity before changing
+   the executor; keep Ruby, layouts, reports, shared stores, and ordered
+   publication serial.
 5. [x] **Fuse enclosure producer/consumer chains — completed with a guarded
    clean-result fast path (exploratory):** `metal1.enclosing(cont)` cost about
    22.3 s and materialized roughly 2.6 million edge pairs before
@@ -598,6 +617,20 @@ not just wall time.
    `6f849cb08d6a78c45228cccfc306aac68171d6683b9d533af6de058d65b13185`),
    and `evidence/freepdk45-five-way-m1-gated-20260721/`.  This is one exact
    provenance-enforced observation, not a promoted three-observation cohort.
+
+   - [ ] **Generic enclosure-derived width fusion — profiled, not yet
+     implemented:** the current
+     `enclosing(...).second_edges.width(...).polygons(...).interacting(...)`
+     chain materializes four global intermediate collections.  In current
+     flat-symbol profiles, the enclosing range plus derived edge-width kernel
+     accounts for about 42.2% of M2 samples but only 8.2% of M1 samples.  A
+     Ruby expression rewrite is unsafe because shielding is input-order
+     asymmetric and deep hierarchy ownership plus merged-edge semantics are
+     observable.  If the ceiling remains above +5% after lower-risk work, use
+     a narrow local operation that preserves the original relation orientation,
+     same-layer neighbors, transforms, shielding, and ordered publication;
+     compare every intermediate as well as the final report on flat/deep
+     adversarial fixtures before timing it.
 6. [ ] **Rectangular exact-size contact/via fast path**
    Exact-length edge filters cost about 5.1 s for contacts and 3.5 s for via1.
    For proven Manhattan boxes, compare transformed dimensions directly and
@@ -615,16 +648,44 @@ not just wall time.
    full ladder and keep the portable build supported.  Consider BOLT only if
    counters still show front-end or instruction-cache pressure.
 
-   - [ ] **Zen 2 code-generation trial — in progress:** build portable and
-     `-march=znver2 -mtune=znver2` bundles freshly from the same commit and
-     toolchain, then compare exact FreePDK45/x2 and Sky130 S5 results in
-     isolated, interleaved cohorts.  The historical incrementally maintained
-     generic bundle is useful only for screening, not clean attribution.  If
-     qualified, add a repo-native clang/full-LTO helper whose default remains
-     portable; specialization must pass compile and LTO-link probes, use
-     distinct output directories, and warn before falling back to portable on
-     unsupported compilers or hosts.  Do not silently publish `-march=native`
-     artifacts.
+   - [x] **Zen 2 code-generation trial — completed (two cross-PDK,
+     three-observation cohorts):** fresh portable and
+     `-march=znver2 -mtune=znver2` bundles use the same `eb6d701` engine source,
+     Clang 22 full LTO, allocator, and runtime dependencies.  Target flags are
+     present in C, C++, and final LTO-link commands.  FreePDK45/x2
+     child-plus-strict-merge means are 172.837420 s portable versus 165.094884
+     s tuned: **4.5% less wall time and +4.7% throughput**.  Full provenance
+     launcher means are 183.980714 versus 176.230410 s: **4.2% less wall time
+     and +4.4% throughput**.  All six reports share raw SHA-256
+     `f79d15877d9029b45fe5711ff84d6a1d5f057573aaace98a4d4469933b53caec`
+     and semantic SHA-256
+     `dd7b3a6f3c8303e105d5ac882261caf68f7f119da90ed40f801fb71800c46a47`
+     at 157 categories, one cell, and zero items.
+
+     Sky130 HG0 S5 means are 196.892068 s portable versus 188.471924 s tuned:
+     **4.3% less wall time and +4.5% throughput**.  Full-range spreads are
+     0.194% and 0.136%; all six S5 reports retain normalized SHA-256
+     `2c9f660d7b2d7186329c510333083bfe19ab17779fe42d66c936feac0b45fdb4`,
+     and all six nonempty sentinels retain 25 items.  Comparison identities
+     match outside the declared runtime bundle.  Durable evidence is under
+     `evidence/klayout-znver2-qualification-20260722/`; summary JSON SHA-256 is
+     `c1e8d42679f69a3b6333d0134098f61f9bcd781c3bd88c5492c096dd7be42633`.
+
+     `scripts/build-clang-perf.sh` keeps portable full-LTO as the default.
+     `auto` and explicit `znver2` specialize only after exact-host detection
+     plus C, C++, full-LTO-link, and execution probes; any unsupported host or
+     failed specialized probe warns and falls back to a distinct portable
+     directory.  A fail-closed manifest prevents reuse of mixed toolchain/
+     flag artifacts.  Twelve fake-tool tests and a real Zen-2 dry-run pass; the
+     helper never silently publishes `-march=native` code.
+
+   - [ ] **Cross-PDK PGO — next low-semantic-risk CPU trial:** train with both
+     FreePDK45/x2 and Sky130 S5 so one deck cannot dominate the profile.  Use
+     same-source portable/full-LTO control and optimized bundles, exact
+     real/sentinel/mixed reports, and three interleaved observations per PDK.
+     Accept at +5% whole-run throughput, or at +2% to +5% only if both PDKs are
+     consistent and neither has a meaningful regression.  Keep portable as
+     the default and treat BOLT as contingent on the resulting counters.
 9. [ ] **Generalized exact early pruning**
    Inventory operations whose required target or interaction layer is empty
    and prove that skipping extraction cannot change report categories or
@@ -637,8 +698,15 @@ not just wall time.
     between designs.  This optimizes developer throughput, not one large DRC.
 11. [ ] **Intra-cell parallelism for remaining deep checks**
     Subdivide the few large serial geometry operations that limit ordinary
-    operation-level thread scaling.  Re-profile after N-way rule scheduling so
-    work is not spent below the new critical path.
+    operation-level thread scaling.  Current verbose operation `Elapsed` is
+    aggregate CPU-like time: M1 totals roughly 289 s and M2 roughly 270 s while
+    their shard walls are about 175 s, only 1.65 and 1.55 effective cores despite
+    `threads(4)`.  Current code schedules whole cells and then walks sorted
+    contexts serially within each cell.  First sweep isolated 1/2/4-thread
+    critical shards and instrument per-cell/context durations; proceed only if
+    dominant serial tasks model at least +5% whole-run.  Compute independent raw
+    context results thread-locally while retaining sorted serial reduction and
+    publication, and always cap outer owners times inner threads at 32.
 12. [ ] **Lazy interpreter initialization**
     Reduce the roughly 1.4 s batch startup floor for short jobs; separate from
     long-run geometry work.
