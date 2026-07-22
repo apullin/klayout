@@ -523,6 +523,23 @@ not just wall time.
      corpus.  This is a qualified FreePDK45/x2 scheduling result, not an
      engine-wide claim.
 
+   - [ ] **Profile-derived eight-way critical-path rebalance — in progress:**
+     retain the existing eight-process/four-inner-thread envelope, but move
+     intact `METAL2.5-.9` from `m2_rules` to `via1_upper_active12` and move
+     `POLY.1/.2/.3/.5/.6` (not the heavy `POLY.4`) from `m1_enclosure` to
+     `antenna`.  Three retained verbose cohorts model Metal2 at about 159.33 s,
+     M1 enclosure at about 159.13 s, and full launcher wall near 170.46 s:
+     approximately **8.4% less wall time** and **+9.2% throughput** versus the
+     immediately preceding accepted dual-repack mean.  The split preserves
+     historical all-mode rule order and moves each derived-layer producer,
+     consumer, and `forget` together.  Regenerate the deck-bound manifest and
+     pass sentinel, transformed mixed-hierarchy, and three-observation x2
+     gates before accepting the model.  `POLY.2` is a conditional category
+     absent from the existing 157-category manifest because current fixtures
+     do not fire it; add a focused nonempty fixture or explicitly retain that
+     pre-existing limitation rather than claiming it was exercised.  Try this
+     lower-overhead rebalance before a ten-owner/three-inner-thread sweep.
+
    - [x] **Optional final five-way balancing nibble — deferred below the search
      threshold:** moving the intact
      `METAL1.5-1.9` classification block (about 0.70 s) from `m1_rest` into the
@@ -595,6 +612,17 @@ not just wall time.
    target tuning and **+3% to +8%** for PGO, but accept only exact reports on the
    full ladder and keep the portable build supported.  Consider BOLT only if
    counters still show front-end or instruction-cache pressure.
+
+   - [ ] **Zen 2 code-generation trial — in progress:** build portable and
+     `-march=znver2 -mtune=znver2` bundles freshly from the same commit and
+     toolchain, then compare exact FreePDK45/x2 and Sky130 S5 results in
+     isolated, interleaved cohorts.  The historical incrementally maintained
+     generic bundle is useful only for screening, not clean attribution.  If
+     qualified, add a repo-native clang/full-LTO helper whose default remains
+     portable; specialization must pass compile and LTO-link probes, use
+     distinct output directories, and warn before falling back to portable on
+     unsupported compilers or hosts.  Do not silently publish `-march=native`
+     artifacts.
 9. [ ] **Generalized exact early pruning**
    Inventory operations whose required target or interaction layer is empty
    and prove that skipping extraction cannot change report categories or
