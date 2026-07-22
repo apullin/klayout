@@ -119,8 +119,8 @@ questions:
 - **Pre-overnight stress:** the 139 MB `vmu_v1_top` (historical 1157.014 s,
   4 GiB peak RSS).  This is a release gate, not an iteration benchmark.
 - **FreePDK45 scale/capstone lane:** the 512-Kbit two-independent-tree SRAM
-  takes 46m09.49s on a fresh upstream-master stock build and 4m10.685s for the
-  current best five-shard DRC plus strict merge.  Use it to demonstrate and
+  takes 46m09.49s on a fresh upstream-master stock build and 3m08.262s for the
+  current best eight-owner DRC plus strict merge.  Use it to demonstrate and
   re-profile cumulative scaling, not for routine iteration or single-patch
   attribution.  The checked record under ranked item 2 binds its identities,
   exactness evidence, and comparison scope.
@@ -443,15 +443,59 @@ not just wall time.
      would create nine four-thread processes and request 36 threads.  Preserve
      the split idea, but do not exceed the user's 32-thread ceiling.
 
-   - [ ] **Eight-way Metal2 follow-up:** isolate `METAL2.1-.9`, then combine
-     Active1/2 plus Via1 and Via2/upper metal into one smaller owner.  Keep the
-     other six owners unchanged, for eight processes times four requested
-     threads.  The current Metal2 mean is 207.778 s and the next measured floor
-     is M1 enclosure at 189.344 s; profiling predicts about 167 s for Metal2
-     and 125–135 s for the combined owner.  The whole-run ceiling remains about
-     **8.9% less wall time** or **+9.7% throughput**.  This clears the +5%
-     search threshold; require the same sentinel, mixed hierarchy, and three
-     real-report gates.
+   - [x] **Eight-way Metal2 follow-up — completed (three exact observations):**
+     isolate `METAL2.1-.9`, then combine Active1/2 plus Via1 and Via2/upper
+     metal into one smaller owner.  The other six owners remain unchanged, so
+     eight processes times four requested threads stay within the 32-thread
+     budget.
+
+     Child-plus-strict-merge walls are 189.368010, 187.034080, and
+     188.383469 s: mean **188.261853 s (3m08.262s)** and 1.240% full-range
+     spread.  Against the immediately preceding 207.786616 s eight-way mean,
+     this is **9.4% less DRC wall time** and **+10.4% throughput**, saving
+     19.525 s.  Full provenance-launcher walls average 199.401136 s versus
+     218.900690 s previously: **8.9% less wall time** and **+9.8%
+     throughput**.
+
+     All three real reports are raw-byte identical, SHA-256
+     `19543eb1328eb73f058caf9cbf4d5f40721337d7fb687e78ef57427aced57992`,
+     and retain the complete semantic SHA-256
+     `dd7b3a6f3c8303e105d5ac882261caf68f7f119da90ed40f801fb71800c46a47`
+     at 157 categories, one cell, and zero items.  The sentinel remains exact
+     at 157 categories, two cells, 99 items, semantic SHA-256
+     `265a2e1c58aed60bc89e8bd2ad2904147a1e53fcd7a2a7c8bfa8ddaa339cd1a2`;
+     the mixed hierarchy remains exact at 157 categories, seven cells, 1,587
+     items, semantic SHA-256
+     `429d631ab89d9e0a54e4f6ed367223974b8caca564c461fda59ebda9dcbcd8d2`.
+
+     The new mean critical path is M1 enclosure at 188.254 s; Implant/Contact
+     is 180.237 s and Metal2 is 174.642 s.  Normalizing only each required
+     fresh-home path makes all three old and all three new runtime,
+     environment, orchestrator, and host identities exact; deck, manifest, and
+     their two shard assignments are the intended changes.
+
+     Durable artifacts are `decks/freepdk45-eight-way-m2-repack.lydrc`
+     (SHA-256
+     `ef860b01ea7b8c67437f5e7256f2f88df7d8748ff4e9d5efdacf07978942300f`),
+     `decks/freepdk45-eight-way-m2-repack-bound.json` (SHA-256
+     `28ab1c3f206ba5c152eec42b47366934c822d53cd2c3154129410696f8eebf8d`),
+     and `evidence/freepdk45-eight-way-m2-repack-20260721/` in the external
+     corpus.  This is a qualified FreePDK45/x2 scheduling result, not an
+     engine-wide claim.
+
+   - [ ] **Dual-bottleneck eight-way repack follow-up:** move the intact WELL
+     block plus `ACTIVE.4` from M1 enclosure to the underloaded antenna owner,
+     and move the self-contained `CONTACT.6` rule from Implant/Contact to the
+     M1-width owner.  Keep eight processes times four requested threads, for
+     32 requested threads total.  The central model leaves Metal2 critical at
+     174.642 s and projects **7.2% less DRC wall time** (**+7.8%
+     throughput**), or **6.8% less full-launcher wall time** (**+7.3%
+     throughput**).  A deliberately harsh model still projects **5.2% less
+     DRC wall time** (**+5.5% throughput**) and **5.0% less full-launcher wall
+     time** (**+5.2% throughput**), only narrowly clearing the search policy.
+     Treat this as one low-risk exact scheduling trial, not a presumed win;
+     require the same sentinel, mixed-hierarchy, x2-report, provenance, and
+     three-isolated-observation gates before acceptance.
 
    - [x] **Optional final five-way balancing nibble — deferred below the search
      threshold:** moving the intact
