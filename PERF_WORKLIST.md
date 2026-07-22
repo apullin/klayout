@@ -124,11 +124,18 @@ questions:
 - **Pre-overnight stress:** the 139 MB `vmu_v1_top` (historical 1157.014 s,
   4 GiB peak RSS).  This is a release gate, not an iteration benchmark.
 - **FreePDK45 scale/capstone lane:** the 512-Kbit two-independent-tree SRAM
-  takes 46m09.49s on a fresh upstream-master stock build and 2m55.035s for the
-  current best eight-owner DRC plus strict merge.  Use it to demonstrate and
-  re-profile cumulative scaling, not for routine iteration or single-patch
-  attribution.  The checked record under ranked item 2 binds its identities,
-  exactness evidence, and comparison scope.
+  takes 46m09.49s on a fresh upstream-master stock build.  The formally
+  qualified current PGO bundle averages 2m25.564s for eight-owner DRC plus
+  strict merge, or 2m36.692s for the full provenance launcher including about
+  11 s of integrity work.  The conservative stock-to-full-launcher comparison
+  is **17.675x throughput and 94.34% less wall time**; comparing DRC process
+  wall with child-plus-merge is **19.026x and 94.74% less wall time**.  These
+  are cumulative build, engine, scheduling, allocator, and PGO results—not
+  single-patch attribution.  Stock is one historical observation while the
+  current value is a three-run mean, so this multiplier is not an identity-v3
+  promoted cohort.  Use this lane to demonstrate and re-profile cumulative
+  scaling, not for routine iteration.  The checked records under ranked items
+  2 and 8 bind identities, exactness evidence, and comparison scope.
 
 Every promoted lane needs a pinned input/deck hash, current-binary serial
 baseline, exact category/item/cell payload comparison, and at least one
