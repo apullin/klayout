@@ -119,7 +119,7 @@ questions:
 - **Pre-overnight stress:** the 139 MB `vmu_v1_top` (historical 1157.014 s,
   4 GiB peak RSS).  This is a release gate, not an iteration benchmark.
 - **FreePDK45 scale/capstone lane:** the 512-Kbit two-independent-tree SRAM
-  takes 46m09.49s on a fresh upstream-master stock build and 3m08.262s for the
+  takes 46m09.49s on a fresh upstream-master stock build and 2m55.035s for the
   current best eight-owner DRC plus strict merge.  Use it to demonstrate and
   re-profile cumulative scaling, not for routine iteration or single-patch
   attribution.  The checked record under ranked item 2 binds its identities,
@@ -483,19 +483,45 @@ not just wall time.
      corpus.  This is a qualified FreePDK45/x2 scheduling result, not an
      engine-wide claim.
 
-   - [ ] **Dual-bottleneck eight-way repack follow-up:** move the intact WELL
-     block plus `ACTIVE.4` from M1 enclosure to the underloaded antenna owner,
-     and move the self-contained `CONTACT.6` rule from Implant/Contact to the
-     M1-width owner.  Keep eight processes times four requested threads, for
-     32 requested threads total.  The central model leaves Metal2 critical at
-     174.642 s and projects **7.2% less DRC wall time** (**+7.8%
-     throughput**), or **6.8% less full-launcher wall time** (**+7.3%
-     throughput**).  A deliberately harsh model still projects **5.2% less
-     DRC wall time** (**+5.5% throughput**) and **5.0% less full-launcher wall
-     time** (**+5.2% throughput**), only narrowly clearing the search policy.
-     Treat this as one low-risk exact scheduling trial, not a presumed win;
-     require the same sentinel, mixed-hierarchy, x2-report, provenance, and
-     three-isolated-observation gates before acceptance.
+   - [x] **Dual-bottleneck eight-way repack follow-up — completed (three exact
+     observations):** move the intact WELL block plus `ACTIVE.4` from M1
+     enclosure to the underloaded antenna owner, and move the self-contained
+     `CONTACT.6` rule from Implant/Contact to the M1-width owner.  Eight
+     processes times four requested threads retain the 32-thread budget.
+
+     Child-plus-strict-merge walls are 175.654973, 174.520844, and
+     174.928626 s: mean **175.034815 s (2m55.035s)** and 0.648% full-range
+     spread.  Against the immediately preceding accepted 188.261853 s mean,
+     this is **7.0% less DRC wall time** and **+7.6% throughput**, saving
+     13.227 s.  Full provenance-launcher walls average 186.162139 s versus
+     199.401136 s previously: **6.6% less wall time** and **+7.1%
+     throughput**.
+
+     All three real reports are raw-byte identical, SHA-256
+     `f79d15877d9029b45fe5711ff84d6a1d5f057573aaace98a4d4469933b53caec`,
+     and retain the complete semantic SHA-256
+     `dd7b3a6f3c8303e105d5ac882261caf68f7f119da90ed40f801fb71800c46a47`
+     at 157 categories, one cell, and zero items.  The sentinel remains exact
+     at 157 categories, two cells, 99 items, semantic SHA-256
+     `265a2e1c58aed60bc89e8bd2ad2904147a1e53fcd7a2a7c8bfa8ddaa339cd1a2`;
+     the mixed hierarchy remains exact at 157 categories, seven cells, 1,587
+     items, semantic SHA-256
+     `429d631ab89d9e0a54e4f6ed367223974b8caca564c461fda59ebda9dcbcd8d2`.
+
+     Mean Metal2 wall is now the critical path at 174.608 s, with M1
+     enclosure close behind at 173.756 s.  Normalizing only each required
+     fresh-home path makes all three preceding and all three new runtime and
+     environment identities exact; orchestrator and normalized host identities
+     also match.  Exactly the declared five category owners change.
+
+     Durable artifacts are `decks/freepdk45-eight-way-dual-repack.lydrc`
+     (SHA-256
+     `3e981b9389a67c6c1c4b08f0640d8750ca78990c868c5686fa8ebbd401cba72c`),
+     `decks/freepdk45-eight-way-dual-repack-bound.json` (SHA-256
+     `7d5b09621e8da2c76091001a2a5bcd37210822698f7908d19aab282490b8811b`),
+     and `evidence/freepdk45-eight-way-dual-repack-20260721/` in the external
+     corpus.  This is a qualified FreePDK45/x2 scheduling result, not an
+     engine-wide claim.
 
    - [x] **Optional final five-way balancing nibble — deferred below the search
      threshold:** moving the intact
