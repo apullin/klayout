@@ -528,24 +528,42 @@ not just wall time.
      corpus.  This is a qualified FreePDK45/x2 scheduling result, not an
      engine-wide claim.
 
-   - [ ] **Profile-derived eight-way critical-path rebalance — in progress:**
-     retain the existing eight-process/four-inner-thread envelope, but move
-     intact `METAL2.5-.9` from `m2_rules` to `via1_upper_active12` and move
-     `POLY.1/.2/.3/.5/.6` (not the heavy `POLY.4`) from `m1_enclosure` to
-     `antenna`.  Three retained verbose cohorts model Metal2 at about 159.33 s,
-     M1 enclosure at about 159.13 s, and full launcher wall near 170.46 s:
-     approximately **8.4% less wall time** and **+9.2% throughput** versus the
-     immediately preceding accepted dual-repack mean.  The split preserves
-     historical all-mode rule order and moves each derived-layer producer,
-     consumer, and `forget` together.  Regenerate the deck-bound manifest and
-     pass sentinel, transformed mixed-hierarchy, and three-observation x2
-     gates before accepting the model.  `POLY.2` is absent from the existing
-     157-category manifest because its pre-existing `polygons?` guard is a type
-     test on an edge-pair result and is therefore always false; even the mixed
-     fixture's 30 nm Poly/Active gap cannot fire it.  Do not fold a signoff-
-     semantics repair into this scheduling treatment or claim that category was
-     exercised.  Try this lower-overhead rebalance before a ten-owner/three-
-     inner-thread sweep.
+   - [x] **Profile-derived eight-way critical-path rebalance — rejected after
+     an exact real screen:** retaining eight owners and four inner threads,
+     move intact `METAL2.5-.9` from `m2_rules` to
+     `via1_upper_active12`, and move `POLY.1/.2/.3/.5/.6` (not the heavy
+     `POLY.4`) from `m1_enclosure` to `antenna`.  The candidate passed the
+     157-category/99-item sentinel and the 157-category/1,587-item transformed
+     mixed-hierarchy gate with exact semantic hashes.  Its real x2 report also
+     retained semantic SHA-256
+     `dd7b3a6f3c8303e105d5ac882261caf68f7f119da90ed40f801fb71800c46a47`.
+     The screened deck SHA-256 was
+     `dad07e76e215e950495855810393a1e860938a351fa8a4cc713ce0a975d18d61`
+     and its bound manifest SHA-256 was
+     `3fa705c9465f52703809c8e9950f6c0a03cea50bd9cc48c0ad6ec889748f051c`.
+
+     The performance model did not survive a same-runner screen.  The accepted
+     deck took 164.889428 s child-plus-merge and 176.007337 s full-launcher wall;
+     the candidate took 165.623715 s and 176.763536 s respectively: **0.4%
+     more wall time and -0.4% throughput** on both measures.  The critical path
+     merely moved to `via1_upper_active12` at 165.613401 s.  The moved Metal2
+     classification chain cost 51.700 s of verbose aggregate elapsed time when
+     cold, versus 22.08-22.27 s while co-located with `METAL2.1-.4`; its first
+     `sized` operation alone rose from 4.24-4.28 s to 34.00 s.  This is lost
+     in-process geometry reuse, not measurement noise that merits a cohort.
+
+     Moving only Poly models about **2.8% less wall time and +2.9% throughput**,
+     below the search threshold.  A narrower Metal2 split is not independent:
+     `classify_by_width` cumulatively reassigns `layer` for each threshold, so
+     `METAL2.6-.9` consume the `METAL2.5` morphology result.  Separating the
+     suffix either changes semantics or duplicates the expensive cold prefix.
+     The existing sentinel and mixed fixture do not prove that altered
+     intermediate geometry is equivalent merely because their final reports
+     match.
+     Retain the accepted dual-repack and do not rediscover this scheduling
+     route.  `POLY.2` remains absent from the manifest because its pre-existing
+     `polygons?` type-test guard is always false; no signoff repair was mixed
+     into this experiment.
 
    - [x] **Optional final five-way balancing nibble — deferred below the search
      threshold:** moving the intact
