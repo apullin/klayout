@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
@@ -16,7 +17,9 @@ import unittest
 
 
 HELPER_SOURCE = Path(__file__).with_name("build-clang-perf.sh")
-MANIFEST_NAME = ".klayout-clang-perf-manifest-v1"
+MANIFEST_NAME = ".klayout-clang-perf-manifest-v2"
+PGO_STATE_NAME = ".klayout-clang-perf-pgo-state-v1"
+PGO_LOCK_NAME = ".klayout-clang-perf-pgo-lock-v1"
 
 
 FAKE_COMPILER = r"""#!/usr/bin/env python3
@@ -41,6 +44,8 @@ if "-march=native" in args and "-dM" in args:
 targeted = "-march=znver2" in args
 compiling = "-c" in args
 is_cxx = tool.endswith("++")
+pgo_generate = any(arg.startswith("-fprofile-generate=") for arg in args)
+pgo_use = any(arg.startswith("-fprofile-use=") for arg in args)
 failure = os.environ.get("FAKE_FAIL", "")
 if compiling and targeted and failure == "znver2-c":
     raise SystemExit(11)
@@ -50,6 +55,12 @@ if not compiling and targeted and failure == "znver2-link":
     raise SystemExit(13)
 if not compiling and not targeted and failure == "portable-link":
     raise SystemExit(14)
+if compiling and (pgo_generate or pgo_use) and failure == "pgo-c":
+    raise SystemExit(16)
+if compiling and is_cxx and (pgo_generate or pgo_use) and failure == "pgo-cxx":
+    raise SystemExit(17)
+if not compiling and (pgo_generate or pgo_use) and failure == "pgo-link":
+    raise SystemExit(18)
 
 try:
     output = Path(args[args.index("-o") + 1])
@@ -83,6 +94,8 @@ FAKE_BUILD = r"""#!/usr/bin/env python3
 import json
 import os
 from pathlib import Path
+import signal
+import stat
 import subprocess
 import sys
 
@@ -94,7 +107,39 @@ try:
     wrapper = args[args.index("-qmake") + 1]
 except (ValueError, IndexError):
     raise SystemExit("fake build expected -qmake")
-raise SystemExit(subprocess.run([wrapper, "-v"], check=False).returncode)
+qmake_result = subprocess.run([wrapper, "-v"], check=False).returncode
+if qmake_result:
+    raise SystemExit(qmake_result)
+
+if os.environ.get("FAKE_BUILD_FAIL"):
+    raise SystemExit(23)
+
+mutation = os.environ.get("FAKE_BUILD_MUTATE", "")
+if mutation == "compiler":
+    target = Path(os.environ["CC"])
+elif mutation == "build-driver":
+    target = Path(sys.argv[0])
+elif mutation == "profile-source":
+    target = Path(os.environ["PGO_TEST_PROFILE"])
+elif mutation == "staged-profile":
+    build_directory = Path(args[args.index("-build") + 1])
+    matches = list(build_directory.glob("pgo-input-*.profdata"))
+    if len(matches) != 1:
+        raise SystemExit("fake build expected one staged PGO profile")
+    target = matches[0]
+elif mutation:
+    raise SystemExit("unknown fake mutation: " + mutation)
+else:
+    target = None
+if target is not None:
+    target.chmod(target.stat().st_mode | stat.S_IWUSR)
+    with target.open("ab") as stream:
+        stream.write(b"\nmutated during build\n")
+
+if os.environ.get("FAKE_BUILD_KILL_PARENT"):
+    os.kill(os.getppid(), signal.SIGKILL)
+
+raise SystemExit(0)
 """
 
 
@@ -121,6 +166,24 @@ class BuildClangPerfTests(unittest.TestCase):
         self._write_executable(self.compiler_cxx, FAKE_COMPILER)
         self._write_executable(self.qmake, FAKE_QMAKE)
         self._write_executable(self.build, FAKE_BUILD)
+
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        subprocess.run(
+            ["git", "config", "user.name", "KLayout perf test"],
+            cwd=self.root,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "klayout-perf@example.invalid"],
+            cwd=self.root,
+            check=True,
+        )
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "fake source"],
+            cwd=self.root,
+            check=True,
+        )
 
         self.compiler_log = self.directory / "compiler.jsonl"
         self.qmake_log = self.directory / "qmake.jsonl"
@@ -183,19 +246,101 @@ class BuildClangPerfTests(unittest.TestCase):
         return list(json.loads(self.build_log.read_text(encoding="utf-8")))
 
     def profile_build_directory(
-        self, profile: str = "portable", output_root: Path | None = None
+        self,
+        profile: str = "portable",
+        output_root: Path | None = None,
+        *,
+        pgo: str = "none",
+        profile_hash: str = "",
+        manifest_hash: str = "",
     ) -> Path:
-        return (output_root or self.output_root) / f"build-clang-perf-{profile}"
+        suffix = profile
+        if pgo == "generate":
+            suffix += "-pgo-generate"
+        elif pgo == "control":
+            suffix += "-pgo-control"
+        elif pgo == "use":
+            suffix += f"-pgo-use-{profile_hash[:16]}-manifest-{manifest_hash[:16]}"
+        if pgo != "none":
+            commit, tree = self.source_identity()
+            suffix += f"-commit-{commit[:16]}-tree-{tree[:16]}"
+        return (output_root or self.output_root) / f"build-clang-perf-{suffix}"
 
     def profile_bin_directory(
-        self, profile: str = "portable", output_root: Path | None = None
+        self,
+        profile: str = "portable",
+        output_root: Path | None = None,
+        *,
+        pgo: str = "none",
+        profile_hash: str = "",
+        manifest_hash: str = "",
     ) -> Path:
-        return (output_root or self.output_root) / f"bin-clang-perf-{profile}"
+        suffix = profile
+        if pgo == "generate":
+            suffix += "-pgo-generate"
+        elif pgo == "control":
+            suffix += "-pgo-control"
+        elif pgo == "use":
+            suffix += f"-pgo-use-{profile_hash[:16]}-manifest-{manifest_hash[:16]}"
+        if pgo != "none":
+            commit, tree = self.source_identity()
+            suffix += f"-commit-{commit[:16]}-tree-{tree[:16]}"
+        return (output_root or self.output_root) / f"bin-clang-perf-{suffix}"
 
     def manifest_path(
-        self, profile: str = "portable", output_root: Path | None = None
+        self,
+        profile: str = "portable",
+        output_root: Path | None = None,
+        *,
+        pgo: str = "none",
+        profile_hash: str = "",
+        manifest_hash: str = "",
     ) -> Path:
-        return self.profile_build_directory(profile, output_root) / MANIFEST_NAME
+        return (
+            self.profile_build_directory(
+                profile,
+                output_root,
+                pgo=pgo,
+                profile_hash=profile_hash,
+                manifest_hash=manifest_hash,
+            )
+            / MANIFEST_NAME
+        )
+
+    def make_immutable_profile(
+        self, name: str = "training.profdata", contents: bytes = b"fake profdata"
+    ) -> Path:
+        path = self.directory / name
+        path.write_bytes(contents)
+        path.chmod(0o444)
+        return path
+
+    def make_immutable_profile_manifest(
+        self,
+        name: str = "training-profile-manifest.json",
+        contents: bytes = b'{"schema":"fake-pgo-profile-v1"}\n',
+    ) -> Path:
+        path = self.directory / name
+        path.write_bytes(contents)
+        path.chmod(0o444)
+        return path
+
+    def source_identity(self) -> tuple[str, str]:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.root,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
+        tree = subprocess.run(
+            ["git", "rev-parse", "HEAD^{tree}"],
+            cwd=self.root,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
+        return commit, tree
 
     def clear_logs(self) -> None:
         for path in (self.compiler_log, self.qmake_log, self.build_log):
@@ -370,8 +515,13 @@ class BuildClangPerfTests(unittest.TestCase):
         manifest_bytes = manifest.read_bytes()
         manifest_text = manifest_bytes.decode("utf-8")
         required_lines = (
-            "manifest_schema=klayout-clang-perf-v1",
+            "manifest_schema=klayout-clang-perf-v2",
             "resolved_profile=portable",
+            "pgo_mode=none",
+            "pgo_profile_source_path=",
+            "pgo_profile_sha256=",
+            "source_commit=",
+            "source_tree=",
             f"cc_path={self.compiler}",
             "cc_sha256=" + hashlib.sha256(self.compiler.read_bytes()).hexdigest(),
             f"cxx_path={self.compiler_cxx}",
@@ -453,6 +603,7 @@ class BuildClangPerfTests(unittest.TestCase):
         manifest.chmod(manifest.stat().st_mode | stat.S_IWUSR)
         mismatched = manifest.read_bytes() + b"unexpected_configuration=1\n"
         manifest.write_bytes(mismatched)
+        manifest.chmod(0o444)
         self.clear_logs()
 
         second = self.run_helper()
@@ -500,10 +651,519 @@ class BuildClangPerfTests(unittest.TestCase):
             self.output_root.exists(), "dry-run created an artifact directory"
         )
 
+    def test_pgo_generate_instruments_compiles_and_links_atomically(self) -> None:
+        result = self.run_helper("--pgo", "generate")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PGO mode:          generate", result.stdout)
+
+        pgo_calls = [
+            list(call["args"])
+            for call in self.compiler_calls()
+            if any(
+                str(arg).startswith("-fprofile-generate=")
+                for arg in list(call["args"])
+            )
+        ]
+        self.assertEqual(len(pgo_calls), 3)
+        for arguments in pgo_calls:
+            self.assertIn("-fprofile-update=atomic", arguments)
+            self.assertIn("-flto=full", arguments)
+
+        build_directory = self.profile_build_directory(pgo="generate")
+        bin_directory = self.profile_bin_directory(pgo="generate")
+        self.assertEqual(
+            Path(self.option_value(self.build_arguments(), "-build")),
+            build_directory,
+        )
+        self.assertEqual(
+            Path(self.option_value(self.build_arguments(), "-bin")), bin_directory
+        )
+        default_profiles = build_directory / "pgo-default-profraw-discard"
+        self.assertTrue(default_profiles.is_dir())
+        commit, tree = self.source_identity()
+        self.assertIn(
+            f"-commit-{commit[:16]}-tree-{tree[:16]}", build_directory.name
+        )
+        lifecycle = build_directory / PGO_STATE_NAME
+        lifecycle_text = lifecycle.read_text(encoding="utf-8")
+        self.assertIn(
+            "lifecycle_schema=klayout-clang-perf-pgo-lifecycle-v1",
+            lifecycle_text,
+        )
+        self.assertIn("status=complete", lifecycle_text)
+        self.assertIn("manifest_sha256=", lifecycle_text)
+        self.assertEqual(lifecycle.stat().st_mode & 0o222, 0)
+        self.assertFalse((build_directory / PGO_LOCK_NAME).exists())
+
+        qmake_args = self.qmake_arguments()
+        for variable in (
+            "QMAKE_CFLAGS+=",
+            "QMAKE_CXXFLAGS+=",
+            "QMAKE_LFLAGS+=",
+        ):
+            value = next(arg for arg in qmake_args if arg.startswith(variable))
+            self.assertIn(
+                f"-fprofile-generate={default_profiles}", value
+            )
+            self.assertIn("-fprofile-update=atomic", value)
+
+        manifest_text = self.manifest_path(pgo="generate").read_text(
+            encoding="utf-8"
+        )
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.root,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
+        tree = subprocess.run(
+            ["git", "rev-parse", "HEAD^{tree}"],
+            cwd=self.root,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
+        self.assertIn("pgo_mode=generate", manifest_text)
+        self.assertIn(f"source_commit={commit}", manifest_text)
+        self.assertIn(f"source_tree={tree}", manifest_text)
+        self.assertIn("-fprofile-update=atomic", manifest_text)
+
+    def test_pgo_failed_build_leaves_refusing_lifecycle(self) -> None:
+        failed = self.run_helper(
+            "--pgo", "generate", environment={"FAKE_BUILD_FAIL": "1"}
+        )
+        self.assertEqual(failed.returncode, 23, failed.stderr)
+        build_directory = self.profile_build_directory(pgo="generate")
+        state = build_directory / PGO_STATE_NAME
+        lock = build_directory / PGO_LOCK_NAME
+        self.assertIn("status=building", state.read_text(encoding="utf-8"))
+        self.assertEqual(state.stat().st_mode & 0o222, 0)
+        self.assertTrue(lock.is_dir())
+
+        self.clear_logs()
+        resumed = self.run_helper("--pgo", "generate")
+        self.assertEqual(resumed.returncode, 2)
+        self.assertIn("lifecycle lock exists", resumed.stderr)
+        self.assertFalse(self.build_log.exists())
+        self.assertFalse(self.qmake_log.exists())
+
+    def test_pgo_stale_or_concurrent_lock_refuses_complete_artifacts(self) -> None:
+        first = self.run_helper("--pgo", "generate")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        build_directory = self.profile_build_directory(pgo="generate")
+        (build_directory / PGO_LOCK_NAME).mkdir()
+        self.clear_logs()
+
+        second = self.run_helper("--pgo", "generate")
+        self.assertEqual(second.returncode, 2)
+        self.assertIn("lifecycle lock exists", second.stderr)
+        self.assertFalse(self.build_log.exists())
+        self.assertFalse(self.qmake_log.exists())
+
+    def test_pgo_sigkill_leaves_refusing_lifecycle(self) -> None:
+        killed = self.run_helper(
+            "--pgo", "generate", environment={"FAKE_BUILD_KILL_PARENT": "1"}
+        )
+        self.assertEqual(killed.returncode, -signal.SIGKILL)
+        build_arguments = self.build_arguments()
+        leaked_probe = Path(self.option_value(build_arguments, "-qmake")).parent
+        self.addCleanup(shutil.rmtree, leaked_probe, ignore_errors=True)
+        build_directory = self.profile_build_directory(pgo="generate")
+        self.assertIn(
+            "status=building",
+            (build_directory / PGO_STATE_NAME).read_text(encoding="utf-8"),
+        )
+        self.assertTrue((build_directory / PGO_LOCK_NAME).is_dir())
+
+        self.clear_logs()
+        resumed = self.run_helper("--pgo", "generate")
+        self.assertEqual(resumed.returncode, 2)
+        self.assertIn("lifecycle lock exists", resumed.stderr)
+        self.assertFalse(self.build_log.exists())
+        self.assertFalse(self.qmake_log.exists())
+
+    def test_pgo_tool_mutation_cannot_publish_complete(self) -> None:
+        result = self.run_helper(
+            "--pgo", "generate", environment={"FAKE_BUILD_MUTATE": "compiler"}
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("C compiler changed after configuration", result.stderr)
+        build_directory = self.profile_build_directory(pgo="generate")
+        self.assertIn(
+            "status=building",
+            (build_directory / PGO_STATE_NAME).read_text(encoding="utf-8"),
+        )
+        self.assertTrue((build_directory / PGO_LOCK_NAME).is_dir())
+
+    def test_pgo_staged_profile_mutation_cannot_publish_complete(self) -> None:
+        profile = self.make_immutable_profile(contents=b"trusted profile")
+        profile_hash = hashlib.sha256(profile.read_bytes()).hexdigest()
+        profile_manifest = self.make_immutable_profile_manifest()
+        manifest_hash = hashlib.sha256(profile_manifest.read_bytes()).hexdigest()
+        result = self.run_helper(
+            "--pgo",
+            "use",
+            "--pgo-profile",
+            str(profile),
+            "--pgo-profile-manifest",
+            str(profile_manifest),
+            environment={"FAKE_BUILD_MUTATE": "staged-profile"},
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("PGO profile must be immutable", result.stderr)
+        build_directory = self.profile_build_directory(
+            pgo="use", profile_hash=profile_hash, manifest_hash=manifest_hash
+        )
+        self.assertIn(
+            "status=building",
+            (build_directory / PGO_STATE_NAME).read_text(encoding="utf-8"),
+        )
+        self.assertTrue((build_directory / PGO_LOCK_NAME).is_dir())
+
+    def test_pgo_use_stages_hashed_immutable_profile(self) -> None:
+        profile = self.make_immutable_profile(contents=b"profile generation one")
+        profile_hash = hashlib.sha256(profile.read_bytes()).hexdigest()
+        profile_manifest = self.make_immutable_profile_manifest()
+        manifest_hash = hashlib.sha256(profile_manifest.read_bytes()).hexdigest()
+        result = self.run_helper(
+            "--profile",
+            "znver2",
+            "--pgo=use",
+            "--pgo-profile",
+            str(profile),
+            "--pgo-profile-manifest",
+            str(profile_manifest),
+            environment={"FAKE_NATIVE_CPU": "znver2"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PGO mode:          use", result.stdout)
+        self.assertIn(f"PGO profile SHA:    {profile_hash}", result.stdout)
+        self.assertIn(
+            "PGO probe scope:    profile format/toolchain only",
+            result.stdout,
+        )
+
+        build_directory = self.profile_build_directory(
+            "znver2",
+            pgo="use",
+            profile_hash=profile_hash,
+            manifest_hash=manifest_hash,
+        )
+        staged = build_directory / f"pgo-input-{profile_hash}.profdata"
+        staged_manifest = (
+            build_directory / f"pgo-profile-manifest-{manifest_hash}.json"
+        )
+        self.assertEqual(staged.read_bytes(), profile.read_bytes())
+        self.assertEqual(staged.stat().st_mode & 0o222, 0)
+        self.assertEqual(staged_manifest.read_bytes(), profile_manifest.read_bytes())
+        self.assertEqual(staged_manifest.stat().st_mode & 0o222, 0)
+        self.assertEqual(
+            Path(self.option_value(self.build_arguments(), "-build")),
+            build_directory,
+        )
+
+        qmake_args = self.qmake_arguments()
+        for variable in (
+            "QMAKE_CFLAGS+=",
+            "QMAKE_CXXFLAGS+=",
+            "QMAKE_LFLAGS+=",
+        ):
+            value = next(arg for arg in qmake_args if arg.startswith(variable))
+            self.assertIn(f"-fprofile-use={staged}", value)
+            self.assertIn("-Werror=profile-instr-out-of-date", value)
+            self.assertIn("-march=znver2", value)
+
+        manifest_text = self.manifest_path(
+            "znver2",
+            pgo="use",
+            profile_hash=profile_hash,
+            manifest_hash=manifest_hash,
+        ).read_text(encoding="utf-8")
+        self.assertIn("pgo_mode=use", manifest_text)
+        self.assertIn(f"pgo_profile_source_path={profile}", manifest_text)
+        self.assertIn(f"pgo_profile_sha256={profile_hash}", manifest_text)
+        self.assertIn(f"pgo_profile_build_path={staged}", manifest_text)
+        self.assertIn(
+            f"pgo_profile_manifest_source_path={profile_manifest}", manifest_text
+        )
+        self.assertIn(f"pgo_profile_manifest_sha256={manifest_hash}", manifest_text)
+        self.assertIn(
+            f"pgo_profile_manifest_build_path={staged_manifest}", manifest_text
+        )
+
+        self.clear_logs()
+        resumed = self.run_helper(
+            "--profile",
+            "znver2",
+            "--pgo=use",
+            "--pgo-profile",
+            str(profile),
+            "--pgo-profile-manifest",
+            str(profile_manifest),
+            environment={"FAKE_NATIVE_CPU": "znver2"},
+        )
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertIn("manifest status:    matching-resume", resumed.stdout)
+        self.assertEqual(staged.read_bytes(), profile.read_bytes())
+
+    def test_pgo_use_rejects_a_tampered_staged_profile(self) -> None:
+        profile = self.make_immutable_profile(contents=b"trusted profile")
+        profile_hash = hashlib.sha256(profile.read_bytes()).hexdigest()
+        profile_manifest = self.make_immutable_profile_manifest()
+        manifest_hash = hashlib.sha256(profile_manifest.read_bytes()).hexdigest()
+        first = self.run_helper(
+            "--pgo",
+            "use",
+            "--pgo-profile",
+            str(profile),
+            "--pgo-profile-manifest",
+            str(profile_manifest),
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        staged = (
+            self.profile_build_directory(
+                pgo="use",
+                profile_hash=profile_hash,
+                manifest_hash=manifest_hash,
+            )
+            / f"pgo-input-{profile_hash}.profdata"
+        )
+        staged.chmod(0o644)
+        staged.write_bytes(b"tampered profile")
+        staged.chmod(0o444)
+        self.clear_logs()
+
+        second = self.run_helper(
+            "--pgo",
+            "use",
+            "--pgo-profile",
+            str(profile),
+            "--pgo-profile-manifest",
+            str(profile_manifest),
+        )
+        self.assertEqual(second.returncode, 2)
+        self.assertIn(
+            "staged PGO profile does not match its manifest identity",
+            second.stderr,
+        )
+        self.assertFalse(self.build_log.exists())
+        self.assertFalse(self.qmake_log.exists())
+
+    def test_pgo_profile_hash_separates_use_builds(self) -> None:
+        first_profile = self.make_immutable_profile(
+            "first.profdata", b"first profile"
+        )
+        second_profile = self.make_immutable_profile(
+            "second.profdata", b"second profile"
+        )
+        first_hash = hashlib.sha256(first_profile.read_bytes()).hexdigest()
+        second_hash = hashlib.sha256(second_profile.read_bytes()).hexdigest()
+        profile_manifest = self.make_immutable_profile_manifest()
+        manifest_hash = hashlib.sha256(profile_manifest.read_bytes()).hexdigest()
+
+        first = self.run_helper(
+            "--pgo",
+            "use",
+            "--pgo-profile",
+            str(first_profile),
+            "--pgo-profile-manifest",
+            str(profile_manifest),
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.clear_logs()
+        second = self.run_helper(
+            "--pgo",
+            "use",
+            "--pgo-profile",
+            str(second_profile),
+            "--pgo-profile-manifest",
+            str(profile_manifest),
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertNotEqual(first_hash, second_hash)
+        self.assertTrue(
+            self.profile_build_directory(
+                pgo="use", profile_hash=first_hash, manifest_hash=manifest_hash
+            ).is_dir()
+        )
+        self.assertTrue(
+            self.profile_build_directory(
+                pgo="use", profile_hash=second_hash, manifest_hash=manifest_hash
+            ).is_dir()
+        )
+
+    def test_pgo_phase_directories_do_not_mix_with_default(self) -> None:
+        baseline = self.run_helper("--pgo", "none")
+        self.assertEqual(baseline.returncode, 0, baseline.stderr)
+        self.assertIn("PGO mode:          none", baseline.stdout)
+        self.clear_logs()
+        generate = self.run_helper("--pgo", "generate")
+        self.assertEqual(generate.returncode, 0, generate.stderr)
+        self.assertTrue(self.profile_build_directory().is_dir())
+        self.assertTrue(self.profile_build_directory(pgo="generate").is_dir())
+        self.assertNotEqual(
+            self.profile_build_directory(),
+            self.profile_build_directory(pgo="generate"),
+        )
+
+    def test_pgo_control_is_clean_bound_and_has_no_profile_flags(self) -> None:
+        control = self.run_helper("--pgo", "control")
+        self.assertEqual(control.returncode, 0, control.stderr)
+        self.assertIn("PGO mode:          control", control.stdout)
+        build_directory = self.profile_build_directory(pgo="control")
+        self.assertEqual(
+            Path(self.option_value(self.build_arguments(), "-build")),
+            build_directory,
+        )
+        self.assertIn("status=complete", (build_directory / PGO_STATE_NAME).read_text())
+        self.assertFalse((build_directory / PGO_LOCK_NAME).exists())
+        qmake_text = " ".join(self.qmake_arguments())
+        self.assertIn("-flto=full", qmake_text)
+        self.assertNotIn("-fprofile-generate", qmake_text)
+        self.assertNotIn("-fprofile-use", qmake_text)
+        manifest_text = self.manifest_path(pgo="control").read_text()
+        commit, tree = self.source_identity()
+        self.assertIn("pgo_mode=control", manifest_text)
+        self.assertIn(f"source_commit={commit}", manifest_text)
+        self.assertIn(f"source_tree={tree}", manifest_text)
+
+    def test_explicit_pgo_never_falls_back_to_non_pgo(self) -> None:
+        result = self.run_helper(
+            "--pgo", "generate", environment={"FAKE_FAIL": "pgo-link"}
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PGO generate full-LTO link probe failed", result.stderr)
+        self.assertIn("refusing a non-PGO build", result.stderr)
+        self.assertFalse(self.build_log.exists())
+        self.assertFalse(self.qmake_log.exists())
+        self.assertFalse(self.output_root.exists())
+
+    def test_znver2_fallback_retains_requested_pgo_phase(self) -> None:
+        result = self.run_helper("--profile", "znver2", "--pgo", "generate")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("falling back to portable", result.stderr)
+        self.assertIn("resolved profile:  portable", result.stdout)
+        self.assertIn("PGO mode:          generate", result.stdout)
+        self.assertEqual(
+            Path(self.option_value(self.build_arguments(), "-build")),
+            self.profile_build_directory(pgo="generate"),
+        )
+        qmake_args = self.qmake_arguments()
+        self.assertIn("-fprofile-generate=", " ".join(qmake_args))
+        self.assertNotIn("-march=znver2", " ".join(qmake_args))
+
+    def test_pgo_dry_run_is_nonmutating(self) -> None:
+        result = self.run_helper("--pgo", "generate", "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PGO mode:          generate", result.stdout)
+        self.assertIn("new (dry-run; not written)", result.stdout)
+        self.assertFalse(self.output_root.exists())
+        self.assertFalse(self.build_log.exists())
+        self.assertFalse(self.qmake_log.exists())
+
+    def test_help_requires_process_and_module_profile_placeholders(self) -> None:
+        result = self.run_helper("--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("containing both %p and %m", result.stdout)
+        self.assertIn("%m_%p.profraw", result.stdout)
+
+    def test_pgo_requires_a_clean_committed_source(self) -> None:
+        with self.build.open("a", encoding="utf-8") as stream:
+            stream.write("\n# uncommitted change\n")
+        pgo = self.run_helper("--pgo", "generate", "--dry-run")
+        self.assertEqual(pgo.returncode, 2)
+        self.assertIn("require a clean source tree", pgo.stderr)
+        self.assertFalse(self.output_root.exists())
+
+        # The non-PGO default deliberately retains its existing behavior.
+        baseline = self.run_helper("--dry-run")
+        self.assertEqual(baseline.returncode, 0, baseline.stderr)
+
+    def test_pgo_use_requires_regular_read_only_profile(self) -> None:
+        missing = self.run_helper("--pgo", "use")
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn("requires --pgo-profile", missing.stderr)
+
+        profile = self.make_immutable_profile()
+        missing_manifest = self.run_helper(
+            "--pgo", "use", "--pgo-profile", str(profile)
+        )
+        self.assertEqual(missing_manifest.returncode, 2)
+        self.assertIn("requires --pgo-profile-manifest", missing_manifest.stderr)
+        profile_manifest = self.make_immutable_profile_manifest()
+
+        writable = self.directory / "writable.profdata"
+        writable.write_bytes(b"mutable")
+        writable.chmod(0o644)
+        mutable = self.run_helper(
+            "--pgo",
+            "use",
+            "--pgo-profile",
+            str(writable),
+            "--pgo-profile-manifest",
+            str(profile_manifest),
+        )
+        self.assertEqual(mutable.returncode, 2)
+        self.assertIn("must be immutable", mutable.stderr)
+
+        symlink = self.directory / "linked.profdata"
+        symlink.symlink_to(profile)
+        linked = self.run_helper(
+            "--pgo",
+            "use",
+            "--pgo-profile",
+            str(symlink),
+            "--pgo-profile-manifest",
+            str(profile_manifest),
+        )
+        self.assertEqual(linked.returncode, 2)
+        self.assertIn("must not be a symbolic link", linked.stderr)
+        self.assertFalse(self.build_log.exists())
+        self.assertFalse(self.qmake_log.exists())
+
+    def test_pgo_use_requires_immutable_valid_json_manifest(self) -> None:
+        profile = self.make_immutable_profile()
+        invalid = self.make_immutable_profile_manifest(
+            "invalid.json", b"not json\n"
+        )
+        invalid_result = self.run_helper(
+            "--pgo",
+            "use",
+            "--pgo-profile",
+            str(profile),
+            "--pgo-profile-manifest",
+            str(invalid),
+        )
+        self.assertEqual(invalid_result.returncode, 2)
+        self.assertIn("not a valid JSON object", invalid_result.stderr)
+
+        writable = self.directory / "writable-manifest.json"
+        writable.write_text("{}\n", encoding="utf-8")
+        writable.chmod(0o644)
+        writable_result = self.run_helper(
+            "--pgo",
+            "use",
+            "--pgo-profile",
+            str(profile),
+            "--pgo-profile-manifest",
+            str(writable),
+        )
+        self.assertEqual(writable_result.returncode, 2)
+        self.assertIn("PGO profile manifest must be immutable", writable_result.stderr)
+
     def test_invalid_and_helper_managed_options_are_rejected(self) -> None:
         invalid = self.run_helper("--profile", "native")
         self.assertEqual(invalid.returncode, 2)
         self.assertIn("unsupported profile", invalid.stderr)
+        invalid_pgo = self.run_helper("--pgo", "sample")
+        self.assertEqual(invalid_pgo.returncode, 2)
+        self.assertIn("unsupported PGO mode", invalid_pgo.stderr)
+        unused_profile = self.run_helper(
+            "--pgo", "generate", "--pgo-profile", "/tmp/unneeded.profdata"
+        )
+        self.assertEqual(unused_profile.returncode, 2)
+        self.assertIn("are valid only with --pgo use", unused_profile.stderr)
         managed = self.run_helper("--", "-build", "/tmp/collision")
         self.assertEqual(managed.returncode, 2)
         self.assertIn("managed by this helper", managed.stderr)
