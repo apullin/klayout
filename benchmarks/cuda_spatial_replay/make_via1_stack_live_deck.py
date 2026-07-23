@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Create the atomic live-CUDA VIA1-stack variant of the FreePDK45 deck."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+
+def replace_once(text: str, old: str, new: str, label: str) -> str:
+    count = text.count(old)
+    if count != 1:
+        raise RuntimeError(f"{label}: expected one source block, found {count}")
+    return text.replace(old, new, 1)
+
+
+def transform(text: str) -> str:
+    text = replace_once(
+        text,
+        """metal10    = polygons(29, 0)
+
+# Computed layers""",
+        """metal10    = polygons(29, 0)
+
+# CUDA off preserves the source deck's original shard owners and CPU chains.
+# CUDA on moves all six decisions into via1_upper_active12.  A missing method,
+# disabled/missing backend, unsupported hierarchy, proof miss, or validation
+# failure then selects all six local historical CPU chains.
+via1_stack_request = ENV["KLAYOUT_CUDA_VIA1_STACK"].to_s
+via1_stack_requested = !via1_stack_request.empty? &amp;&amp; via1_stack_request != "0" &amp;&amp; via1_stack_request != "false" &amp;&amp; via1_stack_request != "off"
+via1_stack_owner = via1_stack_requested &amp;&amp; run_via1_upper_active12
+via1_stack_clean = via1_stack_owner &amp;&amp; via1.respond_to?(:cuda_via1_stack_clean?) &amp;&amp; via1.cuda_via1_stack_clean?(metal1, metal2)
+via1_stack_empty = polygon_layer if via1_stack_clean
+info("CUDA VIA1 stack transaction: #{via1_stack_clean ? 'certified-empty' : 'full-cpu-fallback'}") if via1_stack_owner
+
+# Computed layers""",
+        "transaction initialization",
+    )
+
+    text = replace_once(
+        text,
+        """if run_m1_via_class
+
+via1_edges_with_less_enclosure = metal1.enclosing(via1, 35.nm, projection).second_edges
+error_corners = via1_edges_with_less_enclosure.width(angle_limit(100.0), 1.dbu)
+via1_edges_with_less_enclosure.forget
+via1.interacting(error_corners.polygons(1.dbu)).output("METAL1.4", "METAL1.4 : Minimum enclosure around via1 on two opposite sides : 35nm")
+error_corners.forget
+metal1_gt90""",
+        """if run_m1_via_class
+
+unless via1_stack_requested
+  via1_edges_with_less_enclosure = metal1.enclosing(via1, 35.nm, projection).second_edges
+  error_corners = via1_edges_with_less_enclosure.width(angle_limit(100.0), 1.dbu)
+  via1_edges_with_less_enclosure.forget
+  via1.interacting(error_corners.polygons(1.dbu)).output("METAL1.4", "METAL1.4 : Minimum enclosure around via1 on two opposite sides : 35nm")
+  error_corners.forget
+end
+
+metal1_gt90""",
+        "METAL1.4 original ownership",
+    )
+
+    text = replace_once(
+        text,
+        """#   Via1
+via1.edges.without_length(65.nm).output("VIA1.1", "VIA1.1 : Minimum/Maximum width of via1 : 65nm")
+via1.space(75.nm, euclidian).output("VIA1.2", "VIA1.2 : Minimum spacing of via1 : 75nm")
+via1.not(metal1).output("VIA1.3", "VIA1.3 : via1 must be inside metal1")""",
+        """if via1_stack_owner
+  if via1_stack_clean
+    via1_stack_empty.output("METAL1.4", "METAL1.4 : Minimum enclosure around via1 on two opposite sides : 35nm")
+  else
+    via1_edges_with_less_enclosure = metal1.enclosing(via1, 35.nm, projection).second_edges
+    error_corners = via1_edges_with_less_enclosure.width(angle_limit(100.0), 1.dbu)
+    via1_edges_with_less_enclosure.forget
+    via1.interacting(error_corners.polygons(1.dbu)).output("METAL1.4", "METAL1.4 : Minimum enclosure around via1 on two opposite sides : 35nm")
+    error_corners.forget
+  end
+end
+
+#   Via1
+if via1_stack_clean
+  via1_stack_empty.output("VIA1.1", "VIA1.1 : Minimum/Maximum width of via1 : 65nm")
+  via1_stack_empty.output("VIA1.2", "VIA1.2 : Minimum spacing of via1 : 75nm")
+  via1_stack_empty.output("VIA1.3", "VIA1.3 : via1 must be inside metal1")
+else
+  via1.edges.without_length(65.nm).output("VIA1.1", "VIA1.1 : Minimum/Maximum width of via1 : 65nm")
+  via1.space(75.nm, euclidian).output("VIA1.2", "VIA1.2 : Minimum spacing of via1 : 75nm")
+  via1.not(metal1).output("VIA1.3", "VIA1.3 : via1 must be inside metal1")
+end""",
+        "VIA1.1-.3 transaction",
+    )
+
+    text = replace_once(
+        text,
+        """via1.not(metal2).output("VIA1.4", "VIA1.4 : via1 must be inside metal2")""",
+        """if via1_stack_clean
+  via1_stack_empty.output("VIA1.4", "VIA1.4 : via1 must be inside metal2")
+else
+  via1.not(metal2).output("VIA1.4", "VIA1.4 : via1 must be inside metal2")
+end
+
+if via1_stack_owner
+  if via1_stack_clean
+    via1_stack_empty.output("METAL2.3", "METAL2.3 : Minimum enclosure around via1 on two opposite sides : 35nm")
+  else
+    via1_edges_with_less_enclosure = metal2.enclosing(via1, 35.nm, projection).second_edges
+    error_corners = via1_edges_with_less_enclosure.width(angle_limit(100.0), 1.dbu)
+    via1_edges_with_less_enclosure.forget
+    via1.interacting(error_corners.polygons(1.dbu)).output("METAL2.3", "METAL2.3 : Minimum enclosure around via1 on two opposite sides : 35nm")
+    error_corners.forget
+  end
+end""",
+        "VIA1.4 and METAL2.3 transaction",
+    )
+
+    text = replace_once(
+        text,
+        """metal2_space.output("METAL2.2", "METAL2.2 : Minimum spacing of  intermediate metal2 : 70nm")
+via1_edges_with_less_enclosure = metal2.enclosing(via1, 35.nm, projection).second_edges
+error_corners = via1_edges_with_less_enclosure.width(angle_limit(100.0), 1.dbu)
+via1_edges_with_less_enclosure.forget
+via1.interacting(error_corners.polygons(1.dbu)).output("METAL2.3", "METAL2.3 : Minimum enclosure around via1 on two opposite sides : 35nm")
+error_corners.forget
+via2_edges_with_less_enclosure""",
+        """metal2_space.output("METAL2.2", "METAL2.2 : Minimum spacing of  intermediate metal2 : 70nm")
+unless via1_stack_requested
+  via1_edges_with_less_enclosure = metal2.enclosing(via1, 35.nm, projection).second_edges
+  error_corners = via1_edges_with_less_enclosure.width(angle_limit(100.0), 1.dbu)
+  via1_edges_with_less_enclosure.forget
+  via1.interacting(error_corners.polygons(1.dbu)).output("METAL2.3", "METAL2.3 : Minimum enclosure around via1 on two opposite sides : 35nm")
+  error_corners.forget
+end
+
+via2_edges_with_less_enclosure""",
+        "METAL2.3 original ownership",
+    )
+
+    # The source owners remain intact and are only suppressed when the atomic
+    # owner is explicitly requested. Exact guard balance is parsed by KLayout
+    # in the live gate.
+    return text
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args()
+
+    source = args.input.read_text(encoding="utf-8")
+    output = transform(source)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(output, encoding="utf-8")
+    print(f"VIA1_STACK_LIVE_DECK input={args.input} output={args.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

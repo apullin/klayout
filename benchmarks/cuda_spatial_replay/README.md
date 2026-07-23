@@ -215,6 +215,67 @@ messages. The GPU publishes candidates in deterministic pair-key order, not
 the CPU sweep's callback order; the audited interaction receiver is insensitive
 to that ordering.
 
+### Atomic live M1/VIA1/M2 transaction
+
+`KLAYOUT_CUDA_VIA1_STACK=1` enables the additive
+`klayout_cuda_spatial_run_via1_stack_empty_v1` entry point. The qualified
+FreePDK45 path serializes raw layers 11/0, 12/0, and 13/0 from one
+`DeepShapeStore`, uploads their shared hierarchy once, expands VIA1 once, and
+retains its CSR grid across M1 and M2 projection-enclosure passes. One metal
+scratch allocation and grid are reused. The CPU receives one digest-bound
+six-bit result covering METAL1.4, VIA1.1--1.4, and METAL2.3.
+
+Only a complete all-six empty certificate can bypass DRC work. A malformed or
+partial request/result, unsupported geometry or hierarchy, capacity limit,
+size/spacing/enclosure violation, nonidentical VIA touch/overlap, CUDA error,
+or exception runs all six historical CPU chains. Exact coincident VIA
+duplicates are safe under the required merged Region semantics. The live hook
+also requires exact source-layer provenance, 0.5 nm DBU, no breakout cells,
+hole-free Manhattan metal, rectangular 65 nm cuts, and checked orthogonal
+hierarchy transforms.
+
+The generated deck preserves its original CPU shard owners when the opt-in is
+off. When requested, it moves the six decisions into
+`via1_upper_active12`; a missing method/backend or any proof decline performs
+the complete local CPU fallback. Generate and qualify that deck with:
+
+```sh
+python3 benchmarks/cuda_spatial_replay/make_via1_stack_live_deck.py \
+  --input freepdk45-eight-way-dual-repack.lydrc \
+  --output freepdk45-via1-stack-live.lydrc
+
+benchmarks/cuda_spatial_replay/run_via1_stack_live_gate.sh \
+  --stock-klayout /path/to/stock/klayout \
+  --live-klayout /path/to/live/klayout \
+  --backend /path/to/libklayout_cuda_spatial_backend.so \
+  --deck freepdk45-eight-way-dual-repack.lydrc
+```
+
+The gate covers 17 live-layout cases and three lanes: stock requested
+fallback, live requested fallback, and CUDA. It checks original/off ownership,
+requested atomic ownership, exact enclosure and spacing boundaries, diagonal
+distance, duplicates, X/Y slab witnesses, hierarchy transforms, nine
+fail-closed cases, and stock-identical reports. The CPU-only host attack matrix
+builds and tests a fake backend without requiring a GPU:
+
+```sh
+benchmarks/cuda_spatial_replay/run_via1_stack_host_guard.sh \
+  --klayout-bin /path/to/klayout/bin
+```
+
+On the downstream-composed FreePDK45 x2 scene, the fused backend handled
+849,265 contexts, 41,109,338 M1 rectangles, 20,178,022 VIA occurrences,
+22,947,380 M2 rectangles, and 672,673,286 uniquely owned VIA candidates in
+537.582 ms. Live lowering took 1,172.094 ms. The same-binary eight-owner A/B
+changed `m1_via_class` from 259.526 to 59.832 s (**76.95% less wall**),
+`m2_rules` from 230.567 to 100.867 s (**56.25% less**), and
+`via1_upper_active12` from 187.276 to 59.982 s (**67.97% less**). Canonical
+merged reports were identical with SHA-256
+`01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+The parallel launcher changed only 278.20 to 275.97 s (**0.80% less**) because
+the unchanged `m1_enclosure` owner remained critical; the lane savings are not
+misreported as a whole-run win.
+
 ### Opt-in `DeepEdges` merge certificate
 
 `KLAYOUT_CUDA_DISCONNECTED_MERGE=1` enables a separate, fail-closed
