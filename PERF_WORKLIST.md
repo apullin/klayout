@@ -995,6 +995,26 @@ not just wall time.
       less M2 wall time, below the +10% whole-run integration gate.  Do not
       build the AF_UNIX/shared-arena production broker unless a wider measured
       seam first raises the charged opportunity above that threshold.
+
+    - [x] **Cross-shard EdgeProcessor phase census:** an opt-in, bounded
+      `KLAYOUT_EDGE_PHASE_PROFILE_MIN_EDGES` probe now separates preparation,
+      intersection discovery, cutpoint splitting, and stateful production
+      without changing the disabled algorithm.  All 184 EdgeProcessor test
+      executions pass; Manhattan, diagonal, and redo probes account exactly
+      for their measured phase totals.  A five-pair, ten-repeat disabled-path
+      stress gate measured 10.637 s control versus 10.453 s instrumented means,
+      so no regression is visible (the favorable difference is not booked as
+      a speedup).
+
+      On the x2 capstone, every one of the 16,508 captured M1/M2 calls was
+      Manhattan.  M1 accumulated 47.642 s of phase time: 25.723 s
+      intersections, 2.118 s splitting, and 19.749 s production.  M2
+      accumulated 32.003 s: 15.143 s intersections, 0.673 s splitting, and
+      16.152 s production.  These clocks sum work across four worker threads
+      and are **not** removable shard or whole-launch seconds.  They establish
+      a materially wider device-neutral target for an exact Manhattan
+      intersect/split replay, with stateful production as a second kernel only
+      if charged A/B evidence warrants it.
 15. [ ] **Lean headless DRC build and developer-turnaround path**
     The accepted runtime is headless, but the standard build still compiles the
     full KLayout distribution.  The current graph has 1,877 object files; 724

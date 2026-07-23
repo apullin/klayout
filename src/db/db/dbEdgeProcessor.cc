@@ -29,6 +29,10 @@
 #include "tlProgress.h"
 #include "gsi.h"
 
+#include <chrono>
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
 #include <vector>
 #include <deque>
 #include <memory>
@@ -45,6 +49,46 @@ namespace db
 {
 
 const double fill_factor = 1.5;
+
+namespace
+{
+
+size_t
+edge_processor_phase_profile_min_edges ()
+{
+  static const size_t min_edges = [] () {
+    const char *value = std::getenv ("KLAYOUT_EDGE_PHASE_PROFILE_MIN_EDGES");
+    if (! value || ! *value) {
+      return size_t (0);
+    }
+
+    const int saved_errno = errno;
+    errno = 0;
+    char *end = 0;
+    unsigned long long parsed = std::strtoull (value, &end, 10);
+    const bool valid =
+      errno == 0 && end != value && *end == '\0' &&
+      parsed <= static_cast<unsigned long long> (std::numeric_limits<size_t>::max ());
+    errno = saved_errno;
+    if (! valid) {
+      return size_t (0);
+    }
+
+    return static_cast<size_t> (parsed);
+  } ();
+
+  return min_edges;
+}
+
+double
+edge_processor_phase_milliseconds (
+  const std::chrono::steady_clock::time_point &begin,
+  const std::chrono::steady_clock::time_point &end)
+{
+  return std::chrono::duration<double, std::milli> (end - begin).count ();
+}
+
+}
 
 // -------------------------------------------------------------------------------
 //  Some utilities ..
@@ -2175,6 +2219,21 @@ EdgeProcessor::redo_or_process (const std::vector<std::pair<db::EdgeSink *, db::
 {
   tl::SelfTimer timer (tl::verbosity () >= m_base_verbosity, "EdgeProcessor: process");
 
+  typedef std::chrono::steady_clock phase_clock;
+  const size_t phase_profile_input_edges = mp_work_edges->size ();
+  const size_t phase_profile_min_edges = edge_processor_phase_profile_min_edges ();
+  const bool phase_profile =
+    phase_profile_min_edges > 0 &&
+    phase_profile_input_edges >= phase_profile_min_edges;
+  phase_clock::time_point phase_start;
+  phase_clock::time_point phase_prepared;
+  phase_clock::time_point phase_intersections;
+  phase_clock::time_point phase_split;
+  if (phase_profile) {
+    phase_start = phase_clock::now ();
+  }
+  bool phase_all_manhattan = true;
+
   EdgeProcessorStates gs (gen);
 
   bool prefer_touch = gs.prefer_touch ();
@@ -2222,6 +2281,11 @@ EdgeProcessor::redo_or_process (const std::vector<std::pair<db::EdgeSink *, db::
   size_t todo = todo_next;
   todo_next += (todo_max - todo) / 5;
 
+  if (phase_profile) {
+    phase_prepared = phase_clock::now ();
+    phase_intersections = phase_prepared;
+    phase_split = phase_prepared;
+  }
 
   if (redo) {
 
@@ -2285,6 +2349,9 @@ EdgeProcessor::redo_or_process (const std::vector<std::pair<db::EdgeSink *, db::
         if (is90) {
           get_intersections_per_band_90 (*mp_cpvector, current, future, y, yy, selects_edges);
         } else {
+          if (phase_profile) {
+            phase_all_manhattan = false;
+          }
           get_intersections_per_band_any (*mp_cpvector, current, future, y, yy, selects_edges);
         }
 
@@ -2302,6 +2369,10 @@ EdgeProcessor::redo_or_process (const std::vector<std::pair<db::EdgeSink *, db::
         }
       }
 
+    }
+
+    if (phase_profile) {
+      phase_intersections = phase_clock::now ();
     }
 
     //  step 3: create new edges from the ones with cutpoints
@@ -2410,8 +2481,18 @@ EdgeProcessor::redo_or_process (const std::vector<std::pair<db::EdgeSink *, db::
     }
 #endif
 
+    if (phase_profile) {
+      phase_split = phase_clock::now ();
+    }
+
   }
 
+  if (phase_profile && redo) {
+    phase_split = phase_clock::now ();
+  }
+
+  const size_t phase_profile_split_edges =
+    phase_profile ? mp_work_edges->size () : size_t (0);
 
   tl::SelfTimer timer2 (tl::verbosity () >= m_base_verbosity + 10, "EdgeProcessor: production");
 
@@ -2675,6 +2756,27 @@ EdgeProcessor::redo_or_process (const std::vector<std::pair<db::EdgeSink *, db::
 
   gs.flush ();
 
+  if (phase_profile) {
+    const phase_clock::time_point phase_done = phase_clock::now ();
+    std::fprintf (
+      stderr,
+      "KLAYOUT_EDGE_PHASE"
+      " input_edges=%zu split_edges=%zu redo=%d all_manhattan=%d"
+      " prepare_ms=%.6f intersections_ms=%.6f split_ms=%.6f"
+      " production_ms=%.6f total_ms=%.6f\n",
+      phase_profile_input_edges,
+      phase_profile_split_edges,
+      redo ? 1 : 0,
+      redo ? -1 : (phase_all_manhattan ? 1 : 0),
+      redo
+        ? edge_processor_phase_milliseconds (phase_start, phase_split)
+        : edge_processor_phase_milliseconds (phase_start, phase_prepared),
+      redo ? 0.0 : edge_processor_phase_milliseconds (phase_prepared, phase_intersections),
+      redo ? 0.0 : edge_processor_phase_milliseconds (phase_intersections, phase_split),
+      edge_processor_phase_milliseconds (phase_split, phase_done),
+      edge_processor_phase_milliseconds (phase_start, phase_done));
+  }
+
 }
 
 void
@@ -2933,4 +3035,3 @@ EdgeProcessor::boolean (const std::vector<db::Edge> &a, const std::vector<db::Ed
 }
 
 } // namespace db
-
