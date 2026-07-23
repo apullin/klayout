@@ -188,6 +188,7 @@ SOURCES = \
   dbLocalOperation.cc \
   dbCudaActive3.cc \
   dbCudaSpatialBackend.cc \
+  dbCudaVia1Stack.cc \
   dbHierProcessor.cc \
   dbDeepRegion.cc \
   dbHierNetworkProcessor.cc \
@@ -374,6 +375,8 @@ HEADERS = \
   dbCudaActive3Digest.h \
   dbCudaSpatialApi.h \
   dbCudaSpatialBackend.h \
+  dbCudaVia1Stack.h \
+  dbCudaVia1StackDigest.h \
   dbVariableWidthPath.h \
   dbNamedLayerReader.h \
   dbForceLink.h \

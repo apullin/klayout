@@ -444,6 +444,219 @@ KLAYOUT_CUDA_SPATIAL_EXPORT int klayout_cuda_spatial_run_active3_empty_v1 (
   const struct klayout_cuda_spatial_active3_request_v1 *request,
   struct klayout_cuda_spatial_active3_result_v1 *result);
 
+/*
+ * Optional atomic VIA1-stack empty certificate.
+ *
+ * The caller supplies one qualified hierarchy containing raw M1, VIA1 and M2
+ * box templates.  Manhattan metal polygons are represented by conservative
+ * rectangle witnesses (normally the union of exact X- and Y-slab
+ * decompositions); VIA1 templates must be exact rectangles.  The backend
+ * expands VIA1 once, retains it on the device, and certifies the complete
+ * six-rule stack in one transaction.
+ *
+ * The first implementation accepts only requested_mask == ALL.  A partial
+ * certified_empty_mask is diagnostic telemetry and must never be used to skip
+ * an individual CPU rule.  A caller may bypass the historical six CPU checks
+ * only when every requested bit is certified and every proof echo matches.
+ */
+enum klayout_cuda_spatial_via1_stack_opcode
+{
+  KLAYOUT_CUDA_SPATIAL_VIA1_STACK_EMPTY = 1
+};
+
+enum klayout_cuda_spatial_via1_stack_rule
+{
+  KLAYOUT_CUDA_SPATIAL_VIA1_METAL1_4 = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_VIA1_1 = 1u << 1,
+  KLAYOUT_CUDA_SPATIAL_VIA1_2 = 1u << 2,
+  KLAYOUT_CUDA_SPATIAL_VIA1_3 = 1u << 3,
+  KLAYOUT_CUDA_SPATIAL_VIA1_4 = 1u << 4,
+  KLAYOUT_CUDA_SPATIAL_VIA1_METAL2_3 = 1u << 5
+};
+
+#define KLAYOUT_CUDA_SPATIAL_VIA1_STACK_ALL_RULES ((1u << 6) - 1u)
+
+enum klayout_cuda_spatial_via1_stack_option_flag
+{
+  KLAYOUT_CUDA_SPATIAL_VIA1_STACK_SAME_STORE_AND_TOP = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_VIA1_STACK_NO_BREAKOUT = 1u << 1,
+  KLAYOUT_CUDA_SPATIAL_VIA1_STACK_MANHATTAN_METAL = 1u << 2,
+  KLAYOUT_CUDA_SPATIAL_VIA1_STACK_RECTANGULAR_CUT = 1u << 3,
+  KLAYOUT_CUDA_SPATIAL_VIA1_STACK_EXACT_DUAL_SLABS = 1u << 4,
+  KLAYOUT_CUDA_SPATIAL_VIA1_STACK_STRICT_EUCLIDEAN = 1u << 5,
+  KLAYOUT_CUDA_SPATIAL_VIA1_STACK_IGNORE_PROPERTIES = 1u << 6,
+  KLAYOUT_CUDA_SPATIAL_VIA1_STACK_RAW_COMPLETE_LAYERS = 1u << 7
+};
+
+#define KLAYOUT_CUDA_SPATIAL_VIA1_STACK_QUALIFIED_OPTIONS ((1u << 8) - 1u)
+
+enum klayout_cuda_spatial_via1_stack_disposition
+{
+  /* Every requested rule is certified empty. */
+  KLAYOUT_CUDA_SPATIAL_VIA1_STACK_COMPLETE = 0,
+  /* The exact scan found a miss or violation; run all six CPU rules. */
+  KLAYOUT_CUDA_SPATIAL_VIA1_STACK_NOT_EMPTY = 1,
+  /* Capacity, malformed input, or a device invariant prevented a proof. */
+  KLAYOUT_CUDA_SPATIAL_VIA1_STACK_UNCERTAIN = 2
+};
+
+struct klayout_cuda_spatial_via1_stack_context_v1
+{
+  int64_t tx;
+  int64_t ty;
+  uint32_t cell_id;
+  uint32_t transform_code;
+};
+
+struct klayout_cuda_spatial_via1_stack_box_v1
+{
+  int64_t left;
+  int64_t bottom;
+  int64_t right;
+  int64_t top;
+};
+
+struct klayout_cuda_spatial_via1_stack_cell_v1
+{
+  uint64_t metal1_box_begin;
+  uint64_t via1_box_begin;
+  uint64_t metal2_box_begin;
+  uint32_t metal1_box_count;
+  uint32_t via1_box_count;
+  uint32_t metal2_box_count;
+  uint32_t reserved0;
+};
+
+struct klayout_cuda_spatial_via1_stack_request_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t requested_mask;
+  uint32_t dbu_per_micron;
+  int32_t device;
+  uint32_t reserved0;
+
+  int64_t enclosure_distance;
+  int64_t cut_width;
+  int64_t cut_height;
+  int64_t spacing_distance;
+  int64_t grid_cell_size;
+
+  const struct klayout_cuda_spatial_via1_stack_context_v1 *contexts;
+  uint64_t context_count;
+  const uint32_t *metal1_contexts;
+  uint64_t metal1_context_count;
+  const uint64_t *metal1_offsets;
+  uint64_t metal1_offset_count;
+  const uint32_t *via1_contexts;
+  uint64_t via1_context_count;
+  const uint64_t *via1_offsets;
+  uint64_t via1_offset_count;
+  const uint32_t *metal2_contexts;
+  uint64_t metal2_context_count;
+  const uint64_t *metal2_offsets;
+  uint64_t metal2_offset_count;
+  const struct klayout_cuda_spatial_via1_stack_cell_v1 *cells;
+  uint64_t cell_count;
+  const struct klayout_cuda_spatial_via1_stack_box_v1 *boxes;
+  uint64_t box_count;
+
+  uint64_t flat_metal1_box_count;
+  uint64_t flat_via1_box_count;
+  uint64_t flat_metal2_box_count;
+  int64_t scene_left;
+  int64_t scene_bottom;
+  int64_t scene_right;
+  int64_t scene_top;
+
+  uint64_t max_contexts;
+  uint64_t max_grid_cells;
+  uint64_t max_metal_memberships;
+  uint64_t max_via_memberships;
+  uint64_t max_pair_work;
+  uint8_t scene_digest[32];
+  uint64_t reserved1[2];
+};
+
+struct klayout_cuda_spatial_via1_stack_result_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t status;
+  uint32_t fallback_flags;
+  uint32_t disposition;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t requested_mask;
+  uint32_t certified_empty_mask;
+  uint32_t dbu_per_micron;
+  uint32_t device_flags;
+  uint32_t reserved0;
+
+  int64_t enclosure_distance;
+  int64_t cut_width;
+  int64_t cut_height;
+  int64_t spacing_distance;
+  int64_t grid_cell_size;
+  uint8_t scene_digest[32];
+
+  uint64_t context_count;
+  uint64_t metal1_context_count;
+  uint64_t via1_context_count;
+  uint64_t metal2_context_count;
+  uint64_t cell_count;
+  uint64_t box_count;
+  uint64_t flat_metal1_box_count;
+  uint64_t flat_via1_box_count;
+  uint64_t flat_metal2_box_count;
+
+  uint64_t via_expanded_count;
+  uint64_t via_size_checked_count;
+  uint64_t via_size_violation_count;
+  uint64_t metal1_expanded_count;
+  uint64_t metal2_expanded_count;
+  uint64_t grid_cell_count;
+  uint64_t via_membership_count;
+  uint64_t metal1_membership_count;
+  uint64_t metal2_membership_count;
+  uint64_t via_pair_queried_count;
+  uint64_t via_candidate_pair_count;
+  uint64_t duplicate_via_pair_count;
+  uint64_t unsafe_via_pair_count;
+  uint64_t spacing_violation_count;
+  uint64_t clean_via_pair_count;
+  uint64_t metal1_queried_count;
+  uint64_t metal1_candidate_count;
+  uint64_t metal1_certified_count;
+  uint64_t metal1_miss_count;
+  uint64_t metal2_queried_count;
+  uint64_t metal2_candidate_count;
+  uint64_t metal2_certified_count;
+  uint64_t metal2_miss_count;
+
+  uint64_t setup_ns;
+  uint64_t h2d_ns;
+  uint64_t via_expand_ns;
+  uint64_t via_grid_ns;
+  uint64_t via_query_ns;
+  uint64_t metal1_ns;
+  uint64_t metal2_ns;
+  uint64_t d2h_ns;
+  uint64_t total_ns;
+  char message[192];
+};
+
+typedef int (*klayout_cuda_spatial_run_via1_stack_empty_v1_func) (
+  const struct klayout_cuda_spatial_via1_stack_request_v1 *,
+  struct klayout_cuda_spatial_via1_stack_result_v1 *);
+
+KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_via1_stack_empty_v1 (
+  const struct klayout_cuda_spatial_via1_stack_request_v1 *request,
+  struct klayout_cuda_spatial_via1_stack_result_v1 *result);
+
 #ifdef __cplusplus
 }
 #endif

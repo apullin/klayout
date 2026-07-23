@@ -19,7 +19,10 @@ set_target_properties(cuda_spatial_replay PROPERTIES
   CUDA_RESOLVE_DEVICE_SYMBOLS OFF
 )
 
-add_library(klayout_cuda_spatial_backend SHARED spatial_backend.cu)
+add_library(klayout_cuda_spatial_backend SHARED
+  spatial_backend.cu
+  via1_stack_backend.cu
+)
 target_include_directories(klayout_cuda_spatial_backend PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
 )
@@ -42,6 +45,14 @@ target_include_directories(cuda_spatial_backend_smoke PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
 )
 target_link_libraries(cuda_spatial_backend_smoke PRIVATE
+  klayout_cuda_spatial_backend
+)
+
+add_executable(via1_stack_backend_smoke via1_stack_backend_smoke.cc)
+target_include_directories(via1_stack_backend_smoke PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+target_link_libraries(via1_stack_backend_smoke PRIVATE
   klayout_cuda_spatial_backend
 )
 

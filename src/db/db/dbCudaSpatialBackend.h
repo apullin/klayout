@@ -85,6 +85,55 @@ struct DB_PUBLIC CudaActive3Attempt
   std::string message;
 };
 
+struct DB_PUBLIC CudaVia1StackAttempt
+{
+  enum Disposition
+  {
+    Disabled,
+    CertifiedEmpty,
+    NotEmpty,
+    BackendFallback,
+    BackendError,
+    InvalidResult
+  };
+
+  CudaVia1StackAttempt ();
+
+  Disposition disposition;
+  uint32_t certified_empty_mask;
+  uint32_t fallback_flags;
+  uint32_t device_flags;
+  uint64_t context_count;
+  uint64_t flat_metal1_box_count;
+  uint64_t flat_via1_box_count;
+  uint64_t flat_metal2_box_count;
+  uint64_t via_expanded_count;
+  uint64_t via_size_checked_count;
+  uint64_t via_size_violation_count;
+  uint64_t metal1_expanded_count;
+  uint64_t metal2_expanded_count;
+  uint64_t grid_cell_count;
+  uint64_t via_membership_count;
+  uint64_t metal1_membership_count;
+  uint64_t metal2_membership_count;
+  uint64_t via_pair_queried_count;
+  uint64_t via_candidate_pair_count;
+  uint64_t duplicate_via_pair_count;
+  uint64_t unsafe_via_pair_count;
+  uint64_t spacing_violation_count;
+  uint64_t clean_via_pair_count;
+  uint64_t metal1_queried_count;
+  uint64_t metal1_candidate_count;
+  uint64_t metal1_certified_count;
+  uint64_t metal1_miss_count;
+  uint64_t metal2_queried_count;
+  uint64_t metal2_candidate_count;
+  uint64_t metal2_certified_count;
+  uint64_t metal2_miss_count;
+  uint64_t total_ns;
+  std::string message;
+};
+
 /**
  * Try the optional CUDA bipartite broad phase.
  *
@@ -140,6 +189,18 @@ DB_PUBLIC CudaActive3Attempt cuda_spatial_try_active3_empty (
 
 /** Return true only when the independent ACTIVE.3 opt-in and symbol exist. */
 DB_PUBLIC bool cuda_spatial_active3_requested ();
+
+/**
+ * Invoke the optional atomic M1/VIA1/M2 six-rule empty certificate.
+ *
+ * Only CertifiedEmpty is consumable.  Every other disposition requests the
+ * complete unchanged CPU stack; partial result masks are telemetry only.
+ */
+DB_PUBLIC CudaVia1StackAttempt cuda_spatial_try_via1_stack_empty (
+  const klayout_cuda_spatial_via1_stack_request_v1 &request);
+
+/** Return true only when the VIA1-stack opt-in and optional symbol exist. */
+DB_PUBLIC bool cuda_spatial_via1_stack_requested ();
 
 } // namespace db
 

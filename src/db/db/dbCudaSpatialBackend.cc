@@ -11,9 +11,11 @@
 */
 
 #include "dbCudaSpatialBackend.h"
+#include "dbCudaVia1StackDigest.h"
 #include "tlLog.h"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -49,8 +51,92 @@ CudaActive3Attempt::CudaActive3Attempt ()
   //  nothing yet
 }
 
+CudaVia1StackAttempt::CudaVia1StackAttempt ()
+  : disposition (Disabled), certified_empty_mask (0), fallback_flags (0),
+    device_flags (0), context_count (0), flat_metal1_box_count (0),
+    flat_via1_box_count (0), flat_metal2_box_count (0),
+    via_expanded_count (0), via_size_checked_count (0),
+    via_size_violation_count (0), metal1_expanded_count (0),
+    metal2_expanded_count (0), grid_cell_count (0),
+    via_membership_count (0), metal1_membership_count (0),
+    metal2_membership_count (0), via_pair_queried_count (0),
+    via_candidate_pair_count (0),
+    duplicate_via_pair_count (0), unsafe_via_pair_count (0),
+    spacing_violation_count (0), clean_via_pair_count (0),
+    metal1_queried_count (0), metal1_candidate_count (0),
+    metal1_certified_count (0), metal1_miss_count (0),
+    metal2_queried_count (0), metal2_candidate_count (0),
+    metal2_certified_count (0), metal2_miss_count (0), total_ns (0)
+{
+  //  nothing yet
+}
+
 namespace
 {
+
+bool checked_multiply_u64 (
+  uint64_t first, uint64_t second, uint64_t &result)
+{
+  if (first && second > std::numeric_limits<uint64_t>::max () / first) {
+    return false;
+  }
+  result = first * second;
+  return true;
+}
+
+bool qualified_via1_stack_request (
+  const klayout_cuda_spatial_via1_stack_request_v1 &request)
+{
+  if (request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      request.struct_size < sizeof (request) ||
+      request.opcode != KLAYOUT_CUDA_SPATIAL_VIA1_STACK_EMPTY ||
+      request.option_flags !=
+        KLAYOUT_CUDA_SPATIAL_VIA1_STACK_QUALIFIED_OPTIONS ||
+      request.requested_mask != KLAYOUT_CUDA_SPATIAL_VIA1_STACK_ALL_RULES ||
+      request.dbu_per_micron != 2000 || request.device < 0 ||
+      request.reserved0 != 0 || request.reserved1 [0] != 0 ||
+      request.reserved1 [1] != 0 ||
+      request.enclosure_distance != 70 ||
+      request.cut_width != 130 || request.cut_height != 130 ||
+      request.spacing_distance != 150 ||
+      request.grid_cell_size != 2000 ||
+      ! request.context_count || ! request.contexts ||
+      ! request.metal1_context_count || ! request.metal1_contexts ||
+      request.metal1_offset_count != request.metal1_context_count ||
+      ! request.metal1_offsets ||
+      ! request.via1_context_count || ! request.via1_contexts ||
+      request.via1_offset_count != request.via1_context_count ||
+      ! request.via1_offsets ||
+      ! request.metal2_context_count || ! request.metal2_contexts ||
+      request.metal2_offset_count != request.metal2_context_count ||
+      ! request.metal2_offsets ||
+      ! request.cell_count || ! request.cells ||
+      ! request.box_count || ! request.boxes ||
+      ! request.flat_metal1_box_count ||
+      ! request.flat_via1_box_count ||
+      ! request.flat_metal2_box_count ||
+      request.scene_left >= request.scene_right ||
+      request.scene_bottom >= request.scene_top ||
+      ! request.max_contexts || ! request.max_grid_cells ||
+      ! request.max_metal_memberships ||
+      ! request.max_via_memberships || ! request.max_pair_work ||
+      request.context_count > request.max_contexts ||
+      request.context_count > std::numeric_limits<uint32_t>::max () ||
+      request.cell_count > std::numeric_limits<uint32_t>::max () ||
+      request.flat_metal1_box_count >
+        std::numeric_limits<uint32_t>::max () ||
+      request.flat_via1_box_count >
+        std::numeric_limits<uint32_t>::max () ||
+      request.flat_metal2_box_count >
+        std::numeric_limits<uint32_t>::max ()) {
+    return false;
+  }
+
+  std::array<uint8_t, 32> digest;
+  return db::cuda_via1_stack_digest::request_digest (request, digest) &&
+         std::equal (
+           digest.begin (), digest.end (), request.scene_digest);
+}
 
 uint64_t env_u64 (const char *name, uint64_t default_value)
 {
@@ -82,8 +168,12 @@ public:
     : m_enabled (false), m_telemetry (false),
       m_active3_enabled (env_enabled ("KLAYOUT_CUDA_ACTIVE3")),
       m_active3_telemetry (env_enabled ("KLAYOUT_CUDA_ACTIVE3_TELEMETRY")),
+      m_via1_stack_enabled (env_enabled ("KLAYOUT_CUDA_VIA1_STACK")),
+      m_via1_stack_telemetry (
+        env_enabled ("KLAYOUT_CUDA_VIA1_STACK_TELEMETRY")),
       m_handle (0), m_run_bipartite (0), m_run_self (0),
-      m_run_active3 (0), m_release (0), m_min_records (100000)
+      m_run_active3 (0), m_run_via1_stack (0), m_release (0),
+      m_min_records (100000)
   {
     const char *setting = std::getenv ("KLAYOUT_CUDA_SPATIAL_BACKEND");
     if (! setting || ! *setting || std::strcmp (setting, "0") == 0 ||
@@ -118,6 +208,11 @@ public:
         GetProcAddress (reinterpret_cast<HMODULE> (m_handle), "klayout_cuda_spatial_run_self_v1"));
       m_run_active3 = reinterpret_cast<klayout_cuda_spatial_run_active3_empty_v1_func> (
         GetProcAddress (reinterpret_cast<HMODULE> (m_handle), "klayout_cuda_spatial_run_active3_empty_v1"));
+      m_run_via1_stack =
+        reinterpret_cast<klayout_cuda_spatial_run_via1_stack_empty_v1_func> (
+          GetProcAddress (
+            reinterpret_cast<HMODULE> (m_handle),
+            "klayout_cuda_spatial_run_via1_stack_empty_v1"));
       m_release = reinterpret_cast<klayout_cuda_spatial_release_result_v1_func> (
         GetProcAddress (reinterpret_cast<HMODULE> (m_handle), "klayout_cuda_spatial_release_result_v1"));
       if (! version || version () != KLAYOUT_CUDA_SPATIAL_ABI_VERSION) {
@@ -138,6 +233,10 @@ public:
         dlsym (m_handle, "klayout_cuda_spatial_run_self_v1"));
       m_run_active3 = reinterpret_cast<klayout_cuda_spatial_run_active3_empty_v1_func> (
         dlsym (m_handle, "klayout_cuda_spatial_run_active3_empty_v1"));
+      m_run_via1_stack =
+        reinterpret_cast<klayout_cuda_spatial_run_via1_stack_empty_v1_func> (
+          dlsym (
+            m_handle, "klayout_cuda_spatial_run_via1_stack_empty_v1"));
       m_release = reinterpret_cast<klayout_cuda_spatial_release_result_v1_func> (
         dlsym (m_handle, "klayout_cuda_spatial_release_result_v1"));
       if (! version || version () != KLAYOUT_CUDA_SPATIAL_ABI_VERSION) {
@@ -154,6 +253,7 @@ public:
       m_run_bipartite = 0;
       m_run_self = 0;
       m_run_active3 = 0;
+      m_run_via1_stack = 0;
       m_release = 0;
       tl::warn << m_error;
     } else if (m_telemetry) {
@@ -186,6 +286,16 @@ public:
     return m_active3_enabled;
   }
 
+  bool via1_stack_ready () const
+  {
+    return m_via1_stack_enabled && m_run_via1_stack;
+  }
+
+  bool via1_stack_enabled () const
+  {
+    return m_via1_stack_enabled;
+  }
+
   bool telemetry () const
   {
     return m_telemetry;
@@ -194,6 +304,11 @@ public:
   bool active3_telemetry () const
   {
     return m_active3_telemetry;
+  }
+
+  bool via1_stack_telemetry () const
+  {
+    return m_via1_stack_telemetry;
   }
 
   uint64_t min_records () const
@@ -221,6 +336,11 @@ public:
     return m_run_active3;
   }
 
+  klayout_cuda_spatial_run_via1_stack_empty_v1_func run_via1_stack () const
+  {
+    return m_run_via1_stack;
+  }
+
   klayout_cuda_spatial_release_result_v1_func release () const
   {
     return m_release;
@@ -231,10 +351,13 @@ private:
   bool m_telemetry;
   bool m_active3_enabled;
   bool m_active3_telemetry;
+  bool m_via1_stack_enabled;
+  bool m_via1_stack_telemetry;
   void *m_handle;
   klayout_cuda_spatial_run_bipartite_v1_func m_run_bipartite;
   klayout_cuda_spatial_run_self_v1_func m_run_self;
   klayout_cuda_spatial_run_active3_empty_v1_func m_run_active3;
+  klayout_cuda_spatial_run_via1_stack_empty_v1_func m_run_via1_stack;
   klayout_cuda_spatial_release_result_v1_func m_release;
   uint64_t m_min_records;
   std::string m_error;
@@ -300,6 +423,53 @@ void log_active3_attempt (const CudaActive3Attempt &attempt)
            << " candidates=" << attempt.candidate_pair_count
            << " raw_hits=" << attempt.raw_hit_count
            << " uncertain=" << attempt.uncertain_count
+           << " total_ms=" << (double (attempt.total_ns) / 1.0e6)
+           << " fallback_flags=" << attempt.fallback_flags
+           << " device_flags=" << attempt.device_flags
+           << (attempt.message.empty () ? "" : " message=") << attempt.message;
+}
+
+void log_via1_stack_attempt (const CudaVia1StackAttempt &attempt)
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  if (! module.via1_stack_telemetry ()) {
+    return;
+  }
+
+  const char *outcome = "unknown";
+  switch (attempt.disposition) {
+  case CudaVia1StackAttempt::CertifiedEmpty:
+    outcome = "certified-empty";
+    break;
+  case CudaVia1StackAttempt::NotEmpty:
+    outcome = "not-empty-cpu-fallback";
+    break;
+  case CudaVia1StackAttempt::BackendFallback:
+    outcome = "fallback";
+    break;
+  case CudaVia1StackAttempt::BackendError:
+    outcome = "error";
+    break;
+  case CudaVia1StackAttempt::InvalidResult:
+    outcome = "invalid-result";
+    break;
+  case CudaVia1StackAttempt::Disabled:
+    outcome = "disabled";
+    break;
+  }
+
+  tl::info << "CUDA VIA1 stack empty certificate:"
+           << " outcome=" << outcome
+           << " contexts=" << attempt.context_count
+           << " m1_boxes=" << attempt.flat_metal1_box_count
+           << " vias=" << attempt.flat_via1_box_count
+           << " m2_boxes=" << attempt.flat_metal2_box_count
+           << " certified_mask=" << attempt.certified_empty_mask
+           << " via_pairs=" << attempt.via_candidate_pair_count
+           << " unsafe_pairs=" << attempt.unsafe_via_pair_count
+           << " spacing_errors=" << attempt.spacing_violation_count
+           << " m1_misses=" << attempt.metal1_miss_count
+           << " m2_misses=" << attempt.metal2_miss_count
            << " total_ms=" << (double (attempt.total_ns) / 1.0e6)
            << " fallback_flags=" << attempt.fallback_flags
            << " device_flags=" << attempt.device_flags
@@ -809,6 +979,235 @@ bool cuda_spatial_active3_requested ()
 {
   CudaSpatialModule &module = cuda_spatial_module ();
   return module.enabled () && module.active3_ready ();
+}
+
+CudaVia1StackAttempt cuda_spatial_try_via1_stack_empty (
+  const klayout_cuda_spatial_via1_stack_request_v1 &request)
+{
+  CudaVia1StackAttempt attempt;
+  CudaSpatialModule &module = cuda_spatial_module ();
+  if (! module.via1_stack_enabled ()) {
+    return attempt;
+  }
+  if (! module.enabled ()) {
+    attempt.disposition = CudaVia1StackAttempt::BackendError;
+    attempt.message = module.error ().empty ()
+      ? "CUDA spatial backend is unavailable"
+      : module.error ();
+    log_via1_stack_attempt (attempt);
+    return attempt;
+  }
+  if (! module.via1_stack_ready ()) {
+    attempt.disposition = CudaVia1StackAttempt::BackendFallback;
+    attempt.fallback_flags =
+      KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+    attempt.message =
+      "CUDA spatial backend has no VIA1-stack empty-certificate entry point";
+    log_via1_stack_attempt (attempt);
+    return attempt;
+  }
+  if (! qualified_via1_stack_request (request)) {
+    attempt.disposition = CudaVia1StackAttempt::InvalidResult;
+    attempt.message =
+      "CUDA VIA1-stack caller supplied an unqualified request";
+    log_via1_stack_attempt (attempt);
+    return attempt;
+  }
+
+  klayout_cuda_spatial_via1_stack_result_v1 result;
+  std::memset (&result, 0, sizeof (result));
+  result.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  result.struct_size = sizeof (result);
+  result.status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  result.disposition = KLAYOUT_CUDA_SPATIAL_VIA1_STACK_UNCERTAIN;
+
+  int status = KLAYOUT_CUDA_SPATIAL_ERROR;
+  try {
+    status = module.run_via1_stack () (&request, &result);
+  } catch (const std::exception &ex) {
+    attempt.disposition = CudaVia1StackAttempt::BackendError;
+    attempt.message = ex.what ();
+    log_via1_stack_attempt (attempt);
+    return attempt;
+  } catch (...) {
+    attempt.disposition = CudaVia1StackAttempt::BackendError;
+    attempt.message =
+      "unknown exception while calling CUDA VIA1-stack backend";
+    log_via1_stack_attempt (attempt);
+    return attempt;
+  }
+
+  attempt.certified_empty_mask = result.certified_empty_mask;
+  attempt.fallback_flags = result.fallback_flags;
+  attempt.device_flags = result.device_flags;
+  attempt.context_count = result.context_count;
+  attempt.flat_metal1_box_count = result.flat_metal1_box_count;
+  attempt.flat_via1_box_count = result.flat_via1_box_count;
+  attempt.flat_metal2_box_count = result.flat_metal2_box_count;
+  attempt.via_expanded_count = result.via_expanded_count;
+  attempt.via_size_checked_count = result.via_size_checked_count;
+  attempt.via_size_violation_count = result.via_size_violation_count;
+  attempt.metal1_expanded_count = result.metal1_expanded_count;
+  attempt.metal2_expanded_count = result.metal2_expanded_count;
+  attempt.grid_cell_count = result.grid_cell_count;
+  attempt.via_membership_count = result.via_membership_count;
+  attempt.metal1_membership_count = result.metal1_membership_count;
+  attempt.metal2_membership_count = result.metal2_membership_count;
+  attempt.via_pair_queried_count = result.via_pair_queried_count;
+  attempt.via_candidate_pair_count = result.via_candidate_pair_count;
+  attempt.duplicate_via_pair_count = result.duplicate_via_pair_count;
+  attempt.unsafe_via_pair_count = result.unsafe_via_pair_count;
+  attempt.spacing_violation_count = result.spacing_violation_count;
+  attempt.clean_via_pair_count = result.clean_via_pair_count;
+  attempt.metal1_queried_count = result.metal1_queried_count;
+  attempt.metal1_candidate_count = result.metal1_candidate_count;
+  attempt.metal1_certified_count = result.metal1_certified_count;
+  attempt.metal1_miss_count = result.metal1_miss_count;
+  attempt.metal2_queried_count = result.metal2_queried_count;
+  attempt.metal2_candidate_count = result.metal2_candidate_count;
+  attempt.metal2_certified_count = result.metal2_certified_count;
+  attempt.metal2_miss_count = result.metal2_miss_count;
+  attempt.total_ns = result.total_ns;
+  attempt.message.assign (
+    result.message,
+    std::find (result.message, result.message + sizeof (result.message), '\0'));
+
+  if (result.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      result.struct_size < sizeof (result) || result.reserved0 != 0) {
+    attempt.disposition = CudaVia1StackAttempt::InvalidResult;
+    attempt.message =
+      "CUDA VIA1-stack backend returned an incompatible result";
+    log_via1_stack_attempt (attempt);
+    return attempt;
+  }
+
+  const bool echo_matches =
+    result.opcode == request.opcode &&
+    result.option_flags == request.option_flags &&
+    result.requested_mask == request.requested_mask &&
+    result.dbu_per_micron == request.dbu_per_micron &&
+    result.enclosure_distance == request.enclosure_distance &&
+    result.cut_width == request.cut_width &&
+    result.cut_height == request.cut_height &&
+    result.spacing_distance == request.spacing_distance &&
+    result.grid_cell_size == request.grid_cell_size &&
+    std::equal (
+      result.scene_digest, result.scene_digest + 32, request.scene_digest) &&
+    result.context_count == request.context_count &&
+    result.metal1_context_count == request.metal1_context_count &&
+    result.via1_context_count == request.via1_context_count &&
+    result.metal2_context_count == request.metal2_context_count &&
+    result.cell_count == request.cell_count &&
+    result.box_count == request.box_count &&
+    result.flat_metal1_box_count == request.flat_metal1_box_count &&
+    result.flat_via1_box_count == request.flat_via1_box_count &&
+    result.flat_metal2_box_count == request.flat_metal2_box_count;
+  const bool counters_fit =
+    result.via_expanded_count == request.flat_via1_box_count &&
+    result.via_size_checked_count == request.flat_via1_box_count &&
+    result.via_size_violation_count <= result.via_size_checked_count &&
+    result.metal1_expanded_count == request.flat_metal1_box_count &&
+    result.metal2_expanded_count == request.flat_metal2_box_count &&
+    result.grid_cell_count != 0 &&
+    result.grid_cell_count <= request.max_grid_cells &&
+    result.via_membership_count >= result.via_expanded_count &&
+    result.via_membership_count <= request.max_via_memberships &&
+    result.metal1_membership_count >= result.metal1_expanded_count &&
+    result.metal1_membership_count <= request.max_metal_memberships &&
+    result.metal2_membership_count >= result.metal2_expanded_count &&
+    result.metal2_membership_count <= request.max_metal_memberships &&
+    result.via_pair_queried_count == request.flat_via1_box_count &&
+    result.via_candidate_pair_count <= request.max_pair_work &&
+    result.duplicate_via_pair_count <= result.via_candidate_pair_count &&
+    result.unsafe_via_pair_count <=
+      result.via_candidate_pair_count - result.duplicate_via_pair_count &&
+    result.spacing_violation_count <=
+      result.via_candidate_pair_count -
+        result.duplicate_via_pair_count - result.unsafe_via_pair_count &&
+    result.clean_via_pair_count ==
+      result.via_candidate_pair_count -
+        result.duplicate_via_pair_count - result.unsafe_via_pair_count -
+        result.spacing_violation_count &&
+    result.metal1_queried_count == request.flat_via1_box_count &&
+    result.metal1_certified_count <= result.metal1_queried_count &&
+    result.metal1_miss_count ==
+      result.metal1_queried_count - result.metal1_certified_count &&
+    result.metal1_candidate_count >= result.metal1_certified_count &&
+    result.metal1_candidate_count <= request.max_pair_work &&
+    result.metal2_queried_count == request.flat_via1_box_count &&
+    result.metal2_certified_count <= result.metal2_queried_count &&
+    result.metal2_miss_count ==
+      result.metal2_queried_count - result.metal2_certified_count &&
+    result.metal2_candidate_count >= result.metal2_certified_count &&
+    result.metal2_candidate_count <= request.max_pair_work &&
+    (result.certified_empty_mask & ~request.requested_mask) == 0;
+
+  uint64_t maximum_via_pairs = 0;
+  if (request.flat_via1_box_count > 1) {
+    const uint64_t even =
+      request.flat_via1_box_count % 2
+        ? request.flat_via1_box_count - 1
+        : request.flat_via1_box_count;
+    const uint64_t odd =
+      request.flat_via1_box_count % 2
+        ? request.flat_via1_box_count
+        : request.flat_via1_box_count - 1;
+    maximum_via_pairs = (even / 2) * odd;
+  }
+  uint64_t maximum_metal1_pairs = 0;
+  uint64_t maximum_metal2_pairs = 0;
+  const bool candidate_counts_fit =
+    checked_multiply_u64 (
+      request.flat_via1_box_count,
+      request.flat_metal1_box_count, maximum_metal1_pairs) &&
+    checked_multiply_u64 (
+      request.flat_via1_box_count,
+      request.flat_metal2_box_count, maximum_metal2_pairs) &&
+    result.via_candidate_pair_count <= maximum_via_pairs &&
+    result.metal1_candidate_count <= maximum_metal1_pairs &&
+    result.metal2_candidate_count <= maximum_metal2_pairs;
+
+  if (status == KLAYOUT_CUDA_SPATIAL_OK &&
+      result.status == KLAYOUT_CUDA_SPATIAL_OK) {
+    if (! echo_matches || ! counters_fit || ! candidate_counts_fit ||
+        result.fallback_flags != KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE ||
+        result.device_flags != 0) {
+      attempt.disposition = CudaVia1StackAttempt::InvalidResult;
+      attempt.message =
+        "CUDA VIA1-stack backend returned a mismatched proof echo";
+    } else if (
+      result.disposition == KLAYOUT_CUDA_SPATIAL_VIA1_STACK_COMPLETE &&
+      result.certified_empty_mask == request.requested_mask &&
+      result.via_size_violation_count == 0 &&
+      result.unsafe_via_pair_count == 0 &&
+      result.spacing_violation_count == 0 &&
+      result.metal1_miss_count == 0 && result.metal2_miss_count == 0) {
+      attempt.disposition = CudaVia1StackAttempt::CertifiedEmpty;
+    } else if (
+      result.disposition == KLAYOUT_CUDA_SPATIAL_VIA1_STACK_NOT_EMPTY &&
+      result.certified_empty_mask != request.requested_mask) {
+      attempt.disposition = CudaVia1StackAttempt::NotEmpty;
+    } else {
+      attempt.disposition = CudaVia1StackAttempt::InvalidResult;
+      attempt.message =
+        "CUDA VIA1-stack backend returned an inconsistent disposition";
+    }
+  } else if (
+    status == KLAYOUT_CUDA_SPATIAL_FALLBACK ||
+    result.status == KLAYOUT_CUDA_SPATIAL_FALLBACK) {
+    attempt.disposition = CudaVia1StackAttempt::BackendFallback;
+  } else {
+    attempt.disposition = CudaVia1StackAttempt::BackendError;
+  }
+
+  log_via1_stack_attempt (attempt);
+  return attempt;
+}
+
+bool cuda_spatial_via1_stack_requested ()
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  return module.enabled () && module.via1_stack_ready ();
 }
 
 } // namespace db

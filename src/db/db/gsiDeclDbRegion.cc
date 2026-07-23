@@ -35,6 +35,7 @@
 #include "dbFillTool.h"
 #include "dbRegionProcessors.h"
 #include "dbCompoundOperation.h"
+#include "dbCudaVia1Stack.h"
 #include "dbLayoutToNetlist.h"
 #include "dbPropertiesRepository.h"
 #include "dbPropertiesFilter.h"
@@ -1286,6 +1287,24 @@ static Container *decompose_trapezoids (const db::Region *r, int mode)
 static bool is_deep (const db::Region *region)
 {
   return dynamic_cast<const db::DeepRegion *> (region->delegate ()) != 0;
+}
+
+static bool cuda_via1_stack_clean (
+  const db::Region *via1, const db::Region *metal1,
+  const db::Region *metal2)
+{
+  const db::DeepRegion *deep_via1 =
+    dynamic_cast<const db::DeepRegion *> (via1->delegate ());
+  const db::DeepRegion *deep_metal1 =
+    dynamic_cast<const db::DeepRegion *> (metal1->delegate ());
+  const db::DeepRegion *deep_metal2 =
+    dynamic_cast<const db::DeepRegion *> (metal2->delegate ());
+  return deep_via1 && deep_metal1 && deep_metal2 &&
+         via1->merged_semantics () && metal1->merged_semantics () &&
+         metal2->merged_semantics () &&
+         db::cuda_via1_stack_try_empty (
+           deep_metal1->deep_layer (), deep_via1->deep_layer (),
+           deep_metal2->deep_layer ());
 }
 
 static size_t data_id (const db::Region *r)
@@ -4303,6 +4322,15 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "@brief Returns true if the region is a deep (hierarchical) one\n"
     "\n"
     "This method has been added in version 0.26."
+  ) +
+  method_ext (
+    "cuda_via1_stack_clean?", &cuda_via1_stack_clean,
+    gsi::arg ("metal1"), gsi::arg ("metal2"),
+    "@brief Tries the optional atomic CUDA VIA1-stack empty certificate\n"
+    "\n"
+    "This internal acceleration hook returns true only when all qualified "
+    "M1/VIA1/M2 rules are certified empty. False is a normal fail-closed "
+    "outcome and requires the complete CPU rule stack.\n"
   ) +
   method_ext ("data_id", &data_id,
     "@brief Returns the data ID (a unique identifier for the underlying data storage)\n"

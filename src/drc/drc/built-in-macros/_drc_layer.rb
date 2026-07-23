@@ -3659,6 +3659,20 @@ CODE
     def is_deep?
       self.data.respond_to?(:is_deep?) && self.data.is_deep?
     end
+
+    # Internal, fail-closed acceleration hook for the qualified FreePDK45
+    # M1/VIA1/M2 stack.  The receiver is VIA1.  A false result is expected and
+    # means that the caller must execute all six historical CPU rules.
+    def cuda_via1_stack_clean?(metal1, metal2)
+      @engine._context("cuda_via1_stack_clean?") do
+        check_is_layer(metal1)
+        check_is_layer(metal2)
+        requires_region
+        metal1.requires_region
+        metal2.requires_region
+        self.data.cuda_via1_stack_clean?(metal1.data, metal2.data)
+      end
+    end
     
     # %DRC%
     # @name area
@@ -6185,4 +6199,3 @@ END
   end
  
 end
-
