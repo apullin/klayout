@@ -959,6 +959,68 @@ not just wall time.
       `/home/pullin/personal/klayout/cuda-evidence-temp/contact-x2-duplicate-empty-ab-20260723T154225Z`.
       This is explicitly a downstream-composed x2 CONTACT-shard result, not a
       63.22 s saving from the original 156.692 s parallel full launch.
+
+    - [x] **Reject cuSpatial as the production geometry substrate:** its closest
+      join maps bounding boxes to leaves of a point quadtree, not KLayout's
+      context-qualified AABB/AABB or edge/edge joins.  Its geometry predicates
+      use floating-point GIS semantics and do not implement exact signed-int64
+      thresholds, KLayout projection/orientation modes, partial markers,
+      shielding, or hierarchy publication.  The final 25.04 release is
+      archived, and even the header API adds RMM while the full library adds
+      cuDF.  Keep using the maintained NVIDIA layer that actually fits this
+      workload—CCCL/CUB/Thrust—and implement the small exact integer kernels
+      directly.  Algorithmic ideas may be borrowed; no cuSpatial dependency
+      should be introduced.
+
+    - [x] **Reject two more M1 deck-only shortcuts:** local POLY.3/.4
+      edge-pair-to-polygon fusion changed the x2 M1 wall from 141.09 s to
+      140.00 s, only **0.77% less wall time**, below the stopping threshold.
+      It also exposed a general magnified-hierarchy defect: the compound
+      edge-pair-to-polygon wrapper drops the child check's
+      `MagnificationReducer`, so the fused form cannot be claimed equivalent
+      without a C++ reducer-composition fix.  The guarded local METAL1.3
+      rectangle filter was exact on the adversarial 21-item hierarchy fixture,
+      but the clean x2 probe produced 2,125,548 flat intermediate markers and
+      correctly fell back.  It regressed wall from **141.73 s to 445.99 s**;
+      keep the current guarded reversed-empty path.
+
+    - [x] **Qualify ACTIVE.3 as the first device-resident empty-result target:**
+      `well.enclosing(active, 55nm, euclidian)` took 41.58 s in the isolated
+      profiling microscope and published zero flat and hierarchical edge
+      pairs.  A separate no-shield (`transparent`) census also published
+      exactly zero pairs in 39.01 s wall and produced the same normalized
+      report.  The two timings are not an A/B performance comparison—the
+      shielded run carried `perf record` and ran beside other probes—but the
+      no-hit result proves that the first GPU certificate need not implement
+      shielding for this workload.  The input has 24,687,816 flat ACTIVE
+      polygon occurrences represented by only 716 stored polygons; WELL has
+      1,964 flat occurrences and 1,074 stored polygons.  Preserve that
+      hierarchy compression rather than serializing the flat universe.
+
+    - [ ] **Move the CUDA ownership boundary outward to a fused DRC plan:**
+      the successful ngspice-CUDA project showed that narrow device-evaluator
+      and solver-only seams lose to synchronization and Amdahl's law, while a
+      resident evaluator/assembly/solve/control pipeline delivered 8.44x
+      analysis and 6.73x total speedup.  Apply the same lesson here.  CPU setup
+      should lower immutable cell, instance-array, transform, edge-template,
+      rule, stable-ID, and report-ownership tables once.  GPU work should retain
+      those tables through hierarchy frontier expansion, spatial candidate
+      generation, exact predicates, rule-specific waiver/reduction, stable
+      sort/dedup, and survivor compaction.  Return only compact final marker
+      descriptors (zero records on a clean rule), never the raw candidate
+      stream.
+
+      Start with the exact ACTIVE.3 no-hit certificate, then reuse the same
+      device IR for METAL1.3's four-bit deficient-side reduction.  The latter
+      culls masks 0, singleton, and two-opposite and compacts only disallowed or
+      uncertain stable contact IDs.  The first KLayout integration may consume
+      only a complete zero-survivor result; the ABI and kernel must nevertheless
+      support bounded compact survivors so empty-only behavior is not baked
+      into the engine.  Unsupported transforms, properties, breakout cells,
+      overflow, queue/capacity exhaustion, or incomplete traversal must fail
+      closed to the unchanged CPU operation.  A general nonempty backend may
+      require several thousand lines and is not rejected on code volume alone;
+      exact oracle gates and whole-run savings decide whether each slice lands.
 15. [ ] **Lean headless DRC build and developer-turnaround path**
     The accepted runtime is headless, but the standard build still compiles the
     full KLayout distribution.  The current graph has 1,877 object files; 724
