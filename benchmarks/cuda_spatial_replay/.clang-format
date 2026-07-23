@@ -1,0 +1,39 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+# clang-format's C++ parser includes CUDA launch syntax. Keep launch sites and
+# numerical expressions readable without narrow wrapping.
+ColumnLimit: 100
+IndentWidth: 4
+ContinuationIndentWidth: 4
+AccessModifierOffset: -4
+TabWidth: 4
+UseTab: Never
+
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterClass: false
+  AfterControlStatement: Never
+  AfterEnum: false
+  AfterFunction: true
+  AfterNamespace: false
+  AfterStruct: false
+  AfterUnion: false
+  BeforeCatch: false
+  BeforeElse: false
+BreakAfterReturnType: AllDefinitions
+BinPackArguments: true
+BinPackParameters: OnePerLine
+AlignAfterOpenBracket: AlwaysBreak
+PackConstructorInitializers: Never
+BreakBeforeBinaryOperators: None
+PointerAlignment: Right
+ReferenceAlignment: Pointer
+
+AllowShortBlocksOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+SortIncludes: Never
+...
