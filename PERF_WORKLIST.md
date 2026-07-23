@@ -1091,8 +1091,8 @@ not just wall time.
         reports have canonical SHA-256
         `681cd5f31b2407672e760f718a827721f15a9193f2f7464c12d5ce610d961ed7`.
         Peak host RSS also fell from about 2.31 GiB to 0.55 GiB.  This is an
-        isolated derived-scene replay result, not yet an M1-shard or parallel
-        full-launch saving.
+        isolated derived-scene replay result; the raw-layout M1 result is
+        recorded separately below.
 
         The live and standalone operand universes match exactly: 284 WELL
         contexts / 8,924 edges, 788,174 ACTIVE contexts / 98,754,896 edges, and
@@ -1104,6 +1104,22 @@ not just wall time.
         Compute Sanitizer runs reported zero errors.  Independent review
         returned SHIP after fixing a near-`uint32` device-loop wrap.  Commits
         `766871b`, `ee91e1b`, and `a318f6e` are pushed to `fork/cuda`.
+
+      - [x] **Confirm the live certificate inside the actual x2 M1 lane:**
+        one isolated same-binary raw-layout A/B at `a318f6e` changed
+        `m1_enclosure` from **255.06 s to 203.12 s**, removing **51.94 real
+        seconds / 20.36% of lane wall**.  The integration build is slower than
+        the specialized formal PGO binary, so this comparison is deliberately
+        against its immediate feature-off control rather than the older
+        145.5-second PGO record.  Raw reports are byte-identical with SHA-256
+        `dd1199719a17c460a188bd05581e294fae597060cfc4cd75c5b53fba81f2c289`;
+        generator-stripped reports also match.  The candidate returned the
+        exact 44,623,826-candidate clean census with 189.72 ms live lowering,
+        267.15 ms backend time, and zero hit/uncertainty/fallback/device flags.
+        External process wall is authoritative: KLayout's verbose per-operation
+        `Elapsed` is aggregate CPU-like time and is not used as a wall
+        denominator.  This first qualified pair is not yet a repeated
+        statistical M1 result or a parallel full-launch measurement.
 
       - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
         WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
