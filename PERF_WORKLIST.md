@@ -1121,6 +1121,60 @@ not just wall time.
         denominator.  This first qualified pair is not yet a repeated
         statistical M1 result or a parallel full-launch measurement.
 
+      - [x] **Prove a reusable device-resident VIA1 sandwich on both metal
+        boundaries — completed experimentally:** exact packed-scene oracles
+        now retain the raw M1/VIA1 and M2/VIA1 hierarchies and execute the
+        complete production projection-enclosure chains.  CUDA expands the
+        20,178,022 logical VIA1 occurrences once, builds a cut self-grid,
+        accepts only exact coincident raw duplicates, rejects every other
+        touch/overlap, proves strict 75 nm Euclidean spacing, and streams the
+        enclosing-metal hierarchy through an exact positive containment
+        certificate.  Simple hole-free Manhattan metal polygons are lowered
+        to both exact X- and Y-slab rectangle subsets; unsupported cuts,
+        malformed scenes, overflow, capacity exhaustion, incomplete traversal,
+        counter mismatch, or any positive uncertainty fails closed.
+
+        Both full x2 scenes certify every VIA with zero enclosure misses,
+        unsafe overlaps, spacing violations, or device flags.  M2 expands to
+        22,947,380 metal rectangles; M1 expands to 41,109,338.  Five fresh
+        standalone processes give a **96.601 ms median M2 GPU plan** and
+        **0.633129 s median warm standalone total**, versus the contextual
+        126.49-second exact CPU METAL2.3-chain observation: about 125.857 s /
+        99.499% less wall and 199.8x throughput.  M1 gives a **118.416 ms
+        median GPU plan** and **1.265037 s median warm standalone total**,
+        versus the 62.66-second capture/oracle run containing the 58.010-second
+        enclosing and 2.930-second width stages: about 61.395 s / 97.981% less
+        wall and 49.5x throughput.  These are standalone derived-scene
+        comparisons, not a same-binary live or whole-run A/B; packed-scene
+        validation and host hierarchy lowering are charged, while live source
+        extraction and deck integration are not yet measured.
+
+        The same proof state implies six clean categories when fused:
+        METAL1.4, METAL2.3, and VIA1.1--.4.  Independent M1 and M2 medians sum
+        to 215.017 ms; reusing the resident VIA expansion/grid/pair pass should
+        reduce the combined call further, but that saving remains a projection
+        until measured.  Fifteen deterministic/adversarial gates cover exact
+        enclosure distance, X/Y slab witnesses, arrays and all orthogonal
+        transforms, exact duplicates, nonidentical touching fallback, axial
+        and diagonal 75 nm boundaries, missing enclosure, corrupt input, and
+        nonrectangular-cut decline.  CUDA memcheck reports zero errors on the
+        duplicate and spacing branches.  Capture, island, gate, and hardening
+        commits `2385939`, `5b9fd3c`, `8e47aa0`, `5906b80`, and `6df69d6` are
+        pushed to `fork/cuda`.
+
+      - [ ] **Integrate the six-rule VIA1 sandwich as one atomic live plan:**
+        serialize raw M1/VIA1/M2 from their shared DeepShapeStore without
+        mutating or merging the CPU layers, invoke one optional DSO symbol,
+        retain VIA boxes and their CSR grid while reusing one metal scratch
+        allocation for M1 then M2, and return only a digest-bound six-bit clean
+        mask.  The deck may consume the result only when all six bits are
+        certified; every partial result, unsupported scene, error, or capacity
+        decline must run all six historical CPU chains unchanged.  Move those
+        categories into one existing shard owner rather than adding a process.
+        Qualify six deliberately nonempty sentinels, backend-missing/error
+        fallback, nested hierarchy, exact report equality, and a full x2
+        same-binary A/B before claiming any whole-run saving.
+
       - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
         WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
         exact predicates, METAL1.3 guards, four-side reduction, and per-rule
