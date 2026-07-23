@@ -44,3 +44,16 @@ target_include_directories(cuda_spatial_backend_smoke PRIVATE
 target_link_libraries(cuda_spatial_backend_smoke PRIVATE
   klayout_cuda_spatial_backend
 )
+
+add_executable(active3_exact_predicate_test
+  active3_exact_predicate.cu
+  active3_exact_predicate_test.cc
+)
+target_compile_options(active3_exact_predicate_test PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(active3_exact_predicate_test PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+)
