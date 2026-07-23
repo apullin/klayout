@@ -120,6 +120,14 @@ must equal the captured broad oracle. With the conservative filter, output must
 remain a subset of the broad oracle and a superset of the captured exact
 oracle; both oracle counts and hashes are printed.
 
+`--edge-capture-dir PATH --edge-capture-min-records N` aggregates all `.ker`
+requests at or above the cutoff into one bounded replay. Record IDs are
+globally remapped and every request receives a distinct context, preventing
+cross-request candidate pairs. All selected requests must have identical rule
+profiles. The aggregate broad and exact CPU oracles are rekeyed, checked, and
+reported together with request, record, pair, callback, and captured scanner
+time totals.
+
 ## Build and run
 
 CUDA 12.4 rejects this host's default GCC 15. Use GCC 13 explicitly and compile

@@ -45,6 +45,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -189,15 +190,41 @@ static_assert(sizeof(EdgeCaptureRecord) == 96,
 static_assert(sizeof(EdgeCapturePair) == 8,
               "unexpected edge-capture pair padding");
 
+struct EdgeCaptureProfile {
+  std::uint32_t capture_flags = 0;
+  std::uint32_t relation = 0;
+  std::uint32_t metrics = 0;
+  std::uint32_t zero_distance_mode = 0;
+  std::uint32_t ignore_angle_millidegrees = 0;
+  std::uint32_t option_flags = 0;
+  std::int64_t distance = 0;
+  std::int64_t min_projection = 0;
+  std::int64_t max_projection = 0;
+
+  bool operator==(const EdgeCaptureProfile &other) const {
+    return capture_flags == other.capture_flags &&
+           relation == other.relation && metrics == other.metrics &&
+           zero_distance_mode == other.zero_distance_mode &&
+           ignore_angle_millidegrees == other.ignore_angle_millidegrees &&
+           option_flags == other.option_flags && distance == other.distance &&
+           min_projection == other.min_projection &&
+           max_projection == other.max_projection;
+  }
+};
+
 struct EdgeCaptureInput {
   std::vector<InputRecord> records;
   std::vector<std::uint64_t> broad_pairs;
   std::vector<std::uint64_t> exact_pairs;
+  EdgeCaptureProfile profile;
   std::uint64_t distance = 0;
   std::uint64_t scanner_elapsed_ns = 0;
   std::uint64_t scanner_callbacks = 0;
   std::uint64_t exact_accept_callbacks = 0;
   std::uint64_t request_id = 0;
+  std::uint64_t request_count = 1;
+  std::uint64_t files_seen = 1;
+  std::uint64_t files_skipped = 0;
 };
 
 enum FallbackFlag : std::uint32_t {
@@ -238,6 +265,8 @@ struct Options {
   EdgeFilterMode edge_filter = kEdgeFilterNone;
   std::string input_path;
   std::string edge_capture_path;
+  std::string edge_capture_dir;
+  std::uint64_t edge_capture_min_records = 1;
   std::string write_input_path;
   std::string output_pairs_path;
 };
@@ -336,6 +365,8 @@ void print_help(const char *program) {
       << "Input (synthetic unless --input is supplied):\n"
       << "  --input PATH                  read a v1 compact replay\n"
       << "  --edge-capture PATH           read a v1 KEDGER1 scanner capture\n"
+      << "  --edge-capture-dir PATH       aggregate v1 KEDGER1 captures in a directory\n"
+      << "  --edge-capture-min-records N  directory capture cutoff (default 1)\n"
       << "  --write-input PATH            write the packed input replay\n"
       << "  --records N                   synthetic record count (default 200000)\n"
       << "  --contexts N                  synthetic context count (default 32)\n"
@@ -379,6 +410,12 @@ Options parse_options(int argc, char **argv) {
       options.input_path = value("--input");
     } else if (argument == "--edge-capture") {
       options.edge_capture_path = value("--edge-capture");
+    } else if (argument == "--edge-capture-dir") {
+      options.edge_capture_dir = value("--edge-capture-dir");
+    } else if (argument == "--edge-capture-min-records") {
+      options.edge_capture_min_records =
+          parse_u64(value("--edge-capture-min-records"),
+                    "--edge-capture-min-records");
     } else if (argument == "--write-input") {
       options.write_input_path = value("--write-input");
     } else if (argument == "--output-pairs") {
@@ -459,9 +496,17 @@ Options parse_options(int argc, char **argv) {
   }
 
   if (options.record_count == 0) usage_error("--records must be nonzero");
-  if (!options.input_path.empty() && !options.edge_capture_path.empty()) {
-    usage_error("--input and --edge-capture are mutually exclusive");
+  const unsigned int input_sources =
+      (!options.input_path.empty() ? 1u : 0u) +
+      (!options.edge_capture_path.empty() ? 1u : 0u) +
+      (!options.edge_capture_dir.empty() ? 1u : 0u);
+  if (input_sources > 1) {
+    usage_error(
+        "--input, --edge-capture, and --edge-capture-dir are mutually "
+        "exclusive");
   }
+  if (options.edge_capture_min_records == 0)
+    usage_error("--edge-capture-min-records must be nonzero");
   if (options.record_count > std::numeric_limits<std::uint32_t>::max())
     usage_error("--records exceeds the prototype's uint32 index space");
   if (options.context_count == 0) usage_error("--contexts must be nonzero");
@@ -697,7 +742,7 @@ std::uint64_t checked_section_end(std::uint64_t offset, std::uint64_t count,
   return offset + count * element_size;
 }
 
-EdgeCaptureInput read_edge_capture(const std::string &path) {
+EdgeCaptureHeader read_edge_capture_header(const std::string &path) {
   if (!host_is_little_endian()) {
     throw std::runtime_error(
         "v1 edge-capture reader requires a little-endian host");
@@ -773,7 +818,13 @@ EdgeCaptureInput read_edge_capture(const std::string &path) {
       static_cast<std::uint64_t>(file_size) != exact_end) {
     throw std::runtime_error("edge-capture file size is inconsistent");
   }
+  return header;
+}
 
+EdgeCaptureInput read_edge_capture(const std::string &path) {
+  const EdgeCaptureHeader header = read_edge_capture_header(path);
+  std::ifstream input(path, std::ios::binary);
+  if (!input) throw std::runtime_error("cannot open edge capture: " + path);
   std::vector<EdgeCaptureRecord> disk_records(
       static_cast<std::size_t>(header.record_count));
   input.seekg(static_cast<std::streamoff>(header.records_offset));
@@ -855,11 +906,199 @@ EdgeCaptureInput read_edge_capture(const std::string &path) {
         "edge-capture exact oracle is not a subset of its broad oracle");
   }
   result.distance = static_cast<std::uint64_t>(header.distance);
+  result.profile =
+      EdgeCaptureProfile{header.capture_flags,
+                         header.relation,
+                         header.metrics,
+                         header.zero_distance_mode,
+                         header.ignore_angle_millidegrees,
+                         header.option_flags,
+                         header.distance,
+                         header.min_projection,
+                         header.max_projection};
   result.scanner_elapsed_ns = header.scanner_elapsed_ns;
   result.scanner_callbacks = header.scanner_callbacks;
   result.exact_accept_callbacks = header.exact_accept_callbacks;
   result.request_id = header.request_id;
   return result;
+}
+
+void checked_capture_sum(std::uint64_t &total, std::uint64_t value,
+                         const char *field) {
+  if (value > std::numeric_limits<std::uint64_t>::max() - total) {
+    throw std::runtime_error(std::string("aggregate edge-capture ") + field +
+                             " overflows uint64");
+  }
+  total += value;
+}
+
+EdgeCaptureProfile edge_capture_profile(const EdgeCaptureHeader &header) {
+  return EdgeCaptureProfile{header.capture_flags,
+                            header.relation,
+                            header.metrics,
+                            header.zero_distance_mode,
+                            header.ignore_angle_millidegrees,
+                            header.option_flags,
+                            header.distance,
+                            header.min_projection,
+                            header.max_projection};
+}
+
+EdgeCaptureInput read_edge_capture_directory(
+    const std::string &path, std::uint64_t minimum_records) {
+  namespace fs = std::filesystem;
+  std::vector<fs::path> files;
+  for (const fs::directory_entry &entry : fs::directory_iterator(path)) {
+    if (entry.is_regular_file() && entry.path().extension() == ".ker") {
+      files.push_back(entry.path());
+    }
+  }
+  std::sort(files.begin(), files.end());
+  if (files.empty()) {
+    throw std::runtime_error("edge-capture directory contains no .ker files: " +
+                             path);
+  }
+
+  EdgeCaptureInput aggregate;
+  aggregate.request_count = 0;
+  aggregate.files_seen = files.size();
+  aggregate.files_skipped = 0;
+  aggregate.request_id = 0;
+  struct SelectedCapture {
+    fs::path path;
+    EdgeCaptureHeader header;
+  };
+  std::vector<SelectedCapture> selected;
+  std::uint64_t total_records = 0;
+  std::uint64_t total_broad_pairs = 0;
+  std::uint64_t total_exact_pairs = 0;
+  for (const fs::path &file : files) {
+    const EdgeCaptureHeader header =
+        read_edge_capture_header(file.string());
+    if (header.record_count < minimum_records) {
+      ++aggregate.files_skipped;
+      continue;
+    }
+    const EdgeCaptureProfile profile = edge_capture_profile(header);
+    if (selected.empty()) {
+      aggregate.profile = profile;
+      aggregate.distance = static_cast<std::uint64_t>(header.distance);
+    } else if (!(profile == aggregate.profile)) {
+      throw std::runtime_error(
+          "aggregate edge-capture profiles differ at: " + file.string());
+    }
+    checked_capture_sum(total_records, header.record_count, "record count");
+    checked_capture_sum(total_broad_pairs, header.broad_pair_count,
+                        "broad-pair count");
+    checked_capture_sum(total_exact_pairs, header.exact_pair_count,
+                        "exact-pair count");
+    selected.push_back(SelectedCapture{file, header});
+  }
+  if (selected.empty()) {
+    throw std::runtime_error(
+        "no edge captures meet --edge-capture-min-records");
+  }
+  if (selected.size() > std::numeric_limits<std::uint32_t>::max() ||
+      total_records > std::numeric_limits<std::uint32_t>::max() ||
+      total_records > std::numeric_limits<std::size_t>::max() ||
+      total_broad_pairs > std::numeric_limits<std::size_t>::max() ||
+      total_exact_pairs > std::numeric_limits<std::size_t>::max()) {
+    throw std::runtime_error(
+        "aggregate edge-capture totals exceed replay index space");
+  }
+  aggregate.records.reserve(static_cast<std::size_t>(total_records));
+  aggregate.broad_pairs.reserve(
+      static_cast<std::size_t>(total_broad_pairs));
+  aggregate.exact_pairs.reserve(
+      static_cast<std::size_t>(total_exact_pairs));
+
+  std::uint64_t next_id = 1;
+  for (const SelectedCapture &item : selected) {
+    EdgeCaptureInput capture = read_edge_capture(item.path.string());
+    if (!(capture.profile == aggregate.profile) ||
+        capture.records.size() != item.header.record_count ||
+        capture.broad_pairs.size() != item.header.broad_pair_count ||
+        capture.exact_pairs.size() != item.header.exact_pair_count) {
+      throw std::runtime_error(
+          "edge capture changed after aggregate header validation: " +
+          item.path.string());
+    }
+    if (capture.records.size() >
+        std::numeric_limits<std::uint32_t>::max() - next_id + 1) {
+      throw std::runtime_error(
+          "aggregate edge-capture records exceed uint32 IDs");
+    }
+
+    const std::uint32_t context =
+        static_cast<std::uint32_t>(aggregate.request_count + 1);
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> id_map;
+    id_map.reserve(capture.records.size());
+    aggregate.records.reserve(aggregate.records.size() +
+                              capture.records.size());
+    for (InputRecord &record : capture.records) {
+      const std::uint32_t global_id = static_cast<std::uint32_t>(next_id++);
+      id_map.emplace_back(record.id, global_id);
+      record.id = global_id;
+      record.context = context;
+      aggregate.records.push_back(record);
+    }
+    std::sort(id_map.begin(), id_map.end());
+    const auto remap_id = [&](std::uint32_t local_id) {
+      const auto found = std::lower_bound(
+          id_map.begin(), id_map.end(), local_id,
+          [](const auto &item, std::uint32_t value) {
+            return item.first < value;
+          });
+      if (found == id_map.end() || found->first != local_id) {
+        throw std::runtime_error(
+            "aggregate edge-capture oracle references an unknown record ID");
+      }
+      return found->second;
+    };
+    const auto append_remapped =
+        [&](const std::vector<std::uint64_t> &source,
+            std::vector<std::uint64_t> &destination) {
+          destination.reserve(destination.size() + source.size());
+          for (const std::uint64_t pair : source) {
+            const std::uint32_t first =
+                remap_id(static_cast<std::uint32_t>(pair >> 32));
+            const std::uint32_t second =
+                remap_id(static_cast<std::uint32_t>(pair));
+            const std::uint32_t lo = first < second ? first : second;
+            const std::uint32_t hi = first < second ? second : first;
+            destination.push_back((static_cast<std::uint64_t>(lo) << 32) |
+                                  hi);
+          }
+        };
+    append_remapped(capture.broad_pairs, aggregate.broad_pairs);
+    append_remapped(capture.exact_pairs, aggregate.exact_pairs);
+    checked_capture_sum(aggregate.scanner_elapsed_ns,
+                        capture.scanner_elapsed_ns, "scanner time");
+    checked_capture_sum(aggregate.scanner_callbacks,
+                        capture.scanner_callbacks, "scanner callbacks");
+    checked_capture_sum(aggregate.exact_accept_callbacks,
+                        capture.exact_accept_callbacks,
+                        "exact-accept callbacks");
+    ++aggregate.request_count;
+  }
+  if (aggregate.records.size() != total_records ||
+      aggregate.broad_pairs.size() != total_broad_pairs ||
+      aggregate.exact_pairs.size() != total_exact_pairs) {
+    throw std::runtime_error(
+        "aggregate edge-capture totals changed after header validation");
+  }
+  std::sort(aggregate.broad_pairs.begin(), aggregate.broad_pairs.end());
+  std::sort(aggregate.exact_pairs.begin(), aggregate.exact_pairs.end());
+  if (std::adjacent_find(aggregate.broad_pairs.begin(),
+                         aggregate.broad_pairs.end()) !=
+          aggregate.broad_pairs.end() ||
+      std::adjacent_find(aggregate.exact_pairs.begin(),
+                         aggregate.exact_pairs.end()) !=
+          aggregate.exact_pairs.end()) {
+    throw std::runtime_error(
+        "aggregate edge-capture produced duplicate cross-request oracle keys");
+  }
+  return aggregate;
 }
 
 void write_replay(const std::string &path,
@@ -1729,14 +1968,21 @@ int main(int argc, char **argv) {
     Options options = parse_options(argc, argv);
     const auto input_begin = Clock::now();
     EdgeCaptureInput edge_capture;
-    const bool edge_capture_available = !options.edge_capture_path.empty();
+    const bool edge_capture_available = !options.edge_capture_path.empty() ||
+                                        !options.edge_capture_dir.empty();
     std::vector<InputRecord> input;
     if (edge_capture_available) {
-      edge_capture = read_edge_capture(options.edge_capture_path);
+      edge_capture = options.edge_capture_dir.empty()
+                         ? read_edge_capture(options.edge_capture_path)
+                         : read_edge_capture_directory(
+                               options.edge_capture_dir,
+                               options.edge_capture_min_records);
       input = edge_capture.records;
       options.mode = "bipartite";
       options.geometry = "edges";
       options.enlargement = edge_capture.distance;
+      options.context_count =
+          static_cast<std::uint32_t>(edge_capture.request_count);
     } else if (!options.input_path.empty()) {
       input = read_replay(options.input_path);
     } else {
@@ -1924,7 +2170,16 @@ int main(int argc, char **argv) {
     std::cout << std::dec << '\n';
     if (edge_capture_available) {
       std::cout << std::hex << std::setfill('0')
-                << "capture_request_id=" << std::dec
+                << "capture_requests=" << std::dec
+                << edge_capture.request_count
+                << " capture_files_seen=" << edge_capture.files_seen
+                << " capture_files_skipped="
+                << edge_capture.files_skipped
+                << " capture_min_records="
+                << (options.edge_capture_dir.empty()
+                        ? 1
+                        : options.edge_capture_min_records)
+                << " capture_request_id="
                 << edge_capture.request_id
                 << " capture_scanner_elapsed_ms="
                 << (edge_capture.scanner_elapsed_ns / 1000000.0)
@@ -1941,6 +2196,15 @@ int main(int argc, char **argv) {
                 << " capture_exact_hash=0x" << std::hex
                 << std::setw(16) << pair_hash(edge_capture.exact_pairs)
                 << std::dec << '\n';
+      if (edge_capture.scanner_elapsed_ns != 0 && gpu.total_ms > 0.0) {
+        std::cout
+            << "capture_scanner_to_gpu_pipeline_ratio="
+            << (edge_capture.scanner_elapsed_ns / 1000000.0) / gpu.total_ms
+            << " gpu_pipeline_fraction_of_capture_scanner_pct="
+            << 100.0 * gpu.total_ms /
+                   (edge_capture.scanner_elapsed_ns / 1000000.0)
+            << '\n';
+      }
       std::cout
           << "capture_broad_oracle_comparison="
           << (gpu.pairs == edge_capture.broad_pairs
