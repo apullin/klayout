@@ -921,6 +921,60 @@ not just wall time.
       full KLayout rebuild and an exact CPU/CUDA report gate; the copied
       incremental diagnostic tree was rejected after exposing stale mixed DB
       symbols rather than being treated as integration evidence.
+
+    - [x] **Clean CUDA/KLayout integrity gate and real M2 capture — completed:**
+      a fresh build at `b18ff59` produced byte-identical CPU, CUDA, and preserved
+      stock-master nonempty reports (raw SHA-256
+      `5d0f089a554cd015a5bc24357c3a7fbfe6306d9e7059b3df6b1a69907fb5ceb3`;
+      157 categories, two cells, 99 items).  The opt-in `KEDGER1` recorder now
+      captures endpoints, full 64-bit properties, effective rule metadata,
+      post-property-gate broad pairs, and the independent CPU exact-predicate
+      oracle per scanner request.  A validator/analyzer checks the complete
+      binary format.  The 64x1024 M2 head-check yielded 6,485 valid requests;
+      775 requests with at least 1,024 records contained 98.4% of recorded
+      scanner time.  The x2 capstone large-request capture yielded 3,086 valid
+      requests, 11,727,284 records, 8,024,490 relevant broad pairs, and
+      2,650,190 exact pairs with no unresolved records.  The first recorder
+      draft cost 3.1% even while disabled.  Lazy record discovery removed its
+      per-edge work, and moving the large receiver into a cold helper restored
+      the original 56-byte hot stack frame.  An eight-vs-eight, core-swapped
+      crossover now measures only +0.46% wall / +0.50% user time, below the 2%
+      pursuit floor; all 16 reports are byte-identical.
+
+    - [x] **Fused projection-overlap edge predicate — completed standalone:**
+      the CUDA AABB enumeration now optionally evaluates the exact nondegenerate
+      Manhattan subset of the FreePDK45 enclosure predicate before sort/dedup.
+      Unsupported geometry passes through to CPU; real `KEDGER1` exact oracles
+      guard against false negatives.  The largest 64x1024 request falls from
+      3,634 relevant broad pairs to exactly the CPU oracle's 518 pairs
+      (**85.7% fewer downstream pairs**).  The million-edge gate falls from
+      1,337,218 to 79,838 unique pairs (**94.0% fewer**) and its charged GPU
+      pipeline is 4-5% faster across observed runs.  These are component
+      results, not KLayout
+      whole-run claims.
+
+    - [x] **Cluster-incidence acceleration — measured and rejected:** a
+      temporary counter gate observed 2,461,725 candidate implant incidences,
+      but only 28,082 duplicates (1.14%); every duplicate was an already-seeded
+      self-exclusion, with zero generated-vs-generated repeats for a GPU
+      sort/unique to collapse.  Even zero-cost removal models only 2.30% of the
+      implant/contact shard and 0.27% of M2 before packing, transfer, kernel, or
+      synchronization overhead.  The instrumentation and an earlier
+      below-0.91%-ceiling map-hint trial were both reverted.
+
+    - [x] **Persistent/broker gate — bounded; production broker deferred:** an
+      aggregate replay isolated 775 real requests by context and globally
+      rekeyed 1,490,138 records.  GPU output exactly matched both the 1,023,189
+      broad-pair oracle and the 334,887 exact-pair oracle.  After warmup, the
+      charged GPU pipeline averaged 123.495 ms; host packing plus GPU averaged
+      214.910 ms versus 1,017.226 ms for the capture-instrumented scanner
+      (**78.9% less component time**).  Header-first selection reduced offline
+      capture loading from 30.436 s to 0.473 s.  However, the capstone records
+      only 8.284 s of this scanner work inside the 156.69 s critical M2 shard:
+      even extrapolating the favorable component ratio models roughly 4.2%
+      less M2 wall time, below the +10% whole-run integration gate.  Do not
+      build the AF_UNIX/shared-arena production broker unless a wider measured
+      seam first raises the charged opportunity above that threshold.
 15. [ ] **Lean headless DRC build and developer-turnaround path**
     The accepted runtime is headless, but the standard build still compiles the
     full KLayout distribution.  The current graph has 1,877 object files; 724
