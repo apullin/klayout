@@ -8,6 +8,16 @@ host_cxx=${CUDAHOSTCXX:-/usr/bin/g++-13}
 
 mkdir -p "${build_dir}/tmp"
 
+cmake -S "${here}" -B "${build_dir}/backend-cmake" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CUDA_HOST_COMPILER="${host_cxx}" \
+  -DCMAKE_CUDA_ARCHITECTURES=86
+cmake --build "${build_dir}/backend-cmake" \
+  --target cuda_spatial_backend_smoke -j "${BUILD_JOBS:-16}"
+
+echo "== runtime backend ABI gate =="
+"${build_dir}/backend-cmake/cuda_spatial_backend_smoke"
+
 env TMPDIR="${build_dir}/tmp" \
   "${nvcc}" -O3 -std=c++17 -arch=sm_86 -ccbin "${host_cxx}" \
   "${here}/spatial_replay.cu" -o "${build_dir}/cuda_spatial_replay"

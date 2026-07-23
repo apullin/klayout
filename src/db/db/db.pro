@@ -186,6 +186,7 @@ SOURCES = \
   dbDeepShapeStore.cc \
   dbHierarchyBuilder.cc \
   dbLocalOperation.cc \
+  dbCudaSpatialBackend.cc \
   dbHierProcessor.cc \
   dbDeepRegion.cc \
   dbHierNetworkProcessor.cc \
@@ -368,6 +369,8 @@ HEADERS = \
   dbWriterTools.h \
   dbGlyphs.h \
   dbCommon.h \
+  dbCudaSpatialApi.h \
+  dbCudaSpatialBackend.h \
   dbVariableWidthPath.h \
   dbNamedLayerReader.h \
   dbForceLink.h \
@@ -453,4 +456,3 @@ RESOURCES = \
 INCLUDEPATH += $$TL_INC $$GSI_INC
 DEPENDPATH += $$TL_INC $$GSI_INC
 LIBS += -L$$DESTDIR -lklayout_tl -lklayout_gsi
-

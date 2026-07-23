@@ -18,3 +18,29 @@ set_target_properties(cuda_spatial_replay PROPERTIES
   CUDA_SEPARABLE_COMPILATION OFF
   CUDA_RESOLVE_DEVICE_SYMBOLS OFF
 )
+
+add_library(klayout_cuda_spatial_backend SHARED spatial_backend.cu)
+target_include_directories(klayout_cuda_spatial_backend PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+target_compile_definitions(klayout_cuda_spatial_backend PRIVATE
+  KLAYOUT_CUDA_SPATIAL_BACKEND_BUILD
+)
+target_compile_options(klayout_cuda_spatial_backend PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(klayout_cuda_spatial_backend PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+  CXX_VISIBILITY_PRESET hidden
+  CUDA_VISIBILITY_PRESET hidden
+)
+
+add_executable(cuda_spatial_backend_smoke backend_smoke.cc)
+target_include_directories(cuda_spatial_backend_smoke PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+target_link_libraries(cuda_spatial_backend_smoke PRIVATE
+  klayout_cuda_spatial_backend
+)

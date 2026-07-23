@@ -900,6 +900,27 @@ not just wall time.
       single broker with persistent buffers.  Production integration remains
       gated on finding roughly two more percentage points of removable M1 work
       and charging CPU replay plus broker overhead.
+
+    - [x] **First real CUDA/KLayout vertical slice — proof of concept:** an
+      optional CUDA DSO now exposes the versioned POD broad-phase ABI, while a
+      normal KLayout build remains CUDA-header- and CUDA-link-free and discovers
+      the accelerator only after explicit opt-in.  The first integration seam
+      is deliberately limited to the audited different-layer shape scan.  It
+      validates sorted IDs and bounds, reruns the exact AABB predicate on CPU,
+      and falls back to the untouched CPU scanner before any callback on loader,
+      capacity, CUDA, or validation failure.  The RTX 3080 ABI fixture returned
+      exactly `(1,3),(2,4)`, and a through-the-DSO 1024-by-1024 gate matched all
+      1,245 candidates from 1,048,576 exhaustive CPU checks, including signed
+      and strict-boundary cases.  The standalone replay's exhaustive,
+      signed-coordinate, replay, million-record, dense-cell, and overflow gates
+      also pass.  This lands the integration mechanism, not a whole-run speedup
+      claim: host packing and CPU publication are still charged outside the DSO,
+      and the next measurement must capture/replay the dominant M2 enclosure
+      stream before widening the seam or building the persistent broker.
+      Promotion beyond the experimental `cuda` branch also requires a clean
+      full KLayout rebuild and an exact CPU/CUDA report gate; the copied
+      incremental diagnostic tree was rejected after exposing stale mixed DB
+      symbols rather than being treated as integration evidence.
 15. [ ] **Lean headless DRC build and developer-turnaround path**
     The accepted runtime is headless, but the standard build still compiles the
     full KLayout distribution.  The current graph has 1,877 object files; 724

@@ -1,15 +1,18 @@
 # CUDA spatial-candidate replay prototype
 
-This is a standalone feasibility harness, not a KLayout DRC implementation. It
-tests whether a GPU can turn a large batch of copied geometry records into the
-same deterministic broad-phase candidate pairs as a CPU oracle after charging
-packing, transfers, device work, deduplication, and result copies.
+This directory contains both the standalone feasibility harness and the first
+opt-in KLayout integration proof of concept. They test whether a GPU can turn a
+large batch of copied geometry records into the same deterministic broad-phase
+candidate pairs as a CPU oracle after charging packing, transfers, device work,
+deduplication, and result copies.
 
-Nothing here includes or modifies `src/db`. Exact downstream geometry,
-shielding, hierarchy ownership, receiver calls, and in-order `finish` events
-remain CPU responsibilities.
+The integration is deliberately narrow: only the audited
+`scan_shape2shape_different_layers` seam can call the backend. Exact CPU AABB
+revalidation, hierarchy ownership, receiver calls, and fail-closed fallback
+remain KLayout responsibilities. The normal build has no CUDA headers or CUDA
+link dependency.
 
-## Pointer-free contract
+## KLayout-pointer-free record contract
 
 The on-disk/host replay record is an 80-byte POD with:
 
@@ -96,8 +99,9 @@ TMPDIR=$PWD/build/tmp /usr/bin/nvcc \
 
 `./run.sh` builds and runs exhaustive self/bipartite tests, strict-boundary and
 int64 fixtures, a replay round trip, the million-record grid-oracle case, and
-expected dense/overflow fallbacks. Its optional first argument selects a build
-directory.
+expected dense/overflow fallbacks. It also builds the optional backend DSO and
+runs both a two-pair ABI smoke and a deterministic 1024-by-1024 exact CPU-oracle
+gate through that ABI. Its optional first argument selects a build directory.
 
 CMake is also supported:
 
@@ -108,6 +112,51 @@ cmake -S . -B build -G Ninja \
   -DCMAKE_CUDA_ARCHITECTURES=86
 cmake --build build
 ```
+
+## Opt-in KLayout integration
+
+`libklayout_cuda_spatial_backend` exposes a versioned POD C ABI, free of
+KLayout object pointers, from `dbCudaSpatialApi.h`. KLayout discovers it with
+`dlopen`/`LoadLibrary`; ABI or symbol mismatch, CUDA errors, malformed output,
+and configured capacity limits all return to the authoritative CPU scanner
+before any receiver callback. Successful pair vectors must be sorted and
+unique. KLayout validates all indices and reruns `db::bs_boxes_overlap` on the
+CPU for every pair before publishing the first callback.
+
+Build the DSO with CMake, then enable it with an explicit path:
+
+```sh
+cmake -S benchmarks/cuda_spatial_replay \
+  -B build-cuda-spatial -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-13 \
+  -DCMAKE_CUDA_ARCHITECTURES=86
+cmake --build build-cuda-spatial --target klayout_cuda_spatial_backend
+
+export KLAYOUT_CUDA_SPATIAL_BACKEND="$PWD/build-cuda-spatial/libklayout_cuda_spatial_backend.so"
+export KLAYOUT_CUDA_SPATIAL_TELEMETRY=1
+```
+
+With the backend variable absent, the existing CPU path is retained. `auto` or
+`1` asks the platform loader to find the conventional library name. The PoC
+serializes DSO calls on one device; persistent buffers and a multi-owner broker
+are intentionally deferred.
+
+Runtime tuning variables and defaults are:
+
+- `KLAYOUT_CUDA_SPATIAL_MIN_RECORDS=100000`;
+- `KLAYOUT_CUDA_SPATIAL_DEVICE=0`;
+- `KLAYOUT_CUDA_SPATIAL_CELL_SIZE=128`;
+- `KLAYOUT_CUDA_SPATIAL_MAX_CELLS_PER_RECORD=64`;
+- `KLAYOUT_CUDA_SPATIAL_MAX_RECORDS_PER_CELL=4096`;
+- `KLAYOUT_CUDA_SPATIAL_MAX_MEMBERSHIPS=16000000`;
+- `KLAYOUT_CUDA_SPATIAL_MAX_PAIR_WORK=64000000`;
+- `KLAYOUT_CUDA_SPATIAL_MAX_CANDIDATES=8000000`.
+
+These are fail-closed resource limits, not truncation knobs. Telemetry reports
+handled/fallback status, record and pair-work counts, stage times, and backend
+messages. The GPU publishes candidates in deterministic pair-key order, not
+the CPU sweep's callback order; the audited interaction receiver is insensitive
+to that ordering.
 
 ## Charged timings
 

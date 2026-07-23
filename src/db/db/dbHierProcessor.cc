@@ -32,6 +32,7 @@
 #include "dbShapeFlags.h"
 #include "dbCellVariants.h"
 #include "dbHierProcessorUtils.h"
+#include "dbCudaSpatialBackend.h"
 #include "tlLog.h"
 #include "tlTimer.h"
 #include "tlInternational.h"
@@ -1331,6 +1332,122 @@ struct scan_shape2shape_same_layer<T, T>
   }
 };
 
+template <class Obj, class Prop>
+struct cuda_scanner_entry
+{
+  cuda_scanner_entry (const Obj *object, const Prop &property)
+    : object (object), property (property)
+  { }
+
+  const Obj *object;
+  Prop property;
+};
+
+/**
+ * Run the explicitly enabled CUDA bipartite broad phase, or retain the
+ * authoritative CPU scanner path.  CUDA output is validated in full before
+ * the first receiver callback, including an exact CPU AABB predicate check.
+ */
+template <class Obj1, class Prop1, class Obj2, class Prop2, class Rec,
+          class BoxConvert1, class BoxConvert2>
+void process_cuda_unordered_or_cpu (
+  db::box_scanner2<Obj1, Prop1, Obj2, Prop2> &scanner, Rec &rec,
+  typename BoxConvert1::box_type::coord_type enlargement,
+  const BoxConvert1 &bc1, const BoxConvert2 &bc2,
+  const std::vector<cuda_scanner_entry<Obj1, Prop1> > &subjects,
+  const std::vector<cuda_scanner_entry<Obj2, Prop2> > &intruders)
+{
+  if (! db::cuda_spatial_may_attempt (subjects.size (), intruders.size ()) ||
+      enlargement < 0) {
+    scanner.process (rec, enlargement, bc1, bc2);
+    return;
+  }
+
+  std::vector<klayout_cuda_spatial_aabb_v1> subject_boxes;
+  std::vector<klayout_cuda_spatial_aabb_v1> intruder_boxes;
+  subject_boxes.reserve (subjects.size ());
+  intruder_boxes.reserve (intruders.size ());
+
+  for (typename std::vector<cuda_scanner_entry<Obj1, Prop1> >::const_iterator i = subjects.begin (); i != subjects.end (); ++i) {
+    typename BoxConvert1::box_type box = bc1 (*i->object);
+    subject_boxes.push_back (klayout_cuda_spatial_aabb_v1 {
+      int64_t (box.left ()), int64_t (box.bottom ()),
+      int64_t (box.right ()), int64_t (box.top ())
+    });
+  }
+  for (typename std::vector<cuda_scanner_entry<Obj2, Prop2> >::const_iterator i = intruders.begin (); i != intruders.end (); ++i) {
+    typename BoxConvert2::box_type box = bc2 (*i->object);
+    intruder_boxes.push_back (klayout_cuda_spatial_aabb_v1 {
+      int64_t (box.left ()), int64_t (box.bottom ()),
+      int64_t (box.right ()), int64_t (box.top ())
+    });
+  }
+
+  db::CudaSpatialAttempt attempt = db::cuda_spatial_try_bipartite (
+    subject_boxes, intruder_boxes, int64_t (enlargement));
+  if (attempt.disposition != db::CudaSpatialAttempt::Success) {
+    scanner.process (rec, enlargement, bc1, bc2);
+    return;
+  }
+
+  typedef std::pair<size_t, size_t> validated_pair_type;
+  std::vector<validated_pair_type> validated;
+  validated.reserve (attempt.pair_keys.size ());
+  uint64_t previous_key = 0;
+  bool valid = true;
+  for (std::vector<uint64_t>::const_iterator i = attempt.pair_keys.begin (); i != attempt.pair_keys.end (); ++i) {
+    const uint64_t key = *i;
+    const uint32_t subject_id = uint32_t (key >> 32);
+    const uint32_t intruder_id = uint32_t (key);
+    if ((i != attempt.pair_keys.begin () && key <= previous_key) ||
+        subject_id == 0 || subject_id > subjects.size () ||
+        intruder_id <= subjects.size () ||
+        uint64_t (intruder_id) > uint64_t (subjects.size ()) + intruders.size ()) {
+      valid = false;
+      break;
+    }
+
+    const size_t subject_index = size_t (subject_id - 1);
+    const size_t intruder_index = size_t (uint64_t (intruder_id) - subjects.size () - 1);
+    typename BoxConvert1::box_type subject_box = bc1 (*subjects [subject_index].object);
+    typename BoxConvert2::box_type intruder_box = bc2 (*intruders [intruder_index].object);
+    if (! db::bs_boxes_overlap (subject_box, intruder_box, enlargement)) {
+      valid = false;
+      break;
+    }
+
+    validated.push_back (std::make_pair (subject_index, intruder_index));
+    previous_key = key;
+  }
+
+  if (! valid) {
+    tl::warn << "CUDA spatial backend returned an invalid candidate set; using CPU fallback";
+    scanner.process (rec, enlargement, bc1, bc2);
+    return;
+  }
+
+  //  No callbacks have occurred before this point: validation/fallback is
+  //  transactional.  Candidate order is deterministic but intentionally not
+  //  the CPU sweep order.
+  rec.initialize ();
+  for (typename std::vector<validated_pair_type>::const_iterator i = validated.begin (); i != validated.end (); ++i) {
+    const cuda_scanner_entry<Obj1, Prop1> &subject = subjects [i->first];
+    const cuda_scanner_entry<Obj2, Prop2> &intruder = intruders [i->second];
+    rec.add (subject.object, subject.property, intruder.object, intruder.property);
+    if (rec.stop ()) {
+      rec.finalize (false);
+      return;
+    }
+  }
+  for (typename std::vector<cuda_scanner_entry<Obj1, Prop1> >::const_iterator i = subjects.begin (); i != subjects.end (); ++i) {
+    rec.finish1 (i->object, i->property);
+  }
+  for (typename std::vector<cuda_scanner_entry<Obj2, Prop2> >::const_iterator i = intruders.begin (); i != intruders.end (); ++i) {
+    rec.finish2 (i->object, i->property);
+  }
+  rec.finalize (true);
+}
+
 template <class TS, class TI>
 struct scan_shape2shape_different_layers
 {
@@ -1341,16 +1458,27 @@ struct scan_shape2shape_different_layers
     db::addressable_object_from_shape<TS> sheap;
     db::addressable_object_from_shape<TI> iheap;
     interaction_registration_shape2shape<TS, TI> rec (layout, &interactions, intruder_layer_index);
+    std::vector<cuda_scanner_entry<TS, int> > cuda_subjects;
+    std::vector<cuda_scanner_entry<TI, int> > cuda_intruders;
+    const bool cuda_requested = db::cuda_spatial_requested ();
 
     unsigned int id = subject_id0;
     for (db::Shapes::shape_iterator i = subject_shapes->begin (shape_flags<TS> ()); !i.at_end (); ++i, ++id) {
-      scanner.insert1 (sheap (*i), id);
+      const TS *object = sheap (*i);
+      scanner.insert1 (object, id);
+      if (cuda_requested) {
+        cuda_subjects.push_back (cuda_scanner_entry<TS, int> (object, id));
+      }
     }
 
     //  TODO: can we confine this search to the subject's (sized) bounding box?
     if (intruders) {
       for (typename std::set<TI>::const_iterator i = intruders->begin (); i != intruders->end (); ++i) {
-        scanner.insert2 (i.operator-> (), interactions.next_id ());
+        unsigned int iid = interactions.next_id ();
+        scanner.insert2 (i.operator-> (), iid);
+        if (cuda_requested) {
+          cuda_intruders.push_back (cuda_scanner_entry<TI, int> (i.operator-> (), iid));
+        }
       }
     }
 
@@ -1363,7 +1491,11 @@ struct scan_shape2shape_different_layers
       unsigned int id = subject_id0;
       for (db::Shapes::shape_iterator i = intruder_shapes->begin (shape_flags<TI> ()); !i.at_end (); ++i, ++id) {
         unsigned int iid = interactions.next_id ();
-        scanner.insert2 (iheap (*i), iid);
+        const TI *object = iheap (*i);
+        scanner.insert2 (object, iid);
+        if (cuda_requested) {
+          cuda_intruders.push_back (cuda_scanner_entry<TI, int> (object, iid));
+        }
         rec.same (id, iid);
       }
 
@@ -1371,12 +1503,19 @@ struct scan_shape2shape_different_layers
 
       //  TODO: can we confine this search to the subject's (sized) bounding box?
       for (db::Shapes::shape_iterator i = intruder_shapes->begin (shape_flags<TI> ()); !i.at_end (); ++i) {
-        scanner.insert2 (iheap (*i), interactions.next_id ());
+        const TI *object = iheap (*i);
+        unsigned int iid = interactions.next_id ();
+        scanner.insert2 (object, iid);
+        if (cuda_requested) {
+          cuda_intruders.push_back (cuda_scanner_entry<TI, int> (object, iid));
+        }
       }
 
     }
 
-    scanner.process (rec, dist, db::box_convert<TS> (), db::box_convert<TI> ());
+    process_cuda_unordered_or_cpu (scanner, rec, dist,
+                                   db::box_convert<TS> (), db::box_convert<TI> (),
+                                   cuda_subjects, cuda_intruders);
   }
 };
 
@@ -1959,4 +2098,3 @@ template class DB_PUBLIC local_processor<db::EdgePair, db::PolygonRef, db::Polyg
 template class DB_PUBLIC local_processor<db::EdgePair, db::Edge, db::Edge>;
 
 }
-
