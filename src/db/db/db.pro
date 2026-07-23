@@ -186,6 +186,7 @@ SOURCES = \
   dbDeepShapeStore.cc \
   dbHierarchyBuilder.cc \
   dbLocalOperation.cc \
+  dbCudaActive3.cc \
   dbCudaSpatialBackend.cc \
   dbHierProcessor.cc \
   dbDeepRegion.cc \
@@ -369,6 +370,8 @@ HEADERS = \
   dbWriterTools.h \
   dbGlyphs.h \
   dbCommon.h \
+  dbCudaActive3.h \
+  dbCudaActive3Digest.h \
   dbCudaSpatialApi.h \
   dbCudaSpatialBackend.h \
   dbVariableWidthPath.h \

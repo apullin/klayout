@@ -41,6 +41,7 @@
 #include "dbRegionLocalOperations.h"
 #include "dbLocalOperationUtils.h"
 #include "dbCompoundOperation.h"
+#include "dbCudaActive3.h"
 #include "dbLayoutToNetlist.h"
 #include "tlTimer.h"
 
@@ -2651,6 +2652,16 @@ DeepRegion::run_check (db::edge_relation_type rel, bool different_polygons, cons
 
     configure_proc (proc);
     proc.set_threads (polygons.store ()->threads ());
+
+    //  Consume only a zero-hit certificate over a qualified raw-ACTIVE
+    //  superset.  Every other outcome leaves this exact CPU processor and
+    //  its already-created polygons.derived() output untouched.
+    if (other_deep &&
+        db::cuda_active3_try_empty (
+          rel, different_polygons, d, options, polygons,
+          other_deep->deep_layer ())) {
+      return res.release ();
+    }
 
     proc.run (&op, polygons.layer (), other_layer, res->deep_layer ().layer ());
 

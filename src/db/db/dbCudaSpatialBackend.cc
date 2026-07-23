@@ -38,6 +38,17 @@ CudaSpatialAttempt::CudaSpatialAttempt ()
   //  nothing yet
 }
 
+CudaActive3Attempt::CudaActive3Attempt ()
+  : disposition (Disabled), fallback_flags (0), device_flags (0),
+    context_count (0), well_context_count (0), active_context_count (0),
+    cell_count (0), edge_count (0), flat_well_edge_count (0),
+    flat_active_edge_count (0), grid_cell_count (0), membership_count (0),
+    candidate_pair_count (0), raw_hit_count (0), uncertain_count (0),
+    total_ns (0)
+{
+  //  nothing yet
+}
+
 namespace
 {
 
@@ -68,9 +79,11 @@ class CudaSpatialModule
 {
 public:
   CudaSpatialModule ()
-    : m_enabled (false), m_telemetry (false), m_handle (0),
-      m_run_bipartite (0), m_run_self (0), m_release (0),
-      m_min_records (100000)
+    : m_enabled (false), m_telemetry (false),
+      m_active3_enabled (env_enabled ("KLAYOUT_CUDA_ACTIVE3")),
+      m_active3_telemetry (env_enabled ("KLAYOUT_CUDA_ACTIVE3_TELEMETRY")),
+      m_handle (0), m_run_bipartite (0), m_run_self (0),
+      m_run_active3 (0), m_release (0), m_min_records (100000)
   {
     const char *setting = std::getenv ("KLAYOUT_CUDA_SPATIAL_BACKEND");
     if (! setting || ! *setting || std::strcmp (setting, "0") == 0 ||
@@ -103,6 +116,8 @@ public:
         GetProcAddress (reinterpret_cast<HMODULE> (m_handle), "klayout_cuda_spatial_run_bipartite_v1"));
       m_run_self = reinterpret_cast<klayout_cuda_spatial_run_self_v1_func> (
         GetProcAddress (reinterpret_cast<HMODULE> (m_handle), "klayout_cuda_spatial_run_self_v1"));
+      m_run_active3 = reinterpret_cast<klayout_cuda_spatial_run_active3_empty_v1_func> (
+        GetProcAddress (reinterpret_cast<HMODULE> (m_handle), "klayout_cuda_spatial_run_active3_empty_v1"));
       m_release = reinterpret_cast<klayout_cuda_spatial_release_result_v1_func> (
         GetProcAddress (reinterpret_cast<HMODULE> (m_handle), "klayout_cuda_spatial_release_result_v1"));
       if (! version || version () != KLAYOUT_CUDA_SPATIAL_ABI_VERSION) {
@@ -121,6 +136,8 @@ public:
         dlsym (m_handle, "klayout_cuda_spatial_run_bipartite_v1"));
       m_run_self = reinterpret_cast<klayout_cuda_spatial_run_self_v1_func> (
         dlsym (m_handle, "klayout_cuda_spatial_run_self_v1"));
+      m_run_active3 = reinterpret_cast<klayout_cuda_spatial_run_active3_empty_v1_func> (
+        dlsym (m_handle, "klayout_cuda_spatial_run_active3_empty_v1"));
       m_release = reinterpret_cast<klayout_cuda_spatial_release_result_v1_func> (
         dlsym (m_handle, "klayout_cuda_spatial_release_result_v1"));
       if (! version || version () != KLAYOUT_CUDA_SPATIAL_ABI_VERSION) {
@@ -133,13 +150,10 @@ public:
     }
 #endif
 
-    if (m_handle && (! m_run_bipartite || ! m_release) && m_error.empty ()) {
-      m_error = "CUDA spatial backend is missing required ABI entry points";
-    }
-
     if (! m_error.empty ()) {
       m_run_bipartite = 0;
       m_run_self = 0;
+      m_run_active3 = 0;
       m_release = 0;
       tl::warn << m_error;
     } else if (m_telemetry) {
@@ -162,9 +176,24 @@ public:
     return m_run_self && m_release;
   }
 
+  bool active3_ready () const
+  {
+    return m_active3_enabled && m_run_active3;
+  }
+
+  bool active3_enabled () const
+  {
+    return m_active3_enabled;
+  }
+
   bool telemetry () const
   {
     return m_telemetry;
+  }
+
+  bool active3_telemetry () const
+  {
+    return m_active3_telemetry;
   }
 
   uint64_t min_records () const
@@ -187,6 +216,11 @@ public:
     return m_run_self;
   }
 
+  klayout_cuda_spatial_run_active3_empty_v1_func run_active3 () const
+  {
+    return m_run_active3;
+  }
+
   klayout_cuda_spatial_release_result_v1_func release () const
   {
     return m_release;
@@ -195,9 +229,12 @@ public:
 private:
   bool m_enabled;
   bool m_telemetry;
+  bool m_active3_enabled;
+  bool m_active3_telemetry;
   void *m_handle;
   klayout_cuda_spatial_run_bipartite_v1_func m_run_bipartite;
   klayout_cuda_spatial_run_self_v1_func m_run_self;
+  klayout_cuda_spatial_run_active3_empty_v1_func m_run_active3;
   klayout_cuda_spatial_release_result_v1_func m_release;
   uint64_t m_min_records;
   std::string m_error;
@@ -235,6 +272,37 @@ void log_attempt (const CudaSpatialAttempt &attempt, uint64_t subjects,
            << " pair_work=" << attempt.pair_work_count
            << " total_ms=" << (double (attempt.total_ns) / 1.0e6)
            << " fallback_flags=" << attempt.fallback_flags
+           << (attempt.message.empty () ? "" : " message=") << attempt.message;
+}
+
+void log_active3_attempt (const CudaActive3Attempt &attempt)
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  if (! module.active3_telemetry ()) {
+    return;
+  }
+
+  const char *outcome = "unknown";
+  switch (attempt.disposition) {
+  case CudaActive3Attempt::CertifiedEmpty: outcome = "certified-empty"; break;
+  case CudaActive3Attempt::RawHits: outcome = "raw-hits-cpu-fallback"; break;
+  case CudaActive3Attempt::BackendFallback: outcome = "fallback"; break;
+  case CudaActive3Attempt::BackendError: outcome = "error"; break;
+  case CudaActive3Attempt::InvalidResult: outcome = "invalid-result"; break;
+  case CudaActive3Attempt::Disabled: outcome = "disabled"; break;
+  }
+
+  tl::info << "CUDA ACTIVE.3 empty certificate:"
+           << " outcome=" << outcome
+           << " contexts=" << attempt.context_count
+           << " well_edges=" << attempt.flat_well_edge_count
+           << " active_edges=" << attempt.flat_active_edge_count
+           << " candidates=" << attempt.candidate_pair_count
+           << " raw_hits=" << attempt.raw_hit_count
+           << " uncertain=" << attempt.uncertain_count
+           << " total_ms=" << (double (attempt.total_ns) / 1.0e6)
+           << " fallback_flags=" << attempt.fallback_flags
+           << " device_flags=" << attempt.device_flags
            << (attempt.message.empty () ? "" : " message=") << attempt.message;
 }
 
@@ -427,7 +495,9 @@ CudaSpatialAttempt cuda_spatial_try_bipartite (
   }
   if (! module.ready ()) {
     attempt.disposition = CudaSpatialAttempt::BackendError;
-    attempt.message = module.error ();
+    attempt.message = module.error ().empty ()
+      ? "CUDA spatial backend is missing required legacy ABI entry points"
+      : module.error ();
     log_attempt (attempt, subjects.size (), intruders.size ());
     return attempt;
   }
@@ -495,7 +565,9 @@ CudaSpatialAttempt cuda_spatial_try_self (
   }
   if (! module.ready ()) {
     attempt.disposition = CudaSpatialAttempt::BackendError;
-    attempt.message = module.error ();
+    attempt.message = module.error ().empty ()
+      ? "CUDA spatial backend is missing required legacy ABI entry points"
+      : module.error ();
     log_attempt (attempt, records.size (), 0, "self");
     return attempt;
   }
@@ -592,6 +664,151 @@ bool cuda_spatial_requested ()
 {
   CudaSpatialModule &module = cuda_spatial_module ();
   return module.enabled () && module.ready ();
+}
+
+CudaActive3Attempt cuda_spatial_try_active3_empty (
+  const klayout_cuda_spatial_active3_request_v1 &request)
+{
+  CudaActive3Attempt attempt;
+  CudaSpatialModule &module = cuda_spatial_module ();
+  if (! module.active3_enabled ()) {
+    return attempt;
+  }
+  if (! module.enabled ()) {
+    attempt.disposition = CudaActive3Attempt::BackendError;
+    attempt.message = module.error ().empty ()
+      ? "CUDA spatial backend is unavailable"
+      : module.error ();
+    log_active3_attempt (attempt);
+    return attempt;
+  }
+  if (! module.active3_ready ()) {
+    attempt.disposition = CudaActive3Attempt::BackendFallback;
+    attempt.fallback_flags =
+      KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+    attempt.message =
+      "CUDA spatial backend has no ACTIVE.3 empty-certificate entry point";
+    log_active3_attempt (attempt);
+    return attempt;
+  }
+
+  klayout_cuda_spatial_active3_result_v1 result;
+  std::memset (&result, 0, sizeof (result));
+  result.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  result.struct_size = sizeof (result);
+  result.status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  result.disposition = KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN;
+
+  int status = KLAYOUT_CUDA_SPATIAL_ERROR;
+  try {
+    status = module.run_active3 () (&request, &result);
+  } catch (const std::exception &ex) {
+    attempt.disposition = CudaActive3Attempt::BackendError;
+    attempt.message = ex.what ();
+    log_active3_attempt (attempt);
+    return attempt;
+  } catch (...) {
+    attempt.disposition = CudaActive3Attempt::BackendError;
+    attempt.message =
+      "unknown exception while calling CUDA ACTIVE.3 backend";
+    log_active3_attempt (attempt);
+    return attempt;
+  }
+
+  attempt.fallback_flags = result.fallback_flags;
+  attempt.device_flags = result.device_flags;
+  attempt.context_count = result.context_count;
+  attempt.well_context_count = result.well_context_count;
+  attempt.active_context_count = result.active_context_count;
+  attempt.cell_count = result.cell_count;
+  attempt.edge_count = result.edge_count;
+  attempt.flat_well_edge_count = result.flat_well_edge_count;
+  attempt.flat_active_edge_count = result.flat_active_edge_count;
+  attempt.grid_cell_count = result.grid_cell_count;
+  attempt.membership_count = result.membership_count;
+  attempt.candidate_pair_count = result.candidate_pair_count;
+  attempt.raw_hit_count = result.raw_hit_count;
+  attempt.uncertain_count = result.uncertain_count;
+  attempt.total_ns = result.total_ns;
+  attempt.message.assign (
+    result.message,
+    std::find (result.message, result.message + sizeof (result.message), '\0'));
+
+  if (result.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      result.struct_size < sizeof (result) || result.reserved0 != 0) {
+    attempt.disposition = CudaActive3Attempt::InvalidResult;
+    attempt.message = "CUDA ACTIVE.3 backend returned an incompatible result";
+    log_active3_attempt (attempt);
+    return attempt;
+  }
+
+  if (status == KLAYOUT_CUDA_SPATIAL_OK &&
+      result.status == KLAYOUT_CUDA_SPATIAL_OK) {
+    const bool echo_matches =
+      result.opcode == request.opcode &&
+      result.option_flags == request.option_flags &&
+      result.dbu_per_micron == request.dbu_per_micron &&
+      result.distance == request.distance &&
+      result.grid_cell_size == request.grid_cell_size &&
+      std::equal (result.scene_digest, result.scene_digest + 32,
+                  request.scene_digest) &&
+      result.context_count == request.context_count &&
+      result.well_context_count == request.well_context_count &&
+      result.active_context_count == request.active_context_count &&
+      result.cell_count == request.cell_count &&
+      result.edge_count == request.edge_count &&
+      result.flat_well_edge_count == request.flat_well_edge_count &&
+      result.flat_active_edge_count == request.flat_active_edge_count;
+    if (! echo_matches ||
+        result.fallback_flags != KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE ||
+        result.device_flags != 0) {
+      attempt.disposition = CudaActive3Attempt::InvalidResult;
+      attempt.message =
+        "CUDA ACTIVE.3 backend returned a mismatched proof echo";
+    } else if (
+      result.grid_cell_count > request.max_grid_cells ||
+      result.membership_count > request.max_memberships ||
+      result.candidate_pair_count > request.max_pair_work ||
+      result.raw_hit_count > result.candidate_pair_count ||
+      result.uncertain_count > result.candidate_pair_count ||
+      result.raw_hit_count >
+        result.candidate_pair_count - result.uncertain_count) {
+      attempt.disposition = CudaActive3Attempt::InvalidResult;
+      attempt.message =
+        "CUDA ACTIVE.3 backend returned impossible proof counters";
+    } else if (
+      result.disposition == KLAYOUT_CUDA_SPATIAL_ACTIVE3_COMPLETE &&
+      result.raw_hit_count == 0 && result.uncertain_count == 0) {
+      attempt.disposition = CudaActive3Attempt::CertifiedEmpty;
+    } else if (
+      result.disposition == KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_HITS &&
+      result.raw_hit_count != 0 && result.uncertain_count == 0) {
+      attempt.disposition = CudaActive3Attempt::RawHits;
+    } else if (
+      result.disposition == KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN &&
+      result.uncertain_count != 0) {
+      attempt.disposition = CudaActive3Attempt::BackendFallback;
+    } else {
+      attempt.disposition = CudaActive3Attempt::InvalidResult;
+      attempt.message =
+        "CUDA ACTIVE.3 backend returned an inconsistent disposition";
+    }
+  } else if (
+    status == KLAYOUT_CUDA_SPATIAL_FALLBACK ||
+    result.status == KLAYOUT_CUDA_SPATIAL_FALLBACK) {
+    attempt.disposition = CudaActive3Attempt::BackendFallback;
+  } else {
+    attempt.disposition = CudaActive3Attempt::BackendError;
+  }
+
+  log_active3_attempt (attempt);
+  return attempt;
+}
+
+bool cuda_spatial_active3_requested ()
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  return module.enabled () && module.active3_ready ();
 }
 
 } // namespace db

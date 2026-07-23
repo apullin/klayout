@@ -52,6 +52,39 @@ struct DB_PUBLIC CudaSpatialAttempt
   std::vector<uint64_t> pair_keys;
 };
 
+struct DB_PUBLIC CudaActive3Attempt
+{
+  enum Disposition
+  {
+    Disabled,
+    CertifiedEmpty,
+    RawHits,
+    BackendFallback,
+    BackendError,
+    InvalidResult
+  };
+
+  CudaActive3Attempt ();
+
+  Disposition disposition;
+  uint32_t fallback_flags;
+  uint32_t device_flags;
+  uint64_t context_count;
+  uint64_t well_context_count;
+  uint64_t active_context_count;
+  uint64_t cell_count;
+  uint64_t edge_count;
+  uint64_t flat_well_edge_count;
+  uint64_t flat_active_edge_count;
+  uint64_t grid_cell_count;
+  uint64_t membership_count;
+  uint64_t candidate_pair_count;
+  uint64_t raw_hit_count;
+  uint64_t uncertain_count;
+  uint64_t total_ns;
+  std::string message;
+};
+
 /**
  * Try the optional CUDA bipartite broad phase.
  *
@@ -95,6 +128,18 @@ DB_PUBLIC bool cuda_spatial_preflight_self (
 
 /** Return true only when the opt-in module was requested and loaded. */
 DB_PUBLIC bool cuda_spatial_requested ();
+
+/**
+ * Invoke the optional live ACTIVE.3 raw-superset empty certificate.
+ *
+ * Only CertifiedEmpty is usable by a caller.  RawHits deliberately carries
+ * no KLayout markers and requests the unchanged CPU implementation.
+ */
+DB_PUBLIC CudaActive3Attempt cuda_spatial_try_active3_empty (
+  const klayout_cuda_spatial_active3_request_v1 &request);
+
+/** Return true only when the independent ACTIVE.3 opt-in and symbol exist. */
+DB_PUBLIC bool cuda_spatial_active3_requested ();
 
 } // namespace db
 
