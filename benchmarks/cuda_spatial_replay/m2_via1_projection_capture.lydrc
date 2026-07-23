@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="utf-8"?>
+<klayout-macro>
+ <description>Capture the hierarchical FreePDK45 METAL2/VIA1 projection-enclosure scene</description>
+ <version/>
+ <category>drc</category>
+ <prolog/>
+ <epilog/>
+ <doc/>
+ <autorun>false</autorun>
+ <autorun-early>false</autorun-early>
+ <shortcut/>
+ <show-in-menu>false</show-in-menu>
+ <group-name>drc_scripts</group-name>
+ <menu-path>tools_menu.drc.end</menu-path>
+ <interpreter>dsl</interpreter>
+ <dsl-interpreter-name>drc-dsl-xml</dsl-interpreter-name>
+ <text>
+# KACTSCN1 has two logical polygon slots.  For this workload, slot 0 carries
+# METAL2 and slot 1 carries VIA1.  The source operands deliberately use
+# "polygons", not "input", so source text labels are excluded from the rule and
+# the packed scene.  DeepRegion#insert_into retains the compact hierarchy.
+
+input_path = $input
+top_name = $topcell
+scene_path = $scene_output
+report_path = $output
+thread_text = ($threads || "1").to_s
+
+raise("missing -rd input=PATH") unless input_path &amp;&amp; !input_path.to_s.empty?
+raise("missing -rd topcell=NAME") unless top_name &amp;&amp; !top_name.to_s.empty?
+raise("missing -rd scene_output=PATH") unless scene_path &amp;&amp; !scene_path.to_s.empty?
+raise("missing -rd output=PATH") unless report_path &amp;&amp; !report_path.to_s.empty?
+raise("threads must be a positive integer") unless thread_text =~ /\A[1-9][0-9]*\z/
+thread_count = thread_text.to_i
+
+input_expanded = File.expand_path(input_path.to_s)
+raise("input does not exist: #{input_expanded}") unless File.file?(input_expanded)
+input_abs = File.realpath(input_expanded)
+canonical_output = lambda do |path|
+  expanded = File.expand_path(path.to_s)
+  parent = File.realpath(File.dirname(expanded))
+  File.join(parent, File.basename(expanded))
+end
+scene_abs = canonical_output.call(scene_path)
+report_abs = canonical_output.call(report_path)
+raise("scene output aliases input") if scene_abs == input_abs
+raise("report output aliases input") if report_abs == input_abs
+raise("scene and report outputs alias each other") if scene_abs == report_abs
+raise("refusing to overwrite scene output: #{scene_abs}") if File.exist?(scene_abs) || File.symlink?(scene_abs)
+raise("refusing to overwrite report output: #{report_abs}") if File.exist?(report_abs) || File.symlink?(report_abs)
+
+source(input_abs, top_name.to_s)
+report("FreePDK45 METAL2.3 source", report_abs)
+deep
+threads(thread_count)
+verbose(true)
+
+via1 = polygons(12, 0)
+metal2 = polygons(13, 0)
+
+capture_layout = RBA::Layout.new
+capture_layout.dbu = dbu
+capture_top = capture_layout.create_cell("KLAYOUT_CUDA_M2_VIA1_SCENE")
+capture_metal2 = capture_layout.layer(RBA::LayerInfo.new(101, 0))
+capture_via1 = capture_layout.layer(RBA::LayerInfo.new(102, 0))
+
+metal2.data.insert_into(capture_layout, capture_top.cell_index, capture_metal2)
+via1.data.insert_into(capture_layout, capture_top.cell_index, capture_via1)
+
+# insert_into normally receives polygon-only DeepLayers here.  Still remove any
+# text annotation reconstructed by DeepShapeStore before handing the layout to
+# the polygon-only KACTSCN1 exporter, and fail closed on every other shape kind.
+removed_texts = 0
+captured_shapes = [0, 0]
+capture_layout.each_cell do |cell|
+  [capture_metal2, capture_via1].each_with_index do |layer_index, operand|
+    shapes = cell.shapes(layer_index)
+    texts = []
+    shapes.each(RBA::Shapes::STexts) { |shape| texts &lt;&lt; shape }
+    texts.each do |shape|
+      shapes.erase(shape)
+      removed_texts += 1
+    end
+    shapes.each(RBA::Shapes::SAll) do |shape|
+      unless shape.is_box? || shape.is_polygon? || shape.is_simple_polygon?
+        raise("captured operand contains a non-polygon shape in cell #{cell.name}")
+      end
+      raise("captured operand contains shape properties in cell #{cell.name}") unless shape.prop_id == 0
+      captured_shapes[operand] += 1
+    end
+  end
+end
+raise("captured METAL2 operand is empty") if captured_shapes[0] == 0
+raise("captured VIA1 operand is empty") if captured_shapes[1] == 0
+
+capture_layout.write(scene_abs)
+info(
+  "M2_VIA1_CAPTURE scene=#{scene_abs} " \
+  "top=KLAYOUT_CUDA_M2_VIA1_SCENE metal2=101/0 via1=102/0 " \
+  "metal2_shapes=#{captured_shapes[0]} via1_shapes=#{captured_shapes[1]} " \
+  "removed_texts=#{removed_texts} dbu=#{capture_layout.dbu}"
+)
+
+# Preserve the exact production METAL2.3 projection-enclosure chain as the
+# source-side sanity workload.  The packed scene contains its two input
+# operands, not the transient edge/corner layers.
+via1_edges_with_less_enclosure =
+  metal2.enclosing(via1, 35.nm, projection).second_edges
+error_corners =
+  via1_edges_with_less_enclosure.width(angle_limit(100.0), 1.dbu)
+via1_edges_with_less_enclosure.forget
+via1.interacting(error_corners.polygons(1.dbu)).output(
+  "METAL2.3",
+  "METAL2.3 : Minimum enclosure around via1 on two opposite sides : 35nm"
+)
+error_corners.forget
+ </text>
+</klayout-macro>
