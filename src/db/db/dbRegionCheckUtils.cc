@@ -510,12 +510,6 @@ edge_replay_capture_config ()
   return config;
 }
 
-bool
-edge_replay_capture_requested (const Edge2EdgeCheckBase &output)
-{
-  return ! edge_replay_capture_config ().directory.empty () && output.edge_replay_capture_eligible ();
-}
-
 struct EdgeReplayHeader
 {
   char magic [8];
@@ -627,39 +621,23 @@ class EdgeReplayCaptureReceiver
   : public db::box_scanner_receiver<db::Edge, size_t>
 {
 public:
-  EdgeReplayCaptureReceiver (Edge2EdgeCheckBase &output, const std::list<db::Edge> &edges, const std::vector<size_t> &properties)
-    : mp_output (&output), m_scanner_callbacks (0), m_finish_callbacks (0),
+  EdgeReplayCaptureReceiver (Edge2EdgeCheckBase &output, size_t expected_records)
+    : mp_output (&output), m_expected_records (expected_records),
+      m_scanner_callbacks (0), m_finish_callbacks (0),
       m_unresolved_callbacks (0), m_exact_accept_callbacks (0),
       m_scanner_elapsed_ns (0)
   {
-    m_records.reserve (edges.size ());
-    m_ids.reserve (edges.size ());
-
-    std::vector<size_t>::const_iterator p = properties.begin ();
-    uint32_t id = 1;
-    for (std::list<db::Edge>::const_iterator edge = edges.begin (); edge != edges.end (); ++edge, ++p, ++id) {
-      const db::Box box = edge->bbox ();
-      EdgeReplayRecord record = {
-        int64_t (box.left ()), int64_t (box.bottom ()),
-        int64_t (box.right ()), int64_t (box.top ()),
-        int64_t (edge->p1 ().x ()), int64_t (edge->p1 ().y ()),
-        int64_t (edge->p2 ().x ()), int64_t (edge->p2 ().y ()),
-        uint64_t (*p), id, 0,
-        uint32_t (EdgeReplayHasEndpoints | ((*p & size_t (1)) ? EdgeReplaySideB : 0)),
-        0
-      };
-      m_records.push_back (record);
-      m_ids.insert (std::make_pair (&*edge, id));
-    }
+    m_records.reserve (expected_records);
+    m_ids.reserve (expected_records);
   }
 
   void add (const db::Edge *o1, size_t p1, const db::Edge *o2, size_t p2) override
   {
     ++m_scanner_callbacks;
 
-    std::unordered_map<const db::Edge *, uint32_t>::const_iterator id1 = m_ids.find (o1);
-    std::unordered_map<const db::Edge *, uint32_t>::const_iterator id2 = m_ids.find (o2);
-    if (id1 == m_ids.end () || id2 == m_ids.end ()) {
+    uint32_t id1 = record_id (o1, p1);
+    uint32_t id2 = record_id (o2, p2);
+    if (id1 == 0 || id2 == 0) {
       ++m_unresolved_callbacks;
     } else {
       //  Keep the raw callback count above, but define the broad replay oracle
@@ -668,8 +646,8 @@ public:
       //  This is also the bipartite work that a replay backend must reproduce.
       if (edges_considered (mp_output->different_polygons (),
                             mp_output->requires_different_layers (), p1, p2)) {
-        uint32_t first = std::min (id1->second, id2->second);
-        uint32_t second = std::max (id1->second, id2->second);
+        uint32_t first = std::min (id1, id2);
+        uint32_t second = std::max (id1, id2);
         uint64_t key = (uint64_t (first) << 32) | uint64_t (second);
         m_broad_pair_keys.push_back (key);
 
@@ -686,6 +664,9 @@ public:
   void finish (const db::Edge *edge, size_t property) override
   {
     ++m_finish_callbacks;
+    if (record_id (edge, property) == 0) {
+      ++m_unresolved_callbacks;
+    }
     mp_output->finish (edge, property);
   }
 
@@ -721,10 +702,37 @@ public:
   }
 
 private:
+  uint32_t record_id (const db::Edge *edge, size_t property)
+  {
+    if (! edge) {
+      return 0;
+    }
+
+    std::unordered_map<const db::Edge *, uint32_t>::const_iterator existing = m_ids.find (edge);
+    if (existing != m_ids.end ()) {
+      return existing->second;
+    }
+
+    uint32_t id = uint32_t (m_records.size () + 1);
+    const db::Box box = edge->bbox ();
+    EdgeReplayRecord record = {
+      int64_t (box.left ()), int64_t (box.bottom ()),
+      int64_t (box.right ()), int64_t (box.top ()),
+      int64_t (edge->p1 ().x ()), int64_t (edge->p1 ().y ()),
+      int64_t (edge->p2 ().x ()), int64_t (edge->p2 ().y ()),
+      uint64_t (property), id, 0,
+      uint32_t (EdgeReplayHasEndpoints | ((property & size_t (1)) ? EdgeReplaySideB : 0)),
+      0
+    };
+    m_records.push_back (record);
+    m_ids.insert (std::make_pair (edge, id));
+    return id;
+  }
+
   void write_internal ()
   {
     const EdgeReplayCaptureConfig &config = edge_replay_capture_config ();
-    if (config.directory.empty ()) {
+    if (config.directory.empty () || m_records.size () != m_expected_records) {
       return;
     }
 
@@ -818,6 +826,7 @@ private:
   }
 
   Edge2EdgeCheckBase *mp_output;
+  size_t m_expected_records;
   std::vector<EdgeReplayRecord> m_records;
   std::unordered_map<const db::Edge *, uint32_t> m_ids;
   std::vector<uint64_t> m_broad_pair_keys;
@@ -829,18 +838,43 @@ private:
   uint64_t m_scanner_elapsed_ns;
 };
 
+bool
+process_edge_replay_capture (Edge2EdgeCheckBase &output,
+                             db::box_scanner<db::Edge, size_t> &scanner,
+                             size_t expected_records)
+{
+  const EdgeReplayCaptureConfig &config = edge_replay_capture_config ();
+  if (! output.edge_replay_capture_eligible () ||
+      uint64_t (expected_records) < config.minimum_records ||
+      uint64_t (expected_records) > uint64_t (std::numeric_limits<uint32_t>::max ())) {
+    return false;
+  }
+
+  //  Keep the large diagnostic receiver out of poly2poly_check::process.
+  //  Otherwise its cold-path stack frame and register saves penalize every
+  //  production scanner request even when capture is disabled.
+  EdgeReplayCaptureReceiver capture (output, expected_records);
+  std::chrono::steady_clock::time_point scanner_begin = std::chrono::steady_clock::now ();
+  scanner.process (capture, output.distance (), db::box_convert<db::Edge> ());
+  capture.set_scanner_elapsed_ns (uint64_t (
+    std::chrono::duration_cast<std::chrono::nanoseconds> (
+      std::chrono::steady_clock::now () - scanner_begin).count ()));
+  capture.write ();
+  return true;
+}
+
 }
 
 template <class PolygonType>
 poly2poly_check<PolygonType>::poly2poly_check (Edge2EdgeCheckBase &output)
-  : mp_output (& output), m_capture_requested (edge_replay_capture_requested (output))
+  : mp_output (& output)
 {
   //  .. nothing yet ..
 }
 
 template <class PolygonType>
 poly2poly_check<PolygonType>::poly2poly_check ()
-  : mp_output (0), m_capture_requested (false)
+  : mp_output (0)
 {
   //  .. nothing yet ..
 }
@@ -867,14 +901,10 @@ poly2poly_check<PolygonType>::single (const PolygonType &o, size_t p)
   m_scanner.reserve (vertices (o));
 
   m_edge_heap.clear ();
-  m_edge_properties.clear ();
 
   for (typename PolygonType::polygon_edge_iterator e = o.begin_edge (); ! e.at_end (); ++e) {
     m_edge_heap.push_back (*e);
     m_scanner.insert (& m_edge_heap.back (), p);
-    if (m_capture_requested) {
-      m_edge_properties.push_back (p);
-    }
   }
 
   mp_output->feed_pseudo_edges (m_scanner);
@@ -887,7 +917,6 @@ void
 poly2poly_check<PolygonType>::connect (Edge2EdgeCheckBase &output)
 {
   mp_output = &output;
-  m_capture_requested = edge_replay_capture_requested (output);
   clear ();
 }
 
@@ -897,7 +926,6 @@ poly2poly_check<PolygonType>::clear ()
 {
   m_scanner.clear ();
   m_edge_heap.clear ();
-  m_edge_properties.clear ();
 }
 
 template <class PolygonType>
@@ -908,9 +936,6 @@ poly2poly_check<PolygonType>::enter (const PolygonType &o, size_t p)
     if (! (*e).is_degenerate ()) {
       m_edge_heap.push_back (*e);
       m_scanner.insert (& m_edge_heap.back (), p);
-      if (m_capture_requested) {
-        m_edge_properties.push_back (p);
-      }
     }
   }
 }
@@ -921,9 +946,6 @@ poly2poly_check<PolygonType>::enter (const poly2poly_check<PolygonType>::edge_ty
 {
   m_edge_heap.push_back (e);
   m_scanner.insert (& m_edge_heap.back (), p);
-  if (m_capture_requested) {
-    m_edge_properties.push_back (p);
-  }
 }
 
 //  TODO: move to generic header
@@ -950,9 +972,6 @@ poly2poly_check<PolygonType>::enter (const PolygonType &o, size_t p, const poly2
     if (! (*e).is_degenerate () && interact (box, *e)) {
       m_edge_heap.push_back (*e);
       m_scanner.insert (& m_edge_heap.back (), p);
-      if (m_capture_requested) {
-        m_edge_properties.push_back (p);
-      }
     }
   }
 }
@@ -964,9 +983,6 @@ poly2poly_check<PolygonType>::enter (const poly2poly_check<PolygonType>::edge_ty
   if (! box.empty () && interact (box, e)) {
     m_edge_heap.push_back (e);
     m_scanner.insert (& m_edge_heap.back (), p);
-    if (m_capture_requested) {
-      m_edge_properties.push_back (p);
-    }
   }
 }
 
@@ -976,22 +992,12 @@ poly2poly_check<PolygonType>::process ()
 {
   mp_output->feed_pseudo_edges (m_scanner);
 
-  const EdgeReplayCaptureConfig &config = edge_replay_capture_config ();
-  if (m_capture_requested &&
-      mp_output->edge_replay_capture_eligible () &&
-      m_edge_properties.size () == m_edge_heap.size () &&
-      uint64_t (m_edge_heap.size ()) >= config.minimum_records &&
-      uint64_t (m_edge_heap.size ()) <= uint64_t (std::numeric_limits<uint32_t>::max ())) {
-    EdgeReplayCaptureReceiver capture (*mp_output, m_edge_heap, m_edge_properties);
-    std::chrono::steady_clock::time_point scanner_begin = std::chrono::steady_clock::now ();
-    m_scanner.process (capture, mp_output->distance (), db::box_convert<db::Edge> ());
-    capture.set_scanner_elapsed_ns (uint64_t (
-      std::chrono::duration_cast<std::chrono::nanoseconds> (
-        std::chrono::steady_clock::now () - scanner_begin).count ()));
-    capture.write ();
-  } else {
-    m_scanner.process (*mp_output, mp_output->distance (), db::box_convert<db::Edge> ());
+  if (! edge_replay_capture_config ().directory.empty () &&
+      process_edge_replay_capture (*mp_output, m_scanner, m_edge_heap.size ())) {
+    return;
   }
+
+  m_scanner.process (*mp_output, mp_output->distance (), db::box_convert<db::Edge> ());
 }
 
 //  explicit instantiations

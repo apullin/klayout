@@ -10,8 +10,8 @@ per request because hierarchy scaling can change it.
 
 `KLAYOUT_EDGE_REPLAY_CAPTURE_MIN_RECORDS=N` suppresses request files with fewer
 than `N` scanner records. Its default and minimum effective value are 1. Both
-variables are read once, on the first construction of a polygon scanner. The
-capture directory is created if necessary.
+variables are read once, on the first polygon-scanner capture check. The capture
+directory is created if necessary.
 
 The instrumentation does not run when `KLAYOUT_EDGE_REPLAY_CAPTURE_DIR` is
 unset. A capture uses request-local vectors and has no global lock in the

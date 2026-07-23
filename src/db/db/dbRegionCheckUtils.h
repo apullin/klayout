@@ -355,8 +355,6 @@ private:
   db::Edge2EdgeCheckBase *mp_output;
   db::box_scanner<db::Edge, size_t> m_scanner;
   std::list<db::Edge> m_edge_heap;
-  std::vector<size_t> m_edge_properties;
-  bool m_capture_requested;
 };
 
 /**
