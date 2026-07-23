@@ -29,9 +29,79 @@
 #include "dbEdgesUtils.h"
 #include "dbDeepShapeStore.h"
 #include "dbCellGraphUtils.h"
+#include "dbCudaSpatialBackend.h"
 #include "dbDeepEdges.h"
+#include "tlEnv.h"
 #include "tlUnitTest.h"
 #include "tlStream.h"
+
+#include <algorithm>
+#include <vector>
+
+namespace
+{
+
+class ScopedEnvironment
+{
+public:
+  ScopedEnvironment (const std::string &name, const std::string &value)
+    : m_name (name), m_was_set (tl::has_env (name)),
+      m_old_value (m_was_set ? tl::get_env (name) : std::string ())
+  {
+    tl::set_env (m_name, value);
+  }
+
+  ~ScopedEnvironment ()
+  {
+    if (m_was_set) {
+      tl::set_env (m_name, m_old_value);
+    } else {
+      tl::unset_env (m_name);
+    }
+  }
+
+private:
+  ScopedEnvironment (const ScopedEnvironment &);
+  ScopedEnvironment &operator= (const ScopedEnvironment &);
+
+  std::string m_name;
+  bool m_was_set;
+  std::string m_old_value;
+};
+
+void insert_rectangle_edges (db::Shapes &shapes)
+{
+  shapes.insert (db::Edge (0, 0, 100, 0));
+  shapes.insert (db::Edge (100, 0, 100, 80));
+  shapes.insert (db::Edge (100, 80, 0, 80));
+  shapes.insert (db::Edge (0, 80, 0, 0));
+}
+
+void make_duplicate_rectangle_hierarchy (
+  db::Layout &layout, unsigned int layer, db::Cell *&top)
+{
+  top = &layout.cell (layout.add_cell ("TOP"));
+  db::Cell &child_a = layout.cell (layout.add_cell ("CHILD_A"));
+  db::Cell &child_b = layout.cell (layout.add_cell ("CHILD_B"));
+  insert_rectangle_edges (child_a.shapes (layer));
+  insert_rectangle_edges (child_b.shapes (layer));
+
+  //  Exercise same-definition multiplicity, a separate definition with the
+  //  same geometry, and an orientation-reversing occurrence. All 24
+  //  occurrence boxes are exactly equal in top coordinates.
+  top->insert (db::CellInstArray (
+    db::CellInst (child_a.cell_index ()), db::Trans (),
+    db::Vector (0, 0), db::Vector (0, 0), 8, 1));
+  top->insert (db::CellInstArray (
+    db::CellInst (child_a.cell_index ()),
+    db::Trans (db::Trans::m0, db::Vector (0, 80)),
+    db::Vector (0, 0), db::Vector (0, 0), 8, 1));
+  top->insert (db::CellInstArray (
+    db::CellInst (child_b.cell_index ()), db::Trans (),
+    db::Vector (0, 0), db::Vector (0, 0), 8, 1));
+}
+
+}
 
 TEST(1)
 {
@@ -1691,4 +1761,334 @@ TEST(deep_edges_and_cheats)
 
   CHECKPOINT();
   db::compare_layouts (_this, ly, tl::testdata () + "/algo/cheats_edges_au.gds");
+}
+
+TEST(24_LengthFilterDisconnectedHierarchy)
+{
+  db::Layout ly;
+  unsigned int layer = ly.insert_layer ();
+  db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+  db::Cell &child = ly.cell (ly.add_cell ("CHILD"));
+
+  //  The two local pieces must be canonicalized before length filtering.
+  child.shapes (layer).insert (db::Edge (0, 0, 65, 0));
+  child.shapes (layer).insert (db::Edge (65, 0, 130, 0));
+
+  //  Exercise both an array and a mirrored unit-orthogonal occurrence. All
+  //  occurrences are far enough apart for the certificate to succeed.
+  top.insert (db::CellInstArray (db::CellInst (child.cell_index ()), db::Trans (),
+                                 db::Vector (1000, 0), db::Vector (0, 0), 8, 1));
+  top.insert (db::CellInstArray (db::CellInst (child.cell_index ()),
+                                 db::Trans (db::Trans::m0, db::Vector (0, 1000))));
+
+  db::RecursiveShapeIterator source (ly, top, layer);
+  db::DeepShapeStore dss;
+  db::Edges deep (source, dss);
+  db::Edges flat (source);
+  const db::DeepEdges *deep_delegate =
+    dynamic_cast<const db::DeepEdges *> (deep.delegate ());
+
+  EXPECT_EQ (deep_delegate != 0, true);
+  EXPECT_EQ (deep_delegate->merged_edges_available (), false);
+  EXPECT_EQ (deep.is_merged (), false);
+
+  db::EdgeLengthFilter length_130 (130, 131, false);
+  db::Edges deep_result = deep.filtered (length_130);
+  db::Edges flat_result = flat.filtered (length_130);
+
+  EXPECT_EQ (db::compare (deep_result, flat_result.to_string ()), true);
+  EXPECT_EQ (deep_result.count (), size_t (9));
+  EXPECT_EQ (deep_delegate->merged_edges_available (), true);
+  //  Populating the merged cache must not change the source collection state.
+  EXPECT_EQ (deep.is_merged (), false);
+}
+
+TEST(25_LengthFilterTouchingHierarchyFallsBack)
+{
+  db::Layout ly;
+  unsigned int layer = ly.insert_layer ();
+  db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+  db::Cell &child = ly.cell (ly.add_cell ("CHILD"));
+
+  child.shapes (layer).insert (db::Edge (0, 0, 100, 0));
+
+  //  Adjacent occurrences share endpoints. They also share their definition
+  //  object, so this specifically guards occurrence expansion and inclusive
+  //  bbox-touch detection in the certificate.
+  top.insert (db::CellInstArray (db::CellInst (child.cell_index ()), db::Trans (),
+                                 db::Vector (100, 0), db::Vector (0, 0), 8, 1));
+
+  db::RecursiveShapeIterator source (ly, top, layer);
+  db::DeepShapeStore dss;
+  db::Edges deep (source, dss);
+  db::Edges flat (source);
+
+  db::EdgeLengthFilter length_800 (800, 801, false);
+  db::Edges deep_result = deep.filtered (length_800);
+  db::Edges flat_result = flat.filtered (length_800);
+
+  EXPECT_EQ (db::compare (deep_result, flat_result.to_string ()), true);
+  EXPECT_EQ (deep_result.count (), size_t (1));
+  EXPECT_EQ (deep_result.to_string (), "(0,0;800,0)");
+  EXPECT_EQ (dynamic_cast<const db::DeepEdges *> (deep.delegate ())
+               ->merged_edges_available (), true);
+}
+
+TEST(26_LengthFilterMergedSemanticsOff)
+{
+  db::Layout ly;
+  unsigned int layer = ly.insert_layer ();
+  db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+  top.shapes (layer).insert (db::Edge (0, 0, 65, 0));
+  top.shapes (layer).insert (db::Edge (65, 0, 130, 0));
+
+  db::RecursiveShapeIterator source (ly, top, layer);
+  db::DeepShapeStore dss;
+  db::Edges deep (source, dss);
+  db::Edges flat (source);
+  deep.set_merged_semantics (false);
+  flat.set_merged_semantics (false);
+
+  const db::DeepEdges *deep_delegate =
+    dynamic_cast<const db::DeepEdges *> (deep.delegate ());
+  EXPECT_EQ (deep_delegate != 0, true);
+  EXPECT_EQ (deep_delegate->merged_edges_available (), false);
+
+  db::EdgeLengthFilter length_65 (65, 66, false);
+  db::Edges deep_result = deep.filtered (length_65);
+  db::Edges flat_result = flat.filtered (length_65);
+
+  EXPECT_EQ (db::compare (deep_result, flat_result.to_string ()), true);
+  EXPECT_EQ (deep_result.count (), size_t (2));
+  //  The disconnected-merge cache path is forbidden under raw semantics.
+  EXPECT_EQ (deep_delegate->merged_edges_available (), false);
+}
+
+TEST(27_LengthFilterComplexTransformFallsBack)
+{
+  db::Layout ly;
+  unsigned int layer = ly.insert_layer ();
+  db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+  db::Cell &child = ly.cell (ly.add_cell ("CHILD"));
+  child.shapes (layer).insert (db::Edge (0, 0, 100, 0));
+
+  for (db::Coord x = 0; x < 8000; x += 1000) {
+    top.insert (db::CellInstArray (
+      db::CellInst (child.cell_index ()),
+      db::ICplxTrans (2.0, 0.0, false, db::Vector (x, 0))));
+  }
+
+  db::RecursiveShapeIterator source (ly, top, layer);
+  db::DeepShapeStore dss;
+  db::Edges deep (source, dss);
+  db::Edges flat (source);
+
+  db::EdgeLengthFilter length_200 (200, 201, false);
+  db::Edges deep_result = deep.filtered (length_200);
+  db::Edges flat_result = flat.filtered (length_200);
+
+  EXPECT_EQ (db::compare (deep_result, flat_result.to_string ()), true);
+  EXPECT_EQ (deep_result.count (), size_t (8));
+}
+
+TEST(28_LengthFilterCancellationInteractionFallsBack)
+{
+  db::Layout ly;
+  unsigned int layer = ly.insert_layer ();
+  db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+  db::Cell &child = ly.cell (ly.add_cell ("CHILD"));
+
+  //  Local EdgeOr cancels [0,5], leaving only [5,10]. The top edge
+  //  interacted with the original child edges only inside that canceled
+  //  interval, so a canonical-box-only certificate would miss the original
+  //  connection. The accelerated proof must use the original [0,10] cluster
+  //  bbox as provenance for canonical [5,10], detect its interaction with
+  //  [1,4], and use the legacy merger.
+  child.shapes (layer).insert (db::Edge (0, 0, 10, 0));
+  child.shapes (layer).insert (db::Edge (5, 0, 0, 0));
+  top.shapes (layer).insert (db::Edge (1, 0, 4, 0));
+  top.insert (db::CellInstArray (db::CellInst (child.cell_index ()), db::Trans (),
+                                 db::Vector (100, 0), db::Vector (0, 0), 12, 1));
+
+  db::RecursiveShapeIterator source (ly, top, layer);
+  db::DeepShapeStore candidate_dss;
+  db::Edges candidate (source, candidate_dss);
+  db::Edges flat (source);
+
+  db::EdgeLengthFilter keep_all (0, 100, false);
+  db::Edges expected = flat.filtered (keep_all);
+  db::Edges actual = candidate.filtered (keep_all);
+
+  EXPECT_EQ (actual.count (), size_t (13));
+  EXPECT_EQ (db::compare (actual, expected.to_string (expected.count ())), true);
+}
+
+TEST(29_LengthFilterStoredEdgeLimitFallsBack)
+{
+  db::Layout ly;
+  unsigned int layer = ly.insert_layer ();
+  db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+
+  top.shapes (layer).insert (db::Edge (0, 0, 65, 0));
+  top.shapes (layer).insert (db::Edge (65, 0, 130, 0));
+
+  db::RecursiveShapeIterator source (ly, top, layer);
+  db::DeepShapeStore dss;
+  db::Edges deep (source, dss);
+  db::Edges flat (source);
+
+  //  Force the O(cells) admission gate to reject this two-edge layer before
+  //  any per-edge certificate work. The integration runner additionally
+  //  requires the stored-edge-limit telemetry, proving this is a fallback
+  //  result rather than an equivalent accelerated result.
+  ScopedEnvironment limit (
+    "KLAYOUT_DEEP_EDGE_CERT_MAX_STORED_EDGES", "1");
+  db::EdgeLengthFilter length_130 (130, 131, false);
+  db::Edges deep_result = deep.filtered (length_130);
+  db::Edges flat_result = flat.filtered (length_130);
+
+  EXPECT_EQ (db::compare (deep_result, flat_result.to_string ()), true);
+  EXPECT_EQ (deep_result.count (), size_t (1));
+  EXPECT_EQ (deep_result.to_string (), "(0,0;130,0)");
+}
+
+TEST(30_LengthFilterLowReuseFallsBack)
+{
+  db::Layout ly;
+  unsigned int layer = ly.insert_layer ();
+  db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+
+  top.shapes (layer).insert (db::Edge (0, 0, 65, 0));
+  top.shapes (layer).insert (db::Edge (65, 0, 130, 0));
+
+  db::RecursiveShapeIterator source (ly, top, layer);
+  db::DeepShapeStore dss;
+  db::Edges deep (source, dss);
+  db::Edges flat (source);
+
+  db::EdgeLengthFilter length_130 (130, 131, false);
+  db::Edges deep_result = deep.filtered (length_130);
+  db::Edges flat_result = flat.filtered (length_130);
+
+  EXPECT_EQ (db::compare (deep_result, flat_result.to_string ()), true);
+  EXPECT_EQ (deep_result.count (), size_t (1));
+  EXPECT_EQ (deep_result.to_string (), "(0,0;130,0)");
+}
+
+TEST(31_LengthFilterDuplicateRectanglesSelectEmpty)
+{
+  db::Layout ly;
+  unsigned int layer = ly.insert_layer ();
+  db::Cell *top = 0;
+  make_duplicate_rectangle_hierarchy (ly, layer, top);
+
+  db::RecursiveShapeIterator source (ly, *top, layer);
+  db::DeepShapeStore dss;
+  db::Edges deep (source, dss);
+  db::Edges flat (source);
+  const db::DeepEdges *deep_delegate =
+    dynamic_cast<const db::DeepEdges *> (deep.delegate ());
+
+  EXPECT_EQ (deep_delegate != 0, true);
+  EXPECT_EQ (deep_delegate->merged_edges_available (), false);
+
+  //  Neither 80- nor 100-unit rectangle sides match. The GPU certificate may
+  //  return an empty selected output without materializing the merged cache,
+  //  even though every one of the 276 occurrence pairs interacts.
+  const bool expect_selected_empty =
+    tl::get_env ("KLAYOUT_CUDA_DISCONNECTED_MERGE") == "1" &&
+    db::cuda_spatial_may_attempt_self (24);
+  db::EdgeLengthFilter length_30 (30, 31, false);
+  db::Edges deep_result = deep.filtered (length_30);
+  db::Edges flat_result = flat.filtered (length_30);
+
+  EXPECT_EQ (db::compare (deep_result, flat_result.to_string ()), true);
+  EXPECT_EQ (deep_result.count (), size_t (0));
+  EXPECT_EQ (deep_result.is_merged (), true);
+  if (expect_selected_empty) {
+    EXPECT_EQ (deep_delegate->merged_edges_available (), false);
+  } else {
+    EXPECT_EQ (deep_delegate->merged_edges_available (), true);
+  }
+  EXPECT_EQ (deep.is_merged (), false);
+}
+
+TEST(32_LengthFilterDuplicateRectanglesUnsafeModesFallBack)
+{
+  db::Layout ly;
+  unsigned int layer = ly.insert_layer ();
+  db::Cell *top = 0;
+  make_duplicate_rectangle_hierarchy (ly, layer, top);
+  db::RecursiveShapeIterator source (ly, *top, layer);
+
+  //  Selecting an actual side length invalidates the selected-empty proof.
+  db::DeepShapeStore selected_dss;
+  db::Edges selected_deep (source, selected_dss);
+  db::Edges selected_flat (source);
+  db::EdgeLengthFilter length_100 (100, 101, false);
+  db::Edges selected_actual = selected_deep.filtered (length_100);
+  db::Edges selected_expected = selected_flat.filtered (length_100);
+  EXPECT_EQ (
+    db::compare (selected_actual,
+                 selected_expected.to_string (selected_expected.count ())),
+    true);
+  EXPECT_EQ (
+    dynamic_cast<const db::DeepEdges *> (selected_deep.delegate ())
+      ->merged_edges_available (),
+    true);
+
+  //  Even a filter which rejects every side must not use the optimization
+  //  when the caller asks for the false output as well.
+  db::DeepShapeStore split_dss;
+  db::Edges split_deep (source, split_dss);
+  db::Edges split_flat (source);
+  db::EdgeLengthFilter length_30 (30, 31, false);
+  std::pair<db::Edges, db::Edges> actual =
+    split_deep.split_filter (length_30);
+  std::pair<db::Edges, db::Edges> expected =
+    split_flat.split_filter (length_30);
+  EXPECT_EQ (db::compare (
+               actual.first,
+               expected.first.to_string (expected.first.count ())),
+             true);
+  EXPECT_EQ (db::compare (
+               actual.second,
+               expected.second.to_string (expected.second.count ())),
+             true);
+  EXPECT_EQ (
+    dynamic_cast<const db::DeepEdges *> (split_deep.delegate ())
+      ->merged_edges_available (),
+    true);
+}
+
+TEST(33_LengthFilterEqualBoxNonRectangleFallsBack)
+{
+  db::Layout ly;
+  unsigned int layer = ly.insert_layer ();
+  db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+  db::Cell &child = ly.cell (ly.add_cell ("CHILD"));
+
+  //  These two connected edges have the same positive-area bbox in every
+  //  duplicate occurrence, but they are not the four complete sides of that
+  //  box. Equal marker boxes alone must not authorize selected-empty.
+  child.shapes (layer).insert (db::Edge (0, 0, 100, 0));
+  child.shapes (layer).insert (db::Edge (100, 0, 100, 80));
+  top.insert (db::CellInstArray (
+    db::CellInst (child.cell_index ()), db::Trans (),
+    db::Vector (0, 0), db::Vector (0, 0), 8, 1));
+
+  db::RecursiveShapeIterator source (ly, top, layer);
+  db::DeepShapeStore dss;
+  db::Edges deep (source, dss);
+  db::Edges flat (source);
+
+  db::EdgeLengthFilter length_30 (30, 31, false);
+  db::Edges actual = deep.filtered (length_30);
+  db::Edges expected = flat.filtered (length_30);
+  EXPECT_EQ (db::compare (actual, expected.to_string ()), true);
+  EXPECT_EQ (actual.count (), size_t (0));
+  EXPECT_EQ (
+    dynamic_cast<const db::DeepEdges *> (deep.delegate ())
+      ->merged_edges_available (),
+    true);
 }

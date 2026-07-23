@@ -1,5 +1,5 @@
 /*
- * Optional CUDA bipartite AABB broad phase for KLayout.
+ * Optional CUDA self and bipartite AABB broad phase for KLayout.
  *
  * This DSO intentionally exposes only the versioned POD C ABI.  KLayout
  * remains CUDA-free and loads it explicitly at runtime.
@@ -50,6 +50,7 @@ struct GridConfig {
   std::uint64_t enlargement;
   std::uint32_t max_cells_per_record;
   std::uint32_t max_records_per_cell;
+  std::uint32_t bipartite;
 };
 
 struct CellRange {
@@ -100,6 +101,10 @@ std::uint64_t elapsed_ns(Clock::time_point begin, Clock::time_point end) {
       std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count());
 }
 
+std::uint64_t ceil_div_u64(std::uint64_t value, std::uint64_t divisor) {
+  return value / divisor + (value % divisor != 0);
+}
+
 void cuda_check(cudaError_t error, const char *operation) {
   if (error != cudaSuccess) {
     throw std::runtime_error(std::string(operation) + ": " +
@@ -148,9 +153,11 @@ __host__ __device__ bool boxes_overlap_strict(const PackedAabb &a,
          a.bottom < b.top + e && b.bottom < a.top + e;
 }
 
-__host__ __device__ std::uint64_t pair_key(std::uint32_t a,
-                                           std::uint32_t b) {
-  return (static_cast<std::uint64_t>(a) << 32) | b;
+__host__ __device__ std::uint64_t unordered_pair_key(std::uint32_t a,
+                                                     std::uint32_t b) {
+  const std::uint32_t lo = a < b ? a : b;
+  const std::uint32_t hi = a < b ? b : a;
+  return (static_cast<std::uint64_t>(lo) << 32) | hi;
 }
 
 __global__ void count_memberships_kernel(const PackedAabb *records,
@@ -217,14 +224,27 @@ __global__ void count_pair_work_kernel(
                static_cast<std::uint32_t>(KLAYOUT_CUDA_SPATIAL_FALLBACK_DENSE_CELL));
       continue;
     }
-    const std::uint64_t offset = cell_offsets[cell];
-    std::uint32_t side_a = 0;
-    while (side_a < count && records[record_indices[offset + side_a]].side == 0)
-      ++side_a;
-    side_a_counts[cell] = side_a;
-    pair_work_counts[cell] =
-        static_cast<std::uint64_t>(side_a) * (count - side_a);
+    if (config.bipartite) {
+      const std::uint64_t offset = cell_offsets[cell];
+      std::uint32_t side_a = 0;
+      while (side_a < count &&
+             records[record_indices[offset + side_a]].side == 0) {
+        ++side_a;
+      }
+      side_a_counts[cell] = side_a;
+      pair_work_counts[cell] =
+          static_cast<std::uint64_t>(side_a) * (count - side_a);
+    } else {
+      side_a_counts[cell] = 0;
+      pair_work_counts[cell] =
+          static_cast<std::uint64_t>(count) * (count - 1) / 2;
+    }
   }
+}
+
+__device__ std::uint64_t pair_row_start(std::uint32_t row,
+                                        std::uint32_t count) {
+  return static_cast<std::uint64_t>(row) * (2ULL * count - row - 1) / 2;
 }
 
 __global__ void mark_pair_candidates_kernel(
@@ -251,16 +271,37 @@ __global__ void mark_pair_candidates_kernel(
     const std::uint64_t cell = lo - 1;
     const std::uint64_t local = work - pair_work_offsets[cell];
     const std::uint32_t count = cell_counts[cell];
-    const std::uint32_t side_a = side_a_counts[cell];
-    const std::uint32_t side_b = count - side_a;
-    const std::uint32_t ai = static_cast<std::uint32_t>(local / side_b);
-    const std::uint32_t bi = side_a + static_cast<std::uint32_t>(local % side_b);
+    std::uint32_t ai = 0;
+    std::uint32_t bi = 0;
+    if (config.bipartite) {
+      const std::uint32_t side_a = side_a_counts[cell];
+      const std::uint32_t side_b = count - side_a;
+      ai = static_cast<std::uint32_t>(local / side_b);
+      bi = side_a + static_cast<std::uint32_t>(local % side_b);
+    } else {
+      std::uint32_t row_lo = 0;
+      std::uint32_t row_hi = count - 1;
+      while (row_lo < row_hi) {
+        const std::uint32_t mid = row_lo + (row_hi - row_lo + 1) / 2;
+        if (pair_row_start(mid, count) <= local) {
+          row_lo = mid;
+        } else {
+          row_hi = mid - 1;
+        }
+      }
+      ai = row_lo;
+      bi = static_cast<std::uint32_t>(
+          ai + 1 + local - pair_row_start(ai, count));
+    }
     const std::uint64_t offset = cell_offsets[cell];
     const PackedAabb a = records[record_indices[offset + ai]];
     const PackedAabb b = records[record_indices[offset + bi]];
-    candidate_or_zero[work] = boxes_overlap_strict(a, b, config.enlargement)
-                                  ? pair_key(a.id, b.id)
-                                  : 0;
+    candidate_or_zero[work] =
+        boxes_overlap_strict(a, b, config.enlargement)
+            ? (config.bipartite
+                   ? (static_cast<std::uint64_t>(a.id) << 32) | b.id
+                   : unordered_pair_key(a.id, b.id))
+            : 0;
   }
 }
 
@@ -271,15 +312,19 @@ void set_message(klayout_cuda_spatial_result_v1 *result,
 
 PipelineResult run_pipeline(const std::vector<PackedAabb> &records,
                             const klayout_cuda_spatial_config_v1 &options,
-                            std::uint64_t enlargement) {
+                            std::uint64_t enlargement,
+                            bool bipartite) {
   PipelineResult result;
   GridConfig config{options.cell_size, enlargement,
                     options.max_cells_per_record,
-                    options.max_records_per_cell};
+                    options.max_records_per_cell,
+                    bipartite ? 1u : 0u};
   const std::uint32_t record_count = static_cast<std::uint32_t>(records.size());
   constexpr std::uint32_t threads = 256;
   const std::uint32_t record_blocks = static_cast<std::uint32_t>(
-      std::min<std::uint64_t>((records.size() + threads - 1) / threads, 65535));
+      std::min<std::uint64_t>(
+          ceil_div_u64(static_cast<std::uint64_t>(records.size()), threads),
+          65535));
 
   const auto setup_begin = Clock::now();
   cuda_check(cudaSetDevice(options.device), "cudaSetDevice");
@@ -357,8 +402,8 @@ PipelineResult run_pipeline(const std::vector<PackedAabb> &records,
   thrust::device_vector<std::uint64_t> pair_offsets(result.occupied_cells);
   thrust::device_vector<std::uint32_t> side_a_counts(result.occupied_cells);
   const std::uint32_t cell_blocks = static_cast<std::uint32_t>(
-      std::min<std::uint64_t>((result.occupied_cells + threads - 1) / threads,
-                              65535));
+      std::min<std::uint64_t>(
+          ceil_div_u64(result.occupied_cells, threads), 65535));
   if (cell_blocks) {
     count_pair_work_kernel<<<cell_blocks, threads>>>(
         thrust::raw_pointer_cast(device_records.data()),
@@ -401,7 +446,7 @@ PipelineResult run_pipeline(const std::vector<PackedAabb> &records,
 
   thrust::device_vector<std::uint64_t> candidates(result.pair_work);
   const std::uint32_t pair_blocks = static_cast<std::uint32_t>(
-      std::min<std::uint64_t>((result.pair_work + threads - 1) / threads, 65535));
+      std::min<std::uint64_t>(ceil_div_u64(result.pair_work, threads), 65535));
   if (pair_blocks) {
     mark_pair_candidates_kernel<<<pair_blocks, threads>>>(
         thrust::raw_pointer_cast(device_records.data()),
@@ -443,87 +488,103 @@ PipelineResult run_pipeline(const std::vector<PackedAabb> &records,
   return result;
 }
 
-bool valid_config(const klayout_cuda_spatial_config_v1 &config) {
-  return config.abi_version == KLAYOUT_CUDA_SPATIAL_ABI_VERSION &&
-         config.struct_size >= sizeof(config) && config.device >= 0 &&
-         config.cell_size != 0 &&
-         config.cell_size <= static_cast<std::uint64_t>(INT64_MAX) &&
-         config.max_cells_per_record != 0 &&
-         config.max_records_per_cell != 0 && config.max_memberships != 0 &&
-         config.max_pair_work != 0 && config.max_candidates != 0;
+bool valid_config(const klayout_cuda_spatial_config_v1 *config) {
+  if (!config ||
+      config->abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      config->struct_size < sizeof(*config)) {
+    return false;
+  }
+
+  const bool pair_work_sum_cannot_overflow =
+      config->max_records_per_cell <= 1 ||
+      config->max_memberships <=
+          UINT64_MAX / (config->max_records_per_cell - 1);
+  return config->device >= 0 && config->cell_size != 0 &&
+         config->cell_size <= static_cast<std::uint64_t>(INT64_MAX) &&
+         config->max_cells_per_record != 0 &&
+         config->max_records_per_cell != 0 && config->max_memberships != 0 &&
+         config->max_pair_work != 0 && config->max_candidates != 0 &&
+         pair_work_sum_cannot_overflow;
 }
 
-}  // namespace
-
-extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT std::uint32_t
-klayout_cuda_spatial_abi_version(void) {
-  return KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+std::mutex &pipeline_mutex() {
+  static std::mutex mutex;
+  return mutex;
 }
 
-extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT void
-klayout_cuda_spatial_release_result_v1(klayout_cuda_spatial_result_v1 *result) {
-  if (!result) return;
-  delete[] result->pair_keys;
-  result->pair_keys = nullptr;
-  result->pair_count = 0;
+bool valid_request(const klayout_cuda_spatial_request_v1 &request,
+                   bool bipartite) {
+  if (request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      request.struct_size < sizeof(request) || !valid_config(request.config) ||
+      request.subject_count == 0 ||
+      !request.subjects || request.enlargement < 0 ||
+      request.subject_count > UINT32_MAX) {
+    return false;
+  }
+
+  if (bipartite) {
+    return request.intruder_count != 0 && request.intruders &&
+           request.intruder_count <= UINT32_MAX &&
+           request.subject_count + request.intruder_count <= UINT32_MAX;
+  }
+
+  return request.intruder_count == 0 && request.intruders == nullptr;
 }
 
-extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT int
-klayout_cuda_spatial_run_bipartite_v1(
-    const klayout_cuda_spatial_request_v1 *request,
-    klayout_cuda_spatial_result_v1 *result) {
+bool append_records(std::vector<PackedAabb> &records,
+                    const klayout_cuda_spatial_aabb_v1 *boxes,
+                    std::uint64_t count, std::uint32_t first_id,
+                    std::uint32_t side, std::int64_t enlargement) {
+  for (std::uint64_t i = 0; i < count; ++i) {
+    const auto &box = boxes[i];
+    if (box.left > box.right || box.bottom > box.top ||
+        box.left < INT64_MIN + enlargement ||
+        box.bottom < INT64_MIN + enlargement ||
+        box.right > INT64_MAX - enlargement ||
+        box.top > INT64_MAX - enlargement) {
+      return false;
+    }
+    records.push_back(PackedAabb{box.left, box.bottom, box.right, box.top,
+                                 first_id + static_cast<std::uint32_t>(i),
+                                 side, 0, 0});
+  }
+  return true;
+}
+
+int run_request(const klayout_cuda_spatial_request_v1 *request,
+                klayout_cuda_spatial_result_v1 *result, bool bipartite) {
   if (!result) return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
   std::memset(result, 0, sizeof(*result));
   result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
   result->struct_size = sizeof(*result);
   result->status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
 
-  if (!request || request->abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
-      request->struct_size < sizeof(*request) || !request->config ||
-      !valid_config(*request->config) || request->subject_count == 0 ||
-      request->intruder_count == 0 || !request->subjects || !request->intruders ||
-      request->enlargement < 0 ||
-      static_cast<std::uint64_t>(request->enlargement) >
-          static_cast<std::uint64_t>(INT64_MAX) ||
-      request->subject_count > UINT32_MAX || request->intruder_count > UINT32_MAX ||
-      request->subject_count + request->intruder_count > UINT32_MAX) {
+  if (!request || !valid_request(*request, bipartite)) {
     result->fallback_flags = KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
-    set_message(result, "unsupported or malformed bipartite request");
+    set_message(result, bipartite
+                            ? "unsupported or malformed bipartite request"
+                            : "unsupported or malformed self request");
     return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
   }
 
   const auto total_begin = Clock::now();
   try {
-    // The first PoC deliberately serializes calls.  It avoids accidental
-    // interleaving on CUDA's legacy default stream; a broker with persistent
-    // buffers is the intended production replacement.
-    static std::mutex pipeline_mutex;
-    std::lock_guard<std::mutex> pipeline_lock(pipeline_mutex);
+    // The first PoC deliberately serializes both entry points.  It avoids
+    // accidental interleaving on CUDA's legacy default stream; a broker with
+    // persistent buffers is the intended production replacement.
+    std::lock_guard<std::mutex> pipeline_lock(pipeline_mutex());
     std::vector<PackedAabb> records;
-    records.reserve(static_cast<std::size_t>(request->subject_count +
-                                             request->intruder_count));
+    records.reserve(static_cast<std::size_t>(
+        request->subject_count +
+        (bipartite ? request->intruder_count : std::uint64_t{0})));
     const std::int64_t enlargement = request->enlargement;
-    auto append = [&](const klayout_cuda_spatial_aabb_v1 *boxes,
-                      std::uint64_t count, std::uint32_t first_id,
-                      std::uint32_t side) -> bool {
-      for (std::uint64_t i = 0; i < count; ++i) {
-        const auto &box = boxes[i];
-        if (box.left > box.right || box.bottom > box.top ||
-            box.left < INT64_MIN + enlargement ||
-            box.bottom < INT64_MIN + enlargement ||
-            box.right > INT64_MAX - enlargement ||
-            box.top > INT64_MAX - enlargement) {
-          return false;
-        }
-        records.push_back(PackedAabb{box.left, box.bottom, box.right, box.top,
-                                     first_id + static_cast<std::uint32_t>(i),
-                                     side, 0, 0});
-      }
-      return true;
-    };
-    if (!append(request->subjects, request->subject_count, 1, 0) ||
-        !append(request->intruders, request->intruder_count,
-                static_cast<std::uint32_t>(request->subject_count) + 1, 1)) {
+    if (!append_records(records, request->subjects, request->subject_count, 1,
+                        0, enlargement) ||
+        (bipartite &&
+         !append_records(
+             records, request->intruders, request->intruder_count,
+             static_cast<std::uint32_t>(request->subject_count) + 1, 1,
+             enlargement))) {
       result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
       result->fallback_flags = KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW;
       set_message(result, "non-normalized AABB or coordinate overflow risk");
@@ -533,7 +594,7 @@ klayout_cuda_spatial_run_bipartite_v1(
 
     PipelineResult pipeline = run_pipeline(
         records, *request->config,
-        static_cast<std::uint64_t>(request->enlargement));
+        static_cast<std::uint64_t>(request->enlargement), bipartite);
     result->fallback_flags = pipeline.fallback_flags;
     result->membership_count = pipeline.memberships;
     result->occupied_cell_count = pipeline.occupied_cells;
@@ -568,4 +629,33 @@ klayout_cuda_spatial_run_bipartite_v1(
   }
   result->total_ns = elapsed_ns(total_begin, Clock::now());
   return KLAYOUT_CUDA_SPATIAL_ERROR;
+}
+
+}  // namespace
+
+extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT std::uint32_t
+klayout_cuda_spatial_abi_version(void) {
+  return KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+}
+
+extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT void
+klayout_cuda_spatial_release_result_v1(klayout_cuda_spatial_result_v1 *result) {
+  if (!result) return;
+  delete[] result->pair_keys;
+  result->pair_keys = nullptr;
+  result->pair_count = 0;
+}
+
+extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_bipartite_v1(
+    const klayout_cuda_spatial_request_v1 *request,
+    klayout_cuda_spatial_result_v1 *result) {
+  return run_request(request, result, true);
+}
+
+extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_self_v1(
+    const klayout_cuda_spatial_request_v1 *request,
+    klayout_cuda_spatial_result_v1 *result) {
+  return run_request(request, result, false);
 }

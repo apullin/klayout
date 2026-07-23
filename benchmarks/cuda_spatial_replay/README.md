@@ -6,11 +6,14 @@ large batch of copied geometry records into the same deterministic broad-phase
 candidate pairs as a CPU oracle after charging packing, transfers, device work,
 deduplication, and result copies.
 
-The integration is deliberately narrow: only the audited
-`scan_shape2shape_different_layers` seam can call the backend. Exact CPU AABB
-revalidation, hierarchy ownership, receiver calls, and fail-closed fallback
-remain KLayout responsibilities. The normal build has no CUDA headers or CUDA
-link dependency.
+The integration is deliberately narrow. The audited
+`scan_shape2shape_different_layers` seam can submit a bipartite request, and an
+independent opt-in `DeepEdges` certificate can submit a self request before a
+merged `EdgeLengthFilter` operation. Exact CPU AABB revalidation, hierarchy
+ownership, receiver calls, proof checks, and fail-closed fallback remain
+KLayout responsibilities. The earlier description of the integration as
+different-layer-only is therefore stale. The normal build has no CUDA headers
+or CUDA link dependency.
 
 ## KLayout-pointer-free record contract
 
@@ -35,9 +38,10 @@ bipartite` emits only A-to-B pairs, matching KLayout's two-input
 `box_scanner2` shape/instance and instance/instance uses without paying for a
 same-side superset.
 
-Output is a sorted, duplicate-free vector of uint64 keys:
-`min(record_id) << 32 | max(record_id)`. Multiple owner processes must keep an
-owner/request namespace outside that local pair key.
+Output is a sorted, duplicate-free vector of uint64 keys. Self requests use
+`min(record_id) << 32 | max(record_id)`. Bipartite requests preserve side
+identity and use `subject_id << 32 | intruder_id`. Multiple owner processes
+must keep an owner/request namespace outside that local pair key.
 
 ## Spatial semantics
 
@@ -144,9 +148,10 @@ TMPDIR=$PWD/build/tmp /usr/bin/nvcc \
 `./run.sh` builds and runs exhaustive self/bipartite tests, strict-boundary and
 int64 fixtures, a replay round trip, the million-record grid-oracle case, a
 million-edge projection-filter A/B, and expected dense/overflow fallbacks. It
-also builds the optional backend DSO and runs both a two-pair ABI smoke and a
-deterministic 1024-by-1024 exact CPU-oracle gate through that ABI. Its optional
-first argument selects a build directory.
+also builds the optional backend DSO and runs bipartite two-pair and
+1024-by-1024 exact CPU-oracle gates, plus self strict-boundary, complete-cell,
+1024-record exact-oracle, malformed-request, short-config, invalid-AABB, and
+capacity gates. Its optional first argument selects a build directory.
 
 CMake is also supported:
 
@@ -167,6 +172,13 @@ and configured capacity limits all return to the authoritative CPU scanner
 before any receiver callback. Successful pair vectors must be sorted and
 unique. KLayout validates all indices and reruns `db::bs_boxes_overlap` on the
 CPU for every pair before publishing the first callback.
+
+The original `klayout_cuda_spatial_run_bipartite_v1` contract is unchanged.
+The optional `klayout_cuda_spatial_run_self_v1` entry point reuses the request
+POD with only `subjects` populated (`intruders=null`, `intruder_count=0`) and
+returns each unordered pair as two distinct ascending one-based subject IDs.
+Older v1 backend DSOs remain usable for bipartite scans; the CPU loader treats
+a missing self symbol as a fail-closed unsupported self request.
 
 Build the DSO with CMake, then enable it with an explicit path:
 
@@ -202,6 +214,79 @@ handled/fallback status, record and pair-work counts, stage times, and backend
 messages. The GPU publishes candidates in deterministic pair-key order, not
 the CPU sweep's callback order; the audited interaction receiver is insensitive
 to that ordering.
+
+### Opt-in `DeepEdges` merge certificate
+
+`KLAYOUT_CUDA_DISCONNECTED_MERGE=1` enables a separate, fail-closed
+certificate in `DeepEdges::filtered()`. The setting is read once per process,
+so set it before the first eligible filter call. Disabled builds and processes
+retain the legacy hierarchy-aware merge path.
+
+The certificate is attempted only for the true-only result of the exact
+concrete `EdgeLengthFilter`, with merged (not raw) semantics and no usable
+merged cache. It additionally requires:
+
+- no breakout cells, non-orthogonal/complex instance transform, transform or
+  hierarchy-count overflow, or nonzero source property ID;
+- at most `KLAYOUT_DEEP_EDGE_CERT_MAX_STORED_EDGES` stored source edges
+  (default `100000`) and at least 8x flat occurrence reuse;
+- an enabled self-request backend above
+  `KLAYOUT_CUDA_SPATIAL_MIN_RECORDS`, plus an exact host-side membership
+  capacity preflight;
+- successful, complete GPU output with every returned index and transformed
+  AABB validated on the CPU.
+
+Local canonicalization is not itself accepted as a global merge. KLayout first
+groups canonical edges by original-cluster provenance and endpoint
+connectivity, then submits one overflow-checked marker AABB per hierarchy
+occurrence. An empty interaction set proves that no merge cluster crosses an
+occurrence boundary; only then is the locally canonicalized candidate installed
+as the merged cache.
+
+There is one narrower nonempty result, reported as `selected-empty`, for
+coincident duplicate rectangles. It is valid only when local EdgeOr preserved
+the complete oriented edge multiset including multiplicity, every marker group
+is exactly the four nondegenerate axis-aligned sides of its provenance box,
+the requested length filter rejects every canonical edge, and every GPU pair
+has byte-identical transformed AABBs. Global merging can then only retain,
+cancel, or reorient edges of the same rejected lengths, so the selected output
+is provably empty. KLayout returns a fresh merged empty result and deliberately
+does not publish a merged cache on the source object. Equal AABBs that are not
+literal rectangle boundaries, touching or partially overlapping boxes,
+containment, cancellation, selected sides, split/false-output filtering, or
+any incomplete backend result all fall back to the unchanged CPU path.
+
+`KLAYOUT_DEEP_EDGE_CERT_PROFILE=1` emits one
+`KLAYOUT_DEEP_EDGE_CERT` line per attempted certificate. `accelerator_ms`
+measures the backend call, while `decision_ms` measures the certificate
+decision through the reported outcome; neither is a whole-filter or whole-run
+timer. A nonempty backend result also emits a
+`KLAYOUT_DEEP_EDGE_CERT_PAIRS` classification.
+
+The focused integration runner exercises the successful disconnected and
+selected-empty outcomes and the touching, complex-transform, cancellation,
+stored-edge, reuse, unsafe-mode, and nonrectangle fallbacks:
+
+```sh
+bash benchmarks/cuda_spatial_replay/run_deep_edges_integration.sh \
+  [backend.so] [klayout-build-dir]
+```
+
+It requires a built backend DSO, `ut_runner`, and `db_tests.ut`, selects
+`dbDeepEdgesTests:24` through `:33`, checks the expected telemetry, and fails if
+obsolete `total_ms` certificate telemetry appears. The standalone `run.sh`
+still qualifies the pointer-free backend ABI and GPU/CPU oracles; the
+integration runner is the additional KLayout proof gate.
+
+On the downstream-composed x2 FreePDK45 CONTACT shard, the same-binary control
+took 218.32 s and the selected-empty candidate took 155.10 s: 63.22 s, or
+28.96%, less shard wall time. The reports were identical with SHA-256
+`9511c638ae7ed175e9bca5ece71068602b6c804bd230aecc5e56fa3cbefad305`.
+The 369.611 ms GPU self request and 2,412.654 ms complete certificate decision
+are included in the candidate wall time. This is an x2 CONTACT-shard result,
+not a 63.22 s reduction of the original 156.692 s parallel full launcher.
+Local evidence is retained at
+`/home/pullin/personal/klayout/cuda-evidence-temp/contact-x2-duplicate-empty-ab-20260723T154225Z`.
 
 ## Charged timings
 

@@ -96,10 +96,17 @@ struct klayout_cuda_spatial_request_v1
 };
 
 /*
- * A pair key stores the one-based subject ID in bits 63..32 and the
- * one-based global intruder ID in bits 31..0.  Intruder IDs start at
- * subject_count + 1.  Successful results are strictly increasing and unique.
- * pair_keys is owned by the backend until release_result is called.
+ * For the bipartite entry point, a pair key stores the one-based subject ID
+ * in bits 63..32 and the one-based global intruder ID in bits 31..0.
+ * Intruder IDs start at subject_count + 1.
+ *
+ * For the self entry point, subjects is the sole input array: intruders must
+ * be null and intruder_count must be zero.  A pair key stores two distinct
+ * one-based subject IDs in ascending order.  The self scan enumerates each
+ * unordered pair at most once per cell before cross-cell deduplication.
+ *
+ * Successful results from either entry point are strictly increasing and
+ * unique.  pair_keys is owned by the backend until release_result is called.
  */
 struct klayout_cuda_spatial_result_v1
 {
@@ -125,11 +132,17 @@ typedef uint32_t (*klayout_cuda_spatial_abi_version_func) (void);
 typedef int (*klayout_cuda_spatial_run_bipartite_v1_func) (
   const struct klayout_cuda_spatial_request_v1 *,
   struct klayout_cuda_spatial_result_v1 *);
+typedef int (*klayout_cuda_spatial_run_self_v1_func) (
+  const struct klayout_cuda_spatial_request_v1 *,
+  struct klayout_cuda_spatial_result_v1 *);
 typedef void (*klayout_cuda_spatial_release_result_v1_func) (
   struct klayout_cuda_spatial_result_v1 *);
 
 KLAYOUT_CUDA_SPATIAL_EXPORT uint32_t klayout_cuda_spatial_abi_version (void);
 KLAYOUT_CUDA_SPATIAL_EXPORT int klayout_cuda_spatial_run_bipartite_v1 (
+  const struct klayout_cuda_spatial_request_v1 *request,
+  struct klayout_cuda_spatial_result_v1 *result);
+KLAYOUT_CUDA_SPATIAL_EXPORT int klayout_cuda_spatial_run_self_v1 (
   const struct klayout_cuda_spatial_request_v1 *request,
   struct klayout_cuda_spatial_result_v1 *result);
 KLAYOUT_CUDA_SPATIAL_EXPORT void klayout_cuda_spatial_release_result_v1 (

@@ -179,6 +179,13 @@ protected:
 private:
   friend class DeepRegion;
 
+  enum DisconnectedMergeResult
+  {
+    DisconnectedMergeFallback,
+    DisconnectedMergeCached,
+    DisconnectedMergeSelectedEmpty
+  };
+
   DeepEdges &operator= (const DeepEdges &other);
 
   mutable DeepLayer m_merged_edges;
@@ -188,6 +195,8 @@ private:
 
   void init ();
   void ensure_merged_edges_valid () const;
+  DisconnectedMergeResult try_disconnected_merge (
+    const EdgeFilterBase &filter) const;
   std::pair<DeepLayer, DeepLayer> and_or_not_with (const DeepEdges *other, EdgeBoolOp op) const;
   std::pair<DeepLayer, DeepLayer> edge_region_op (const DeepRegion *other, EdgePolygonOp::mode_t op, bool include_borders) const;
   EdgePairsDelegate *run_check (db::edge_relation_type rel, const Edges *other, db::Coord d, const db::EdgesCheckOptions &options) const;
@@ -207,4 +216,3 @@ private:
 }
 
 #endif
-

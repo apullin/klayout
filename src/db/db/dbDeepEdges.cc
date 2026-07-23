@@ -29,6 +29,7 @@
 #include "dbHierNetworkProcessor.h"
 #include "dbCellGraphUtils.h"
 #include "dbCellVariants.h"
+#include "dbCudaSpatialBackend.h"
 #include "dbEdgeBoolean.h"
 #include "dbCellMapping.h"
 #include "dbLayoutUtils.h"
@@ -39,7 +40,19 @@
 #include "dbHierProcessor.h"
 #include "dbEmptyEdges.h"
 
+#include <algorithm>
+#include <cerrno>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <list>
+#include <limits>
+#include <map>
+#include <set>
+#include <typeinfo>
 #include <unordered_set>
+#include <vector>
 
 namespace db
 {
@@ -624,6 +637,403 @@ private:
   }
 };
 
+class DisconnectedMergeUnionFind
+{
+public:
+  explicit DisconnectedMergeUnionFind (size_t n)
+    : m_parent (n), m_rank (n, 0)
+  {
+    for (size_t i = 0; i < n; ++i) {
+      m_parent [i] = i;
+    }
+  }
+
+  size_t find (size_t i)
+  {
+    size_t root = i;
+    while (m_parent [root] != root) {
+      root = m_parent [root];
+    }
+    while (m_parent [i] != i) {
+      size_t next = m_parent [i];
+      m_parent [i] = root;
+      i = next;
+    }
+    return root;
+  }
+
+  void join (size_t a, size_t b)
+  {
+    a = find (a);
+    b = find (b);
+    if (a == b) {
+      return;
+    }
+    if (m_rank [a] < m_rank [b]) {
+      std::swap (a, b);
+    }
+    m_parent [b] = a;
+    if (m_rank [a] == m_rank [b]) {
+      ++m_rank [a];
+    }
+  }
+
+private:
+  std::vector<size_t> m_parent;
+  std::vector<unsigned char> m_rank;
+};
+
+bool disconnected_merge_enabled ()
+{
+  static const bool enabled = [] () {
+    const char *value = std::getenv ("KLAYOUT_CUDA_DISCONNECTED_MERGE");
+    return value && *value && std::strcmp (value, "0") != 0 &&
+           std::strcmp (value, "false") != 0 &&
+           std::strcmp (value, "off") != 0;
+  } ();
+  return enabled;
+}
+
+bool checked_add_size (size_t a, size_t b, size_t &result)
+{
+  if (b > std::numeric_limits<size_t>::max () - a) {
+    return false;
+  }
+  result = a + b;
+  return true;
+}
+
+bool checked_multiply_size (size_t a, size_t b, size_t &result)
+{
+  if (a != 0 && b > std::numeric_limits<size_t>::max () / a) {
+    return false;
+  }
+  result = a * b;
+  return true;
+}
+
+bool checked_instance_size (const db::CellInstArray &array, size_t &size)
+{
+  db::CellInstArray::vector_type a, b;
+  unsigned long na = 0, nb = 0;
+  if (array.is_regular_array (a, b, na, nb)) {
+    return checked_multiply_size (size_t (na), size_t (nb), size);
+  }
+
+  if (array.is_iterated_array ()) {
+    size = array.size ();
+  } else {
+    size = 1;
+  }
+  return true;
+}
+
+bool checked_occurrence_weights (
+  const db::Layout &layout, db::cell_index_type initial_cell,
+  std::map<db::cell_index_type, size_t> &weights,
+  bool &complex_transform)
+{
+  weights.clear ();
+  complex_transform = false;
+  weights.insert (std::make_pair (initial_cell, size_t (1)));
+
+  for (db::Layout::top_down_const_iterator ci = layout.begin_top_down ();
+       ci != layout.end_top_down (); ++ci) {
+    std::map<db::cell_index_type, size_t>::const_iterator weight =
+      weights.find (*ci);
+    if (weight == weights.end ()) {
+      continue;
+    }
+
+    const db::Cell &cell = layout.cell (*ci);
+    for (db::Cell::const_iterator inst = cell.begin ();
+         ! inst.at_end (); ++inst) {
+      if (inst->is_complex ()) {
+        complex_transform = true;
+        return false;
+      }
+
+      size_t array_size = 0, contribution = 0;
+      if (! checked_instance_size (inst->cell_inst (), array_size) ||
+          ! checked_multiply_size (weight->second, array_size,
+                                   contribution)) {
+        return false;
+      }
+
+      size_t &child_weight = weights [inst->cell_index ()];
+      if (! checked_add_size (child_weight, contribution, child_weight)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+bool checked_weighted_shape_count (
+  const db::Layout &layout,
+  const std::map<db::cell_index_type, size_t> &weights,
+  unsigned int layer, size_t &stored, size_t &occurrences)
+{
+  stored = 0;
+  occurrences = 0;
+  for (std::map<db::cell_index_type, size_t>::const_iterator cell =
+         weights.begin ();
+       cell != weights.end (); ++cell) {
+    const size_t shape_count =
+      layout.cell (cell->first).shapes (layer).size ();
+    size_t weighted_count = 0;
+    if (! checked_add_size (stored, shape_count, stored) ||
+        ! checked_multiply_size (cell->second, shape_count, weighted_count) ||
+        ! checked_add_size (occurrences, weighted_count, occurrences)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+size_t disconnected_merge_max_stored_edges ()
+{
+  const size_t default_limit = 100000;
+  const char *value =
+    std::getenv ("KLAYOUT_DEEP_EDGE_CERT_MAX_STORED_EDGES");
+  if (! value || ! *value) {
+    return default_limit;
+  }
+
+  const int saved_errno = errno;
+  errno = 0;
+  char *end = 0;
+  unsigned long long parsed = std::strtoull (value, &end, 10);
+  const bool valid =
+    errno == 0 && end != value && *end == '\0' && *value != '-' &&
+    parsed <= static_cast<unsigned long long> (
+      std::numeric_limits<size_t>::max ());
+  errno = saved_errno;
+
+  return valid ? static_cast<size_t> (parsed) : default_limit;
+}
+
+bool checked_negate_coord (db::Coord value, db::Coord &result)
+{
+  if (value == std::numeric_limits<db::Coord>::min ()) {
+    return false;
+  }
+  result = -value;
+  return true;
+}
+
+bool checked_add_coord (db::Coord a, db::Coord b, db::Coord &result)
+{
+  if ((b > 0 && a > std::numeric_limits<db::Coord>::max () - b) ||
+      (b < 0 && a < std::numeric_limits<db::Coord>::min () - b)) {
+    return false;
+  }
+  result = a + b;
+  return true;
+}
+
+bool checked_transform_marker_point (db::Coord x, db::Coord y,
+                                     const db::ICplxTrans &trans,
+                                     db::Coord &tx, db::Coord &ty)
+{
+  db::Coord rx = 0, ry = 0;
+  switch (trans.rot ()) {
+  case db::Trans::r0:
+    rx = x;
+    ry = y;
+    break;
+  case db::Trans::r90:
+    if (! checked_negate_coord (y, rx)) {
+      return false;
+    }
+    ry = x;
+    break;
+  case db::Trans::r180:
+    if (! checked_negate_coord (x, rx) || ! checked_negate_coord (y, ry)) {
+      return false;
+    }
+    break;
+  case db::Trans::r270:
+    rx = y;
+    if (! checked_negate_coord (x, ry)) {
+      return false;
+    }
+    break;
+  case db::Trans::m0:
+    rx = x;
+    if (! checked_negate_coord (y, ry)) {
+      return false;
+    }
+    break;
+  case db::Trans::m45:
+    rx = y;
+    ry = x;
+    break;
+  case db::Trans::m90:
+    if (! checked_negate_coord (x, rx)) {
+      return false;
+    }
+    ry = y;
+    break;
+  case db::Trans::m135:
+    if (! checked_negate_coord (y, rx) || ! checked_negate_coord (x, ry)) {
+      return false;
+    }
+    break;
+  default:
+    return false;
+  }
+
+  const db::Vector displacement = trans.disp ();
+  return checked_add_coord (rx, displacement.x (), tx) &&
+         checked_add_coord (ry, displacement.y (), ty);
+}
+
+bool checked_transform_marker_box (const db::Box &box,
+                                   const db::ICplxTrans &trans,
+                                   klayout_cuda_spatial_aabb_v1 &record)
+{
+  if (box.empty () || trans.is_complex ()) {
+    return false;
+  }
+
+  db::Coord left = std::numeric_limits<db::Coord>::max ();
+  db::Coord bottom = std::numeric_limits<db::Coord>::max ();
+  db::Coord right = std::numeric_limits<db::Coord>::min ();
+  db::Coord top = std::numeric_limits<db::Coord>::min ();
+  const db::Coord xx [2] = { box.left (), box.right () };
+  const db::Coord yy [2] = { box.bottom (), box.top () };
+
+  for (size_t ix = 0; ix < 2; ++ix) {
+    for (size_t iy = 0; iy < 2; ++iy) {
+      db::Coord x = 0, y = 0;
+      if (! checked_transform_marker_point (xx [ix], yy [iy], trans, x, y)) {
+        return false;
+      }
+      left = std::min (left, x);
+      bottom = std::min (bottom, y);
+      right = std::max (right, x);
+      top = std::max (top, y);
+    }
+  }
+
+  record.left = static_cast<int64_t> (left);
+  record.bottom = static_cast<int64_t> (bottom);
+  record.right = static_cast<int64_t> (right);
+  record.top = static_cast<int64_t> (top);
+  return true;
+}
+
+bool exact_oriented_multiset (
+  std::vector<db::Edge> original, std::vector<db::Edge> canonical)
+{
+  if (original.size () != canonical.size ()) {
+    return false;
+  }
+  std::sort (original.begin (), original.end ());
+  std::sort (canonical.begin (), canonical.end ());
+  return std::equal (original.begin (), original.end (), canonical.begin ());
+}
+
+bool exact_box_boundary (
+  const db::Box &box, const std::vector<db::Edge> &edges,
+  const std::vector<size_t> &indices)
+{
+  if (box.empty () || box.left () >= box.right () ||
+      box.bottom () >= box.top () || indices.size () != 4) {
+    return false;
+  }
+
+  unsigned int sides = 0;
+  for (std::vector<size_t>::const_iterator index = indices.begin ();
+       index != indices.end (); ++index) {
+    if (*index >= edges.size ()) {
+      return false;
+    }
+
+    const db::Edge &edge = edges [*index];
+    const db::Point &p1 = edge.p1 ();
+    const db::Point &p2 = edge.p2 ();
+    unsigned int side = 0;
+    if (p1.y () == p2.y () &&
+        std::min (p1.x (), p2.x ()) == box.left () &&
+        std::max (p1.x (), p2.x ()) == box.right ()) {
+      if (p1.y () == box.bottom ()) {
+        side = 1;
+      } else if (p1.y () == box.top ()) {
+        side = 2;
+      }
+    } else if (p1.x () == p2.x () &&
+               std::min (p1.y (), p2.y ()) == box.bottom () &&
+               std::max (p1.y (), p2.y ()) == box.top ()) {
+      if (p1.x () == box.left ()) {
+        side = 4;
+      } else if (p1.x () == box.right ()) {
+        side = 8;
+      }
+    }
+
+    if (side == 0 || (sides & side) != 0) {
+      return false;
+    }
+    sides |= side;
+  }
+
+  return sides == 15;
+}
+
+struct DisconnectedMergeStats
+{
+  DisconnectedMergeStats ()
+    : cells (0), stored_edges (0), flat_edges (0), input_edges (0),
+      canonical_edges (0), groups (0), occurrences (0), disposition (-1),
+      fallback_flags (0), memberships (0), accelerator_ns (0),
+      start (std::chrono::steady_clock::now ())
+  {
+  }
+
+  void report (const char *status, const char *reason) const
+  {
+    const char *profile = std::getenv ("KLAYOUT_DEEP_EDGE_CERT_PROFILE");
+    if (! profile || ! *profile || (profile [0] == '0' && profile [1] == 0)) {
+      return;
+    }
+
+    const double elapsed_ms =
+      std::chrono::duration_cast<std::chrono::duration<double, std::milli> >
+        (std::chrono::steady_clock::now () - start).count ();
+
+    //  Profiling is opt-in and deliberately bounded to one line per attempted
+    //  certificate. Preserve errno so diagnostics cannot affect the caller.
+    const int saved_errno = errno;
+    std::fprintf (stderr,
+                  "KLAYOUT_DEEP_EDGE_CERT status=%s reason=%s cells=%zu "
+                  "stored_edges=%zu flat_edges=%zu input_edges=%zu "
+                  "canonical_edges=%zu groups=%zu occurrences=%zu "
+                  "disposition=%d fallback_flags=%u memberships=%llu "
+                  "accelerator_ms=%.3f decision_ms=%.3f\n",
+                  status, reason, cells, stored_edges, flat_edges, input_edges,
+                  canonical_edges, groups, occurrences, disposition, fallback_flags,
+                  static_cast<unsigned long long> (memberships),
+                  double (accelerator_ns) / 1.0e6, elapsed_ms);
+    errno = saved_errno;
+  }
+
+  size_t cells;
+  size_t stored_edges;
+  size_t flat_edges;
+  size_t input_edges;
+  size_t canonical_edges;
+  size_t groups;
+  size_t occurrences;
+  int disposition;
+  uint32_t fallback_flags;
+  uint64_t memberships;
+  uint64_t accelerator_ns;
+  std::chrono::steady_clock::time_point start;
+};
+
 }
 
 const DeepLayer &
@@ -692,6 +1102,355 @@ DeepEdges::ensure_merged_edges_valid () const
     m_merged_edges_boc_hash = deep_layer ().breakout_cells_hash ();
 
   }
+}
+
+DeepEdges::DisconnectedMergeResult
+DeepEdges::try_disconnected_merge (const EdgeFilterBase &filter) const
+{
+  DisconnectedMergeStats stats;
+
+  //  Breakout cells change the hierarchy seen by the regular cluster builder.
+  //  This first, narrow implementation does not attempt to reproduce that.
+  if (deep_layer ().breakout_cells () != 0) {
+    stats.report ("fallback", "breakout-cells");
+    return DisconnectedMergeFallback;
+  }
+
+  db::Layout &layout = const_cast<db::Layout &> (deep_layer ().layout ());
+  std::map<db::cell_index_type, size_t> occurrence_weights;
+  bool complex_transform = false;
+  if (! checked_occurrence_weights (
+        layout, deep_layer ().initial_cell ().cell_index (),
+        occurrence_weights, complex_transform)) {
+    stats.report ("fallback",
+                  complex_transform ? "complex-transform" :
+                                      "hierarchy-count-overflow");
+    return DisconnectedMergeFallback;
+  }
+  stats.cells = occurrence_weights.size ();
+
+  //  Local canonicalization is linear in the number of stored source edges,
+  //  while the established hierarchical merger can be dramatically cheaper
+  //  on large, highly reused definitions. Compute an exact, overflow-checked
+  //  flat-edge upper bound first. If even that upper bound cannot satisfy the
+  //  enabled backend's readiness and threshold gate, no later marker set can.
+  if (! checked_weighted_shape_count (
+        layout, occurrence_weights, deep_layer ().layer (),
+        stats.stored_edges, stats.flat_edges)) {
+    stats.report ("fallback", "flat-edge-count-overflow");
+    return DisconnectedMergeFallback;
+  }
+  if (! db::cuda_spatial_may_attempt_self (stats.flat_edges)) {
+    stats.report ("fallback", "accelerator-unavailable");
+    return DisconnectedMergeFallback;
+  }
+
+  //  Avoid paying per-edge setup for low-reuse or unusually large definition
+  //  layers. The preceding count is O(reachable cells).
+  const size_t max_stored_edges = disconnected_merge_max_stored_edges ();
+  if (stats.stored_edges > max_stored_edges) {
+    stats.report ("fallback", "stored-edge-limit");
+    return DisconnectedMergeFallback;
+  }
+
+  //  The certificate only has a chance to beat the legacy hierarchy-aware
+  //  merger when local work is substantially reused. Divide to avoid a
+  //  potentially overflowing "stored_edges * minimum_reuse" comparison.
+  if (stats.stored_edges == 0) {
+    stats.report ("fallback", "empty-input");
+    return DisconnectedMergeFallback;
+  }
+  const size_t minimum_reuse = 8;
+  if (stats.flat_edges / stats.stored_edges < minimum_reuse) {
+    stats.report ("fallback", "reuse-ratio");
+    return DisconnectedMergeFallback;
+  }
+
+  //  The regular hierarchical merger propagates one property ID through an
+  //  original hierarchy cluster. Local EdgeOr canonicalization can cancel the
+  //  portion which made that cluster cross an instance boundary, so canonical
+  //  marker boxes alone cannot prove equivalent property propagation. Keep
+  //  this first certificate geometry-only and fail closed on every nonzero
+  //  source edge property.
+  for (std::map<db::cell_index_type, size_t>::const_iterator ci =
+         occurrence_weights.begin ();
+       ci != occurrence_weights.end (); ++ci) {
+    const db::Shapes &source_shapes =
+      layout.cell (ci->first).shapes (deep_layer ().layer ());
+    for (db::Shapes::shape_iterator shape =
+           source_shapes.begin (db::ShapeIterator::Edges);
+         ! shape.at_end (); ++shape) {
+      if (shape->prop_id () != 0) {
+        stats.report ("fallback", "properties");
+        return DisconnectedMergeFallback;
+      }
+    }
+  }
+
+  db::DeepLayer candidate = deep_layer ().derived ();
+  db::DeepLayer markers = deep_layer ().derived ();
+  db::Connectivity conn;
+  conn.connect (deep_layer ());
+
+  //  Canonicalize only exact local clusters. A separate output container per
+  //  cluster is required: the edge boolean collector resolves orphan dots
+  //  against its whole output container during finalize(). Retain each
+  //  emitted edge's original-cluster bbox as provenance: canonicalization can
+  //  remove the geometry which established a hierarchy interaction.
+  bool duplicate_empty_proof = true;
+  for (std::map<db::cell_index_type, size_t>::const_iterator ci =
+         occurrence_weights.begin ();
+       ci != occurrence_weights.end (); ++ci) {
+    db::Cell &cell = layout.cell (ci->first);
+    db::local_clusters<db::Edge> clusters;
+    clusters.build_clusters (cell, conn, 0, false, false);
+
+    db::Shapes &candidate_shapes = cell.shapes (candidate.layer ());
+    db::Shapes &marker_shapes = cell.shapes (markers.layer ());
+    std::vector<db::Edge> edges;
+    std::vector<db::Box> provenance_boxes;
+    std::vector<std::pair<size_t, size_t> > cluster_ranges;
+    std::vector<db::Box> canceled_cluster_boxes;
+
+    for (db::local_clusters<db::Edge>::const_iterator cluster = clusters.begin ();
+         cluster != clusters.end (); ++cluster) {
+      const db::Box original_cluster_box = cluster->bbox ();
+      std::list<db::Edge> heap;
+      std::vector<db::Edge> original_edges;
+      db::box_scanner<db::Edge, size_t> scanner;
+
+      for (db::local_cluster<db::Edge>::shape_iterator shape =
+             cluster->begin (deep_layer ().layer ());
+           ! shape.at_end (); ++shape) {
+        heap.push_back (*shape);
+        original_edges.push_back (*shape);
+        scanner.insert (&heap.back (), 0);
+        ++stats.input_edges;
+      }
+
+      db::properties_id_type prop_id = 0;
+      if (cluster->begin_attr () != cluster->end_attr ()) {
+        prop_id = *cluster->begin_attr ();
+      }
+
+      db::Shapes cluster_output (false);
+      db::EdgeBooleanClusterCollectorToShapes collector (&cluster_output, db::EdgeOr, prop_id);
+      scanner.process (collector, 1, db::box_convert<db::Edge> ());
+
+      const size_t range_begin = edges.size ();
+      std::vector<db::Edge> canonical_cluster_edges;
+      for (db::Shapes::shape_iterator shape =
+             cluster_output.begin (db::ShapeIterator::Edges);
+           ! shape.at_end (); ++shape) {
+        edges.push_back (shape->edge ());
+        canonical_cluster_edges.push_back (shape->edge ());
+        provenance_boxes.push_back (original_cluster_box);
+        if (filter.selected (shape->edge (), 0)) {
+          duplicate_empty_proof = false;
+        }
+      }
+      if (! exact_oriented_multiset (original_edges,
+                                     canonical_cluster_edges)) {
+        duplicate_empty_proof = false;
+      }
+      if (edges.size () == range_begin) {
+        //  A fully canceled cluster can still have connected another
+        //  hierarchy occurrence before EdgeOr. It therefore needs a marker
+        //  even though it contributes no canonical edge.
+        canceled_cluster_boxes.push_back (original_cluster_box);
+        duplicate_empty_proof = false;
+      } else {
+        cluster_ranges.push_back (
+          std::make_pair (range_begin, edges.size ()));
+      }
+
+      candidate_shapes.insert (cluster_output);
+      stats.canonical_edges += cluster_output.size ();
+    }
+
+    //  Compress canonical edges into endpoint-connected marker groups. First
+    //  keep every output from one original local cluster together, even if
+    //  cancellation made those outputs disconnected. Then join canonical
+    //  endpoints across clusters (for example, the four independently
+    //  clustered perpendicular edges of a contact rectangle). Each final box
+    //  is the union of ORIGINAL provenance boxes, not canonical edge boxes.
+    if (! edges.empty ()) {
+      DisconnectedMergeUnionFind uf (edges.size ());
+
+      for (std::vector<std::pair<size_t, size_t> >::const_iterator range =
+             cluster_ranges.begin ();
+           range != cluster_ranges.end (); ++range) {
+        for (size_t i = range->first + 1; i < range->second; ++i) {
+          uf.join (range->first, i);
+        }
+      }
+
+      std::map<db::Point, size_t> endpoint_owner;
+      for (size_t i = 0; i < edges.size (); ++i) {
+        const db::Point endpoints [2] = { edges [i].p1 (), edges [i].p2 () };
+        for (size_t p = 0; p < 2; ++p) {
+          std::pair<std::map<db::Point, size_t>::iterator, bool> inserted =
+            endpoint_owner.insert (std::make_pair (endpoints [p], i));
+          if (! inserted.second) {
+            uf.join (i, inserted.first->second);
+          }
+        }
+      }
+
+      std::map<size_t, db::Box> group_boxes;
+      std::map<size_t, std::vector<size_t> > group_edges;
+      for (size_t i = 0; i < edges.size (); ++i) {
+        const size_t root = uf.find (i);
+        group_boxes [root] += provenance_boxes [i];
+        group_edges [root].push_back (i);
+      }
+
+      for (std::map<size_t, db::Box>::const_iterator group = group_boxes.begin ();
+           group != group_boxes.end (); ++group) {
+        std::map<size_t, std::vector<size_t> >::const_iterator members =
+          group_edges.find (group->first);
+        if (members == group_edges.end () ||
+            ! exact_box_boundary (group->second, edges, members->second)) {
+          duplicate_empty_proof = false;
+        }
+        marker_shapes.insert (group->second);
+        ++stats.groups;
+      }
+    }
+
+    for (std::vector<db::Box>::const_iterator box =
+           canceled_cluster_boxes.begin ();
+         box != canceled_cluster_boxes.end (); ++box) {
+      marker_shapes.insert (*box);
+      ++stats.groups;
+    }
+  }
+  if (stats.input_edges != stats.stored_edges) {
+    stats.report ("fallback", "input-edge-count-mismatch");
+    return DisconnectedMergeFallback;
+  }
+
+  //  Materialize each occurrence into distinct storage before giving pointers
+  //  to the scanner. Repeated instances share definition objects, so definition
+  //  pointer identity cannot certify occurrence separation.
+  size_t stored_markers = 0;
+  if (! checked_weighted_shape_count (
+        layout, occurrence_weights, markers.layer (), stored_markers,
+        stats.occurrences) ||
+      stored_markers != stats.groups ||
+      stats.occurrences > std::vector<klayout_cuda_spatial_aabb_v1> ().max_size ()) {
+    stats.report ("fallback", "marker-count-overflow");
+    return DisconnectedMergeFallback;
+  }
+  if (! db::cuda_spatial_may_attempt_self (stats.occurrences)) {
+    stats.report ("fallback", "accelerator-unavailable");
+    return DisconnectedMergeFallback;
+  }
+
+  std::vector<klayout_cuda_spatial_aabb_v1> marker_occurrences;
+  marker_occurrences.reserve (stats.occurrences);
+  for (db::RecursiveShapeIterator marker (layout, markers.initial_cell (), markers.layer ());
+       ! marker.at_end (); ++marker) {
+    klayout_cuda_spatial_aabb_v1 record;
+    std::memset (&record, 0, sizeof (record));
+    if (! checked_transform_marker_box (marker->bbox (), marker.trans (), record)) {
+      stats.report ("fallback", "transform-overflow");
+      return DisconnectedMergeFallback;
+    }
+    marker_occurrences.push_back (record);
+  }
+  if (marker_occurrences.size () != stats.occurrences) {
+    stats.report ("fallback", "marker-count-mismatch");
+    return DisconnectedMergeFallback;
+  }
+
+  uint64_t exact_memberships = 0;
+  if (! db::cuda_spatial_preflight_self (
+        marker_occurrences, 1, exact_memberships)) {
+    stats.report ("fallback", "accelerator-membership-capacity");
+    return DisconnectedMergeFallback;
+  }
+  stats.memberships = exact_memberships;
+
+  db::CudaSpatialAttempt attempt =
+    db::cuda_spatial_try_self (marker_occurrences, 1);
+  stats.disposition = int (attempt.disposition);
+  stats.fallback_flags = attempt.fallback_flags;
+  stats.accelerator_ns = attempt.total_ns;
+
+  //  Only accelerator Success with no inclusive-touch pair proves that no
+  //  exact merge cluster can cross a hierarchy occurrence boundary.
+  if (attempt.disposition != db::CudaSpatialAttempt::Success) {
+    stats.report ("fallback", "accelerator-attempt");
+    return DisconnectedMergeFallback;
+  }
+  if (attempt.membership_count != exact_memberships) {
+    stats.report ("fallback", "accelerator-membership-mismatch");
+    return DisconnectedMergeFallback;
+  }
+  if (! attempt.pair_keys.empty ()) {
+    size_t equal_boxes = 0;
+    size_t boundary_touches = 0;
+    size_t containments = 0;
+    size_t area_overlaps = 0;
+    for (std::vector<uint64_t>::const_iterator pair =
+           attempt.pair_keys.begin (); pair != attempt.pair_keys.end (); ++pair) {
+      const klayout_cuda_spatial_aabb_v1 &a =
+        marker_occurrences [size_t ((*pair >> 32) - 1)];
+      const klayout_cuda_spatial_aabb_v1 &b =
+        marker_occurrences [size_t ((*pair & uint64_t (0xffffffff)) - 1)];
+      if (std::memcmp (&a, &b, sizeof (a)) == 0) {
+        ++equal_boxes;
+      } else {
+        const int64_t intersection_left = std::max (a.left, b.left);
+        const int64_t intersection_bottom = std::max (a.bottom, b.bottom);
+        const int64_t intersection_right = std::min (a.right, b.right);
+        const int64_t intersection_top = std::min (a.top, b.top);
+        if (intersection_left == intersection_right ||
+            intersection_bottom == intersection_top) {
+          ++boundary_touches;
+        } else if ((a.left <= b.left && a.bottom <= b.bottom &&
+                    a.right >= b.right && a.top >= b.top) ||
+                   (b.left <= a.left && b.bottom <= a.bottom &&
+                    b.right >= a.right && b.top >= a.top)) {
+          ++containments;
+        } else {
+          ++area_overlaps;
+        }
+      }
+    }
+    const char *profile = std::getenv ("KLAYOUT_DEEP_EDGE_CERT_PROFILE");
+    if (profile && *profile && ! (profile [0] == '0' && profile [1] == 0)) {
+      std::fprintf (
+        stderr,
+        "KLAYOUT_DEEP_EDGE_CERT_PAIRS total=%zu equal=%zu boundary=%zu "
+        "containment=%zu area_overlap=%zu\n",
+        attempt.pair_keys.size (), equal_boxes, boundary_touches, containments,
+        area_overlaps);
+    }
+
+    //  A nonempty interaction set normally requires the legacy hierarchy
+    //  merger. There is one strictly narrower exception: local
+    //  canonicalization preserved the exact oriented edge multiset, every
+    //  marker is a literal rectangle boundary whose edges this filter rejects,
+    //  and every interacting occurrence is a byte-identical box. Global
+    //  merging can then only retain or cancel edges of those same rejected
+    //  lengths, so the selected output is provably empty.
+    if (duplicate_empty_proof && equal_boxes == attempt.pair_keys.size ()) {
+      stats.report ("success", "selected-empty");
+      return DisconnectedMergeSelectedEmpty;
+    }
+
+    stats.report ("fallback", "marker-interaction");
+    return DisconnectedMergeFallback;
+  }
+
+  //  Publish only after the candidate has been fully built and certified.
+  m_merged_edges = candidate;
+  m_merged_edges_boc_hash = deep_layer ().breakout_cells_hash ();
+  m_merged_edges_valid = true;
+  stats.report ("success", "disconnected");
+  return DisconnectedMergeCached;
 }
 
 void
@@ -824,6 +1583,25 @@ DeepEdges::filtered_pair (const EdgeFilterBase &filter) const
 std::pair<DeepEdges *, DeepEdges *>
 DeepEdges::apply_filter (const EdgeFilterBase &filter, bool with_true, bool with_false) const
 {
+  //  Keep the disabled path to static, cheap guards. The duplicate-only
+  //  selected-empty proof is valid solely for filtered()'s true output; split
+  //  or false-output operations always use the untouched legacy path.
+  if (with_true && ! with_false &&
+      disconnected_merge_enabled () &&
+      typeid (filter) == typeid (db::EdgeLengthFilter) &&
+      ! filter.requires_raw_input () &&
+      merged_semantics () &&
+      ! merged_edges_available ()) {
+    const DisconnectedMergeResult result = try_disconnected_merge (filter);
+    if (result == DisconnectedMergeSelectedEmpty) {
+      std::unique_ptr<db::DeepEdges> empty (
+        new db::DeepEdges (deep_layer ().derived ()));
+      empty->set_is_merged (true);
+      return std::make_pair (empty.release (),
+                             static_cast<db::DeepEdges *> (0));
+    }
+  }
+
   const db::DeepLayer &edges = filter.requires_raw_input () ? deep_layer () : merged_deep_layer ();
   db::Layout &layout = const_cast<db::Layout &> (edges.layout ());
 

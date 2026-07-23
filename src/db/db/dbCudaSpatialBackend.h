@@ -64,9 +64,34 @@ DB_PUBLIC CudaSpatialAttempt cuda_spatial_try_bipartite (
   const std::vector<klayout_cuda_spatial_aabb_v1> &intruders,
   int64_t enlargement);
 
+/**
+ * Try the optional CUDA self-AABB broad phase.
+ *
+ * Returned keys contain two distinct one-based record IDs in ascending order.
+ * A backend without the optional self entry point fails closed to the caller.
+ */
+DB_PUBLIC CudaSpatialAttempt cuda_spatial_try_self (
+  const std::vector<klayout_cuda_spatial_aabb_v1> &records,
+  int64_t enlargement);
+
 /** Return true when an enabled, loaded backend would accept this record count. */
 DB_PUBLIC bool cuda_spatial_may_attempt (uint64_t subject_count,
                                          uint64_t intruder_count);
+
+/** Return true when the optional self entry point accepts this record count. */
+DB_PUBLIC bool cuda_spatial_may_attempt_self (uint64_t record_count);
+
+/**
+ * Check that a self-AABB request fits the configured per-record and aggregate
+ * membership limits without launching the backend.
+ *
+ * On success, membership_count is the exact number of grid memberships the
+ * backend will allocate for these records.  Coordinate, grid-span, or capacity
+ * uncertainty fails closed.
+ */
+DB_PUBLIC bool cuda_spatial_preflight_self (
+  const std::vector<klayout_cuda_spatial_aabb_v1> &records,
+  int64_t enlargement, uint64_t &membership_count);
 
 /** Return true only when the opt-in module was requested and loaded. */
 DB_PUBLIC bool cuda_spatial_requested ();

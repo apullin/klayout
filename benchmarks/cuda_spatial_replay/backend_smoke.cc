@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -48,6 +49,22 @@ bool valid_result(const klayout_cuda_spatial_result_v1 &result, int status) {
          result.abi_version == KLAYOUT_CUDA_SPATIAL_ABI_VERSION &&
          result.struct_size >= sizeof(result) &&
          (result.pair_count == 0 || result.pair_keys != nullptr);
+}
+
+bool valid_self_pairs(const klayout_cuda_spatial_result_v1 &result,
+                      std::size_t record_count) {
+  std::uint64_t previous = 0;
+  for (std::uint64_t i = 0; i < result.pair_count; ++i) {
+    const std::uint64_t key = result.pair_keys[i];
+    const std::uint64_t first = key >> 32;
+    const std::uint64_t second = key & UINT64_C(0xffffffff);
+    if ((i != 0 && key <= previous) || first == 0 || first >= second ||
+        second > record_count) {
+      return false;
+    }
+    previous = key;
+  }
+  return true;
 }
 
 void report_failure(const char *name, int status,
@@ -204,6 +221,249 @@ bool run_exact_oracle_gate() {
   return good;
 }
 
+bool run_self_boundary_smoke() {
+  constexpr std::int64_t kEnlargement = 7;
+  const klayout_cuda_spatial_aabb_v1 records[] = {
+      {0, 0, 10, 10},
+      {16, 0, 26, 10},    // gap enlargement-1: included
+      {0, 100, 10, 110},
+      {17, 100, 27, 110}  // gap exactly enlargement: excluded
+  };
+  const std::uint64_t expected = pair_key(1, 2);
+
+  auto config = make_config(32);
+  klayout_cuda_spatial_request_v1 request{};
+  request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  request.struct_size = sizeof(request);
+  request.subjects = records;
+  request.subject_count = sizeof(records) / sizeof(records[0]);
+  request.enlargement = kEnlargement;
+  request.config = &config;
+
+  klayout_cuda_spatial_result_v1 result{};
+  const int status = klayout_cuda_spatial_run_self_v1(&request, &result);
+  const bool good = valid_result(result, status) &&
+                    valid_self_pairs(result, request.subject_count) &&
+                    result.pair_count == 1 && result.pair_keys[0] == expected;
+  if (!good) {
+    report_failure("CUDA backend self strict-boundary smoke", status, result);
+  } else {
+    std::cout << "CUDA backend self strict-boundary smoke passed: "
+                 "unordered_pair=(1,2) total_ms="
+              << (double(result.total_ns) / 1.0e6) << '\n';
+  }
+  klayout_cuda_spatial_release_result_v1(&result);
+  return good && result.pair_keys == nullptr && result.pair_count == 0;
+}
+
+bool run_self_complete_cell_smoke() {
+  const klayout_cuda_spatial_aabb_v1 records[] = {
+      {0, 0, 10, 10},
+      {0, 0, 10, 10},
+      {0, 0, 10, 10},
+      {0, 0, 10, 10},
+      {0, 0, 10, 10},
+  };
+  std::vector<std::uint64_t> expected;
+  for (std::uint32_t first = 1; first <= 5; ++first) {
+    for (std::uint32_t second = first + 1; second <= 5; ++second) {
+      expected.push_back(pair_key(first, second));
+    }
+  }
+
+  auto config = make_config(64);
+  klayout_cuda_spatial_request_v1 request{};
+  request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  request.struct_size = sizeof(request);
+  request.subjects = records;
+  request.subject_count = sizeof(records) / sizeof(records[0]);
+  request.enlargement = 0;
+  request.config = &config;
+
+  klayout_cuda_spatial_result_v1 result{};
+  const int status = klayout_cuda_spatial_run_self_v1(&request, &result);
+  bool good = valid_result(result, status) &&
+              valid_self_pairs(result, request.subject_count) &&
+              result.pair_work_count == expected.size() &&
+              result.pair_count == expected.size();
+  if (good) {
+    good = std::equal(expected.begin(), expected.end(), result.pair_keys);
+  }
+  if (!good) {
+    report_failure("CUDA backend self complete-cell smoke", status, result);
+  } else {
+    std::cout << "CUDA backend self complete-cell smoke passed: records=5 "
+                 "unordered_pairs=10\n";
+  }
+  klayout_cuda_spatial_release_result_v1(&result);
+  return good;
+}
+
+bool run_self_exact_oracle_gate() {
+  constexpr std::size_t kRecordCount = 1024;
+  constexpr std::int64_t kEnlargement = 7;
+  auto records = make_boxes(kRecordCount, UINT64_C(0x3c6ef372fe94f82b));
+
+  records[0] = {-64, -64, -32, -32};
+  records[1] = {-26, -60, -10, -40};  // gap 6: included
+  records[2] = {10000, 0, 10032, 32};
+  records[3] = {10039, 0, 10055, 16};  // gap 7: excluded
+
+  std::vector<std::uint64_t> expected;
+  for (std::size_t i = 0; i < records.size(); ++i) {
+    for (std::size_t j = i + 1; j < records.size(); ++j) {
+      if (boxes_overlap(records[i], records[j], kEnlargement)) {
+        expected.push_back(pair_key(static_cast<std::uint32_t>(i + 1),
+                                    static_cast<std::uint32_t>(j + 1)));
+      }
+    }
+  }
+  const bool pinned_boundaries =
+      std::binary_search(expected.begin(), expected.end(), pair_key(1, 2)) &&
+      !std::binary_search(expected.begin(), expected.end(), pair_key(3, 4));
+
+  auto config = make_config(64);
+  klayout_cuda_spatial_request_v1 request{};
+  request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  request.struct_size = sizeof(request);
+  request.subjects = records.data();
+  request.subject_count = records.size();
+  request.enlargement = kEnlargement;
+  request.config = &config;
+
+  klayout_cuda_spatial_result_v1 result{};
+  const int status = klayout_cuda_spatial_run_self_v1(&request, &result);
+  bool good = pinned_boundaries && valid_result(result, status) &&
+              valid_self_pairs(result, records.size()) &&
+              result.pair_count == expected.size();
+  if (good) {
+    good = std::equal(expected.begin(), expected.end(), result.pair_keys);
+  }
+  if (!good) {
+    report_failure("CUDA backend self exact CPU-oracle gate", status, result);
+  } else {
+    std::cout << "CUDA backend self exact CPU-oracle gate passed: checks="
+              << (records.size() * (records.size() - 1) / 2)
+              << " exact_pairs=" << expected.size()
+              << " memberships=" << result.membership_count
+              << " pair_work=" << result.pair_work_count
+              << " total_ms=" << (double(result.total_ns) / 1.0e6) << '\n';
+  }
+  klayout_cuda_spatial_release_result_v1(&result);
+  return good;
+}
+
+bool run_self_fail_closed_gate() {
+  const klayout_cuda_spatial_aabb_v1 records[] = {
+      {0, 0, 10, 10},
+      {1, 1, 11, 11},
+      {2, 2, 12, 12},
+  };
+  auto config = make_config(64);
+  klayout_cuda_spatial_request_v1 request{};
+  request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  request.struct_size = sizeof(request);
+  request.subjects = records;
+  request.subject_count = sizeof(records) / sizeof(records[0]);
+  request.enlargement = 0;
+  request.config = &config;
+
+  // Self mode has exactly one input array.  Supplying the bipartite fields is
+  // malformed and must never reach a device pipeline.
+  request.intruders = records;
+  request.intruder_count = 1;
+  klayout_cuda_spatial_result_v1 malformed{};
+  const int malformed_status =
+      klayout_cuda_spatial_run_self_v1(&request, &malformed);
+  bool good = malformed_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+              malformed.status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+              (malformed.fallback_flags &
+               KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST) != 0 &&
+              malformed.pair_count == 0 && malformed.pair_keys == nullptr;
+  if (!good) {
+    report_failure("CUDA backend self malformed-request gate",
+                   malformed_status, malformed);
+  }
+  klayout_cuda_spatial_release_result_v1(&malformed);
+
+  // A matching ABI with a truncated config prefix must be rejected before the
+  // backend consults any fields beyond struct_size.
+  request.intruders = nullptr;
+  request.intruder_count = 0;
+  auto short_config = config;
+  short_config.struct_size = 2 * sizeof(std::uint32_t);
+  request.config = &short_config;
+  klayout_cuda_spatial_result_v1 short_config_result{};
+  const int short_config_status =
+      klayout_cuda_spatial_run_self_v1(&request, &short_config_result);
+  const bool short_config_good =
+      short_config_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      short_config_result.status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      (short_config_result.fallback_flags &
+       KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST) != 0 &&
+      short_config_result.pair_count == 0 &&
+      short_config_result.pair_keys == nullptr;
+  if (!short_config_good) {
+    report_failure("CUDA backend self short-config gate",
+                   short_config_status, short_config_result);
+  }
+  good = good && short_config_good;
+  klayout_cuda_spatial_release_result_v1(&short_config_result);
+  request.config = &config;
+
+  // A non-normalized box is a data-dependent CPU fallback, not partial output.
+  const klayout_cuda_spatial_aabb_v1 invalid_records[] = {
+      {10, 0, 0, 10},
+      {0, 0, 10, 10},
+  };
+  request.subjects = invalid_records;
+  request.subject_count = sizeof(invalid_records) / sizeof(invalid_records[0]);
+  request.intruders = nullptr;
+  request.intruder_count = 0;
+  klayout_cuda_spatial_result_v1 invalid{};
+  const int invalid_status =
+      klayout_cuda_spatial_run_self_v1(&request, &invalid);
+  const bool invalid_good =
+      invalid_status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      invalid.status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      (invalid.fallback_flags &
+       KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW) != 0 &&
+      invalid.pair_count == 0 && invalid.pair_keys == nullptr;
+  if (!invalid_good) {
+    report_failure("CUDA backend self invalid-AABB gate", invalid_status,
+                   invalid);
+  }
+  good = good && invalid_good;
+  klayout_cuda_spatial_release_result_v1(&invalid);
+
+  // Three records in one cell require three unordered comparisons.
+  request.subjects = records;
+  request.subject_count = sizeof(records) / sizeof(records[0]);
+  config.max_pair_work = 1;
+  klayout_cuda_spatial_result_v1 capacity{};
+  const int capacity_status =
+      klayout_cuda_spatial_run_self_v1(&request, &capacity);
+  const bool capacity_good =
+      capacity_status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      capacity.status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      (capacity.fallback_flags &
+       KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY) != 0 &&
+      capacity.pair_count == 0 && capacity.pair_keys == nullptr;
+  if (!capacity_good) {
+    report_failure("CUDA backend self capacity gate", capacity_status,
+                   capacity);
+  }
+  good = good && capacity_good;
+  klayout_cuda_spatial_release_result_v1(&capacity);
+
+  if (good) {
+    std::cout << "CUDA backend self fail-closed gates passed: "
+                 "malformed, short-config, invalid-AABB, "
+                 "pair-work-capacity\n";
+  }
+  return good;
+}
+
 }  // namespace
 
 int main() {
@@ -213,7 +473,12 @@ int main() {
                  "version\n";
     return 1;
   }
-  const bool smoke_good = run_two_pair_smoke();
-  const bool oracle_good = smoke_good && run_exact_oracle_gate();
-  return oracle_good ? 0 : 1;
+  bool good = true;
+  good = run_two_pair_smoke() && good;
+  good = run_exact_oracle_gate() && good;
+  good = run_self_boundary_smoke() && good;
+  good = run_self_complete_cell_smoke() && good;
+  good = run_self_exact_oracle_gate() && good;
+  good = run_self_fail_closed_gate() && good;
+  return good ? 0 : 1;
 }
