@@ -2059,7 +2059,11 @@ int run(const Options &options, Clock::time_point total_begin) {
   if (host_status || counters.uncertain) {
     verdict = "UNCERTAIN";
   } else if (counters.violations) {
-    verdict = "VIOLATION";
+    // The captured ACTIVE layer contains raw contours. KLayout unions those
+    // intruders locally, which can erase internal raw edges. A raw hit is
+    // therefore a mandatory CPU-fallback signal, not an exact final marker.
+    // Only the zero-hit direction is consumed as a clean certificate.
+    verdict = "RAW_HIT_FALLBACK";
   }
   std::cout << std::fixed << std::setprecision(3)
             << "ACTIVE3_GPU_ISLAND"
@@ -2077,7 +2081,7 @@ int run(const Options &options, Clock::time_point total_begin) {
             << " grid_cells=" << grid_cells
             << " memberships=" << membership_total
             << " candidate_pairs=" << counters.candidate_pairs
-            << " violations=" << counters.violations
+            << " raw_hits=" << counters.violations
             << " uncertain=" << counters.uncertain
             << " device_flags=" << host_status
             << " scene_sha256="
@@ -2112,7 +2116,10 @@ int run(const Options &options, Clock::time_point total_begin) {
               << " well=" << samples[i].well_edge
               << " verdict=" << samples[i].verdict << "\n";
   }
-  return std::string(verdict) == "UNCERTAIN" ? 2 : 0;
+  if (std::string(verdict) == "UNCERTAIN") {
+    return 2;
+  }
+  return std::string(verdict) == "RAW_HIT_FALLBACK" ? 3 : 0;
 }
 
 }  // namespace

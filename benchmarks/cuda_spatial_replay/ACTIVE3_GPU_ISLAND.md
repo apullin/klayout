@@ -3,9 +3,9 @@
 Status: experimental proof, not a production CPU-skip integration.
 
 `active3_scene_island.cu` is the first contiguous GPU-owned implementation of
-the captured FreePDK45 ACTIVE.3 relation. It starts after a checked host
-lowering of `KACTSCN1` hierarchy into compact cell contexts. From the first
-upload through result reduction, the device owns:
+the captured FreePDK45 ACTIVE.3 clean-certificate path. It starts after a
+checked host lowering of `KACTSCN1` hierarchy into compact cell contexts. From
+the first upload through result reduction, the device owns:
 
 1. hierarchy-aware expansion of the small WELL edge stream;
 2. construction of a dense uniform-grid CSR index;
@@ -37,6 +37,30 @@ Omitting or mismatching that fingerprint returns `UNCERTAIN`. Unsupported DBU,
 non-integral rule conversion, malformed geometry, overflow, hierarchy cycles,
 capacity exhaustion, CUDA errors, or any exact-predicate uncertainty also
 return `UNCERTAIN`; none can produce a clean certificate.
+
+## Clean-only production meaning
+
+The captured WELL operand is merged, but the captured ACTIVE operand retains
+raw polygon contours. KLayout unions those ACTIVE intruders locally before
+reporting the enclosing check. Every boundary segment of that union is a
+directed subsegment of a raw contour edge. With partial-edge Euclidean
+semantics, extending such a segment back to its raw parent cannot remove an
+existential `< 110` match. Additional raw internal edges, cross-context pairs,
+or shielding can only add candidates or remove later markers. Therefore:
+
+```text
+complete traversal + zero raw hits + zero uncertainty => safe CLEAN certificate
+any raw hit                                  => run pristine CPU check
+```
+
+The reverse implication is false. For example, a second ACTIVE polygon can
+cover the first polygon's near internal edge while extending the merged union
+outside WELL; KLayout then reports no enclosure marker although the raw edge
+pair matched. The standalone executable consequently reports
+`RAW_HIT_FALLBACK` with exit status 3 for any raw hit. It never presents raw
+hit counts as exact KLayout violations or markers. Exact nonempty results
+would require reproducing ACTIVE union boundaries, shielding, marker
+fragments, and hierarchy ownership.
 
 The only qualified unit conversion is:
 
@@ -94,8 +118,11 @@ The initial qualification on an RTX 3080 passed:
 - full independent packed-scene validation for the 64K and x2 captures;
 - exact scene fingerprints on every accepted real-scene run;
 - all-eight-transform KLayout directed-edge differential;
-- a mirrored deliberate-violation scene: KLayout 32 flat edge pairs, GPU 32
-  violations, zero uncertain;
+- a mirrored deliberate-hit scene: KLayout 32 flat edge pairs and GPU 32 raw
+  hits on that already disjoint fixture, with zero uncertain;
+- an ACTIVE-union counterexample: KLayout reports one marker for the first raw
+  polygon alone but zero after adding an overlapping covering polygon; the GPU
+  sees the one internal raw hit and returns `RAW_HIT_FALLBACK` with status 3;
 - a deterministic randomized/grid-boundary scene: CPU brute force and GPU
   both found 1,536 unique candidates and 384 violations;
 - twelve fail-closed gates: truncated, corrupt hash, unsupported DBU/distance,
@@ -107,8 +134,10 @@ The initial qualification on an RTX 3080 passed:
 
 The randomized and deliberate fixtures are produced by
 `active3_scene_island_random_fixture.rb` and
-`active3_scene_island_fixture.rb`. The optional `--verify-bruteforce` mode is
-capacity-bounded and intended only for such small differential scenes.
+`active3_scene_island_fixture.rb`; the raw-hit fallback regression is
+`active3_scene_island_merge_fallback_fixture.rb`. The optional
+`--verify-bruteforce` mode is capacity-bounded and intended only for such small
+differential scenes.
 
 ## Measured x2 result
 
@@ -132,7 +161,7 @@ active_edges=98754896
 grid_cells=660231
 memberships=774466
 candidate_pairs=44623826
-violations=0
+raw_hits=0
 uncertain=0
 device_flags=0
 ```
@@ -141,10 +170,10 @@ The approximately 41.58-second isolated CPU ACTIVE.3 observation is useful
 workload context, but the 0.69--0.70-second number is not yet production DRC
 wall: this executable starts from an already captured derived scene and has
 not replaced KLayout's live operation. The defensible result is that the
-standalone exact scene path at the 0.70-second median is about 98.3% less wall
-than that reference (roughly 59x). Even the first-driver-cold 0.78-second tail
-is about 98.1% less wall (roughly 53x). Production integration and its
-source/capture boundary remain to be measured.
+standalone clean-certificate scene path at the 0.70-second median is about
+98.3% less wall than that reference (roughly 59x). Even the
+first-driver-cold 0.78-second tail is about 98.1% less wall (roughly 53x).
+Production integration and its source/capture boundary remain to be measured.
 
 The remaining large host costs are bounded scene load/SHA validation
 (about 355 ms) and CPU hierarchy lowering (about 40 ms). CUDA context creation
