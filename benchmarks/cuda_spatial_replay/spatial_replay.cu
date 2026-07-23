@@ -81,7 +81,9 @@ struct alignas(16) InputRecord {
   std::uint32_t flags;
 };
 
-// Device broad-phase record.  It deliberately omits optional endpoint data.
+// Device broad-phase record.  The default AABB-only path deliberately omits
+// optional endpoint data.  An opt-in exact-filter path copies the separate,
+// index-aligned endpoint sidecar below.
 struct alignas(16) PackedAabb {
   std::int64_t left;
   std::int64_t bottom;
@@ -93,12 +95,23 @@ struct alignas(16) PackedAabb {
   std::uint32_t flags;
 };
 
+struct alignas(16) PackedEndpoints {
+  std::int64_t x1;
+  std::int64_t y1;
+  std::int64_t x2;
+  std::int64_t y2;
+};
+
 static_assert(std::is_trivially_copyable<InputRecord>::value,
               "replay records must remain trivially copyable");
 static_assert(std::is_trivially_copyable<PackedAabb>::value,
               "device records must remain trivially copyable");
+static_assert(std::is_trivially_copyable<PackedEndpoints>::value,
+              "endpoint sidecars must remain trivially copyable");
 static_assert(sizeof(InputRecord) == 80, "unexpected replay-record padding");
 static_assert(sizeof(PackedAabb) == 48, "unexpected device-record padding");
+static_assert(sizeof(PackedEndpoints) == 32,
+              "unexpected endpoint-sidecar padding");
 
 struct ReplayHeader {
   char magic[8];
@@ -114,6 +127,79 @@ static_assert(sizeof(ReplayHeader) == 32, "unexpected replay-header padding");
 constexpr std::array<char, 8> kReplayMagic = {'K', 'S', 'P', 'A', 'T', '0', '1', '\0'};
 constexpr std::uint32_t kReplayVersion = 1;
 
+struct EdgeCaptureHeader {
+  char magic[8];
+  std::uint32_t version;
+  std::uint32_t header_size;
+  std::uint32_t record_size;
+  std::uint32_t pair_size;
+  std::uint32_t coordinate_bits;
+  std::uint32_t property_bits;
+  std::uint32_t capture_flags;
+  std::uint32_t relation;
+  std::uint32_t metrics;
+  std::uint32_t zero_distance_mode;
+  std::uint32_t ignore_angle_millidegrees;
+  std::uint32_t option_flags;
+  std::uint32_t process_id;
+  std::uint32_t reserved;
+  std::int64_t distance;
+  std::int64_t min_projection;
+  std::int64_t max_projection;
+  std::uint64_t request_id;
+  std::uint64_t thread_tag;
+  std::uint64_t scanner_elapsed_ns;
+  std::uint64_t record_count;
+  std::uint64_t scanner_callbacks;
+  std::uint64_t finish_callbacks;
+  std::uint64_t unresolved_callbacks;
+  std::uint64_t broad_pair_count;
+  std::uint64_t exact_accept_callbacks;
+  std::uint64_t exact_pair_count;
+  std::uint64_t records_offset;
+  std::uint64_t broad_pairs_offset;
+  std::uint64_t exact_pairs_offset;
+};
+
+struct alignas(16) EdgeCaptureRecord {
+  std::int64_t left;
+  std::int64_t bottom;
+  std::int64_t right;
+  std::int64_t top;
+  std::int64_t x1;
+  std::int64_t y1;
+  std::int64_t x2;
+  std::int64_t y2;
+  std::uint64_t property;
+  std::uint32_t id;
+  std::uint32_t context;
+  std::uint32_t flags;
+  std::uint32_t reserved;
+};
+
+struct EdgeCapturePair {
+  std::uint32_t first;
+  std::uint32_t second;
+};
+
+static_assert(sizeof(EdgeCaptureHeader) == 192,
+              "unexpected edge-capture header padding");
+static_assert(sizeof(EdgeCaptureRecord) == 96,
+              "unexpected edge-capture record padding");
+static_assert(sizeof(EdgeCapturePair) == 8,
+              "unexpected edge-capture pair padding");
+
+struct EdgeCaptureInput {
+  std::vector<InputRecord> records;
+  std::vector<std::uint64_t> broad_pairs;
+  std::vector<std::uint64_t> exact_pairs;
+  std::uint64_t distance = 0;
+  std::uint64_t scanner_elapsed_ns = 0;
+  std::uint64_t scanner_callbacks = 0;
+  std::uint64_t exact_accept_callbacks = 0;
+  std::uint64_t request_id = 0;
+};
+
 enum FallbackFlag : std::uint32_t {
   kFallbackNone = 0,
   kFallbackCoordinateOverflow = 1u << 0,
@@ -122,6 +208,11 @@ enum FallbackFlag : std::uint32_t {
   kFallbackDenseCell = 1u << 3,
   kFallbackPairWorkCapacity = 1u << 4,
   kFallbackPairCapacity = 1u << 5,
+};
+
+enum EdgeFilterMode : std::uint32_t {
+  kEdgeFilterNone = 0,
+  kEdgeFilterProjectionOverlap = 1,
 };
 
 struct Options {
@@ -144,7 +235,9 @@ struct Options {
   std::string geometry = "aabb";
   std::string mode = "self";
   std::string fixture = "synthetic";
+  EdgeFilterMode edge_filter = kEdgeFilterNone;
   std::string input_path;
+  std::string edge_capture_path;
   std::string write_input_path;
   std::string output_pairs_path;
 };
@@ -192,11 +285,14 @@ struct PipelineResult {
   std::uint64_t memberships = 0;
   std::uint64_t occupied_cells = 0;
   std::uint64_t pair_work = 0;
+  std::uint64_t broad_raw_candidates = 0;
+  std::uint64_t filtered_raw_pairs = 0;
   std::uint64_t raw_candidates = 0;
   std::vector<std::uint64_t> pairs;
   double setup_ms = 0.0;
   double h2d_ms = 0.0;
   double kernel_ms = 0.0;
+  double edge_filter_ms = 0.0;
   double sort_dedup_ms = 0.0;
   double d2h_ms = 0.0;
   double total_ms = 0.0;
@@ -239,6 +335,7 @@ void print_help(const char *program) {
       << "Usage: " << program << " [options]\n\n"
       << "Input (synthetic unless --input is supplied):\n"
       << "  --input PATH                  read a v1 compact replay\n"
+      << "  --edge-capture PATH           read a v1 KEDGER1 scanner capture\n"
       << "  --write-input PATH            write the packed input replay\n"
       << "  --records N                   synthetic record count (default 200000)\n"
       << "  --contexts N                  synthetic context count (default 32)\n"
@@ -246,7 +343,7 @@ void print_help(const char *program) {
       << "  --object-size N               maximum synthetic AABB/edge size\n"
       << "  --geometry aabb|edges         synthetic geometry (default aabb)\n"
       << "  --mode self|bipartite         scanner mode (default self)\n"
-      << "  --fixture synthetic|boundary|extrema|overflow\n"
+      << "  --fixture synthetic|boundary|projection-overlap|extrema|overflow\n"
       << "  --seed N                      deterministic synthetic seed\n\n"
       << "Broad phase:\n"
       << "  --enlargement N               strict KLayout-style range (default 32)\n"
@@ -259,6 +356,8 @@ void print_help(const char *program) {
       << "  --device N                    CUDA device index (default 0)\n"
       << "  --warmup N                    unreported warmup pipelines\n"
       << "  --repeat N                    measured end-to-end repetitions\n\n"
+      << "Exact candidate filter:\n"
+      << "  --edge-filter none|projection-overlap (default none)\n\n"
       << "Verification/output:\n"
       << "  --reference grid|exhaustive|none (default grid)\n"
       << "  --output-pairs PATH           write sorted uint64 pair keys\n"
@@ -278,6 +377,8 @@ Options parse_options(int argc, char **argv) {
       std::exit(0);
     } else if (argument == "--input") {
       options.input_path = value("--input");
+    } else if (argument == "--edge-capture") {
+      options.edge_capture_path = value("--edge-capture");
     } else if (argument == "--write-input") {
       options.write_input_path = value("--write-input");
     } else if (argument == "--output-pairs") {
@@ -303,8 +404,20 @@ Options parse_options(int argc, char **argv) {
     } else if (argument == "--fixture") {
       options.fixture = value("--fixture");
       if (options.fixture != "synthetic" && options.fixture != "boundary" &&
+          options.fixture != "projection-overlap" &&
           options.fixture != "extrema" && options.fixture != "overflow") {
-        usage_error("--fixture must be synthetic, boundary, extrema, or overflow");
+        usage_error(
+            "--fixture must be synthetic, boundary, projection-overlap, "
+            "extrema, or overflow");
+      }
+    } else if (argument == "--edge-filter") {
+      const std::string filter = value("--edge-filter");
+      if (filter == "none") {
+        options.edge_filter = kEdgeFilterNone;
+      } else if (filter == "projection-overlap") {
+        options.edge_filter = kEdgeFilterProjectionOverlap;
+      } else {
+        usage_error("--edge-filter must be none or projection-overlap");
       }
     } else if (argument == "--seed") {
       options.seed = parse_u64(value("--seed"), "--seed");
@@ -346,6 +459,9 @@ Options parse_options(int argc, char **argv) {
   }
 
   if (options.record_count == 0) usage_error("--records must be nonzero");
+  if (!options.input_path.empty() && !options.edge_capture_path.empty()) {
+    usage_error("--input and --edge-capture are mutually exclusive");
+  }
   if (options.record_count > std::numeric_limits<std::uint32_t>::max())
     usage_error("--records exceeds the prototype's uint32 index space");
   if (options.context_count == 0) usage_error("--contexts must be nonzero");
@@ -394,6 +510,25 @@ InputRecord make_aabb(std::int64_t left, std::int64_t bottom,
                      context, flags};
 }
 
+InputRecord make_edge(std::int64_t x1, std::int64_t y1, std::int64_t x2,
+                      std::int64_t y2, std::uint32_t id,
+                      std::uint32_t context, bool side_b = false) {
+  return InputRecord{std::min(x1, x2),
+                     std::min(y1, y2),
+                     std::max(x1, x2),
+                     std::max(y1, y2),
+                     x1,
+                     y1,
+                     x2,
+                     y2,
+                     id,
+                     0,
+                     context,
+                     kRecordHasEndpoints |
+                         (side_b ? static_cast<std::uint32_t>(kRecordSideB)
+                                 : 0u)};
+}
+
 std::vector<InputRecord> generate_boundary_fixture(const Options &options) {
   if (options.enlargement >
       static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max() - 32)) {
@@ -416,8 +551,55 @@ std::vector<InputRecord> generate_boundary_fixture(const Options &options) {
   };
 }
 
+std::vector<InputRecord> generate_projection_overlap_fixture() {
+  std::vector<InputRecord> records;
+  auto pair = [&](std::uint32_t context, const InputRecord &a,
+                  const InputRecord &b) {
+    records.push_back(a);
+    records.push_back(b);
+  };
+
+  // Supported and accepted: equal direction, positive right-normal gap below
+  // the threshold, and a positive 1-D projection.
+  pair(0, make_edge(10, 30, 30, 30, 1, 0),
+       make_edge(15, 25, 35, 25, 2, 0, true));
+  // Strict distance boundary.
+  pair(1, make_edge(10, 30, 30, 30, 3, 1),
+       make_edge(15, 22, 35, 22, 4, 1, true));
+  // A touching (zero-length) projection.
+  pair(2, make_edge(10, 30, 30, 30, 5, 2),
+       make_edge(30, 25, 50, 25, 6, 2, true));
+  // Wrong side of the directed subject edge.
+  pair(3, make_edge(10, 30, 30, 30, 7, 3),
+       make_edge(15, 35, 35, 35, 8, 3, true));
+  // Opposite original directions fail the 90-degree angle gate.
+  pair(4, make_edge(10, 30, 30, 30, 9, 4),
+       make_edge(35, 25, 15, 25, 10, 4, true));
+  // Supported vertical accepted case.
+  pair(5, make_edge(20, 10, 20, 30, 11, 5),
+       make_edge(25, 15, 25, 35, 12, 5, true));
+
+  // Perpendicular Manhattan edges fail the 90-degree angle gate exactly.
+  pair(6, make_edge(10, 30, 30, 30, 13, 6),
+       make_edge(20, 20, 20, 40, 14, 6, true));
+  // The remaining cases exercise diagonal/missing/degenerate conservative
+  // pass-through plus exact zero-gap collinear overlap.
+  pair(7, make_edge(10, 30, 30, 30, 15, 7),
+       make_edge(15, 25, 35, 35, 16, 7, true));
+  pair(8, make_edge(10, 30, 30, 30, 17, 8),
+       make_aabb(15, 25, 35, 25, 18, 0, 8, kRecordSideB));
+  pair(9, make_edge(10, 30, 30, 30, 19, 9),
+       make_edge(20, 25, 20, 25, 20, 9, true));
+  pair(10, make_edge(10, 30, 30, 30, 21, 10),
+       make_edge(15, 30, 35, 30, 22, 10, true));
+  return records;
+}
+
 std::vector<InputRecord> generate_records(const Options &options) {
   if (options.fixture == "boundary") return generate_boundary_fixture(options);
+  if (options.fixture == "projection-overlap") {
+    return generate_projection_overlap_fixture();
+  }
   if (options.fixture == "extrema") {
     if (options.enlargement > 1024) {
       throw std::runtime_error("extrema fixture requires enlargement <= 1024");
@@ -504,6 +686,182 @@ std::vector<InputRecord> read_replay(const std::string &path) {
   return records;
 }
 
+std::uint64_t checked_section_end(std::uint64_t offset, std::uint64_t count,
+                                  std::uint64_t element_size,
+                                  const char *section) {
+  if (count > (std::numeric_limits<std::uint64_t>::max() - offset) /
+                  element_size) {
+    throw std::runtime_error(std::string("edge-capture ") + section +
+                             " size overflows uint64");
+  }
+  return offset + count * element_size;
+}
+
+EdgeCaptureInput read_edge_capture(const std::string &path) {
+  if (!host_is_little_endian()) {
+    throw std::runtime_error(
+        "v1 edge-capture reader requires a little-endian host");
+  }
+  std::ifstream input(path, std::ios::binary);
+  if (!input) throw std::runtime_error("cannot open edge capture: " + path);
+
+  EdgeCaptureHeader header{};
+  input.read(reinterpret_cast<char *>(&header), sizeof(header));
+  constexpr std::array<char, 8> magic = {
+      'K', 'E', 'D', 'G', 'E', 'R', '1', '\0'};
+  constexpr std::uint32_t required_capture_flags = 0xf;
+  constexpr std::uint32_t required_option_flags = 0xf;
+  constexpr std::uint32_t overlap_relation = 3;
+  constexpr std::uint32_t projection_metrics = 3;
+  constexpr std::uint32_t include_zero_when_touching = 1;
+  if (!input || !std::equal(magic.begin(), magic.end(), header.magic) ||
+      header.version != 1 ||
+      header.header_size != sizeof(EdgeCaptureHeader) ||
+      header.record_size != sizeof(EdgeCaptureRecord) ||
+      header.pair_size != sizeof(EdgeCapturePair) ||
+      header.coordinate_bits != 64 || header.property_bits != 64 ||
+      (header.capture_flags & required_capture_flags) !=
+          required_capture_flags ||
+      header.relation != overlap_relation ||
+      header.metrics != projection_metrics ||
+      header.zero_distance_mode != include_zero_when_touching ||
+      header.ignore_angle_millidegrees != 90000 ||
+      (header.option_flags & required_option_flags) !=
+          required_option_flags ||
+      header.distance < 0 || header.min_projection != 0 ||
+      (header.max_projection != -1 &&
+       header.max_projection != std::numeric_limits<std::int64_t>::max()) ||
+      header.reserved != 0) {
+    throw std::runtime_error(
+        "invalid, unsupported, or non-M2-profile edge capture: " + path);
+  }
+  if (header.record_count == 0 ||
+      header.record_count > std::numeric_limits<std::uint32_t>::max() ||
+      header.record_count >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max()) ||
+      header.broad_pair_count >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max()) ||
+      header.exact_pair_count >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max())) {
+    throw std::runtime_error("edge-capture section count is unsupported");
+  }
+  if (header.unresolved_callbacks != 0) {
+    throw std::runtime_error(
+        "edge capture has unresolved callbacks and no complete broad oracle");
+  }
+
+  const std::uint64_t records_end = checked_section_end(
+      header.records_offset, header.record_count, sizeof(EdgeCaptureRecord),
+      "record");
+  const std::uint64_t broad_end = checked_section_end(
+      header.broad_pairs_offset, header.broad_pair_count,
+      sizeof(EdgeCapturePair), "broad-pair");
+  const std::uint64_t exact_end = checked_section_end(
+      header.exact_pairs_offset, header.exact_pair_count,
+      sizeof(EdgeCapturePair), "exact-pair");
+  if (header.records_offset != sizeof(EdgeCaptureHeader) ||
+      header.broad_pairs_offset != records_end ||
+      header.exact_pairs_offset != broad_end) {
+    throw std::runtime_error("edge-capture section offsets are inconsistent");
+  }
+  input.seekg(0, std::ios::end);
+  const std::streamoff file_size = input.tellg();
+  if (file_size < 0 ||
+      static_cast<std::uint64_t>(file_size) != exact_end) {
+    throw std::runtime_error("edge-capture file size is inconsistent");
+  }
+
+  std::vector<EdgeCaptureRecord> disk_records(
+      static_cast<std::size_t>(header.record_count));
+  input.seekg(static_cast<std::streamoff>(header.records_offset));
+  input.read(
+      reinterpret_cast<char *>(disk_records.data()),
+      static_cast<std::streamsize>(disk_records.size() *
+                                   sizeof(EdgeCaptureRecord)));
+  if (!input) throw std::runtime_error("truncated edge-capture records");
+
+  EdgeCaptureInput result;
+  result.records.reserve(disk_records.size());
+  std::vector<std::uint32_t> record_ids;
+  record_ids.reserve(disk_records.size());
+  for (const EdgeCaptureRecord &record : disk_records) {
+    if (record.property > std::numeric_limits<std::uint32_t>::max()) {
+      throw std::runtime_error(
+          "edge-capture property does not fit the replay uint32 contract");
+    }
+    if (record.reserved != 0 || (record.flags & ~std::uint32_t{0x3}) != 0 ||
+        (record.flags & kRecordHasEndpoints) == 0 ||
+        (((record.property & 1u) != 0) !=
+         ((record.flags & kRecordSideB) != 0))) {
+      throw std::runtime_error("edge-capture record metadata is invalid");
+    }
+    result.records.push_back(InputRecord{
+        record.left, record.bottom, record.right, record.top,
+        record.x1, record.y1, record.x2, record.y2, record.id,
+        static_cast<std::uint32_t>(record.property), record.context,
+        record.flags});
+    record_ids.push_back(record.id);
+  }
+  std::sort(record_ids.begin(), record_ids.end());
+  if (record_ids.empty() || record_ids.front() == 0 ||
+      std::adjacent_find(record_ids.begin(), record_ids.end()) !=
+          record_ids.end()) {
+    throw std::runtime_error("edge-capture record IDs are invalid");
+  }
+
+  auto read_pairs = [&](std::uint64_t offset, std::uint64_t count,
+                        const char *section) {
+    std::vector<EdgeCapturePair> disk_pairs(
+        static_cast<std::size_t>(count));
+    input.seekg(static_cast<std::streamoff>(offset));
+    input.read(reinterpret_cast<char *>(disk_pairs.data()),
+               static_cast<std::streamsize>(
+                   disk_pairs.size() * sizeof(EdgeCapturePair)));
+    if (!input) {
+      throw std::runtime_error(std::string("truncated edge-capture ") +
+                               section);
+    }
+    std::vector<std::uint64_t> pairs;
+    pairs.reserve(disk_pairs.size());
+    for (const EdgeCapturePair &pair : disk_pairs) {
+      if (pair.first == 0 || pair.first >= pair.second ||
+          !std::binary_search(record_ids.begin(), record_ids.end(),
+                              pair.first) ||
+          !std::binary_search(record_ids.begin(), record_ids.end(),
+                              pair.second)) {
+        throw std::runtime_error(std::string("invalid edge-capture ") +
+                                 section);
+      }
+      pairs.push_back((static_cast<std::uint64_t>(pair.first) << 32) |
+                      pair.second);
+    }
+    if (!std::is_sorted(pairs.begin(), pairs.end()) ||
+        std::adjacent_find(pairs.begin(), pairs.end()) != pairs.end()) {
+      throw std::runtime_error(std::string("unsorted edge-capture ") +
+                               section);
+    }
+    return pairs;
+  };
+  result.broad_pairs = read_pairs(
+      header.broad_pairs_offset, header.broad_pair_count, "broad pairs");
+  result.exact_pairs = read_pairs(
+      header.exact_pairs_offset, header.exact_pair_count, "exact pairs");
+  if (!std::includes(result.broad_pairs.begin(), result.broad_pairs.end(),
+                     result.exact_pairs.begin(), result.exact_pairs.end())) {
+    throw std::runtime_error(
+        "edge-capture exact oracle is not a subset of its broad oracle");
+  }
+  result.distance = static_cast<std::uint64_t>(header.distance);
+  result.scanner_elapsed_ns = header.scanner_elapsed_ns;
+  result.scanner_callbacks = header.scanner_callbacks;
+  result.exact_accept_callbacks = header.exact_accept_callbacks;
+  result.request_id = header.request_id;
+  return result;
+}
+
 void write_replay(const std::string &path,
                   const std::vector<InputRecord> &records) {
   if (!host_is_little_endian()) {
@@ -524,9 +882,15 @@ void write_replay(const std::string &path,
   if (!output) throw std::runtime_error("failed writing replay: " + path);
 }
 
-std::vector<PackedAabb> pack_records(const std::vector<InputRecord> &input) {
+std::vector<PackedAabb> pack_records(
+    const std::vector<InputRecord> &input,
+    std::vector<PackedEndpoints> *endpoint_sidecars = nullptr) {
   std::vector<PackedAabb> packed;
   packed.reserve(input.size());
+  if (endpoint_sidecars) {
+    endpoint_sidecars->clear();
+    endpoint_sidecars->reserve(input.size());
+  }
   std::vector<std::uint32_t> ids;
   ids.reserve(input.size());
   for (const InputRecord &record : input) {
@@ -543,6 +907,10 @@ std::vector<PackedAabb> pack_records(const std::vector<InputRecord> &input) {
     packed.push_back(PackedAabb{record.left, record.bottom, record.right,
                                 record.top, record.id, record.property,
                                 record.context, record.flags});
+    if (endpoint_sidecars) {
+      endpoint_sidecars->push_back(
+          PackedEndpoints{record.x1, record.y1, record.x2, record.y2});
+    }
     ids.push_back(record.id);
   }
   std::sort(ids.begin(), ids.end());
@@ -553,6 +921,99 @@ std::vector<PackedAabb> pack_records(const std::vector<InputRecord> &input) {
     throw std::runtime_error("record IDs must be globally unique");
   }
   return packed;
+}
+
+const char *edge_filter_name(EdgeFilterMode edge_filter) {
+  switch (edge_filter) {
+    case kEdgeFilterNone:
+      return "none";
+    case kEdgeFilterProjectionOverlap:
+      return "projection-overlap";
+  }
+  return "unknown";
+}
+
+// Exact boolean for the deliberately narrow, overflow-free subset of
+// EdgeRelationFilter(OverlapRelation, d, Projection, 90, 0, max,
+// IncludeZeroDistanceWhenTouching).  The return value says whether the broad
+// candidate must reach the CPU.  Unsupported cases return true, so this helper
+// can reduce CPU work but can never create a false negative.
+//
+// The supported subset is two nondegenerate Manhattan edges.  Perpendicular
+// and opposite-direction pairs are exact angle-gate rejections.  Parallel
+// pairs require equal original direction, a right-normal gap in [0, d), and a
+// positive projected overlap.  For zero gap, that positive overlap is exactly
+// the IncludeZeroDistanceWhenTouching case.
+__host__ __device__ bool projection_overlap_keep_or_pass(
+    const PackedAabb &a, const PackedEndpoints &ae, const PackedAabb &b,
+    const PackedEndpoints &be, std::uint64_t distance,
+    bool ordered_bipartite) {
+  if (!ordered_bipartite ||
+      (a.flags & kRecordHasEndpoints) == 0 ||
+      (b.flags & kRecordHasEndpoints) == 0) {
+    return true;
+  }
+
+  const bool a_horizontal = ae.y1 == ae.y2 && ae.x1 != ae.x2;
+  const bool a_vertical = ae.x1 == ae.x2 && ae.y1 != ae.y2;
+  const bool b_horizontal = be.y1 == be.y2 && be.x1 != be.x2;
+  const bool b_vertical = be.x1 == be.x2 && be.y1 != be.y2;
+  if ((!a_horizontal && !a_vertical) || (!b_horizontal && !b_vertical)) {
+    return true;
+  }
+  // OverlapRelation with a 90-degree ignore angle rejects perpendicular
+  // nondegenerate edges before the distance predicate.
+  if (a_horizontal != b_horizontal) return false;
+
+  std::uint64_t gap = 0;
+  std::int64_t a_lo = 0;
+  std::int64_t a_hi = 0;
+  std::int64_t b_lo = 0;
+  std::int64_t b_hi = 0;
+  if (a_horizontal) {
+    const bool a_positive = ae.x2 > ae.x1;
+    const bool b_positive = be.x2 > be.x1;
+    if (a_positive != b_positive) return false;
+    if (ae.y1 == be.y1) {
+      gap = 0;
+    } else if (a_positive) {
+      if (be.y1 > ae.y1) return false;
+      gap = static_cast<std::uint64_t>(ae.y1) -
+            static_cast<std::uint64_t>(be.y1);
+    } else {
+      if (be.y1 < ae.y1) return false;
+      gap = static_cast<std::uint64_t>(be.y1) -
+            static_cast<std::uint64_t>(ae.y1);
+    }
+    a_lo = ae.x1 < ae.x2 ? ae.x1 : ae.x2;
+    a_hi = ae.x1 < ae.x2 ? ae.x2 : ae.x1;
+    b_lo = be.x1 < be.x2 ? be.x1 : be.x2;
+    b_hi = be.x1 < be.x2 ? be.x2 : be.x1;
+  } else {
+    const bool a_positive = ae.y2 > ae.y1;
+    const bool b_positive = be.y2 > be.y1;
+    if (a_positive != b_positive) return false;
+    if (ae.x1 == be.x1) {
+      gap = 0;
+    } else if (a_positive) {
+      if (be.x1 < ae.x1) return false;
+      gap = static_cast<std::uint64_t>(be.x1) -
+            static_cast<std::uint64_t>(ae.x1);
+    } else {
+      if (be.x1 > ae.x1) return false;
+      gap = static_cast<std::uint64_t>(ae.x1) -
+            static_cast<std::uint64_t>(be.x1);
+    }
+    a_lo = ae.y1 < ae.y2 ? ae.y1 : ae.y2;
+    a_hi = ae.y1 < ae.y2 ? ae.y2 : ae.y1;
+    b_lo = be.y1 < be.y2 ? be.y1 : be.y2;
+    b_hi = be.y1 < be.y2 ? be.y2 : be.y1;
+  }
+
+  if (gap >= distance) return false;
+  const std::int64_t projection_lo = a_lo > b_lo ? a_lo : b_lo;
+  const std::int64_t projection_hi = a_hi < b_hi ? a_hi : b_hi;
+  return projection_lo < projection_hi;
 }
 
 __host__ __device__ std::int64_t grid_min_x(const PackedAabb &box,
@@ -762,12 +1223,14 @@ __device__ std::uint64_t pair_row_start(std::uint32_t row,
 }
 
 __global__ void mark_pair_candidates_kernel(
-    const PackedAabb *records, const std::uint32_t *record_indices,
+    const PackedAabb *records, const PackedEndpoints *endpoints,
+    EdgeFilterMode edge_filter, const std::uint32_t *record_indices,
     const std::uint64_t *cell_offsets, const std::uint32_t *cell_counts,
     const std::uint32_t *side_a_counts,
     const std::uint64_t *pair_work_offsets, std::uint64_t occupied_cells,
     std::uint64_t total_pair_work, GridConfig config,
-    std::uint64_t *candidate_or_zero) {
+    std::uint64_t *candidate_or_zero,
+    unsigned long long *broad_and_filtered_counts) {
   const std::uint64_t first_work =
       static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const std::uint64_t stride =
@@ -811,14 +1274,33 @@ __global__ void mark_pair_candidates_kernel(
           first_local + 1 + local - pair_row_start(first_local, count));
     }
     const std::uint64_t membership_offset = cell_offsets[cell];
-    const PackedAabb first =
-        records[record_indices[membership_offset + first_local]];
-    const PackedAabb second =
-        records[record_indices[membership_offset + second_local]];
-    candidate_or_zero[work] =
-        boxes_overlap_strict(first, second, config.enlargement)
-            ? pair_key(first.id, second.id)
-            : 0;
+    const std::uint32_t first_index =
+        record_indices[membership_offset + first_local];
+    const std::uint32_t second_index =
+        record_indices[membership_offset + second_local];
+    const PackedAabb first = records[first_index];
+    const PackedAabb second = records[second_index];
+    if (!boxes_overlap_strict(first, second, config.enlargement)) {
+      candidate_or_zero[work] = 0;
+      continue;
+    }
+
+    if (broad_and_filtered_counts) {
+      atomicAdd(broad_and_filtered_counts, 1ULL);
+    }
+    const bool keep =
+        edge_filter != kEdgeFilterProjectionOverlap ||
+        projection_overlap_keep_or_pass(
+            first, endpoints[first_index], second, endpoints[second_index],
+            config.enlargement, config.bipartite != 0);
+    if (keep) {
+      if (broad_and_filtered_counts) {
+        atomicAdd(broad_and_filtered_counts + 1, 1ULL);
+      }
+      candidate_or_zero[work] = pair_key(first.id, second.id);
+    } else {
+      candidate_or_zero[work] = 0;
+    }
   }
 }
 
@@ -830,6 +1312,7 @@ void cuda_check(cudaError_t error, const char *operation) {
 }
 
 PipelineResult run_gpu_stages(const std::vector<PackedAabb> &records,
+                              const std::vector<PackedEndpoints> &endpoints,
                               const GridConfig &config,
                               const Options &options,
                               std::uint32_t initial_fallback_flags) {
@@ -843,6 +1326,7 @@ PipelineResult run_gpu_stages(const std::vector<PackedAabb> &records,
   cuda_check(cudaSetDevice(options.device), "cudaSetDevice");
   cuda_check(cudaFree(nullptr), "CUDA context initialization");
   thrust::device_vector<PackedAabb> device_records(records.size());
+  thrust::device_vector<PackedEndpoints> device_endpoints(endpoints.size());
   thrust::device_vector<std::uint32_t> device_status(1, 0);
   const auto setup_end = Clock::now();
   result.setup_ms = elapsed_ms(setup_begin, setup_end);
@@ -852,6 +1336,13 @@ PipelineResult run_gpu_stages(const std::vector<PackedAabb> &records,
                         records.data(), records.size() * sizeof(PackedAabb),
                         cudaMemcpyHostToDevice),
              "record H2D copy");
+  if (!endpoints.empty()) {
+    cuda_check(cudaMemcpy(thrust::raw_pointer_cast(device_endpoints.data()),
+                          endpoints.data(),
+                          endpoints.size() * sizeof(PackedEndpoints),
+                          cudaMemcpyHostToDevice),
+               "endpoint-sidecar H2D copy");
+  }
   const auto h2d_end = Clock::now();
   result.h2d_ms = elapsed_ms(h2d_begin, h2d_end);
 
@@ -976,6 +1467,8 @@ PipelineResult run_gpu_stages(const std::vector<PackedAabb> &records,
   }
 
   thrust::device_vector<std::uint64_t> candidate_pairs(result.pair_work);
+  thrust::device_vector<unsigned long long> candidate_counts(
+      options.edge_filter == kEdgeFilterNone ? 0 : 2, 0);
   const std::uint64_t required_blocks =
       (result.pair_work + threads - 1) / threads;
   const std::uint32_t pair_blocks = static_cast<std::uint32_t>(
@@ -991,16 +1484,24 @@ PipelineResult run_gpu_stages(const std::vector<PackedAabb> &records,
   result.enumeration_theoretical_occupancy_pct =
       100.0 * active_blocks_per_sm * threads /
       static_cast<double>(property.maxThreadsPerMultiProcessor);
+  const auto edge_filter_begin = Clock::now();
   if (pair_blocks != 0) {
     mark_pair_candidates_kernel<<<pair_blocks, threads>>>(
         thrust::raw_pointer_cast(device_records.data()),
+        endpoints.empty()
+            ? nullptr
+            : thrust::raw_pointer_cast(device_endpoints.data()),
+        options.edge_filter,
         thrust::raw_pointer_cast(membership_records.data()),
         thrust::raw_pointer_cast(cell_offsets.data()),
         thrust::raw_pointer_cast(cell_counts.data()),
         thrust::raw_pointer_cast(side_a_counts.data()),
         thrust::raw_pointer_cast(pair_work_offsets.data()), result.occupied_cells,
         result.pair_work, config,
-        thrust::raw_pointer_cast(candidate_pairs.data()));
+        thrust::raw_pointer_cast(candidate_pairs.data()),
+        candidate_counts.empty()
+            ? nullptr
+            : thrust::raw_pointer_cast(candidate_counts.data()));
     cuda_check(cudaGetLastError(), "mark-pair-candidates launch");
   }
   auto compact_end = thrust::remove(thrust::device, candidate_pairs.begin(),
@@ -1008,6 +1509,24 @@ PipelineResult run_gpu_stages(const std::vector<PackedAabb> &records,
   cuda_check(cudaDeviceSynchronize(), "broad-phase synchronize");
   result.raw_candidates =
       static_cast<std::uint64_t>(compact_end - candidate_pairs.begin());
+  result.filtered_raw_pairs = result.raw_candidates;
+  result.broad_raw_candidates = result.raw_candidates;
+  if (!candidate_counts.empty()) {
+    std::array<unsigned long long, 2> counts{};
+    cuda_check(cudaMemcpy(
+                   counts.data(),
+                   thrust::raw_pointer_cast(candidate_counts.data()),
+                   sizeof(counts), cudaMemcpyDeviceToHost),
+               "candidate filter-count D2H copy");
+    result.broad_raw_candidates =
+        static_cast<std::uint64_t>(counts[0]);
+    result.filtered_raw_pairs =
+        static_cast<std::uint64_t>(counts[1]);
+    if (result.filtered_raw_pairs != result.raw_candidates) {
+      throw std::runtime_error("edge-filter compaction count mismatch");
+    }
+    result.edge_filter_ms = elapsed_ms(edge_filter_begin, Clock::now());
+  }
   if (result.raw_candidates > options.max_candidates) {
     result.fallback_flags |= kFallbackPairCapacity;
   }
@@ -1041,17 +1560,35 @@ PipelineResult run_gpu_stages(const std::vector<PackedAabb> &records,
 // Keep the outer timer outside run_gpu_stages so all per-call device-vector
 // destructors run before the charged pipeline wall is sampled.
 PipelineResult run_gpu(const std::vector<PackedAabb> &records,
+                       const std::vector<PackedEndpoints> &endpoints,
                        const GridConfig &config, const Options &options,
                        std::uint32_t initial_fallback_flags) {
   const auto total_begin = Clock::now();
   PipelineResult result =
-      run_gpu_stages(records, config, options, initial_fallback_flags);
+      run_gpu_stages(records, endpoints, config, options,
+                     initial_fallback_flags);
   result.total_ms = elapsed_ms(total_begin, Clock::now());
   return result;
 }
 
+bool cpu_edge_filter_keep(
+    const std::vector<PackedAabb> &records,
+    const std::vector<PackedEndpoints> &endpoints, std::uint32_t first,
+    std::uint32_t second, const GridConfig &config,
+    EdgeFilterMode edge_filter) {
+  if (edge_filter == kEdgeFilterNone) return true;
+  if (endpoints.size() != records.size()) {
+    throw std::runtime_error("CPU edge filter is missing endpoint sidecars");
+  }
+  return projection_overlap_keep_or_pass(
+      records[first], endpoints[first], records[second], endpoints[second],
+      config.enlargement, config.bipartite != 0);
+}
+
 std::vector<std::uint64_t> cpu_grid_reference(
-    const std::vector<PackedAabb> &records, const GridConfig &config) {
+    const std::vector<PackedAabb> &records,
+    const std::vector<PackedEndpoints> &endpoints, const GridConfig &config,
+    EdgeFilterMode edge_filter) {
   std::uint64_t total_memberships = 0;
   for (const PackedAabb &record : records) {
     std::uint64_t count = 0;
@@ -1097,11 +1634,15 @@ std::vector<std::uint64_t> cpu_grid_reference(
     }
     for (std::size_t i = begin; i < end; ++i) {
       for (std::size_t j = i + 1; j < end; ++j) {
-        const PackedAabb &a = records[memberships[i].second];
-        const PackedAabb &b = records[memberships[j].second];
+        const std::uint32_t a_index = memberships[i].second;
+        const std::uint32_t b_index = memberships[j].second;
+        const PackedAabb &a = records[a_index];
+        const PackedAabb &b = records[b_index];
         const bool side_ok =
             !config.bipartite || ((a.flags ^ b.flags) & kRecordSideB) != 0;
-        if (side_ok && boxes_overlap_strict_host(a, b, config.enlargement)) {
+        if (side_ok && boxes_overlap_strict_host(a, b, config.enlargement) &&
+            cpu_edge_filter_keep(records, endpoints, a_index, b_index, config,
+                                 edge_filter)) {
           pairs.push_back(pair_key(a.id, b.id));
         }
       }
@@ -1114,16 +1655,26 @@ std::vector<std::uint64_t> cpu_grid_reference(
 }
 
 std::vector<std::uint64_t> cpu_exhaustive_reference(
-    const std::vector<PackedAabb> &records, const GridConfig &config) {
+    const std::vector<PackedAabb> &records,
+    const std::vector<PackedEndpoints> &endpoints, const GridConfig &config,
+    EdgeFilterMode edge_filter) {
   std::vector<std::uint64_t> pairs;
   for (std::size_t i = 0; i < records.size(); ++i) {
     for (std::size_t j = i + 1; j < records.size(); ++j) {
       const bool side_ok =
           !config.bipartite ||
           ((records[i].flags ^ records[j].flags) & kRecordSideB) != 0;
+      std::uint32_t first = static_cast<std::uint32_t>(i);
+      std::uint32_t second = static_cast<std::uint32_t>(j);
+      if (config.bipartite &&
+          (records[first].flags & kRecordSideB) != 0) {
+        std::swap(first, second);
+      }
       if (records[i].context == records[j].context && side_ok &&
-          boxes_overlap_strict_host(records[i], records[j],
-                                    config.enlargement)) {
+          boxes_overlap_strict_host(records[first], records[second],
+                                    config.enlargement) &&
+          cpu_edge_filter_keep(
+              records, endpoints, first, second, config, edge_filter)) {
         pairs.push_back(pair_key(records[i].id, records[j].id));
       }
     }
@@ -1175,16 +1726,29 @@ void write_pairs(const std::string &path,
 
 int main(int argc, char **argv) {
   try {
-    const Options options = parse_options(argc, argv);
+    Options options = parse_options(argc, argv);
     const auto input_begin = Clock::now();
-    const std::vector<InputRecord> input = options.input_path.empty()
-                                               ? generate_records(options)
-                                               : read_replay(options.input_path);
+    EdgeCaptureInput edge_capture;
+    const bool edge_capture_available = !options.edge_capture_path.empty();
+    std::vector<InputRecord> input;
+    if (edge_capture_available) {
+      edge_capture = read_edge_capture(options.edge_capture_path);
+      input = edge_capture.records;
+      options.mode = "bipartite";
+      options.geometry = "edges";
+      options.enlargement = edge_capture.distance;
+    } else if (!options.input_path.empty()) {
+      input = read_replay(options.input_path);
+    } else {
+      input = generate_records(options);
+    }
     const auto input_end = Clock::now();
     if (input.empty()) throw std::runtime_error("input contains no records");
 
     const auto pack_begin = Clock::now();
-    const std::vector<PackedAabb> records = pack_records(input);
+    std::vector<PackedEndpoints> endpoints;
+    const std::vector<PackedAabb> records = pack_records(
+        input, options.edge_filter == kEdgeFilterNone ? nullptr : &endpoints);
     const auto pack_end = Clock::now();
     if (!options.write_input_path.empty()) {
       write_replay(options.write_input_path, input);
@@ -1199,7 +1763,8 @@ int main(int argc, char **argv) {
                "cudaGetDeviceProperties");
     for (std::uint32_t i = 0; i < options.warmup; ++i) {
       const PipelineResult warmup =
-          run_gpu(records, config, options, initial_fallback_flags);
+          run_gpu(records, endpoints, config, options,
+                  initial_fallback_flags);
       if (warmup.fallback_flags != kFallbackNone) break;
     }
 
@@ -1207,15 +1772,18 @@ int main(int argc, char **argv) {
     double setup_sum = 0.0;
     double h2d_sum = 0.0;
     double kernel_sum = 0.0;
+    double edge_filter_sum = 0.0;
     double sort_sum = 0.0;
     double d2h_sum = 0.0;
     double total_sum = 0.0;
     for (std::uint32_t i = 0; i < options.repeat; ++i) {
       PipelineResult current =
-          run_gpu(records, config, options, initial_fallback_flags);
+          run_gpu(records, endpoints, config, options,
+                  initial_fallback_flags);
       setup_sum += current.setup_ms;
       h2d_sum += current.h2d_ms;
       kernel_sum += current.kernel_ms;
+      edge_filter_sum += current.edge_filter_ms;
       sort_sum += current.sort_dedup_ms;
       d2h_sum += current.d2h_ms;
       total_sum += current.total_ms;
@@ -1225,6 +1793,9 @@ int main(int argc, char **argv) {
                  current.memberships != gpu.memberships ||
                  current.occupied_cells != gpu.occupied_cells ||
                  current.pair_work != gpu.pair_work ||
+                 current.broad_raw_candidates !=
+                     gpu.broad_raw_candidates ||
+                 current.filtered_raw_pairs != gpu.filtered_raw_pairs ||
                  current.raw_candidates != gpu.raw_candidates ||
                  current.pairs != gpu.pairs) {
         throw std::runtime_error("measured repetitions were not deterministic");
@@ -1234,6 +1805,7 @@ int main(int argc, char **argv) {
     gpu.setup_ms = setup_sum / repetitions;
     gpu.h2d_ms = h2d_sum / repetitions;
     gpu.kernel_ms = kernel_sum / repetitions;
+    gpu.edge_filter_ms = edge_filter_sum / repetitions;
     gpu.sort_dedup_ms = sort_sum / repetitions;
     gpu.d2h_ms = d2h_sum / repetitions;
     gpu.total_ms = total_sum / repetitions;
@@ -1249,18 +1821,48 @@ int main(int argc, char **argv) {
         (!fallback_required || options.reference == "exhaustive")) {
       const auto reference_begin = Clock::now();
       reference_pairs = options.reference == "exhaustive"
-                            ? cpu_exhaustive_reference(records, config)
-                            : cpu_grid_reference(records, config);
+                            ? cpu_exhaustive_reference(
+                                  records, endpoints, config,
+                                  options.edge_filter)
+                            : cpu_grid_reference(records, endpoints, config,
+                                                 options.edge_filter);
       reference_ms = elapsed_ms(reference_begin, Clock::now());
       reference_available = true;
     }
 
     const bool compared = reference_available && !fallback_required;
     const bool equal = compared && gpu.pairs == reference_pairs;
+    bool capture_output_within_broad = false;
+    bool capture_exact_covered = false;
+    bool capture_oracles_pass = !edge_capture_available;
+    if (edge_capture_available && !fallback_required) {
+      capture_output_within_broad =
+          std::includes(edge_capture.broad_pairs.begin(),
+                        edge_capture.broad_pairs.end(), gpu.pairs.begin(),
+                        gpu.pairs.end());
+      capture_exact_covered =
+          std::includes(gpu.pairs.begin(), gpu.pairs.end(),
+                        edge_capture.exact_pairs.begin(),
+                        edge_capture.exact_pairs.end());
+      capture_oracles_pass =
+          options.edge_filter == kEdgeFilterNone
+              ? gpu.pairs == edge_capture.broad_pairs
+              : capture_output_within_broad && capture_exact_covered;
+    }
     if (!fallback_required && options.fixture == "boundary") {
       const std::size_t expected = options.enlargement == 0 ? 1 : 2;
       if (gpu.pairs.size() != expected) {
         throw std::runtime_error("strict-enlargement boundary fixture failed");
+      }
+    }
+    if (!fallback_required &&
+        options.fixture == "projection-overlap" &&
+        options.edge_filter == kEdgeFilterProjectionOverlap &&
+        options.mode == "bipartite") {
+      constexpr std::size_t expected = 6;
+      if (gpu.pairs.size() != expected) {
+        throw std::runtime_error(
+            "projection-overlap boundary fixture failed");
       }
     }
     const std::vector<std::uint64_t> &authoritative_pairs =
@@ -1280,13 +1882,18 @@ int main(int argc, char **argv) {
     std::cout << "records=" << records.size()
               << " replay_record_bytes=" << sizeof(InputRecord)
               << " device_record_bytes=" << sizeof(PackedAabb)
+              << " device_endpoint_bytes="
+              << (endpoints.empty() ? 0 : sizeof(PackedEndpoints))
               << " contexts_requested=" << options.context_count
               << " mode=" << options.mode << " geometry=" << options.geometry
+              << " edge_filter=" << edge_filter_name(options.edge_filter)
               << " enlargement=" << options.enlargement
               << " cell_size=" << options.cell_size << '\n';
     std::cout << "memberships=" << gpu.memberships
               << " occupied_cells=" << gpu.occupied_cells
               << " pair_work=" << gpu.pair_work
+              << " broad_raw_candidates=" << gpu.broad_raw_candidates
+              << " filtered_raw_pairs=" << gpu.filtered_raw_pairs
               << " raw_candidates=" << gpu.raw_candidates
               << " unique_gpu_pairs=" << gpu.pairs.size() << '\n';
     std::cout << "fallback_required=" << (fallback_required ? "true" : "false")
@@ -1295,6 +1902,7 @@ int main(int argc, char **argv) {
               << " pack=" << elapsed_ms(pack_begin, pack_end)
               << " setup=" << gpu.setup_ms << " h2d=" << gpu.h2d_ms
               << " kernel=" << gpu.kernel_ms
+              << " edge_filter_charged=" << gpu.edge_filter_ms
               << " sort_dedup=" << gpu.sort_dedup_ms << " d2h=" << gpu.d2h_ms
               << " gpu_pipeline_total=" << gpu.total_ms
               << " host_to_host_candidate_generation="
@@ -1314,17 +1922,60 @@ int main(int argc, char **argv) {
                 << pair_hash(reference_pairs);
     }
     std::cout << std::dec << '\n';
+    if (edge_capture_available) {
+      std::cout << std::hex << std::setfill('0')
+                << "capture_request_id=" << std::dec
+                << edge_capture.request_id
+                << " capture_scanner_elapsed_ms="
+                << (edge_capture.scanner_elapsed_ns / 1000000.0)
+                << " capture_scanner_callbacks="
+                << edge_capture.scanner_callbacks
+                << " capture_exact_accept_callbacks="
+                << edge_capture.exact_accept_callbacks
+                << " capture_broad_pairs="
+                << edge_capture.broad_pairs.size()
+                << " capture_broad_hash=0x" << std::hex
+                << std::setw(16) << pair_hash(edge_capture.broad_pairs)
+                << " capture_exact_pairs=" << std::dec
+                << edge_capture.exact_pairs.size()
+                << " capture_exact_hash=0x" << std::hex
+                << std::setw(16) << pair_hash(edge_capture.exact_pairs)
+                << std::dec << '\n';
+      std::cout
+          << "capture_broad_oracle_comparison="
+          << (gpu.pairs == edge_capture.broad_pairs
+                  ? "PASS"
+                  : (capture_output_within_broad ? "FILTERED_SUBSET"
+                                                 : "FAIL"))
+          << " capture_exact_oracle_comparison="
+          << (gpu.pairs == edge_capture.exact_pairs
+                  ? "PASS"
+                  : (capture_exact_covered ? "CONSERVATIVE_SUPERSET"
+                                           : "FAIL"))
+          << '\n';
+    }
     if (fallback_required) {
       std::cout << "comparison=FALLBACK cpu_reference_available="
                 << (reference_available ? "true" : "false") << '\n';
       return 3;
     }
     if (options.reference == "none") {
-      std::cout << "comparison=SKIPPED\n";
-      return 0;
+      std::cout << "comparison=SKIPPED"
+                << (edge_capture_available
+                        ? (capture_oracles_pass
+                               ? " capture_oracles=PASS\n"
+                               : " capture_oracles=FAIL\n")
+                        : "\n");
+      return capture_oracles_pass ? 0 : 2;
     }
-    std::cout << "comparison=" << (equal ? "PASS" : "FAIL") << '\n';
-    return equal ? 0 : 2;
+    const bool all_equal = equal && capture_oracles_pass;
+    std::cout << "comparison=" << (all_equal ? "PASS" : "FAIL");
+    if (edge_capture_available) {
+      std::cout << " capture_oracles="
+                << (capture_oracles_pass ? "PASS" : "FAIL");
+    }
+    std::cout << '\n';
+    return all_equal ? 0 : 2;
   } catch (const std::exception &error) {
     std::cerr << "error: " << error.what() << '\n';
     return 1;

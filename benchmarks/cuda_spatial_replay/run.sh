@@ -29,6 +29,21 @@ echo "== exhaustive correctness gate =="
   --reference exhaustive --max-memberships 1000000 \
   --max-pair-work 2000000 --max-candidates 2000000
 
+echo "== fused projection-overlap exhaustive gate =="
+"${build_dir}/cuda_spatial_replay" \
+  --records 8192 --contexts 8 --world-size 5000 --object-size 64 \
+  --geometry edges --mode bipartite --enlargement 32 --cell-size 128 \
+  --edge-filter projection-overlap --reference exhaustive \
+  --max-memberships 1000000 --max-pair-work 2000000 \
+  --max-candidates 2000000
+
+echo "== fused projection-overlap boundary and pass-through gate =="
+"${build_dir}/cuda_spatial_replay" \
+  --fixture projection-overlap --mode bipartite --enlargement 8 \
+  --cell-size 128 --edge-filter projection-overlap \
+  --reference exhaustive --max-memberships 1000 \
+  --max-pair-work 1000 --max-candidates 1000
+
 echo "== strict boundary gates (self and bipartite) =="
 for mode in self bipartite; do
   for enlargement in 0 1; do
@@ -55,6 +70,16 @@ echo "== aggregated throughput sample =="
   --geometry aabb --mode bipartite --enlargement 32 --cell-size 128 \
   --reference grid --warmup 1 --repeat 3 --max-memberships 16000000 \
   --max-pair-work 64000000 --max-candidates 16000000
+
+echo "== projection-overlap A/B throughput sample =="
+for edge_filter in none projection-overlap; do
+  "${build_dir}/cuda_spatial_replay" \
+    --records 1000000 --contexts 4 --world-size 20000 --object-size 64 \
+    --geometry edges --mode bipartite --enlargement 32 --cell-size 128 \
+    --edge-filter "${edge_filter}" --reference grid --warmup 1 --repeat 3 \
+    --max-memberships 16000000 --max-pair-work 64000000 \
+    --max-candidates 16000000
+done
 
 echo "== expected fail-closed dense-cell gate =="
 set +e

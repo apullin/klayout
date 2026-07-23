@@ -22,11 +22,13 @@ The on-disk/host replay record is an 80-byte POD with:
 - uint32 property and hierarchy/context tokens;
 - flags for endpoint presence and bipartite side A/B.
 
-Packing produces the 48-byte device AABB record; optional endpoints never cross
-PCIe for the broad phase. Pointer identity is never serialized or compared.
-The CPU seam maps returned IDs back to its copied records, runs any remaining
-exact predicate, and publishes accepted records and finish events in original
-order.
+Packing produces the 48-byte device AABB record. The default broad phase does
+not allocate or transfer endpoint data. The opt-in
+`--edge-filter projection-overlap` path additionally packs and transfers a
+separate, index-aligned 32-byte endpoint sidecar. Pointer identity is never
+serialized or compared. The CPU seam maps returned IDs back to its copied
+records, runs any remaining exact predicate, and publishes accepted records and
+finish events in original order.
 
 `--mode self` enumerates unordered pairs within each context. `--mode
 bipartite` emits only A-to-B pairs, matching KLayout's two-input
@@ -63,6 +65,30 @@ mapped one-per-thread. Bipartite cells use an exact A-count times B-count work
 range. The kernel writes a pair key or zero, a device compaction removes misses,
 and device sort/unique makes duplicate-cell output deterministic.
 
+## Projection-overlap edge filter
+
+`--edge-filter projection-overlap` fuses a conservative exact-edge filter into
+the AABB candidate kernel. It targets the FreePDK45 M2 enclosure profile:
+`OverlapRelation`, projection metrics, a 90-degree angle limit, `[0, max)`
+projection limits, and `IncludeZeroDistanceWhenTouching`.
+
+The device makes a final decision only for two nondegenerate Manhattan edges in
+ordered bipartite mode. Perpendicular and opposite-direction pairs are exact
+angle-gate rejections. Parallel pairs require equal original direction, a
+right-normal gap in `[0, distance)`, and a positive 1-D projection; zero gap
+therefore covers the profile's collinear-overlap case. Missing endpoints,
+diagonal or degenerate edges, and unordered scanner modes conservatively retain
+the broad candidate for authoritative CPU replay. Thus unsupported geometry can
+reduce the win but cannot cause a false negative.
+
+The CPU reference implements the same conservative contract. `run.sh` includes
+an exhaustive random-edge comparison and a deterministic fixture covering
+accepted horizontal/vertical pairs, the strict distance boundary, zero
+projection, wrong side, opposite direction, and every pass-through class.
+Output reports `broad_raw_candidates`, `filtered_raw_pairs`, and
+`edge_filter_charged`; the last field is the already-charged fused
+enumeration/filter/compaction interval inside `kernel`, not an additional time.
+
 ## Replay format and fail-closed behavior
 
 The v1 little-endian header is 32 bytes: `KSPAT01\0`, uint32 version, uint32
@@ -84,6 +110,16 @@ GPU output is incomplete after any fallback signal and must not be published.
 The fixtures include safe INT64_MIN/INT64_MAX-adjacent records and a separate
 adversarial coordinate-overflow case.
 
+`--edge-capture PATH` natively reads the 192-byte-header `KEDGER1` files emitted
+by the opt-in KLayout M2 scanner capture. It validates all section
+sizes/offsets, profile metadata, sorted-unique pair oracles, endpoint/AABB
+records, and the full uint64 property before any checked narrowing to the
+standalone replay's uint32 property. Capture mode takes its distance from the
+file and uses ordered bipartite edge semantics. With no edge filter, GPU output
+must equal the captured broad oracle. With the conservative filter, output must
+remain a subset of the broad oracle and a superset of the captured exact
+oracle; both oracle counts and hashes are printed.
+
 ## Build and run
 
 CUDA 12.4 rejects this host's default GCC 15. Use GCC 13 explicitly and compile
@@ -98,10 +134,11 @@ TMPDIR=$PWD/build/tmp /usr/bin/nvcc \
 ```
 
 `./run.sh` builds and runs exhaustive self/bipartite tests, strict-boundary and
-int64 fixtures, a replay round trip, the million-record grid-oracle case, and
-expected dense/overflow fallbacks. It also builds the optional backend DSO and
-runs both a two-pair ABI smoke and a deterministic 1024-by-1024 exact CPU-oracle
-gate through that ABI. Its optional first argument selects a build directory.
+int64 fixtures, a replay round trip, the million-record grid-oracle case, a
+million-edge projection-filter A/B, and expected dense/overflow fallbacks. It
+also builds the optional backend DSO and runs both a two-pair ABI smoke and a
+deterministic 1024-by-1024 exact CPU-oracle gate through that ABI. Its optional
+first argument selects a build directory.
 
 CMake is also supported:
 
@@ -232,6 +269,18 @@ nsys profile --trace=cuda --stats=true \
 
 Activity alone is not an acceptance criterion; serialization, CPU replay, and
 whole-run savings still have to clear the project gate.
+
+## Synthetic fused-filter result
+
+On the deterministic million-edge bipartite sample, the projection filter
+reduced raw candidates from `2,729,090` to `1,613,186` (40.9% fewer) and unique
+CPU replay pairs from `1,337,218` to `791,540` (40.8% fewer), with exact
+GPU/CPU agreement. The fused filter interval was 1.446 ms. Device-pipeline wall
+was 29.872 ms versus 29.233 ms without the filter, so this synthetic broad-phase
+run alone was 2.2% slower before charging the downstream exact CPU work it
+eliminates. The real M2 capture/oracle gate, including CPU replay, is therefore
+the performance decision point; candidate reduction by itself is not booked as
+a whole-run win.
 
 ## Eight-owner integration and next kernels
 
