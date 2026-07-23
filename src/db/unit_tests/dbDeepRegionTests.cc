@@ -31,12 +31,47 @@
 #include "dbEdgesUtils.h"
 #include "dbDeepShapeStore.h"
 #include "dbDeepRegion.h"
+#include "dbDeepEdgePairs.h"
 #include "dbOriginalLayerRegion.h"
 #include "dbCellGraphUtils.h"
 #include "dbTestSupport.h"
 #include "dbCompoundOperation.h"
+#include "dbArray.h"
 #include "tlUnitTest.h"
 #include "tlStream.h"
+
+namespace
+{
+
+class GridCheckSpoofedRegularArray
+  : public db::regular_array<db::Coord>
+{
+public:
+  GridCheckSpoofedRegularArray ()
+    : db::regular_array<db::Coord> (
+        db::Vector (1, 0), db::Vector (0, 10), 2, 1
+      )
+  {
+    //  .. nothing yet ..
+  }
+
+  virtual db::basic_array<db::Coord> *clone () const
+  {
+    return new GridCheckSpoofedRegularArray (*this);
+  }
+
+  virtual bool is_regular_array (db::Vector &a, db::Vector &b, unsigned long &na, unsigned long &nb) const
+  {
+    //  Hide the actual off-grid unit pitch behind grid-aligned metadata.
+    a = db::Vector (10, 0);
+    b = db::Vector (0, 10);
+    na = 2;
+    nb = 1;
+    return true;
+  }
+};
+
+}
 
 TEST(1_Basic)
 {
@@ -1205,6 +1240,296 @@ TEST(19_GridCheck)
 
   CHECKPOINT();
   db::compare_layouts (_this, target, tl::testdata () + "/algo/deep_region_au19.gds");
+}
+
+TEST(deep_grid_check_early_empty_certificate)
+{
+  //  Grid-aligned rectilinear geometry under simple rotations, mirrors and
+  //  regular/iterated arrays is certified without materializing the merged
+  //  layer.
+  {
+    db::Layout ly;
+    db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+    db::Cell &child = ly.cell (ly.add_cell ("CHILD"));
+    unsigned int l1 = ly.insert_layer (db::LayerProperties (1, 0));
+
+    child.shapes (l1).insert (db::Box (0, 0, 20, 20));
+    child.shapes (l1).insert (db::Box (10, 0, 30, 20));
+
+    db::Polygon with_hole (db::Box (100, 100, 200, 200));
+    db::Point hole[] = {
+      db::Point (120, 120), db::Point (120, 180),
+      db::Point (180, 180), db::Point (180, 120)
+    };
+    with_hole.insert_hole (hole, hole + sizeof (hole) / sizeof (hole [0]));
+    child.shapes (l1).insert (with_hole);
+
+    top.insert (db::CellInstArray (
+      db::CellInst (child.cell_index ()),
+      db::Trans (1, false, db::Vector (300, 300)),
+      db::Vector (250, 0), db::Vector (0, 250), 2, 2
+    ));
+
+    std::vector<db::Vector> offsets;
+    offsets.push_back (db::Vector (0, 0));
+    offsets.push_back (db::Vector (0, 250));
+    top.insert (db::CellInstArray (
+      db::CellInst (child.cell_index ()),
+      db::Trans (0, true, db::Vector (800, 300)),
+      offsets.begin (), offsets.end ()
+    ));
+
+    db::DeepShapeStore dss;
+    db::Region deep (db::RecursiveShapeIterator (ly, top, l1), dss);
+    const db::DeepRegion *deep_delegate = dynamic_cast<const db::DeepRegion *> (deep.delegate ());
+    EXPECT_EQ (deep_delegate != 0, true);
+    EXPECT_EQ (deep_delegate->merged_polygons_available (), false);
+
+    db::EdgePairs checked = deep.grid_check (10, 10);
+    EXPECT_EQ (dynamic_cast<const db::DeepEdgePairs *> (checked.delegate ()) != 0, true);
+    EXPECT_EQ (checked.to_string (), "");
+    EXPECT_EQ (deep_delegate->merged_polygons_available (), false);
+  }
+
+  //  Zero-count regular arrays and empty iterated arrays are empty according
+  //  to their authoritative metadata.  They remain safe even though they
+  //  carry delegates (and must not be mistaken for unknown representations).
+  {
+    db::Region seed (db::Polygon (db::Box (0, 0, 20, 20)));
+    db::DeepShapeStore dss ("TOP", 0.001);
+    db::DeepLayer layer = dss.create_from_flat (seed, false);
+    db::Layout &ly = layer.layout ();
+    db::Cell &top = layer.initial_cell ();
+    db::Cell &child = ly.cell (ly.add_cell ("CHILD"));
+
+    top.insert (db::CellInstArray (
+      db::CellInst (child.cell_index ()), db::Trans (),
+      db::Vector (10, 0), db::Vector (0, 10), 0, 2
+    ));
+
+    std::vector<db::Vector> no_offsets;
+    top.insert (db::CellInstArray (
+      db::CellInst (child.cell_index ()), db::Trans (),
+      no_offsets.begin (), no_offsets.end ()
+    ));
+
+    db::Region deep (new db::DeepRegion (layer));
+    deep.set_merged_semantics (true);
+    const db::DeepRegion *deep_delegate = dynamic_cast<const db::DeepRegion *> (deep.delegate ());
+    EXPECT_EQ (deep_delegate->merged_polygons_available (), false);
+
+    db::EdgePairs checked = deep.grid_check (10, 10);
+    EXPECT_EQ (dynamic_cast<const db::DeepEdgePairs *> (checked.delegate ()) != 0, true);
+    EXPECT_EQ (checked.to_string (), "");
+    EXPECT_EQ (deep_delegate->merged_polygons_available (), false);
+  }
+
+  //  Virtual array classification is not authoritative for a public custom
+  //  delegate.  This subclass hides an off-grid physical pitch behind
+  //  grid-aligned regular-array metadata and must fail closed.
+  {
+    db::Region seed (db::Polygon (db::Box (100, 100, 120, 120)));
+    db::DeepShapeStore dss ("TOP", 0.001);
+    db::DeepLayer layer = dss.create_from_flat (seed, false);
+    db::Layout &ly = layer.layout ();
+    db::Cell &top = layer.initial_cell ();
+    db::Cell &child = ly.cell (ly.add_cell ("CHILD"));
+    child.shapes (layer.layer ()).insert (
+      db::PolygonRef (db::Polygon (db::Box (0, 0, 20, 20)), ly.shape_repository ())
+    );
+    top.insert (db::CellInstArray (
+      db::CellInst (child.cell_index ()), db::Trans (),
+      new GridCheckSpoofedRegularArray ()
+    ));
+
+    db::Region deep (new db::DeepRegion (layer));
+    deep.set_merged_semantics (true);
+    const db::DeepRegion *deep_delegate = dynamic_cast<const db::DeepRegion *> (deep.delegate ());
+    EXPECT_EQ (deep_delegate->merged_polygons_available (), false);
+
+    db::EdgePairs checked = deep.grid_check (10, 10);
+    (void) checked;
+    EXPECT_EQ (deep_delegate->merged_polygons_available (), true);
+  }
+
+  //  An off-grid local vertex must reject the certificate and preserve the
+  //  generic result.
+  {
+    db::Layout ly;
+    db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+    unsigned int l1 = ly.insert_layer (db::LayerProperties (1, 0));
+    top.shapes (l1).insert (db::Box (1, 0, 21, 20));
+
+    db::Region flat (db::RecursiveShapeIterator (ly, top, l1));
+    const std::string expected = flat.grid_check (10, 10).to_string ();
+
+    db::DeepShapeStore dss;
+    db::Region deep (db::RecursiveShapeIterator (ly, top, l1), dss);
+    const db::DeepRegion *deep_delegate = dynamic_cast<const db::DeepRegion *> (deep.delegate ());
+    db::EdgePairs checked = deep.grid_check (10, 10);
+    EXPECT_EQ (checked.to_string (), expected);
+    EXPECT_EQ (checked.empty (), false);
+    EXPECT_EQ (deep_delegate->merged_polygons_available (), true);
+  }
+
+  //  Instance displacement is part of the lattice proof.
+  {
+    db::Layout ly;
+    db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+    db::Cell &child = ly.cell (ly.add_cell ("CHILD"));
+    unsigned int l1 = ly.insert_layer (db::LayerProperties (1, 0));
+    child.shapes (l1).insert (db::Box (0, 0, 20, 20));
+    top.insert (db::CellInstArray (
+      db::CellInst (child.cell_index ()), db::Trans (db::Vector (1, 0))
+    ));
+
+    db::Region flat (db::RecursiveShapeIterator (ly, top, l1));
+    const std::string expected = flat.grid_check (10, 10).to_string ();
+
+    db::DeepShapeStore dss;
+    db::Region deep (db::RecursiveShapeIterator (ly, top, l1), dss);
+    const db::DeepRegion *deep_delegate = dynamic_cast<const db::DeepRegion *> (deep.delegate ());
+    db::EdgePairs checked = deep.grid_check (10, 10);
+    EXPECT_EQ (checked.to_string (), expected);
+    EXPECT_EQ (checked.empty (), false);
+    EXPECT_EQ (deep_delegate->merged_polygons_available (), true);
+  }
+
+  //  Both regular and iterated array offsets are checked without expanding a
+  //  regular array.
+  {
+    db::Layout ly;
+    db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+    db::Cell &child = ly.cell (ly.add_cell ("CHILD"));
+    unsigned int l1 = ly.insert_layer (db::LayerProperties (1, 0));
+    child.shapes (l1).insert (db::Box (0, 0, 20, 20));
+    top.insert (db::CellInstArray (
+      db::CellInst (child.cell_index ()), db::Trans (),
+      db::Vector (11, 0), db::Vector (0, 10), 2, 1
+    ));
+
+    db::Region flat (db::RecursiveShapeIterator (ly, top, l1));
+    const std::string expected = flat.grid_check (10, 10).to_string ();
+
+    db::DeepShapeStore dss;
+    db::Region deep (db::RecursiveShapeIterator (ly, top, l1), dss);
+    const db::DeepRegion *deep_delegate = dynamic_cast<const db::DeepRegion *> (deep.delegate ());
+    db::EdgePairs checked = deep.grid_check (10, 10);
+    EXPECT_EQ (checked.to_string (), expected);
+    EXPECT_EQ (checked.empty (), false);
+    EXPECT_EQ (deep_delegate->merged_polygons_available (), true);
+  }
+
+  {
+    db::Layout ly;
+    db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+    db::Cell &child = ly.cell (ly.add_cell ("CHILD"));
+    unsigned int l1 = ly.insert_layer (db::LayerProperties (1, 0));
+    child.shapes (l1).insert (db::Box (0, 0, 20, 20));
+
+    std::vector<db::Vector> offsets;
+    offsets.push_back (db::Vector (0, 0));
+    offsets.push_back (db::Vector (11, 0));
+    top.insert (db::CellInstArray (
+      db::CellInst (child.cell_index ()), db::Trans (),
+      offsets.begin (), offsets.end ()
+    ));
+
+    db::Region flat (db::RecursiveShapeIterator (ly, top, l1));
+    const std::string expected = flat.grid_check (10, 10).to_string ();
+
+    db::DeepShapeStore dss;
+    db::Region deep (db::RecursiveShapeIterator (ly, top, l1), dss);
+    const db::DeepRegion *deep_delegate = dynamic_cast<const db::DeepRegion *> (deep.delegate ());
+    db::EdgePairs checked = deep.grid_check (10, 10);
+    EXPECT_EQ (checked.to_string (), expected);
+    EXPECT_EQ (checked.empty (), false);
+    EXPECT_EQ (deep_delegate->merged_polygons_available (), true);
+  }
+
+  //  Arbitrary rotations and magnification are deliberately rejected, even
+  //  when a particular magnified shape happens to remain on-grid.
+  {
+    db::Layout ly;
+    db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+    db::Cell &child = ly.cell (ly.add_cell ("CHILD"));
+    unsigned int l1 = ly.insert_layer (db::LayerProperties (1, 0));
+    child.shapes (l1).insert (db::Box (0, 0, 20, 20));
+    top.insert (db::CellInstArray (
+      db::CellInst (child.cell_index ()),
+      db::ICplxTrans (1.0, 45.0, false, db::Vector ())
+    ));
+
+    db::Region flat (db::RecursiveShapeIterator (ly, top, l1));
+    const std::string expected = flat.grid_check (10, 10).to_string ();
+
+    db::DeepShapeStore dss;
+    db::Region deep (db::RecursiveShapeIterator (ly, top, l1), dss);
+    const db::DeepRegion *deep_delegate = dynamic_cast<const db::DeepRegion *> (deep.delegate ());
+    db::EdgePairs checked = deep.grid_check (10, 10);
+    EXPECT_EQ (checked.to_string (), expected);
+    EXPECT_EQ (checked.empty (), false);
+    EXPECT_EQ (deep_delegate->merged_polygons_available (), true);
+  }
+
+  {
+    db::Layout ly;
+    db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+    db::Cell &child = ly.cell (ly.add_cell ("CHILD"));
+    unsigned int l1 = ly.insert_layer (db::LayerProperties (1, 0));
+    child.shapes (l1).insert (db::Box (0, 0, 20, 20));
+    top.insert (db::CellInstArray (
+      db::CellInst (child.cell_index ()),
+      db::ICplxTrans (2.0, 0.0, false, db::Vector ())
+    ));
+
+    db::Region flat (db::RecursiveShapeIterator (ly, top, l1));
+    const std::string expected = flat.grid_check (10, 10).to_string ();
+    EXPECT_EQ (expected, "");
+
+    db::DeepShapeStore dss;
+    db::Region deep (db::RecursiveShapeIterator (ly, top, l1), dss);
+    const db::DeepRegion *deep_delegate = dynamic_cast<const db::DeepRegion *> (deep.delegate ());
+    db::EdgePairs checked = deep.grid_check (10, 10);
+    EXPECT_EQ (checked.to_string (), expected);
+    EXPECT_EQ (deep_delegate->merged_polygons_available (), true);
+  }
+
+  //  On-grid input vertices are insufficient: diagonal boundaries can
+  //  intersect at off-grid points created by merging.
+  {
+    db::Layout ly;
+    db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+    unsigned int l1 = ly.insert_layer (db::LayerProperties (1, 0));
+
+    db::Point a_points[] = {
+      db::Point (0, 10), db::Point (10, 0),
+      db::Point (20, 10), db::Point (10, 20)
+    };
+    db::Point b_points[] = {
+      db::Point (10, 10), db::Point (20, 0),
+      db::Point (30, 10), db::Point (20, 20)
+    };
+    db::Polygon a, b;
+    a.assign_hull (a_points, a_points + sizeof (a_points) / sizeof (a_points [0]));
+    b.assign_hull (b_points, b_points + sizeof (b_points) / sizeof (b_points [0]));
+    top.shapes (l1).insert (a);
+    top.shapes (l1).insert (b);
+
+    db::Region flat (db::RecursiveShapeIterator (ly, top, l1));
+    const std::string expected = flat.grid_check (10, 10).to_string ();
+    EXPECT_EQ (
+      expected,
+      "(15,15;15,15)/(15,15;15,15);(15,5;15,5)/(15,5;15,5)"
+    );
+
+    db::DeepShapeStore dss;
+    db::Region deep (db::RecursiveShapeIterator (ly, top, l1), dss);
+    const db::DeepRegion *deep_delegate = dynamic_cast<const db::DeepRegion *> (deep.delegate ());
+    db::EdgePairs checked = deep.grid_check (10, 10);
+    EXPECT_EQ (checked.to_string (), expected);
+    EXPECT_EQ (deep_delegate->merged_polygons_available (), true);
+  }
 }
 
 TEST(20_AngleCheck)
@@ -3340,4 +3665,3 @@ TEST(deep_region_peel)
   CHECKPOINT();
   db::compare_layouts (_this, ly, tl::testdata () + "/algo/deep_region_peel_au.gds");
 }
-

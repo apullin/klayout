@@ -44,6 +44,8 @@
 #include "dbLayoutToNetlist.h"
 #include "tlTimer.h"
 
+#include <typeinfo>
+
 namespace db
 {
 
@@ -1568,6 +1570,122 @@ DeepRegion::to_string (size_t nmax) const
   return db::AsIfFlatRegion::to_string (nmax);
 }
 
+static bool
+grid_coordinate_pair_is_on_grid (db::Coord x, db::Coord y, db::Coord grid)
+{
+  return (x % grid) == 0 && (y % grid) == 0;
+}
+
+static bool
+grid_instance_array_preserves_lattice (const db::CellInstArray &inst, db::Coord grid)
+{
+  const db::ArrayBase *delegate = inst.delegate ();
+
+  db::Vector a, b;
+  unsigned long na = 0, nb = 0;
+  if (delegate != 0 &&
+      (typeid (*delegate) == typeid (db::regular_array<db::Coord>) ||
+       typeid (*delegate) == typeid (db::regular_complex_array<db::Coord>))) {
+
+    //  Exact concrete-type classification is intentional.  ArrayBase is
+    //  public and custom delegates can spoof the virtual classification
+    //  methods and size(), so accepting a subclass would not be fail-closed.
+    if (! inst.is_regular_array (a, b, na, nb)) {
+      return false;
+    }
+
+    //  ArrayBase::size() multiplies these counts in size_t and can overflow.
+    //  The dimensions themselves are authoritative for emptiness.
+    if (na == 0 || nb == 0) {
+      return true;
+    }
+
+    //  A simple Trans is an exact signed-axis permutation.  Complex
+    //  transformations can include magnification or arbitrary rotation and
+    //  are deliberately left to the generic path.
+    return
+      ! inst.is_complex () &&
+      grid_coordinate_pair_is_on_grid (inst.front ().disp ().x (), inst.front ().disp ().y (), grid) &&
+      (na <= 1 || grid_coordinate_pair_is_on_grid (a.x (), a.y (), grid)) &&
+      (nb <= 1 || grid_coordinate_pair_is_on_grid (b.x (), b.y (), grid));
+  }
+
+  std::vector<db::Vector> offsets;
+  if (delegate != 0 &&
+      (typeid (*delegate) == typeid (db::iterated_array<db::Coord>) ||
+       typeid (*delegate) == typeid (db::iterated_complex_array<db::Coord>))) {
+
+    if (! inst.is_iterated_array (&offsets)) {
+      return false;
+    }
+
+    if (offsets.empty ()) {
+      return true;
+    }
+    if (inst.is_complex () ||
+        ! grid_coordinate_pair_is_on_grid (inst.front ().disp ().x (), inst.front ().disp ().y (), grid)) {
+      return false;
+    }
+    for (std::vector<db::Vector>::const_iterator i = offsets.begin (); i != offsets.end (); ++i) {
+      if (! grid_coordinate_pair_is_on_grid (i->x (), i->y (), grid)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  //  Only a null delegate is the built-in singular representation.  Custom
+  //  delegates are public and can report an arbitrary size or hide additional
+  //  displacements, so an unrecognized delegate must fail closed.
+  return
+    delegate == 0 &&
+    ! inst.is_complex () &&
+    grid_coordinate_pair_is_on_grid (inst.front ().disp ().x (), inst.front ().disp ().y (), grid);
+}
+
+static bool
+raw_hierarchy_is_on_grid_rectilinear (const db::DeepLayer &polygons, db::Coord grid)
+{
+  const db::Layout &layout = polygons.layout ();
+  const db::cell_index_type initial_cell = polygons.initial_cell ().cell_index ();
+
+  std::set<db::cell_index_type> called_cells;
+  called_cells.insert (initial_cell);
+  layout.cell (initial_cell).collect_called_cells (called_cells);
+
+  for (std::set<db::cell_index_type>::const_iterator ci = called_cells.begin (); ci != called_cells.end (); ++ci) {
+
+    const db::Cell &cell = layout.cell (*ci);
+
+    for (db::Cell::const_iterator i = cell.begin (); ! i.at_end (); ++i) {
+      if (! grid_instance_array_preserves_lattice (i->cell_inst (), grid)) {
+        return false;
+      }
+    }
+
+    const db::Shapes &shapes = cell.shapes (polygons.layer ());
+    for (db::Shapes::shape_iterator si = shapes.begin (db::ShapeIterator::All); ! si.at_end (); ++si) {
+
+      if (! si->is_polygon ()) {
+        return false;
+      }
+
+      for (db::Shape::polygon_edge_iterator e = si->begin_edge (); ! e.at_end (); ++e) {
+        const db::Edge edge = *e;
+        if (! edge.is_ortho () ||
+            ! grid_coordinate_pair_is_on_grid (edge.p1 ().x (), edge.p1 ().y (), grid) ||
+            ! grid_coordinate_pair_is_on_grid (edge.p2 ().x (), edge.p2 ().y (), grid)) {
+          return false;
+        }
+      }
+
+    }
+
+  }
+
+  return true;
+}
+
 EdgePairsDelegate *
 DeepRegion::grid_check (db::Coord gx, db::Coord gy) const
 {
@@ -1586,6 +1704,17 @@ DeepRegion::grid_check (db::Coord gx, db::Coord gy) const
 
   if (gx == 0) {
     return new EmptyEdgePairs ();
+  }
+
+  //  The union of grid-aligned rectilinear polygons cannot acquire an
+  //  off-grid vertex: intersections combine the grid-aligned x coordinate of
+  //  a vertical edge with the grid-aligned y coordinate of a horizontal
+  //  edge.  Prove that property on the raw hierarchy before paying to merge
+  //  it.  The certificate is intentionally fail-closed.
+  if (merged_semantics () &&
+      ! merged_polygons_available () &&
+      raw_hierarchy_is_on_grid_rectilinear (deep_layer (), gx)) {
+    return new db::DeepEdgePairs (deep_layer ().derived ());
   }
 
   const db::DeepLayer &polygons = merged_deep_layer ();

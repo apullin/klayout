@@ -826,6 +826,26 @@ not just wall time.
    and prove that skipping extraction cannot change report categories or
    diagnostics.  Empty-target antenna pruning was valuable; use profiling to
    avoid scattering checks with no measurable ceiling.
+
+    - [x] **Rectilinear grid early-empty certificate:** deep grid checks now
+      prove that raw polygon edges and every reachable simple hierarchy
+      transform preserve the requested lattice before materializing merged
+      polygons.  The proof is deliberately fail-closed for diagonal/nonpolygon
+      geometry, off-grid placements or array vectors, magnification/arbitrary
+      rotation, and unknown/custom array delegates; exact concrete array types
+      and zero-cardinality metadata avoid a `size()` multiplication-overflow
+      escape.  The normal merged path remains the fallback.
+
+      Five simultaneous, CPU-affinity-isolated 64-Kbit FreePDK45 grid pairs
+      measured **20.800 s control versus 3.036 s candidate means**: **17.764
+      real seconds removed, or 85.4% less shard wall time**.  All ten reports
+      were byte-identical (SHA-256
+      `fa05238947d072c2de998e82483a153d6ee5a224e131e2721247569184fbfaeb`).
+      A nonempty violation sentinel also stayed byte-identical (SHA-256
+      `420b02729315839c12594bf25f7390acfb99260e5fa1c869d3067284002f6ead`),
+      and all 124 `dbDeepRegionTests` executions pass.  This removes grid as a
+      cross-shard bottleneck; it is not by itself a whole-launch or CUDA win
+      because M1 remains critical.
 10. [ ] **Persistent workers for batches of small peripherals**
     Startup is negligible on the long lanes but material on many tiny blocks.
     Reusing initialized processes across a batch could improve throughput by
