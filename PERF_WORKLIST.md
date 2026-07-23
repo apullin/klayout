@@ -1046,15 +1046,50 @@ not just wall time.
         shapes and 570,294 instance records.  This is commit `8148bf5` on
         `fork/cuda`; hashes are provenance, not hard-coded correctness values.
 
-      - [ ] **Join the two bookends with a resident packed scene:** lower the
-        captured cell/instance/array/polygon/edge DAG to deterministic POD,
-        upload once, expand or traverse contexts on-device, run ACTIVE.3 and
-        METAL1.3 predicates/culls without downloading candidates, and bind the
-        compact result to scene and rule fingerprints.  Any unsupported
-        transform, geometry, property, overflow, incomplete queue, or
-        fingerprint mismatch must fall back before publication.  Measure
-        serialization, upload, GPU stages, result validation, and end-to-end
-        wall separately; do not book a synthetic kernel time as M1 savings.
+      - [x] **Lower the ACTIVE.3 capture to deterministic device POD:** the
+        versioned `KACTSCN1` format preserves the cell/instance/array DAG,
+        directed Manhattan contours, layer bounds, and scene fingerprint in
+        bounded little-endian records.  Independent validation rejects
+        malformed, unsupported, truncated, or hash-mismatched scenes.  This is
+        commit `40462b3` on `fork/cuda`.
+
+      - [x] **Qualify the exact ACTIVE.3 device predicate:** the fixed 55 nm
+        Euclidean enclosure relation now has a shared CPU/CUDA implementation
+        with fail-closed uncertainty, exhaustive lattice,
+        randomized/extreme-coordinate, and direct KLayout differential gates.
+        This is commit `038623d` on `fork/cuda`.
+
+      - [x] **Join the bookends in a standalone contiguous ACTIVE.3 GPU
+        island — completed experimentally:** after checked packed-scene loading
+        and host context lowering, the device owns WELL expansion and indexing,
+        streams 98,754,896 transformed ACTIVE edges without materializing a
+        flat edge or candidate array, evaluates the exact predicate, and
+        returns only bounded counters/diagnostics.  Five fresh x2 processes had
+        an external median of **0.70 s**; the ACTIVE query itself took
+        **23.24 ms**, with identical zero-violation/zero-uncertain censuses.
+        Against the roughly 41.58 s isolated CPU observation, that is
+        contextual evidence of about **40.88 s / 98.3% less wall time (roughly
+        59x)**.  It is not yet a same-binary production A/B, M1-shard saving,
+        or full-run result: the executable starts from an already captured
+        derived scene and has not replaced KLayout's live operation.  This is
+        commit `c3ceed2` on `fork/cuda`.
+
+      - [ ] **Integrate at the live ACTIVE.3 operation seam:** invoke the island
+        after the production deck has built WELL and ACTIVE but before the
+        legacy `well.enclosing(active, 55nm, euclidian)` scan.  Bind the
+        lowered scene, rule, and live source revision; publish only a validated
+        complete result, and otherwise discard all device output and run the
+        pristine CPU operation.  Measure fresh same-binary rule, shard,
+        critical-path, and full-launch controls before claiming a production
+        saving.
+
+      - [ ] **Move hierarchy lowering onto the GPU and amortize residency:**
+        replace the current host context lowering with a bounded device
+        BFS/wavefront, then add a fingerprint-keyed resident scene cache with a
+        persistent CUDA context and reusable buffers.  Charge cold load,
+        validation, upload, queueing, fallback, and teardown separately from
+        warm reuse; extend the same resident IR to METAL1.3 and later rules
+        only after the live ACTIVE.3 seam remains exact and beneficial.
 15. [ ] **Lean headless DRC build and developer-turnaround path**
     The accepted runtime is headless, but the standard build still compiles the
     full KLayout distribution.  The current graph has 1,877 object files; 724
