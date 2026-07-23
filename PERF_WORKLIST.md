@@ -1021,6 +1021,40 @@ not just wall time.
       closed to the unchanged CPU operation.  A general nonempty backend may
       require several thousand lines and is not rejected on code volume alone;
       exact oracle gates and whole-run savings decide whether each slice lands.
+
+      - [x] **Land the bounded METAL1.3 device-side analyze/cull kernel:** CUDA
+        now performs the context-qualified sparse broad phase, strict
+        projection-distance classification, four-side mask reduction, waiver,
+        deterministic sort, and survivor compaction without returning raw
+        pairs.  The additive ABI preserves the old v1 entry points.  Its
+        synthetic gates cover all 16 masks, the 34/35/36 threshold, contexts,
+        partial and non-Manhattan uncertainty, signed-coordinate extrema,
+        malformed requests, duplicate IDs, and capacity fallback.  Independent
+        review caught and fixed two initially fail-open internal-invariant
+        branches before commit; the hardened suite passes CUDA memcheck with
+        zero errors.  This is commit `93c51a8` on `fork/cuda`, not a production
+        KLayout speedup: a caller must still prove and fingerprint the complete
+        hierarchy/edge universe.
+
+      - [x] **Make the exact ACTIVE.3 derived scene reproducible:** the capture
+        harness derives `nwell.or(pwell)` and ACTIVE through the production
+        deep engine, uses `DeepRegion#insert_into` to retain hierarchy, replays
+        the rule from the captured operands, records a non-flattening census,
+        and publishes only after source/replay checks pass.  Clean tiny and 64K
+        gates pass; a deliberate nonempty fixture retains 4/4 markers.  The x2
+        scene represents 24,687,816 logical ACTIVE polygons with 716 stored
+        shapes and 570,294 instance records.  This is commit `8148bf5` on
+        `fork/cuda`; hashes are provenance, not hard-coded correctness values.
+
+      - [ ] **Join the two bookends with a resident packed scene:** lower the
+        captured cell/instance/array/polygon/edge DAG to deterministic POD,
+        upload once, expand or traverse contexts on-device, run ACTIVE.3 and
+        METAL1.3 predicates/culls without downloading candidates, and bind the
+        compact result to scene and rule fingerprints.  Any unsupported
+        transform, geometry, property, overflow, incomplete queue, or
+        fingerprint mismatch must fall back before publication.  Measure
+        serialization, upload, GPU stages, result validation, and end-to-end
+        wall separately; do not book a synthetic kernel time as M1 savings.
 15. [ ] **Lean headless DRC build and developer-turnaround path**
     The accepted runtime is headless, but the standard build still compiles the
     full KLayout distribution.  The current graph has 1,877 object files; 724
