@@ -1066,30 +1066,72 @@ not just wall time.
         flat edge or candidate array, evaluates the exact predicate, and
         returns only bounded counters/diagnostics.  Five fresh x2 processes had
         an external median of **0.70 s**; the ACTIVE query itself took
-        **23.24 ms**, with identical zero-violation/zero-uncertain censuses.
+        **23.24 ms**, with identical zero-raw-hit/zero-uncertain censuses.
         Against the roughly 41.58 s isolated CPU observation, that is
         contextual evidence of about **40.88 s / 98.3% less wall time (roughly
         59x)**.  It is not yet a same-binary production A/B, M1-shard saving,
         or full-run result: the executable starts from an already captured
         derived scene and has not replaced KLayout's live operation.  This is
-        commit `c3ceed2` on `fork/cuda`.
+        commit `c3ceed2` on `fork/cuda`.  Follow-up commit `b1fd3da` corrected
+        the result contract: local ACTIVE union can remove a raw inner-edge
+        hit, so only zero raw hits are consumable; every raw hit requires
+        pristine CPU fallback.
 
-      - [ ] **Integrate at the live ACTIVE.3 operation seam:** invoke the island
-        after the production deck has built WELL and ACTIVE but before the
-        legacy `well.enclosing(active, 55nm, euclidian)` scan.  Bind the
-        lowered scene, rule, and live source revision; publish only a validated
-        complete result, and otherwise discard all device output and run the
-        pristine CPU operation.  Measure fresh same-binary rule, shard,
-        critical-path, and full-launch controls before claiming a production
-        saving.
+      - [x] **Integrate at the live ACTIVE.3 operation seam — completed,
+        isolated-process scope:** the default-off KLayout hook now lowers the
+        live merged-WELL/raw-ACTIVE DeepShapeStore hierarchy into digest-bound
+        POD and calls the additive CUDA entry point in-process.  Only a complete
+        zero-raw-hit result returns the already-created empty `DeepEdgePairs`;
+        every hit, uncertainty, unsupported shape/transform/property, malformed
+        echo, capacity limit, loader error, or exception runs the unchanged CPU
+        processor.  Three fresh same-binary isolated controls had external
+        walls **55.25/55.37/54.80 s**; three frozen candidates had
+        **2.99/2.95/2.96 s**.  The medians are **55.25 -> 2.96 s**, removing
+        **52.29 real seconds / 94.6% of process wall** (about 18.7x).  All
+        reports have canonical SHA-256
+        `681cd5f31b2407672e760f718a827721f15a9193f2f7464c12d5ce610d961ed7`.
+        Peak host RSS also fell from about 2.31 GiB to 0.55 GiB.  This is an
+        isolated derived-scene replay result, not yet an M1-shard or parallel
+        full-launch saving.
+
+        The live and standalone operand universes match exactly: 284 WELL
+        contexts / 8,924 edges, 788,174 ACTIVE contexts / 98,754,896 edges, and
+        44,623,826 candidates.  Live deep extraction prunes 780 contexts
+        containing neither operand, explaining its 848,485 versus packed
+        849,265 total without omitting geometry.  Deliberate nonempty and
+        raw-ACTIVE-union counterexamples both forced exact CPU fallback;
+        nested 3x2 arrays under all eight transforms passed; normal and live x2
+        Compute Sanitizer runs reported zero errors.  Independent review
+        returned SHIP after fixing a near-`uint32` device-loop wrap.  Commits
+        `766871b`, `ee91e1b`, and `a318f6e` are pushed to `fork/cuda`.
+
+      - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
+        WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
+        exact predicates, METAL1.3 guards, four-side reduction, and per-rule
+        clean/fallback state on device, and return one terminal result.  Source
+        and profile mapping projects roughly 95--100 seconds of the 145.5-second
+        M1 lane in this interval, but that is overlapping opportunity
+        accounting, not an additive measured saving.  The existing ACTIVE.3
+        and METAL1.3 kernels are the two proven endpoints.
+
+      - [ ] **Widen the resident plan across the post-derived M1 interval:**
+        after CPU construction of WELL and GATE, keep POLY.1/3/4/5/6,
+        ACTIVE.3, and METAL1.3 on device through terminal per-category culling.
+        This exposes about 95% of profiled M1 operation work without first
+        porting polygon Boolean construction.  POLY.3/4 require exact
+        edge-pair normalization, edge-pair-to-polygon conversion, zero-area
+        culling, and stable hierarchy ownership; a raw-hit-zero certificate is
+        insufficient.
 
       - [ ] **Move hierarchy lowering onto the GPU and amortize residency:**
         replace the current host context lowering with a bounded device
         BFS/wavefront, then add a fingerprint-keyed resident scene cache with a
         persistent CUDA context and reusable buffers.  Charge cold load,
         validation, upload, queueing, fallback, and teardown separately from
-        warm reuse; extend the same resident IR to METAL1.3 and later rules
-        only after the live ACTIVE.3 seam remains exact and beneficial.
+        warm reuse.  Extend the plan boundary leftward to raw layers and perform
+        WELL/GATE/FIELD-POLY Boolean construction on device only after the
+        post-derived executor is exact and beneficial; this is the whole-M1
+        endgame rather than a prerequisite for the next measured win.
 15. [ ] **Lean headless DRC build and developer-turnaround path**
     The accepted runtime is headless, but the standard build still compiles the
     full KLayout distribution.  The current graph has 1,877 object files; 724
