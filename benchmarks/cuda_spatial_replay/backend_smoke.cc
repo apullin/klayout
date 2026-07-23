@@ -1,6 +1,8 @@
 #include "dbCudaSpatialApi.h"
+#include "dbCudaActive3Digest.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -842,6 +844,183 @@ bool run_m1_extrema_and_fail_closed_gate() {
   return good;
 }
 
+void report_active3_failure(
+    const char *name, int status,
+    const klayout_cuda_spatial_active3_result_v1 &result) {
+  std::cerr << name << " failed: call_status=" << status
+            << " result_status=" << result.status
+            << " disposition=" << result.disposition
+            << " fallback_flags=" << result.fallback_flags
+            << " device_flags=" << result.device_flags
+            << " candidates=" << result.candidate_pair_count
+            << " raw_hits=" << result.raw_hit_count
+            << " uncertain=" << result.uncertain_count
+            << " message=" << result.message << '\n';
+}
+
+bool set_active3_digest(
+    klayout_cuda_spatial_active3_request_v1 &request) {
+  std::array<std::uint8_t, 32> digest{};
+  if (!db::cuda_active3_digest::request_digest(request, digest)) {
+    return false;
+  }
+  std::copy(digest.begin(), digest.end(), request.scene_digest);
+  return true;
+}
+
+bool run_active3_abi_smoke() {
+  const klayout_cuda_spatial_active3_context_v1 contexts[] = {
+      {0, 0, 0, 0},
+  };
+  const std::uint32_t well_contexts[] = {0};
+  const std::uint64_t well_offsets[] = {0};
+  const std::uint32_t active_contexts[] = {0};
+  const klayout_cuda_spatial_active3_cell_v1 cells[] = {
+      {0, 4, 4, 4},
+  };
+  klayout_cuda_spatial_active3_edge_v1 edges[] = {
+      // Clockwise WELL: directed-edge material is on the right.
+      {0, 0, 0, 1000},
+      {0, 1000, 1000, 1000},
+      {1000, 1000, 1000, 0},
+      {1000, 0, 0, 0},
+      // Clockwise ACTIVE, initially inset by 200 DBU (> d=110).
+      {200, 200, 200, 800},
+      {200, 800, 800, 800},
+      {800, 800, 800, 200},
+      {800, 200, 200, 200},
+  };
+
+  klayout_cuda_spatial_active3_request_v1 request{};
+  request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  request.struct_size = sizeof(request);
+  request.opcode =
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_SUPERSET_EMPTY;
+  request.option_flags =
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_QUALIFIED_OPTIONS;
+  request.dbu_per_micron = 2000;
+  request.distance = 110;
+  request.grid_cell_size = 2000;
+  request.contexts = contexts;
+  request.context_count = 1;
+  request.well_contexts = well_contexts;
+  request.well_context_count = 1;
+  request.well_offsets = well_offsets;
+  request.well_offset_count = 1;
+  request.active_contexts = active_contexts;
+  request.active_context_count = 1;
+  request.cells = cells;
+  request.cell_count = 1;
+  request.edges = edges;
+  request.edge_count = sizeof(edges) / sizeof(edges[0]);
+  request.flat_well_edge_count = 4;
+  request.flat_active_edge_count = 4;
+  request.well_left = 0;
+  request.well_bottom = 0;
+  request.well_right = 1000;
+  request.well_top = 1000;
+  request.max_contexts = 16;
+  request.max_grid_cells = 1024;
+  request.max_memberships = 1024;
+  request.max_pair_work = 1024;
+
+  bool good = set_active3_digest(request);
+  klayout_cuda_spatial_active3_result_v1 clean{};
+  const int clean_status =
+      good ? klayout_cuda_spatial_run_active3_empty_v1(&request, &clean)
+           : KLAYOUT_CUDA_SPATIAL_ERROR;
+  const bool clean_good =
+      good && clean_status == KLAYOUT_CUDA_SPATIAL_OK &&
+      clean.status == KLAYOUT_CUDA_SPATIAL_OK &&
+      clean.disposition == KLAYOUT_CUDA_SPATIAL_ACTIVE3_COMPLETE &&
+      clean.fallback_flags == 0 && clean.device_flags == 0 &&
+      clean.raw_hit_count == 0 && clean.uncertain_count == 0;
+  if (!clean_good) {
+    report_active3_failure(
+        "CUDA ACTIVE.3 clean-certificate smoke", clean_status, clean);
+  }
+  good = clean_good;
+
+  // Move ACTIVE within 50 DBU of every WELL edge: raw hits must request
+  // pristine CPU fallback and must never masquerade as publishable markers.
+  edges[4] = {50, 50, 50, 950};
+  edges[5] = {50, 950, 950, 950};
+  edges[6] = {950, 950, 950, 50};
+  edges[7] = {950, 50, 50, 50};
+  const bool hit_digest_good = set_active3_digest(request);
+  klayout_cuda_spatial_active3_result_v1 raw_hit{};
+  const int hit_status =
+      hit_digest_good
+          ? klayout_cuda_spatial_run_active3_empty_v1(&request, &raw_hit)
+          : KLAYOUT_CUDA_SPATIAL_ERROR;
+  const bool hit_good =
+      hit_digest_good && hit_status == KLAYOUT_CUDA_SPATIAL_OK &&
+      raw_hit.status == KLAYOUT_CUDA_SPATIAL_OK &&
+      raw_hit.disposition == KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_HITS &&
+      raw_hit.fallback_flags == 0 && raw_hit.device_flags == 0 &&
+      raw_hit.raw_hit_count != 0 && raw_hit.uncertain_count == 0;
+  if (!hit_good) {
+    report_active3_failure(
+        "CUDA ACTIVE.3 raw-hit fallback smoke", hit_status, raw_hit);
+  }
+  good = hit_good && good;
+
+  // The digest binds the exact serialized scene.  Any mismatch must be
+  // rejected before the device pipeline can produce a consumable result.
+  request.scene_digest[0] ^= 0x80u;
+  klayout_cuda_spatial_active3_result_v1 tampered{};
+  const int tampered_status =
+      klayout_cuda_spatial_run_active3_empty_v1(&request, &tampered);
+  const bool tampered_good =
+      tampered_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      tampered.status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      tampered.disposition == KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN &&
+      (tampered.fallback_flags &
+       KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST) != 0 &&
+      tampered.device_flags == 0 && tampered.raw_hit_count == 0 &&
+      tampered.uncertain_count == 0;
+  if (!tampered_good) {
+    report_active3_failure(
+        "CUDA ACTIVE.3 tampered-digest gate", tampered_status, tampered);
+  }
+  good = tampered_good && good;
+
+  // Reject a count whose byte span cannot be represented before any array
+  // walk, digest, allocation, or H2D copy can observe the supplied pointer.
+  klayout_cuda_spatial_active3_request_v1 oversized = request;
+  oversized.edge_count =
+      std::numeric_limits<std::size_t>::max() /
+          sizeof(klayout_cuda_spatial_active3_edge_v1) +
+      1;
+  klayout_cuda_spatial_active3_result_v1 oversized_result{};
+  const int oversized_status =
+      klayout_cuda_spatial_run_active3_empty_v1(
+          &oversized, &oversized_result);
+  const bool oversized_good =
+      oversized_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      oversized_result.status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      oversized_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN &&
+      (oversized_result.fallback_flags &
+       KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST) != 0 &&
+      oversized_result.device_flags == 0 &&
+      oversized_result.raw_hit_count == 0 &&
+      oversized_result.uncertain_count == 0;
+  if (!oversized_good) {
+    report_active3_failure(
+        "CUDA ACTIVE.3 oversized-payload gate",
+        oversized_status, oversized_result);
+  }
+  good = oversized_good && good;
+
+  if (good) {
+    std::cout << "CUDA ACTIVE.3 additive ABI smoke passed: "
+                 "clean certificate, raw-hit fallback, digest/count "
+                 "rejection\n";
+  }
+  return good;
+}
+
 }  // namespace
 
 int main() {
@@ -861,5 +1040,6 @@ int main() {
   good = run_m1_all_masks_gate() && good;
   good = run_m1_boundary_context_uncertainty_gate() && good;
   good = run_m1_extrema_and_fail_closed_gate() && good;
+  good = run_active3_abi_smoke() && good;
   return good ? 0 : 1;
 }

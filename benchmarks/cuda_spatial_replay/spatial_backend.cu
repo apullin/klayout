@@ -6,6 +6,8 @@
  */
 
 #include "dbCudaSpatialApi.h"
+#include "dbCudaActive3Digest.h"
+#include "active3_exact_predicate.cuh"
 
 #include <cuda_runtime.h>
 
@@ -52,6 +54,24 @@ static_assert(sizeof(klayout_cuda_spatial_m1_request_v1) == 64,
               "unexpected M1 request ABI padding");
 static_assert(sizeof(klayout_cuda_spatial_m1_survivor_v1) == 16,
               "unexpected M1 survivor ABI padding");
+static_assert(
+    std::is_trivially_copyable<
+        klayout_cuda_spatial_active3_context_v1>::value,
+    "ACTIVE.3 contexts must remain POD across the DSO boundary");
+static_assert(
+    std::is_trivially_copyable<klayout_cuda_spatial_active3_cell_v1>::value,
+    "ACTIVE.3 cells must remain POD across the DSO boundary");
+static_assert(
+    std::is_trivially_copyable<klayout_cuda_spatial_active3_edge_v1>::value,
+    "ACTIVE.3 edges must remain POD across the DSO boundary");
+static_assert(sizeof(klayout_cuda_spatial_active3_context_v1) == 24,
+              "unexpected ACTIVE.3 context ABI padding");
+static_assert(sizeof(klayout_cuda_spatial_active3_cell_v1) == 24,
+              "unexpected ACTIVE.3 cell ABI padding");
+static_assert(sizeof(klayout_cuda_spatial_active3_edge_v1) == 32,
+              "unexpected ACTIVE.3 edge ABI padding");
+static_assert(sizeof(klayout_cuda_spatial_active3_request_v1) == 256,
+              "unexpected ACTIVE.3 request ABI padding");
 
 struct alignas(16) PackedAabb {
   std::int64_t left;
@@ -537,14 +557,441 @@ __global__ void classify_m1_contacts_kernel(
   }
 }
 
+enum Active3DeviceFlag : std::uint32_t {
+  kActive3TransformOverflow = 1u << 0,
+  kActive3GridCounterOverflow = 1u << 1,
+  kActive3GridCapacityExceeded = 1u << 2,
+  kActive3InvalidDeviceRecord = 1u << 3,
+};
+
+struct Active3DirectedEdge {
+  std::int64_t x1;
+  std::int64_t y1;
+  std::int64_t x2;
+  std::int64_t y2;
+};
+
+struct Active3Grid {
+  std::int64_t base_x;
+  std::int64_t base_y;
+  std::int64_t cell_size;
+  std::uint32_t width;
+  std::uint32_t height;
+};
+
+struct Active3Counters {
+  unsigned long long candidate_pairs;
+  unsigned long long raw_hits;
+  unsigned long long uncertain;
+};
+
+__device__ bool active3_negate_checked(std::int64_t value,
+                                       std::int64_t *result) {
+  if (value == INT64_MIN) return false;
+  *result = -value;
+  return true;
+}
+
+__device__ bool active3_add_checked(std::int64_t a, std::int64_t b,
+                                    std::int64_t *result) {
+  if ((b > 0 && a > INT64_MAX - b) ||
+      (b < 0 && a < INT64_MIN - b)) {
+    return false;
+  }
+  *result = a + b;
+  return true;
+}
+
+__device__ bool active3_transform_point_checked(
+    const klayout_cuda_spatial_active3_context_v1 &context,
+    std::int64_t x, std::int64_t y,
+    std::int64_t *output_x, std::int64_t *output_y) {
+  std::int64_t tx = 0;
+  std::int64_t ty = 0;
+  switch (context.transform_code) {
+    case 0: tx = x; ty = y; break;
+    case 1:
+      if (!active3_negate_checked(y, &tx)) return false;
+      ty = x;
+      break;
+    case 2:
+      if (!active3_negate_checked(x, &tx) ||
+          !active3_negate_checked(y, &ty)) return false;
+      break;
+    case 3:
+      tx = y;
+      if (!active3_negate_checked(x, &ty)) return false;
+      break;
+    case 4:
+      tx = x;
+      if (!active3_negate_checked(y, &ty)) return false;
+      break;
+    case 5: tx = y; ty = x; break;
+    case 6:
+      if (!active3_negate_checked(x, &tx)) return false;
+      ty = y;
+      break;
+    case 7:
+      if (!active3_negate_checked(y, &tx) ||
+          !active3_negate_checked(x, &ty)) return false;
+      break;
+    default: return false;
+  }
+  return active3_add_checked(tx, context.tx, output_x) &&
+         active3_add_checked(ty, context.ty, output_y);
+}
+
+__device__ bool active3_transform_edge_checked(
+    const klayout_cuda_spatial_active3_context_v1 &context,
+    const klayout_cuda_spatial_active3_edge_v1 &source,
+    Active3DirectedEdge *destination) {
+  Active3DirectedEdge transformed{};
+  if (!active3_transform_point_checked(
+          context, source.x1, source.y1,
+          &transformed.x1, &transformed.y1) ||
+      !active3_transform_point_checked(
+          context, source.x2, source.y2,
+          &transformed.x2, &transformed.y2)) {
+    return false;
+  }
+
+  // KLayout renormalizes reflected polygon hulls to clockwise.  Restore that
+  // directed interior-right convention exactly as the standalone island.
+  if (context.transform_code >= 4) {
+    destination->x1 = transformed.x2;
+    destination->y1 = transformed.y2;
+    destination->x2 = transformed.x1;
+    destination->y2 = transformed.y1;
+  } else {
+    *destination = transformed;
+  }
+  return true;
+}
+
+__global__ void active3_transform_semantics_gate(std::uint32_t *status) {
+  const std::uint32_t code = threadIdx.x;
+  if (blockIdx.x || code >= 8) return;
+  const klayout_cuda_spatial_active3_edge_v1 source[4] = {
+      {0, 0, 0, 20}, {0, 20, 10, 20},
+      {10, 20, 10, 0}, {10, 0, 0, 0}};
+  const klayout_cuda_spatial_active3_context_v1 context =
+      {13, -7, 0, code};
+  long long twice_area = 0;
+  for (int edge_id = 0; edge_id < 4; ++edge_id) {
+    Active3DirectedEdge edge{};
+    if (!active3_transform_edge_checked(context, source[edge_id], &edge)) {
+      atomicOr(status, std::uint32_t(kActive3InvalidDeviceRecord));
+      return;
+    }
+    twice_area += edge.x1 * edge.y2 - edge.x2 * edge.y1;
+  }
+  if (twice_area != -400) {
+    atomicOr(status, std::uint32_t(kActive3InvalidDeviceRecord));
+  }
+}
+
+__device__ std::int64_t active3_floor_div(std::int64_t value,
+                                          std::int64_t divisor) {
+  std::int64_t quotient = value / divisor;
+  if (value % divisor < 0) --quotient;
+  return quotient;
+}
+
+__device__ bool active3_edge_grid_span(
+    const Active3DirectedEdge &edge, const Active3Grid &grid,
+    std::int64_t expansion, std::int64_t *x0, std::int64_t *y0,
+    std::int64_t *x1, std::int64_t *y1) {
+  std::int64_t low_x = min(edge.x1, edge.x2);
+  std::int64_t high_x = max(edge.x1, edge.x2);
+  std::int64_t low_y = min(edge.y1, edge.y2);
+  std::int64_t high_y = max(edge.y1, edge.y2);
+  if (expansion &&
+      (!active3_add_checked(low_x, -expansion, &low_x) ||
+       !active3_add_checked(high_x, expansion, &high_x) ||
+       !active3_add_checked(low_y, -expansion, &low_y) ||
+       !active3_add_checked(high_y, expansion, &high_y))) {
+    return false;
+  }
+  *x0 = active3_floor_div(low_x, grid.cell_size);
+  *x1 = active3_floor_div(high_x, grid.cell_size);
+  *y0 = active3_floor_div(low_y, grid.cell_size);
+  *y1 = active3_floor_div(high_y, grid.cell_size);
+  return true;
+}
+
+__device__ bool active3_span_inside_grid(
+    const Active3Grid &grid, std::int64_t x0, std::int64_t y0,
+    std::int64_t x1, std::int64_t y1) {
+  const std::int64_t maximum_x =
+      grid.base_x + std::int64_t(grid.width) - 1;
+  const std::int64_t maximum_y =
+      grid.base_y + std::int64_t(grid.height) - 1;
+  return x0 >= grid.base_x && x1 <= maximum_x &&
+         y0 >= grid.base_y && y1 <= maximum_y;
+}
+
+__device__ bool active3_clip_span(
+    const Active3Grid &grid, std::int64_t *x0, std::int64_t *y0,
+    std::int64_t *x1, std::int64_t *y1) {
+  const std::int64_t maximum_x =
+      grid.base_x + std::int64_t(grid.width) - 1;
+  const std::int64_t maximum_y =
+      grid.base_y + std::int64_t(grid.height) - 1;
+  if (*x1 < grid.base_x || *x0 > maximum_x ||
+      *y1 < grid.base_y || *y0 > maximum_y) {
+    return false;
+  }
+  *x0 = max(*x0, grid.base_x);
+  *x1 = min(*x1, maximum_x);
+  *y0 = max(*y0, grid.base_y);
+  *y1 = min(*y1, maximum_y);
+  return true;
+}
+
+__device__ std::uint64_t active3_grid_index(
+    const Active3Grid &grid, std::int64_t x, std::int64_t y) {
+  return std::uint64_t(y - grid.base_y) * grid.width +
+         std::uint64_t(x - grid.base_x);
+}
+
+__global__ void active3_expand_well_kernel(
+    const klayout_cuda_spatial_active3_context_v1 *contexts,
+    const std::uint32_t *well_contexts,
+    const std::uint64_t *well_offsets,
+    const klayout_cuda_spatial_active3_cell_v1 *cells,
+    const klayout_cuda_spatial_active3_edge_v1 *templates,
+    std::uint32_t context_count, Active3DirectedEdge *well_edges,
+    std::uint32_t *status) {
+  const std::uint32_t list_index = blockIdx.x;
+  if (list_index >= context_count) return;
+  const klayout_cuda_spatial_active3_context_v1 context =
+      contexts[well_contexts[list_index]];
+  const klayout_cuda_spatial_active3_cell_v1 cell =
+      cells[context.cell_id];
+  for (std::uint64_t local = threadIdx.x;
+       local < cell.well_edge_count; local += std::uint64_t(blockDim.x)) {
+    Active3DirectedEdge edge{};
+    if (!active3_transform_edge_checked(
+            context, templates[cell.well_edge_begin + local], &edge)) {
+      atomicOr(status, std::uint32_t(kActive3TransformOverflow));
+    } else {
+      well_edges[well_offsets[list_index] + local] = edge;
+    }
+  }
+}
+
+__global__ void active3_count_grid_kernel(
+    const Active3DirectedEdge *well_edges, std::uint32_t well_count,
+    Active3Grid grid, std::uint32_t *counts, unsigned long long *total,
+    std::uint32_t *status) {
+  for (std::uint64_t id =
+           std::uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+       id < well_count;
+       id += std::uint64_t(blockDim.x) * gridDim.x) {
+    std::int64_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    if (!active3_edge_grid_span(
+          well_edges[id], grid, 0, &x0, &y0, &x1, &y1) ||
+        !active3_span_inside_grid(grid, x0, y0, x1, y1)) {
+      atomicOr(status, std::uint32_t(kActive3InvalidDeviceRecord));
+      continue;
+    }
+    for (std::int64_t y = y0; y <= y1; ++y) {
+      for (std::int64_t x = x0; x <= x1; ++x) {
+        const std::uint64_t index = active3_grid_index(grid, x, y);
+        const std::uint32_t previous = atomicAdd(counts + index, 1u);
+        if (previous == UINT32_MAX) {
+          atomicOr(status, std::uint32_t(kActive3GridCounterOverflow));
+        }
+        atomicAdd(total, 1ull);
+      }
+    }
+  }
+}
+
+__global__ void active3_fill_grid_kernel(
+    const Active3DirectedEdge *well_edges, std::uint32_t well_count,
+    Active3Grid grid, std::uint32_t *cursors, std::uint32_t *members,
+    std::uint64_t member_capacity, std::uint32_t *status) {
+  for (std::uint64_t id =
+           std::uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+       id < well_count;
+       id += std::uint64_t(blockDim.x) * gridDim.x) {
+    std::int64_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    if (!active3_edge_grid_span(
+          well_edges[id], grid, 0, &x0, &y0, &x1, &y1) ||
+        !active3_span_inside_grid(grid, x0, y0, x1, y1)) {
+      atomicOr(status, std::uint32_t(kActive3InvalidDeviceRecord));
+      continue;
+    }
+    for (std::int64_t y = y0; y <= y1; ++y) {
+      for (std::int64_t x = x0; x <= x1; ++x) {
+        const std::uint64_t index = active3_grid_index(grid, x, y);
+        const std::uint32_t position = atomicAdd(cursors + index, 1u);
+        if (position >= member_capacity) {
+          atomicOr(status, std::uint32_t(kActive3GridCapacityExceeded));
+        } else {
+          members[position] = static_cast<std::uint32_t>(id);
+        }
+      }
+    }
+  }
+}
+
+__global__ void active3_validate_grid_kernel(
+    const std::uint32_t *counts, const std::uint32_t *offsets,
+    const std::uint32_t *cursors, std::uint64_t cell_count,
+    std::uint32_t *status) {
+  for (std::uint64_t cell =
+           std::uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+       cell < cell_count;
+       cell += std::uint64_t(blockDim.x) * gridDim.x) {
+    const std::uint64_t expected =
+        std::uint64_t(offsets[cell]) + counts[cell];
+    if (expected > UINT32_MAX || cursors[cell] != expected) {
+      atomicOr(status, std::uint32_t(kActive3GridCounterOverflow));
+    }
+  }
+}
+
+__global__ void active3_query_kernel(
+    const klayout_cuda_spatial_active3_context_v1 *contexts,
+    const std::uint32_t *active_contexts,
+    std::uint32_t active_context_count,
+    const klayout_cuda_spatial_active3_cell_v1 *cells,
+    const klayout_cuda_spatial_active3_edge_v1 *templates,
+    const Active3DirectedEdge *well_edges, std::uint32_t well_edge_count,
+    Active3Grid grid, const std::uint32_t *counts,
+    const std::uint32_t *offsets, const std::uint32_t *members,
+    std::int64_t distance, Active3Counters *counters,
+    std::uint32_t *status) {
+  const std::uint32_t active_list_id = blockIdx.x;
+  if (active_list_id >= active_context_count) return;
+  const std::uint32_t context_id = active_contexts[active_list_id];
+  const klayout_cuda_spatial_active3_context_v1 context =
+      contexts[context_id];
+  const klayout_cuda_spatial_active3_cell_v1 cell =
+      cells[context.cell_id];
+  unsigned long long local_candidates = 0;
+  unsigned long long local_hits = 0;
+  unsigned long long local_uncertain = 0;
+  for (std::uint64_t local = threadIdx.x;
+       local < cell.active_edge_count; local += std::uint64_t(blockDim.x)) {
+    Active3DirectedEdge active{};
+    if (!active3_transform_edge_checked(
+            context, templates[cell.active_edge_begin + local], &active)) {
+      atomicOr(status, std::uint32_t(kActive3TransformOverflow));
+      continue;
+    }
+    std::int64_t active_x0 = 0, active_y0 = 0;
+    std::int64_t active_x1 = 0, active_y1 = 0;
+    if (!active3_edge_grid_span(
+          active, grid, distance, &active_x0, &active_y0,
+          &active_x1, &active_y1)) {
+      atomicOr(status, std::uint32_t(kActive3TransformOverflow));
+      continue;
+    }
+    if (!active3_clip_span(
+          grid, &active_x0, &active_y0, &active_x1, &active_y1)) {
+      continue;
+    }
+    for (std::int64_t y = active_y0; y <= active_y1; ++y) {
+      for (std::int64_t x = active_x0; x <= active_x1; ++x) {
+        const std::uint64_t cell_index = active3_grid_index(grid, x, y);
+        const std::uint32_t begin = offsets[cell_index];
+        const std::uint32_t end = begin + counts[cell_index];
+        for (std::uint32_t position = begin; position < end; ++position) {
+          const std::uint32_t well_id = members[position];
+          if (well_id >= well_edge_count) {
+            atomicOr(status, std::uint32_t(kActive3InvalidDeviceRecord));
+            continue;
+          }
+          const Active3DirectedEdge well = well_edges[well_id];
+          std::int64_t well_x0 = 0, well_y0 = 0;
+          std::int64_t well_x1 = 0, well_y1 = 0;
+          if (!active3_edge_grid_span(
+                well, grid, 0, &well_x0, &well_y0, &well_x1, &well_y1)) {
+            atomicOr(status, std::uint32_t(kActive3InvalidDeviceRecord));
+            continue;
+          }
+          if (x != max(active_x0, well_x0) ||
+              y != max(active_y0, well_y0)) {
+            continue;
+          }
+
+          std::int64_t expanded_left = min(active.x1, active.x2);
+          std::int64_t expanded_right = max(active.x1, active.x2);
+          std::int64_t expanded_bottom = min(active.y1, active.y2);
+          std::int64_t expanded_top = max(active.y1, active.y2);
+          if (!active3_add_checked(
+                expanded_left, -distance, &expanded_left) ||
+              !active3_add_checked(
+                expanded_right, distance, &expanded_right) ||
+              !active3_add_checked(
+                expanded_bottom, -distance, &expanded_bottom) ||
+              !active3_add_checked(
+                expanded_top, distance, &expanded_top)) {
+            atomicOr(status, std::uint32_t(kActive3TransformOverflow));
+            continue;
+          }
+          const std::int64_t well_left = min(well.x1, well.x2);
+          const std::int64_t well_right = max(well.x1, well.x2);
+          const std::int64_t well_bottom = min(well.y1, well.y2);
+          const std::int64_t well_top = max(well.y1, well.y2);
+          if (well_right < expanded_left || well_left > expanded_right ||
+              well_top < expanded_bottom || well_bottom > expanded_top) {
+            continue;
+          }
+
+          ++local_candidates;
+          const klayout_cuda::active3::DirectedEdge exact_well = {
+              well.x1, well.y1, well.x2, well.y2};
+          const klayout_cuda::active3::DirectedEdge exact_active = {
+              active.x1, active.y1, active.x2, active.y2};
+          const klayout_cuda::active3::Verdict verdict =
+              klayout_cuda::active3::classify_pair_bounded(
+                  klayout_cuda::active3::EdgePair{
+                      exact_well, exact_active}, distance);
+          if (verdict == klayout_cuda::active3::Verdict::kViolation) {
+            ++local_hits;
+          } else if (
+              verdict == klayout_cuda::active3::Verdict::kUncertain) {
+            ++local_uncertain;
+          } else if (
+              verdict != klayout_cuda::active3::Verdict::kNoViolation) {
+            atomicOr(status, std::uint32_t(kActive3InvalidDeviceRecord));
+          }
+        }
+      }
+    }
+  }
+  if (local_candidates) {
+    atomicAdd(&counters->candidate_pairs, local_candidates);
+  }
+  if (local_hits) atomicAdd(&counters->raw_hits, local_hits);
+  if (local_uncertain) {
+    atomicAdd(&counters->uncertain, local_uncertain);
+  }
+}
+
 void set_message(klayout_cuda_spatial_result_v1 *result,
-                 const std::string &message) {
-  std::snprintf(result->message, sizeof(result->message), "%s", message.c_str());
+                 const char *message) {
+  std::snprintf(
+      result->message, sizeof(result->message), "%s",
+      message ? message : "");
 }
 
 void set_message(klayout_cuda_spatial_m1_result_v1 *result,
-                 const std::string &message) {
-  std::snprintf(result->message, sizeof(result->message), "%s", message.c_str());
+                 const char *message) {
+  std::snprintf(
+      result->message, sizeof(result->message), "%s",
+      message ? message : "");
+}
+
+void set_message(klayout_cuda_spatial_active3_result_v1 *result,
+                 const char *message) {
+  std::snprintf(
+      result->message, sizeof(result->message), "%s",
+      message ? message : "");
 }
 
 PipelineResult run_pipeline(const std::vector<PackedAabb> &records,
@@ -1329,6 +1776,524 @@ int run_m1_request(const klayout_cuda_spatial_m1_request_v1 *request,
   return KLAYOUT_CUDA_SPATIAL_ERROR;
 }
 
+bool active3_coordinate_qualified(std::int64_t value) {
+  constexpr std::int64_t limit = INT64_C(1000000000000);
+  return value >= -limit && value <= limit;
+}
+
+bool active3_array_sizes_fit(
+    const klayout_cuda_spatial_active3_request_v1 &request) {
+  const auto fits = [](std::uint64_t count, std::size_t record_size) {
+    return record_size &&
+           count <= std::numeric_limits<std::size_t>::max() / record_size;
+  };
+  return fits(
+             request.context_count,
+             sizeof(klayout_cuda_spatial_active3_context_v1)) &&
+         fits(request.well_context_count, sizeof(std::uint32_t)) &&
+         fits(request.well_offset_count, sizeof(std::uint64_t)) &&
+         fits(request.active_context_count, sizeof(std::uint32_t)) &&
+         fits(
+             request.cell_count,
+             sizeof(klayout_cuda_spatial_active3_cell_v1)) &&
+         fits(
+             request.edge_count,
+             sizeof(klayout_cuda_spatial_active3_edge_v1));
+}
+
+bool valid_active3_request(
+    const klayout_cuda_spatial_active3_request_v1 &request) {
+  if (request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      request.struct_size < sizeof(request) ||
+      request.opcode !=
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_SUPERSET_EMPTY ||
+      request.option_flags !=
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_QUALIFIED_OPTIONS ||
+      request.dbu_per_micron != 2000 || request.reserved0 != 0 ||
+      request.reserved1 != 0 || request.distance != 110 ||
+      request.grid_cell_size != 2000 ||
+      !request.context_count || !request.contexts ||
+      !request.well_context_count || !request.well_contexts ||
+      request.well_offset_count != request.well_context_count ||
+      !request.well_offsets ||
+      !request.active_context_count || !request.active_contexts ||
+      !request.cell_count || !request.cells ||
+      !request.edge_count || !request.edges ||
+      !request.flat_well_edge_count || !request.flat_active_edge_count ||
+      request.context_count > request.max_contexts ||
+      request.context_count > UINT32_MAX ||
+      request.well_context_count > UINT32_MAX ||
+      request.active_context_count > UINT32_MAX ||
+      request.cell_count > UINT32_MAX ||
+      !active3_array_sizes_fit(request) ||
+      request.flat_well_edge_count > UINT32_MAX ||
+      !request.max_grid_cells || !request.max_memberships ||
+      !request.max_pair_work ||
+      request.well_left > request.well_right ||
+      request.well_bottom > request.well_top ||
+      !active3_coordinate_qualified(request.well_left) ||
+      !active3_coordinate_qualified(request.well_bottom) ||
+      !active3_coordinate_qualified(request.well_right) ||
+      !active3_coordinate_qualified(request.well_top)) {
+    return false;
+  }
+
+  std::uint64_t pair_work = 0;
+  if (request.flat_active_edge_count >
+          std::numeric_limits<std::uint64_t>::max() /
+              request.flat_well_edge_count) {
+    return false;
+  }
+  pair_work =
+      request.flat_active_edge_count * request.flat_well_edge_count;
+  if (pair_work > request.max_pair_work) return false;
+
+  std::uint64_t next_edge = 0;
+  for (std::uint64_t id = 0; id < request.cell_count; ++id) {
+    const auto &cell = request.cells[id];
+    if (cell.well_edge_begin != next_edge ||
+        cell.well_edge_count > request.edge_count - next_edge) {
+      return false;
+    }
+    next_edge += cell.well_edge_count;
+    if (cell.active_edge_begin != next_edge ||
+        cell.active_edge_count > request.edge_count - next_edge) {
+      return false;
+    }
+    next_edge += cell.active_edge_count;
+  }
+  if (next_edge != request.edge_count) return false;
+
+  for (std::uint64_t id = 0; id < request.edge_count; ++id) {
+    const auto &edge = request.edges[id];
+    if (!active3_coordinate_qualified(edge.x1) ||
+        !active3_coordinate_qualified(edge.y1) ||
+        !active3_coordinate_qualified(edge.x2) ||
+        !active3_coordinate_qualified(edge.y2) ||
+        (edge.x1 == edge.x2 && edge.y1 == edge.y2) ||
+        !(edge.x1 == edge.x2 || edge.y1 == edge.y2)) {
+      return false;
+    }
+  }
+
+  std::uint64_t well_list = 0;
+  std::uint64_t active_list = 0;
+  std::uint64_t well_edges = 0;
+  std::uint64_t active_edges = 0;
+  for (std::uint64_t id = 0; id < request.context_count; ++id) {
+    const auto &context = request.contexts[id];
+    if (context.cell_id >= request.cell_count ||
+        context.transform_code >= 8 ||
+        !active3_coordinate_qualified(context.tx) ||
+        !active3_coordinate_qualified(context.ty)) {
+      return false;
+    }
+    const auto &cell = request.cells[context.cell_id];
+    if (cell.well_edge_count) {
+      if (well_list >= request.well_context_count ||
+          request.well_contexts[well_list] != id ||
+          request.well_offsets[well_list] != well_edges ||
+          cell.well_edge_count >
+              std::numeric_limits<std::uint64_t>::max() - well_edges) {
+        return false;
+      }
+      well_edges += cell.well_edge_count;
+      ++well_list;
+    }
+    if (cell.active_edge_count) {
+      if (active_list >= request.active_context_count ||
+          request.active_contexts[active_list] != id ||
+          cell.active_edge_count >
+              std::numeric_limits<std::uint64_t>::max() - active_edges) {
+        return false;
+      }
+      active_edges += cell.active_edge_count;
+      ++active_list;
+    }
+  }
+  if (well_list != request.well_context_count ||
+      active_list != request.active_context_count ||
+      well_edges != request.flat_well_edge_count ||
+      active_edges != request.flat_active_edge_count) {
+    return false;
+  }
+
+  std::array<std::uint8_t, 32> digest;
+  return db::cuda_active3_digest::request_digest(request, digest) &&
+         std::equal(
+             digest.begin(), digest.end(), request.scene_digest);
+}
+
+struct Active3PipelineResult {
+  std::uint32_t fallback_flags = 0;
+  std::uint32_t device_flags = 0;
+  std::uint64_t grid_cells = 0;
+  std::uint64_t memberships = 0;
+  std::uint64_t candidates = 0;
+  std::uint64_t raw_hits = 0;
+  std::uint64_t uncertain = 0;
+  std::uint64_t setup_ns = 0;
+  std::uint64_t h2d_ns = 0;
+  std::uint64_t well_expand_ns = 0;
+  std::uint64_t grid_build_ns = 0;
+  std::uint64_t active_query_ns = 0;
+  std::uint64_t d2h_ns = 0;
+};
+
+Active3PipelineResult run_active3_pipeline(
+    const klayout_cuda_spatial_active3_request_v1 &request) {
+  Active3PipelineResult result;
+  const std::int64_t base_x =
+      floor_div(request.well_left, request.grid_cell_size);
+  const std::int64_t base_y =
+      floor_div(request.well_bottom, request.grid_cell_size);
+  const std::int64_t maximum_x =
+      floor_div(request.well_right, request.grid_cell_size);
+  const std::int64_t maximum_y =
+      floor_div(request.well_top, request.grid_cell_size);
+  const std::uint64_t width =
+      std::uint64_t(maximum_x - base_x) + 1;
+  const std::uint64_t height =
+      std::uint64_t(maximum_y - base_y) + 1;
+  if (!width || !height || width > UINT32_MAX || height > UINT32_MAX ||
+      height > std::numeric_limits<std::uint64_t>::max() / width) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW;
+    return result;
+  }
+  result.grid_cells = width * height;
+  if (result.grid_cells > request.max_grid_cells ||
+      result.grid_cells > UINT32_MAX) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_MEMBERSHIP_CAPACITY;
+    return result;
+  }
+  const Active3Grid grid = {
+      base_x, base_y, request.grid_cell_size,
+      static_cast<std::uint32_t>(width),
+      static_cast<std::uint32_t>(height)};
+
+  constexpr std::uint32_t threads = 128;
+  const auto setup_begin = Clock::now();
+  cuda_check(cudaFree(nullptr), "ACTIVE.3 CUDA context initialization");
+  int device = 0;
+  cudaDeviceProp properties{};
+  cuda_check(cudaGetDevice(&device), "ACTIVE.3 cudaGetDevice");
+  cuda_check(
+      cudaGetDeviceProperties(&properties, device),
+      "ACTIVE.3 cudaGetDeviceProperties");
+  if (request.well_context_count >
+          static_cast<std::uint64_t>(properties.maxGridSize[0]) ||
+      request.active_context_count >
+          static_cast<std::uint64_t>(properties.maxGridSize[0])) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+    return result;
+  }
+
+  thrust::device_vector<klayout_cuda_spatial_active3_context_v1>
+      contexts(request.context_count);
+  thrust::device_vector<std::uint32_t>
+      well_contexts(request.well_context_count);
+  thrust::device_vector<std::uint64_t>
+      well_offsets(request.well_offset_count);
+  thrust::device_vector<std::uint32_t>
+      active_contexts(request.active_context_count);
+  thrust::device_vector<klayout_cuda_spatial_active3_cell_v1>
+      cells(request.cell_count);
+  thrust::device_vector<klayout_cuda_spatial_active3_edge_v1>
+      edges(request.edge_count);
+  thrust::device_vector<Active3DirectedEdge>
+      well_edges(request.flat_well_edge_count);
+  thrust::device_vector<std::uint32_t> counts(result.grid_cells, 0);
+  thrust::device_vector<std::uint32_t> offsets(result.grid_cells + 1);
+  thrust::device_vector<std::uint32_t> cursors(result.grid_cells);
+  thrust::device_vector<unsigned long long> membership_total(1, 0);
+  thrust::device_vector<std::uint32_t> status(1, 0);
+  thrust::device_vector<Active3Counters> counters(1);
+  cuda_check(
+      cudaMemset(
+          thrust::raw_pointer_cast(counters.data()), 0,
+          sizeof(Active3Counters)),
+      "ACTIVE.3 counter clear");
+  result.setup_ns = elapsed_ns(setup_begin, Clock::now());
+
+  const auto h2d_begin = Clock::now();
+#define ACTIVE3_COPY_TO_DEVICE(destination, source, count, type, label) \
+  cuda_check( \
+      cudaMemcpy( \
+          thrust::raw_pointer_cast(destination.data()), source, \
+          std::size_t(count) * sizeof(type), cudaMemcpyHostToDevice), \
+      label)
+  ACTIVE3_COPY_TO_DEVICE(
+      contexts, request.contexts, request.context_count,
+      klayout_cuda_spatial_active3_context_v1,
+      "ACTIVE.3 context H2D");
+  ACTIVE3_COPY_TO_DEVICE(
+      well_contexts, request.well_contexts, request.well_context_count,
+      std::uint32_t, "ACTIVE.3 WELL-context H2D");
+  ACTIVE3_COPY_TO_DEVICE(
+      well_offsets, request.well_offsets, request.well_offset_count,
+      std::uint64_t, "ACTIVE.3 WELL-offset H2D");
+  ACTIVE3_COPY_TO_DEVICE(
+      active_contexts, request.active_contexts,
+      request.active_context_count, std::uint32_t,
+      "ACTIVE.3 ACTIVE-context H2D");
+  ACTIVE3_COPY_TO_DEVICE(
+      cells, request.cells, request.cell_count,
+      klayout_cuda_spatial_active3_cell_v1,
+      "ACTIVE.3 cell H2D");
+  ACTIVE3_COPY_TO_DEVICE(
+      edges, request.edges, request.edge_count,
+      klayout_cuda_spatial_active3_edge_v1,
+      "ACTIVE.3 edge H2D");
+#undef ACTIVE3_COPY_TO_DEVICE
+  active3_transform_semantics_gate<<<1, 8>>>(
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(
+      cudaGetLastError(), "ACTIVE.3 transform semantics gate launch");
+  cuda_check(cudaDeviceSynchronize(), "ACTIVE.3 H2D synchronize");
+  result.h2d_ns = elapsed_ns(h2d_begin, Clock::now());
+
+  const auto well_begin = Clock::now();
+  active3_expand_well_kernel<<<
+      static_cast<unsigned int>(request.well_context_count), threads>>>(
+      thrust::raw_pointer_cast(contexts.data()),
+      thrust::raw_pointer_cast(well_contexts.data()),
+      thrust::raw_pointer_cast(well_offsets.data()),
+      thrust::raw_pointer_cast(cells.data()),
+      thrust::raw_pointer_cast(edges.data()),
+      static_cast<std::uint32_t>(request.well_context_count),
+      thrust::raw_pointer_cast(well_edges.data()),
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(cudaGetLastError(), "ACTIVE.3 WELL expansion launch");
+  cuda_check(cudaDeviceSynchronize(), "ACTIVE.3 WELL expansion synchronize");
+  cuda_check(
+      cudaMemcpy(
+          &result.device_flags, thrust::raw_pointer_cast(status.data()),
+          sizeof(result.device_flags), cudaMemcpyDeviceToHost),
+      "ACTIVE.3 WELL status D2H");
+  result.well_expand_ns = elapsed_ns(well_begin, Clock::now());
+  if (result.device_flags) {
+    result.fallback_flags =
+        (result.device_flags & kActive3TransformOverflow)
+            ? KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW
+            : KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    return result;
+  }
+
+  const auto grid_begin = Clock::now();
+  const unsigned int well_blocks = static_cast<unsigned int>(
+      std::min<std::uint64_t>(
+          65535, (request.flat_well_edge_count + 255) / 256));
+  active3_count_grid_kernel<<<well_blocks, 256>>>(
+      thrust::raw_pointer_cast(well_edges.data()),
+      static_cast<std::uint32_t>(request.flat_well_edge_count), grid,
+      thrust::raw_pointer_cast(counts.data()),
+      thrust::raw_pointer_cast(membership_total.data()),
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(cudaGetLastError(), "ACTIVE.3 grid count launch");
+  cuda_check(cudaDeviceSynchronize(), "ACTIVE.3 grid count synchronize");
+  unsigned long long memberships = 0;
+  cuda_check(
+      cudaMemcpy(
+          &memberships, thrust::raw_pointer_cast(membership_total.data()),
+          sizeof(memberships), cudaMemcpyDeviceToHost),
+      "ACTIVE.3 membership count D2H");
+  cuda_check(
+      cudaMemcpy(
+          &result.device_flags, thrust::raw_pointer_cast(status.data()),
+          sizeof(result.device_flags), cudaMemcpyDeviceToHost),
+      "ACTIVE.3 grid-count status D2H");
+  result.memberships = memberships;
+  if (result.device_flags) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    return result;
+  }
+  if (!result.memberships ||
+      result.memberships > request.max_memberships ||
+      result.memberships > UINT32_MAX) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_MEMBERSHIP_CAPACITY;
+    return result;
+  }
+
+  thrust::exclusive_scan(
+      thrust::device, counts.begin(), counts.end(), offsets.begin());
+  const std::uint32_t terminal =
+      static_cast<std::uint32_t>(result.memberships);
+  cuda_check(
+      cudaMemcpy(
+          thrust::raw_pointer_cast(offsets.data()) + result.grid_cells,
+          &terminal, sizeof(terminal), cudaMemcpyHostToDevice),
+      "ACTIVE.3 terminal grid offset H2D");
+  cuda_check(
+      cudaMemcpy(
+          thrust::raw_pointer_cast(cursors.data()),
+          thrust::raw_pointer_cast(offsets.data()),
+          result.grid_cells * sizeof(std::uint32_t),
+          cudaMemcpyDeviceToDevice),
+      "ACTIVE.3 offsets-to-cursors D2D");
+  thrust::device_vector<std::uint32_t> members(result.memberships);
+  active3_fill_grid_kernel<<<well_blocks, 256>>>(
+      thrust::raw_pointer_cast(well_edges.data()),
+      static_cast<std::uint32_t>(request.flat_well_edge_count), grid,
+      thrust::raw_pointer_cast(cursors.data()),
+      thrust::raw_pointer_cast(members.data()), result.memberships,
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(cudaGetLastError(), "ACTIVE.3 grid fill launch");
+  const unsigned int grid_blocks = static_cast<unsigned int>(
+      std::min<std::uint64_t>(
+          65535, (result.grid_cells + 255) / 256));
+  active3_validate_grid_kernel<<<grid_blocks, 256>>>(
+      thrust::raw_pointer_cast(counts.data()),
+      thrust::raw_pointer_cast(offsets.data()),
+      thrust::raw_pointer_cast(cursors.data()), result.grid_cells,
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(cudaGetLastError(), "ACTIVE.3 grid validation launch");
+  cuda_check(cudaDeviceSynchronize(), "ACTIVE.3 grid build synchronize");
+  cuda_check(
+      cudaMemcpy(
+          &result.device_flags, thrust::raw_pointer_cast(status.data()),
+          sizeof(result.device_flags), cudaMemcpyDeviceToHost),
+      "ACTIVE.3 grid-build status D2H");
+  result.grid_build_ns = elapsed_ns(grid_begin, Clock::now());
+  if (result.device_flags) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    return result;
+  }
+
+  const auto query_begin = Clock::now();
+  active3_query_kernel<<<
+      static_cast<unsigned int>(request.active_context_count), threads>>>(
+      thrust::raw_pointer_cast(contexts.data()),
+      thrust::raw_pointer_cast(active_contexts.data()),
+      static_cast<std::uint32_t>(request.active_context_count),
+      thrust::raw_pointer_cast(cells.data()),
+      thrust::raw_pointer_cast(edges.data()),
+      thrust::raw_pointer_cast(well_edges.data()),
+      static_cast<std::uint32_t>(request.flat_well_edge_count), grid,
+      thrust::raw_pointer_cast(counts.data()),
+      thrust::raw_pointer_cast(offsets.data()),
+      thrust::raw_pointer_cast(members.data()), request.distance,
+      thrust::raw_pointer_cast(counters.data()),
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(cudaGetLastError(), "ACTIVE.3 query launch");
+  cuda_check(cudaDeviceSynchronize(), "ACTIVE.3 query synchronize");
+  result.active_query_ns = elapsed_ns(query_begin, Clock::now());
+
+  const auto d2h_begin = Clock::now();
+  Active3Counters host_counters{};
+  cuda_check(
+      cudaMemcpy(
+          &host_counters, thrust::raw_pointer_cast(counters.data()),
+          sizeof(host_counters), cudaMemcpyDeviceToHost),
+      "ACTIVE.3 counters D2H");
+  cuda_check(
+      cudaMemcpy(
+          &result.device_flags, thrust::raw_pointer_cast(status.data()),
+          sizeof(result.device_flags), cudaMemcpyDeviceToHost),
+      "ACTIVE.3 final status D2H");
+  result.candidates = host_counters.candidate_pairs;
+  result.raw_hits = host_counters.raw_hits;
+  result.uncertain = host_counters.uncertain;
+  result.d2h_ns = elapsed_ns(d2h_begin, Clock::now());
+  if (result.device_flags) {
+    result.fallback_flags =
+        (result.device_flags & kActive3TransformOverflow)
+            ? KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW
+            : KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+  }
+  return result;
+}
+
+void echo_active3_request(
+    const klayout_cuda_spatial_active3_request_v1 &request,
+    klayout_cuda_spatial_active3_result_v1 *result) {
+  result->opcode = request.opcode;
+  result->option_flags = request.option_flags;
+  result->dbu_per_micron = request.dbu_per_micron;
+  result->distance = request.distance;
+  result->grid_cell_size = request.grid_cell_size;
+  std::copy(
+      request.scene_digest, request.scene_digest + 32,
+      result->scene_digest);
+  result->context_count = request.context_count;
+  result->well_context_count = request.well_context_count;
+  result->active_context_count = request.active_context_count;
+  result->cell_count = request.cell_count;
+  result->edge_count = request.edge_count;
+  result->flat_well_edge_count = request.flat_well_edge_count;
+  result->flat_active_edge_count = request.flat_active_edge_count;
+}
+
+int run_active3_request(
+    const klayout_cuda_spatial_active3_request_v1 *request,
+    klayout_cuda_spatial_active3_result_v1 *result) {
+  if (!result) return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  std::memset(result, 0, sizeof(*result));
+  result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  result->struct_size = sizeof(*result);
+  result->status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  result->disposition = KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN;
+  if (!request || !valid_active3_request(*request)) {
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+    set_message(result, "unsupported or malformed ACTIVE.3 request");
+    return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  }
+  echo_active3_request(*request, result);
+
+  const auto total_begin = Clock::now();
+  try {
+    std::lock_guard<std::mutex> pipeline_lock(pipeline_mutex());
+    const Active3PipelineResult pipeline =
+        run_active3_pipeline(*request);
+    result->fallback_flags = pipeline.fallback_flags;
+    result->device_flags = pipeline.device_flags;
+    result->grid_cell_count = pipeline.grid_cells;
+    result->membership_count = pipeline.memberships;
+    result->candidate_pair_count = pipeline.candidates;
+    result->raw_hit_count = pipeline.raw_hits;
+    result->uncertain_count = pipeline.uncertain;
+    result->setup_ns = pipeline.setup_ns;
+    result->h2d_ns = pipeline.h2d_ns;
+    result->well_expand_ns = pipeline.well_expand_ns;
+    result->grid_build_ns = pipeline.grid_build_ns;
+    result->active_query_ns = pipeline.active_query_ns;
+    result->d2h_ns = pipeline.d2h_ns;
+    if (pipeline.fallback_flags || pipeline.device_flags) {
+      result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      set_message(result, "ACTIVE.3 device or capacity gate declined");
+      result->total_ns = elapsed_ns(total_begin, Clock::now());
+      return KLAYOUT_CUDA_SPATIAL_FALLBACK;
+    }
+    result->status = KLAYOUT_CUDA_SPATIAL_OK;
+    if (pipeline.uncertain) {
+      result->disposition = KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN;
+      set_message(result, "ACTIVE.3 exact predicate reported uncertainty");
+    } else if (pipeline.raw_hits) {
+      result->disposition = KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_HITS;
+      set_message(result, "ACTIVE.3 raw hits require pristine CPU fallback");
+    } else {
+      result->disposition = KLAYOUT_CUDA_SPATIAL_ACTIVE3_COMPLETE;
+      set_message(result, "complete empty ACTIVE.3 raw-superset certificate");
+    }
+    result->total_ns = elapsed_ns(total_begin, Clock::now());
+    return KLAYOUT_CUDA_SPATIAL_OK;
+  } catch (const std::exception &ex) {
+    result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+    set_message(result, ex.what());
+  } catch (...) {
+    result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+    set_message(result, "unknown CUDA ACTIVE.3 backend exception");
+  }
+  result->total_ns = elapsed_ns(total_begin, Clock::now());
+  return KLAYOUT_CUDA_SPATIAL_ERROR;
+}
+
 }  // namespace
 
 extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT std::uint32_t
@@ -1372,4 +2337,26 @@ klayout_cuda_spatial_release_m1_result_v1(
   delete[] result->survivors;
   result->survivors = nullptr;
   result->survivor_count = 0;
+}
+
+extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_active3_empty_v1(
+    const klayout_cuda_spatial_active3_request_v1 *request,
+    klayout_cuda_spatial_active3_result_v1 *result) {
+  try {
+    return run_active3_request(request, result);
+  } catch (...) {
+    if (result) {
+      std::memset(result, 0, sizeof(*result));
+      result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+      result->struct_size = sizeof(*result);
+      result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+      result->disposition = KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN;
+      result->fallback_flags =
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+      set_message(
+          result, "exception escaped the ACTIVE.3 request boundary");
+    }
+    return KLAYOUT_CUDA_SPATIAL_ERROR;
+  }
 }

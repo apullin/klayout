@@ -284,6 +284,166 @@ KLAYOUT_CUDA_SPATIAL_EXPORT int klayout_cuda_spatial_run_m1_enclosure_v1 (
 KLAYOUT_CUDA_SPATIAL_EXPORT void klayout_cuda_spatial_release_m1_result_v1 (
   struct klayout_cuda_spatial_m1_result_v1 *result);
 
+/*
+ * Optional ACTIVE.3 empty certificate over a caller-qualified live hierarchy.
+ *
+ * This is another additive v1 entry point.  The caller expands the regular
+ * hierarchy into compact contexts, but retains per-cell edge templates:
+ * ACTIVE edges are streamed from templates on the device and are never
+ * materialized as one flat array.
+ *
+ * The ACTIVE operand is intentionally the raw (unmerged) DeepLayer.  A raw
+ * hit is not an exact KLayout marker and must only request pristine CPU
+ * fallback.  COMPLETE is the sole consumable outcome and means that the
+ * complete raw-ACTIVE superset had zero hits and zero uncertainty.
+ */
+enum klayout_cuda_spatial_active3_opcode
+{
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_SUPERSET_EMPTY = 1
+};
+
+enum klayout_cuda_spatial_active3_option_flag
+{
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_OVERLAP_RELATION = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_DIFFERENT_POLYGONS = 1u << 1,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_EUCLIDIAN = 1u << 2,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_IGNORE_ANGLE_90 = 1u << 3,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WHOLE_EDGES_FALSE = 1u << 4,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_PROJECTION_DEFAULTS = 1u << 5,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_SHIELDED = 1u << 6,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_NO_FILTERS_OR_NEGATIVE = 1u << 7,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_IGNORE_PROPERTIES = 1u << 8,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_INCLUDE_TOUCHING = 1u << 9,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_SAME_STORE_AND_TOP = 1u << 10,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_NO_BREAKOUT = 1u << 11,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_QUALIFIED_GEOMETRY = 1u << 12,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_ACTIVE_SUPERSET = 1u << 13
+};
+
+#define KLAYOUT_CUDA_SPATIAL_ACTIVE3_QUALIFIED_OPTIONS \
+  ((1u << 14) - 1u)
+
+enum klayout_cuda_spatial_active3_disposition
+{
+  /* Complete qualified raw-ACTIVE universe, zero hits and zero uncertainty. */
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_COMPLETE = 0,
+  /* Raw-superset hits were found.  They are not publishable KLayout markers. */
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_HITS = 1,
+  /* The bounded backend could not establish either result exactly. */
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN = 2
+};
+
+struct klayout_cuda_spatial_active3_context_v1
+{
+  int64_t tx;
+  int64_t ty;
+  uint32_t cell_id;
+  uint32_t transform_code;
+};
+
+struct klayout_cuda_spatial_active3_cell_v1
+{
+  uint64_t well_edge_begin;
+  uint64_t active_edge_begin;
+  uint32_t well_edge_count;
+  uint32_t active_edge_count;
+};
+
+struct klayout_cuda_spatial_active3_edge_v1
+{
+  int64_t x1;
+  int64_t y1;
+  int64_t x2;
+  int64_t y2;
+};
+
+struct klayout_cuda_spatial_active3_request_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t dbu_per_micron;
+  uint32_t reserved0;
+  int64_t distance;
+  int64_t grid_cell_size;
+
+  const struct klayout_cuda_spatial_active3_context_v1 *contexts;
+  uint64_t context_count;
+  const uint32_t *well_contexts;
+  uint64_t well_context_count;
+  const uint64_t *well_offsets;
+  uint64_t well_offset_count;
+  const uint32_t *active_contexts;
+  uint64_t active_context_count;
+  const struct klayout_cuda_spatial_active3_cell_v1 *cells;
+  uint64_t cell_count;
+  const struct klayout_cuda_spatial_active3_edge_v1 *edges;
+  uint64_t edge_count;
+
+  uint64_t flat_well_edge_count;
+  uint64_t flat_active_edge_count;
+  int64_t well_left;
+  int64_t well_bottom;
+  int64_t well_right;
+  int64_t well_top;
+
+  uint64_t max_contexts;
+  uint64_t max_grid_cells;
+  uint64_t max_memberships;
+  uint64_t max_pair_work;
+  uint8_t scene_digest[32];
+  uint64_t reserved1;
+};
+
+struct klayout_cuda_spatial_active3_result_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t status;
+  uint32_t fallback_flags;
+  uint32_t disposition;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t dbu_per_micron;
+  int64_t distance;
+  int64_t grid_cell_size;
+  uint8_t scene_digest[32];
+
+  uint64_t context_count;
+  uint64_t well_context_count;
+  uint64_t active_context_count;
+  uint64_t cell_count;
+  uint64_t edge_count;
+  uint64_t flat_well_edge_count;
+  uint64_t flat_active_edge_count;
+
+  uint64_t grid_cell_count;
+  uint64_t membership_count;
+  uint64_t candidate_pair_count;
+  uint64_t raw_hit_count;
+  uint64_t uncertain_count;
+  uint32_t device_flags;
+  uint32_t reserved0;
+
+  uint64_t setup_ns;
+  uint64_t h2d_ns;
+  uint64_t well_expand_ns;
+  uint64_t grid_build_ns;
+  uint64_t active_query_ns;
+  uint64_t d2h_ns;
+  uint64_t total_ns;
+  char message[192];
+};
+
+typedef int (*klayout_cuda_spatial_run_active3_empty_v1_func) (
+  const struct klayout_cuda_spatial_active3_request_v1 *,
+  struct klayout_cuda_spatial_active3_result_v1 *);
+
+KLAYOUT_CUDA_SPATIAL_EXPORT int klayout_cuda_spatial_run_active3_empty_v1 (
+  const struct klayout_cuda_spatial_active3_request_v1 *request,
+  struct klayout_cuda_spatial_active3_result_v1 *result);
+
 #ifdef __cplusplus
 }
 #endif
