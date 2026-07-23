@@ -900,6 +900,65 @@ not just wall time.
       single broker with persistent buffers.  Production integration remains
       gated on finding roughly two more percentage points of removable M1 work
       and charging CPU replay plus broker overhead.
+
+    - [x] **Reject the disconnected-only CONTACT result:** the first
+      `DeepEdges` certificate accepted only an empty hierarchy-interaction set,
+      but the real 64K CONTACT workload was not disconnected.  In the valid
+      same-binary isolated A/B, control averaged 25.100 s and the attempted
+      certificate averaged 25.377 s, **0.277 s / 1.1% slower**, with identical
+      reports.  That result was rejected rather than booked as a win.
+
+    - [x] **Diagnose the apparent hierarchy interactions:** all **201,643**
+      returned marker pairs were byte-identical coincident boxes; there were
+      zero boundary-only, containment, or partial-area-overlap pairs.  The raw
+      GDS has 335,805 duplicate CONTACT-box pairs and local preprocessing
+      removes 134,162 of them, exactly accounting for the remaining 201,643.
+      They are real duplicate contact rectangles, not AABB false positives.
+
+    - [x] **Prove a strict duplicate-rectangle selected-empty result:** the
+      certificate now accepts a nonempty GPU pair set only for a true-only,
+      merged-semantics concrete `EdgeLengthFilter`, with no breakout, complex
+      transform, nonzero property, overflow, capacity failure, or source-cache
+      ambiguity.  Local EdgeOr must preserve the exact oriented edge multiset
+      including multiplicity, every provenance group must be exactly four full
+      axis-aligned rectangle sides, the filter must reject every canonical
+      edge, the GPU must return complete Success, and every interacting
+      transformed box must be byte-identical.  It then returns a fresh merged
+      empty result without publishing a source merged cache; every unmet guard
+      falls back to the legacy CPU path.
+
+    - [x] **Measure the real 64K CONTACT win:** three same-binary control runs
+      averaged **25.040 s** and three certificate runs averaged **18.697 s**:
+      **6.343 s / 25.3% less CONTACT-shard wall time**.  All six reports were
+      identical with SHA-256
+      `e29559d81e17f525a7978e8e402235dfa3a7f6ef408f3c7adbe7ef74d76b3c5e`.
+      The GPU self request was about 52 ms and the complete proof decision about
+      305–309 ms; those component timings are already charged in the candidate
+      wall time.
+
+    - [x] **Close the correctness gates:** the focused GPU integration gate
+      passed all 10 certificate tests, and the complete `dbDeepEdgesTests`
+      matrix passed **70/70** (35 non-editable plus 35 editable).  A nonempty
+      CONTACT-violation sentinel retained exactly four CONTACT.1 edge markers
+      and matching raw/semantic reports, so the shortcut cannot erase a real
+      selected-length violation.
+
+    - [x] **Keep whole-run accounting honest:** this 6.343 s CONTACT-shard
+      reduction currently removes **0.000 s** from the 156.692 s parallel
+      full-launch wall because M1 remains the critical lane (145.540 s versus
+      M2 at 138.225 s).  It creates useful CONTACT slack and can become a
+      whole-run saving only after the critical lanes move or at larger scale.
+
+    - [x] **Run the downstream-composed x2 CONTACT scale gate:** the
+      same-binary control took **218.32 s** and the certificate candidate took
+      **155.10 s**, removing **63.22 s / 28.96%** of this x2 CONTACT-shard wall.
+      Reports were identical with SHA-256
+      `9511c638ae7ed175e9bca5ece71068602b6c804bd230aecc5e56fa3cbefad305`.
+      The 369.611 ms GPU self request and 2,412.654 ms complete certificate
+      decision are charged inside the candidate wall.  Evidence:
+      `/home/pullin/personal/klayout/cuda-evidence-temp/contact-x2-duplicate-empty-ab-20260723T154225Z`.
+      This is explicitly a downstream-composed x2 CONTACT-shard result, not a
+      63.22 s saving from the original 156.692 s parallel full launch.
 15. [ ] **Lean headless DRC build and developer-turnaround path**
     The accepted runtime is headless, but the standard build still compiles the
     full KLayout distribution.  The current graph has 1,877 object files; 724
