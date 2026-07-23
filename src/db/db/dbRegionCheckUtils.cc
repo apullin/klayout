@@ -25,6 +25,23 @@
 #include "dbPolygonTools.h"
 #include "dbEdgeBoolean.h"
 #include "tlSelect.h"
+#include "tlEnv.h"
+#include "tlFileUtils.h"
+
+#include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
+#include <thread>
+#include <unordered_map>
+
+#if defined(_WIN32)
+#  include <windows.h>
+#else
+#  include <unistd.h>
+#endif
 
 namespace db
 {
@@ -392,19 +409,438 @@ Edge2EdgeCheckBase::distance () const
   return m_distance;
 }
 
+bool
+Edge2EdgeCheckBase::edge_replay_capture_eligible () const
+{
+  return m_pass == 0 &&
+         m_has_edge_pair_output && ! m_has_negative_edge_output &&
+         m_with_shielding &&
+         m_different_polygons && m_requires_different_layers &&
+         mp_check->relation () == db::OverlapRelation &&
+         mp_check->metrics () == db::Projection &&
+         mp_check->ignore_angle () == 90.0 &&
+         mp_check->min_projection () == 0 &&
+         mp_check->max_projection () == std::numeric_limits<EdgeRelationFilter::distance_type>::max () &&
+         ! mp_check->whole_edges () &&
+         mp_check->get_zero_distance_mode () == db::IncludeZeroDistanceWhenTouching;
+}
+
+bool
+Edge2EdgeCheckBase::edge_replay_capture_exact_accepts (const db::Edge &edge1, size_t property1, const db::Edge &edge2, size_t property2) const
+{
+  if (! edge_replay_capture_eligible () ||
+      ! edges_considered (m_different_polygons, m_requires_different_layers, property1, property2)) {
+    return false;
+  }
+
+  const db::Edge *o1 = &edge1;
+  const db::Edge *o2 = &edge2;
+  size_t p1 = property1;
+  size_t p2 = property2;
+
+  //  Match add(): the exact relation is directional and layer zero must be
+  //  presented as the first argument.
+  if ((p1 & size_t (1)) > (p2 & size_t (1))) {
+    std::swap (o1, o2);
+    std::swap (p1, p2);
+  }
+
+  return mp_check->check (*o1, *o2, 0);
+}
+
 // -------------------------------------------------------------------------------------
 //  Poly2PolyCheckBase implementation
 
+namespace
+{
+
+enum EdgeReplayRecordFlag
+{
+  EdgeReplayHasEndpoints = 1u << 0,
+  EdgeReplaySideB = 1u << 1
+};
+
+enum EdgeReplayCaptureFlag
+{
+  EdgeReplayBroadPairsSortedUnique = 1u << 0,
+  EdgeReplayExactPairsSortedUnique = 1u << 1,
+  EdgeReplayPropertyIsUint64 = 1u << 2,
+  EdgeReplayNegativeOneIsInfiniteProjection = 1u << 3
+};
+
+enum EdgeReplayOptionFlag
+{
+  EdgeReplayDifferentPolygons = 1u << 0,
+  EdgeReplayDifferentLayers = 1u << 1,
+  EdgeReplayShielded = 1u << 2,
+  EdgeReplayPositiveOutput = 1u << 3
+};
+
+struct EdgeReplayCaptureConfig
+{
+  EdgeReplayCaptureConfig ()
+    : minimum_records (1)
+  {
+    const char *capture_dir = std::getenv ("KLAYOUT_EDGE_REPLAY_CAPTURE_DIR");
+    if (capture_dir) {
+      directory = capture_dir;
+    }
+
+    const char *minimum = std::getenv ("KLAYOUT_EDGE_REPLAY_CAPTURE_MIN_RECORDS");
+    if (minimum && *minimum) {
+      char *end = 0;
+      errno = 0;
+      unsigned long long value = std::strtoull (minimum, &end, 10);
+      if (errno == 0 && end != minimum && *end == '\0') {
+        minimum_records = value > 0 ? uint64_t (value) : uint64_t (1);
+      }
+    }
+  }
+
+  std::string directory;
+  uint64_t minimum_records;
+};
+
+const EdgeReplayCaptureConfig &
+edge_replay_capture_config ()
+{
+  //  Environment parsing happens once, outside the scanner callback.  With no
+  //  capture directory the normal path has only this guarded-static check.
+  static const EdgeReplayCaptureConfig config;
+  return config;
+}
+
+bool
+edge_replay_capture_requested (const Edge2EdgeCheckBase &output)
+{
+  return ! edge_replay_capture_config ().directory.empty () && output.edge_replay_capture_eligible ();
+}
+
+struct EdgeReplayHeader
+{
+  char magic [8];
+  uint32_t version;
+  uint32_t header_size;
+  uint32_t record_size;
+  uint32_t pair_size;
+  uint32_t coordinate_bits;
+  uint32_t property_bits;
+  uint32_t capture_flags;
+  uint32_t relation;
+  uint32_t metrics;
+  uint32_t zero_distance_mode;
+  uint32_t ignore_angle_millidegrees;
+  uint32_t option_flags;
+  uint32_t process_id;
+  uint32_t reserved;
+  int64_t distance;
+  int64_t min_projection;
+  int64_t max_projection;  //  -1 is the KEDGER1 unbounded-projection sentinel
+  uint64_t request_id;
+  uint64_t thread_tag;
+  uint64_t scanner_elapsed_ns;
+  uint64_t record_count;
+  uint64_t scanner_callbacks;
+  uint64_t finish_callbacks;
+  uint64_t unresolved_callbacks;
+  uint64_t broad_pair_count;
+  uint64_t exact_accept_callbacks;
+  uint64_t exact_pair_count;
+  uint64_t records_offset;
+  uint64_t broad_pairs_offset;
+  uint64_t exact_pairs_offset;
+};
+
+struct alignas (16) EdgeReplayRecord
+{
+  int64_t left;
+  int64_t bottom;
+  int64_t right;
+  int64_t top;
+  int64_t x1;
+  int64_t y1;
+  int64_t x2;
+  int64_t y2;
+  uint64_t property;
+  uint32_t id;
+  uint32_t context;
+  uint32_t flags;
+  uint32_t reserved;
+};
+
+struct EdgeReplayPair
+{
+  uint32_t first;
+  uint32_t second;
+};
+
+static_assert (sizeof (size_t) <= sizeof (uint64_t), "edge replay properties require at most 64 bits");
+static_assert (sizeof (EdgeReplayHeader) == 192, "unexpected edge replay header padding");
+static_assert (sizeof (EdgeReplayRecord) == 96, "unexpected edge replay record padding");
+static_assert (sizeof (EdgeReplayPair) == 8, "unexpected edge replay pair padding");
+
+uint32_t
+edge_replay_process_id ()
+{
+#if defined(_WIN32)
+  return uint32_t (GetCurrentProcessId ());
+#else
+  return uint32_t (getpid ());
+#endif
+}
+
+uint64_t
+edge_replay_capture_time_ns ()
+{
+  return uint64_t (std::chrono::duration_cast<std::chrono::nanoseconds> (
+    std::chrono::system_clock::now ().time_since_epoch ()).count ());
+}
+
+uint64_t
+edge_replay_request_id ()
+{
+  //  This atomic is touched once per captured request, never by a scanner
+  //  callback.  The callback itself writes only to request-local storage.
+  static std::atomic<uint64_t> next_request (0);
+  return next_request.fetch_add (1, std::memory_order_relaxed);
+}
+
+std::vector<EdgeReplayPair>
+edge_replay_pairs (std::vector<uint64_t> &keys)
+{
+  std::sort (keys.begin (), keys.end ());
+  keys.erase (std::unique (keys.begin (), keys.end ()), keys.end ());
+
+  std::vector<EdgeReplayPair> pairs;
+  pairs.reserve (keys.size ());
+  for (std::vector<uint64_t>::const_iterator k = keys.begin (); k != keys.end (); ++k) {
+    EdgeReplayPair pair = {
+      uint32_t (*k >> 32),
+      uint32_t (*k & uint64_t (std::numeric_limits<uint32_t>::max ()))
+    };
+    pairs.push_back (pair);
+  }
+  return pairs;
+}
+
+class EdgeReplayCaptureReceiver
+  : public db::box_scanner_receiver<db::Edge, size_t>
+{
+public:
+  EdgeReplayCaptureReceiver (Edge2EdgeCheckBase &output, const std::list<db::Edge> &edges, const std::vector<size_t> &properties)
+    : mp_output (&output), m_scanner_callbacks (0), m_finish_callbacks (0),
+      m_unresolved_callbacks (0), m_exact_accept_callbacks (0),
+      m_scanner_elapsed_ns (0)
+  {
+    m_records.reserve (edges.size ());
+    m_ids.reserve (edges.size ());
+
+    std::vector<size_t>::const_iterator p = properties.begin ();
+    uint32_t id = 1;
+    for (std::list<db::Edge>::const_iterator edge = edges.begin (); edge != edges.end (); ++edge, ++p, ++id) {
+      const db::Box box = edge->bbox ();
+      EdgeReplayRecord record = {
+        int64_t (box.left ()), int64_t (box.bottom ()),
+        int64_t (box.right ()), int64_t (box.top ()),
+        int64_t (edge->p1 ().x ()), int64_t (edge->p1 ().y ()),
+        int64_t (edge->p2 ().x ()), int64_t (edge->p2 ().y ()),
+        uint64_t (*p), id, 0,
+        uint32_t (EdgeReplayHasEndpoints | ((*p & size_t (1)) ? EdgeReplaySideB : 0)),
+        0
+      };
+      m_records.push_back (record);
+      m_ids.insert (std::make_pair (&*edge, id));
+    }
+  }
+
+  void add (const db::Edge *o1, size_t p1, const db::Edge *o2, size_t p2) override
+  {
+    ++m_scanner_callbacks;
+
+    std::unordered_map<const db::Edge *, uint32_t>::const_iterator id1 = m_ids.find (o1);
+    std::unordered_map<const db::Edge *, uint32_t>::const_iterator id2 = m_ids.find (o2);
+    if (id1 == m_ids.end () || id2 == m_ids.end ()) {
+      ++m_unresolved_callbacks;
+    } else {
+      //  Keep the raw callback count above, but define the broad replay oracle
+      //  at the same seam as Edge2EdgeCheckBase::add: after its cheap
+      //  property/layer gate and immediately before the exact edge predicate.
+      //  This is also the bipartite work that a replay backend must reproduce.
+      if (edges_considered (mp_output->different_polygons (),
+                            mp_output->requires_different_layers (), p1, p2)) {
+        uint32_t first = std::min (id1->second, id2->second);
+        uint32_t second = std::max (id1->second, id2->second);
+        uint64_t key = (uint64_t (first) << 32) | uint64_t (second);
+        m_broad_pair_keys.push_back (key);
+
+        if (mp_output->edge_replay_capture_exact_accepts (*o1, p1, *o2, p2)) {
+          ++m_exact_accept_callbacks;
+          m_exact_pair_keys.push_back (key);
+        }
+      }
+    }
+
+    mp_output->add (o1, p1, o2, p2);
+  }
+
+  void finish (const db::Edge *edge, size_t property) override
+  {
+    ++m_finish_callbacks;
+    mp_output->finish (edge, property);
+  }
+
+  bool stop () const override
+  {
+    return mp_output->stop ();
+  }
+
+  void initialize () override
+  {
+    mp_output->initialize ();
+  }
+
+  void finalize (bool completed) override
+  {
+    mp_output->finalize (completed);
+  }
+
+  void set_scanner_elapsed_ns (uint64_t elapsed_ns)
+  {
+    m_scanner_elapsed_ns = elapsed_ns;
+  }
+
+  void write ()
+  {
+    try {
+      write_internal ();
+    } catch (...) {
+      //  Capture is diagnostic and must never turn an otherwise valid DRC run
+      //  into a failure.  An incomplete temporary file is removed below when
+      //  the stream itself reports an error.
+    }
+  }
+
+private:
+  void write_internal ()
+  {
+    const EdgeReplayCaptureConfig &config = edge_replay_capture_config ();
+    if (config.directory.empty ()) {
+      return;
+    }
+
+    if (! tl::file_exists (config.directory) &&
+        ! tl::mkpath (config.directory) &&
+        ! tl::file_exists (config.directory)) {
+      return;
+    }
+
+    std::vector<EdgeReplayPair> broad_pairs = edge_replay_pairs (m_broad_pair_keys);
+    std::vector<EdgeReplayPair> exact_pairs = edge_replay_pairs (m_exact_pair_keys);
+
+    const uint64_t request_id = edge_replay_request_id ();
+    const uint64_t thread_tag = uint64_t (std::hash<std::thread::id> () (std::this_thread::get_id ()));
+    const uint64_t capture_time_ns = edge_replay_capture_time_ns ();
+    const uint32_t process_id = edge_replay_process_id ();
+
+    std::ostringstream basename;
+    basename << "edge-replay-p" << process_id
+             << "-t" << std::hex << thread_tag << std::dec
+             << "-r" << request_id
+             << "-" << capture_time_ns << ".ker";
+
+    const std::string final_path = tl::combine_path (config.directory, basename.str ());
+    const std::string temporary_path = final_path + ".tmp";
+
+    EdgeReplayHeader header = { };
+    const char magic [8] = { 'K', 'E', 'D', 'G', 'E', 'R', '1', '\0' };
+    std::copy (magic, magic + sizeof (magic), header.magic);
+    header.version = 1;
+    header.header_size = uint32_t (sizeof (header));
+    header.record_size = uint32_t (sizeof (EdgeReplayRecord));
+    header.pair_size = uint32_t (sizeof (EdgeReplayPair));
+    header.coordinate_bits = 64;
+    header.property_bits = 64;
+    header.capture_flags = EdgeReplayBroadPairsSortedUnique |
+                           EdgeReplayExactPairsSortedUnique |
+                           EdgeReplayPropertyIsUint64 |
+                           EdgeReplayNegativeOneIsInfiniteProjection;
+    header.relation = uint32_t (db::OverlapRelation);
+    header.metrics = uint32_t (db::Projection);
+    header.zero_distance_mode = uint32_t (db::IncludeZeroDistanceWhenTouching);
+    header.ignore_angle_millidegrees = 90000;
+    header.option_flags = EdgeReplayDifferentPolygons |
+                          EdgeReplayDifferentLayers |
+                          EdgeReplayShielded |
+                          EdgeReplayPositiveOutput;
+    header.process_id = process_id;
+    header.distance = int64_t (mp_output->distance ());
+    header.min_projection = 0;
+    //  EdgeRelationFilter::distance_type is unsigned on supported builds.
+    //  KEDGER1 uses signed -1 as its explicit unbounded-projection sentinel.
+    header.max_projection = -1;
+    header.request_id = request_id;
+    header.thread_tag = thread_tag;
+    header.scanner_elapsed_ns = m_scanner_elapsed_ns;
+    header.record_count = uint64_t (m_records.size ());
+    header.scanner_callbacks = m_scanner_callbacks;
+    header.finish_callbacks = m_finish_callbacks;
+    header.unresolved_callbacks = m_unresolved_callbacks;
+    header.broad_pair_count = uint64_t (broad_pairs.size ());
+    header.exact_accept_callbacks = m_exact_accept_callbacks;
+    header.exact_pair_count = uint64_t (exact_pairs.size ());
+    header.records_offset = sizeof (header);
+    header.broad_pairs_offset = header.records_offset + header.record_count * sizeof (EdgeReplayRecord);
+    header.exact_pairs_offset = header.broad_pairs_offset + header.broad_pair_count * sizeof (EdgeReplayPair);
+
+    std::ofstream stream (temporary_path.c_str (), std::ios::binary | std::ios::trunc);
+    if (! stream) {
+      return;
+    }
+
+    stream.write (reinterpret_cast<const char *> (&header), sizeof (header));
+    if (! m_records.empty ()) {
+      stream.write (reinterpret_cast<const char *> (&m_records.front ()),
+                    std::streamsize (m_records.size () * sizeof (EdgeReplayRecord)));
+    }
+    if (! broad_pairs.empty ()) {
+      stream.write (reinterpret_cast<const char *> (&broad_pairs.front ()),
+                    std::streamsize (broad_pairs.size () * sizeof (EdgeReplayPair)));
+    }
+    if (! exact_pairs.empty ()) {
+      stream.write (reinterpret_cast<const char *> (&exact_pairs.front ()),
+                    std::streamsize (exact_pairs.size () * sizeof (EdgeReplayPair)));
+    }
+    stream.close ();
+
+    if (! stream || ! tl::rename_file (temporary_path, final_path)) {
+      tl::rm_file (temporary_path);
+    }
+  }
+
+  Edge2EdgeCheckBase *mp_output;
+  std::vector<EdgeReplayRecord> m_records;
+  std::unordered_map<const db::Edge *, uint32_t> m_ids;
+  std::vector<uint64_t> m_broad_pair_keys;
+  std::vector<uint64_t> m_exact_pair_keys;
+  uint64_t m_scanner_callbacks;
+  uint64_t m_finish_callbacks;
+  uint64_t m_unresolved_callbacks;
+  uint64_t m_exact_accept_callbacks;
+  uint64_t m_scanner_elapsed_ns;
+};
+
+}
+
 template <class PolygonType>
 poly2poly_check<PolygonType>::poly2poly_check (Edge2EdgeCheckBase &output)
-  : mp_output (& output)
+  : mp_output (& output), m_capture_requested (edge_replay_capture_requested (output))
 {
   //  .. nothing yet ..
 }
 
 template <class PolygonType>
 poly2poly_check<PolygonType>::poly2poly_check ()
-  : mp_output (0)
+  : mp_output (0), m_capture_requested (false)
 {
   //  .. nothing yet ..
 }
@@ -431,10 +867,14 @@ poly2poly_check<PolygonType>::single (const PolygonType &o, size_t p)
   m_scanner.reserve (vertices (o));
 
   m_edge_heap.clear ();
+  m_edge_properties.clear ();
 
   for (typename PolygonType::polygon_edge_iterator e = o.begin_edge (); ! e.at_end (); ++e) {
     m_edge_heap.push_back (*e);
     m_scanner.insert (& m_edge_heap.back (), p);
+    if (m_capture_requested) {
+      m_edge_properties.push_back (p);
+    }
   }
 
   mp_output->feed_pseudo_edges (m_scanner);
@@ -447,6 +887,7 @@ void
 poly2poly_check<PolygonType>::connect (Edge2EdgeCheckBase &output)
 {
   mp_output = &output;
+  m_capture_requested = edge_replay_capture_requested (output);
   clear ();
 }
 
@@ -456,6 +897,7 @@ poly2poly_check<PolygonType>::clear ()
 {
   m_scanner.clear ();
   m_edge_heap.clear ();
+  m_edge_properties.clear ();
 }
 
 template <class PolygonType>
@@ -466,6 +908,9 @@ poly2poly_check<PolygonType>::enter (const PolygonType &o, size_t p)
     if (! (*e).is_degenerate ()) {
       m_edge_heap.push_back (*e);
       m_scanner.insert (& m_edge_heap.back (), p);
+      if (m_capture_requested) {
+        m_edge_properties.push_back (p);
+      }
     }
   }
 }
@@ -476,6 +921,9 @@ poly2poly_check<PolygonType>::enter (const poly2poly_check<PolygonType>::edge_ty
 {
   m_edge_heap.push_back (e);
   m_scanner.insert (& m_edge_heap.back (), p);
+  if (m_capture_requested) {
+    m_edge_properties.push_back (p);
+  }
 }
 
 //  TODO: move to generic header
@@ -502,6 +950,9 @@ poly2poly_check<PolygonType>::enter (const PolygonType &o, size_t p, const poly2
     if (! (*e).is_degenerate () && interact (box, *e)) {
       m_edge_heap.push_back (*e);
       m_scanner.insert (& m_edge_heap.back (), p);
+      if (m_capture_requested) {
+        m_edge_properties.push_back (p);
+      }
     }
   }
 }
@@ -513,6 +964,9 @@ poly2poly_check<PolygonType>::enter (const poly2poly_check<PolygonType>::edge_ty
   if (! box.empty () && interact (box, e)) {
     m_edge_heap.push_back (e);
     m_scanner.insert (& m_edge_heap.back (), p);
+    if (m_capture_requested) {
+      m_edge_properties.push_back (p);
+    }
   }
 }
 
@@ -521,7 +975,23 @@ void
 poly2poly_check<PolygonType>::process ()
 {
   mp_output->feed_pseudo_edges (m_scanner);
-  m_scanner.process (*mp_output, mp_output->distance (), db::box_convert<db::Edge> ());
+
+  const EdgeReplayCaptureConfig &config = edge_replay_capture_config ();
+  if (m_capture_requested &&
+      mp_output->edge_replay_capture_eligible () &&
+      m_edge_properties.size () == m_edge_heap.size () &&
+      uint64_t (m_edge_heap.size ()) >= config.minimum_records &&
+      uint64_t (m_edge_heap.size ()) <= uint64_t (std::numeric_limits<uint32_t>::max ())) {
+    EdgeReplayCaptureReceiver capture (*mp_output, m_edge_heap, m_edge_properties);
+    std::chrono::steady_clock::time_point scanner_begin = std::chrono::steady_clock::now ();
+    m_scanner.process (capture, mp_output->distance (), db::box_convert<db::Edge> ());
+    capture.set_scanner_elapsed_ns (uint64_t (
+      std::chrono::duration_cast<std::chrono::nanoseconds> (
+        std::chrono::steady_clock::now () - scanner_begin).count ()));
+    capture.write ();
+  } else {
+    m_scanner.process (*mp_output, mp_output->distance (), db::box_convert<db::Edge> ());
+  }
 }
 
 //  explicit instantiations

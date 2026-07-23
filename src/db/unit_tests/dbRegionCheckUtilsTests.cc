@@ -27,6 +27,8 @@
 
 #include "dbRegionCheckUtils.h"
 
+#include <limits>
+
 TEST(1_SimpleLShape)
 {
   std::set<db::EdgePair> ep;
@@ -275,4 +277,55 @@ TEST(6_SeparationLvsBox)
   EXPECT_EQ (tl::to_string (ep), "(1000,1000;1000,0)/(2000,0;2000,1000),(3000,2000;2000,2000)/(2000,1000;3000,1000)");
   EXPECT_EQ (tl::to_string (ee1), "(0,0;0,3000),(1000,0;0,0),(0,3000;3000,3000),(3000,3000;3000,2000)");
   EXPECT_EQ (tl::to_string (ee2), "(3000,0;2000,0),(3000,1000;3000,0)");
+}
+
+TEST(7_EdgeReplayCaptureProfile)
+{
+  std::set<db::EdgePair> ep;
+
+  db::EdgeRelationFilter target (
+    db::OverlapRelation, 35, db::Projection, 90.0, 0,
+    std::numeric_limits<db::EdgeRelationFilter::distance_type>::max (),
+    db::IncludeZeroDistanceWhenTouching
+  );
+  db::edge2edge_check_negative_or_positive<std::set<db::EdgePair> > capture (
+    target, ep, false /*positive output*/, true /*different polygons*/,
+    true /*different layers*/, true /*shielded*/, false /*symmetric*/
+  );
+
+  EXPECT_EQ (capture.edge_replay_capture_eligible (), true);
+
+  db::Edge first (db::Point (0, 0), db::Point (0, 100));
+  db::Edge second (db::Point (10, 0), db::Point (10, 100));
+
+  EXPECT_EQ (
+    capture.edge_replay_capture_exact_accepts (first, 0, second, 1),
+    target.check (first, second, 0)
+  );
+  EXPECT_EQ (capture.edge_replay_capture_exact_accepts (first, 0, second, 2), false);
+  EXPECT_EQ (capture.edge_replay_capture_exact_accepts (first, 0, second, 0), false);
+
+  db::edge2edge_check_negative_or_positive<std::set<db::EdgePair> > unshielded (
+    target, ep, false, true, true, false /*shielded*/, false
+  );
+  EXPECT_EQ (unshielded.edge_replay_capture_eligible (), false);
+
+  db::EdgeRelationFilter wrong_metrics (
+    db::OverlapRelation, 35, db::Euclidian, 90.0, 0,
+    std::numeric_limits<db::EdgeRelationFilter::distance_type>::max (),
+    db::IncludeZeroDistanceWhenTouching
+  );
+  db::edge2edge_check_negative_or_positive<std::set<db::EdgePair> > non_projection (
+    wrong_metrics, ep, false, true, true, true, false
+  );
+  EXPECT_EQ (non_projection.edge_replay_capture_eligible (), false);
+
+  //  Exercise the scanner path as well.  When the capture environment is set
+  //  for this test process, this two-record request also validates file output.
+  db::poly2poly_check<db::Polygon> scanner (capture);
+  scanner.enter (first, 0);
+  scanner.enter (second, 1);
+  do {
+    scanner.process ();
+  } while (capture.prepare_next_pass ());
 }

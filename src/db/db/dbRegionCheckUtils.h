@@ -118,6 +118,22 @@ public:
    */
   EdgeRelationFilter::distance_type distance () const;
 
+  /**
+   *  @brief Returns true if this receiver matches the opt-in edge replay capture profile
+   *
+   *  This is an internal diagnostic hook.  It deliberately recognizes only the
+   *  first, positive pass of the shielded two-layer overlap/projection check used
+   *  by enclosing DRC operations.
+   */
+  bool edge_replay_capture_eligible () const;
+
+  /**
+   *  @brief Applies the first-pass eligibility and exact edge predicate for replay capture
+   *
+   *  This is an internal diagnostic hook.  It does not mutate the receiver.
+   */
+  bool edge_replay_capture_exact_accepts (const db::Edge &o1, size_t p1, const db::Edge &o2, size_t p2) const;
+
 protected:
   /**
    *  @brief Normal edge pair output (violations)
@@ -339,6 +355,8 @@ private:
   db::Edge2EdgeCheckBase *mp_output;
   db::box_scanner<db::Edge, size_t> m_scanner;
   std::list<db::Edge> m_edge_heap;
+  std::vector<size_t> m_edge_properties;
+  bool m_capture_requested;
 };
 
 /**
@@ -436,4 +454,3 @@ private:
 } // namespace db
 
 #endif
-
