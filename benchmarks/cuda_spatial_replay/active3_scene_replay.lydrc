@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<klayout-macro>
+ <description>Replay the exact FreePDK45 ACTIVE.3 check from a captured derived scene</description>
+ <version/>
+ <category>drc</category>
+ <prolog/>
+ <epilog/>
+ <doc/>
+ <autorun>false</autorun>
+ <autorun-early>false</autorun-early>
+ <shortcut/>
+ <show-in-menu>false</show-in-menu>
+ <group-name>drc_scripts</group-name>
+ <menu-path>tools_menu.drc.end</menu-path>
+ <interpreter>dsl</interpreter>
+ <dsl-interpreter-name>drc-dsl-xml</dsl-interpreter-name>
+ <text>
+input_path = $input
+top_name = $topcell
+report_path = $output
+thread_text = ($threads || "1").to_s
+
+raise("missing -rd input=PATH") unless input_path &amp;&amp; !input_path.to_s.empty?
+raise("missing -rd topcell=NAME") unless top_name &amp;&amp; !top_name.to_s.empty?
+raise("missing -rd output=PATH") unless report_path &amp;&amp; !report_path.to_s.empty?
+raise("threads must be a positive integer") unless thread_text =~ /\A[1-9][0-9]*\z/
+thread_count = thread_text.to_i
+
+input_expanded = File.expand_path(input_path.to_s)
+raise("input does not exist: #{input_expanded}") unless File.file?(input_expanded)
+input_abs = File.realpath(input_expanded)
+report_expanded = File.expand_path(report_path.to_s)
+report_abs = File.join(
+  File.realpath(File.dirname(report_expanded)),
+  File.basename(report_expanded)
+)
+raise("report output aliases input") if report_abs == input_abs
+raise("refusing to overwrite report output: #{report_abs}") if File.exist?(report_abs) || File.symlink?(report_abs)
+
+source(input_abs, top_name.to_s)
+report("FreePDK45 ACTIVE.3 captured-scene replay", report_abs)
+deep
+threads(thread_count)
+verbose(true)
+
+well = polygons(101, 0)
+active = polygons(102, 0)
+info("ACTIVE3_REPLAY input=#{input_abs} top=#{top_name} well=101/0 active=102/0")
+
+well.enclosing(active, 55.nm, euclidian).output(
+  "ACTIVE.3",
+  "ACTIVE.3 : Minimum enclosure/spacing of nwell/pwell to active: 55nm"
+)
+ </text>
+</klayout-macro>

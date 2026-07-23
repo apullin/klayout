@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<klayout-macro>
+ <description>Capture the exact hierarchical FreePDK45 ACTIVE.3 derived scene</description>
+ <version/>
+ <category>drc</category>
+ <prolog/>
+ <epilog/>
+ <doc/>
+ <autorun>false</autorun>
+ <autorun-early>false</autorun-early>
+ <shortcut/>
+ <show-in-menu>false</show-in-menu>
+ <group-name>drc_scripts</group-name>
+ <menu-path>tools_menu.drc.end</menu-path>
+ <interpreter>dsl</interpreter>
+ <dsl-interpreter-name>drc-dsl-xml</dsl-interpreter-name>
+ <text>
+# This deck deliberately derives only the two operands consumed by ACTIVE.3.
+# DeepRegion#insert_into copies their hierarchy into a self-contained replay
+# layout instead of flattening millions of repeated shapes.
+
+input_path = $input
+top_name = $topcell
+scene_path = $scene_output
+report_path = $output
+thread_text = ($threads || "1").to_s
+
+raise("missing -rd input=PATH") unless input_path &amp;&amp; !input_path.to_s.empty?
+raise("missing -rd topcell=NAME") unless top_name &amp;&amp; !top_name.to_s.empty?
+raise("missing -rd scene_output=PATH") unless scene_path &amp;&amp; !scene_path.to_s.empty?
+raise("missing -rd output=PATH") unless report_path &amp;&amp; !report_path.to_s.empty?
+raise("threads must be a positive integer") unless thread_text =~ /\A[1-9][0-9]*\z/
+thread_count = thread_text.to_i
+
+input_expanded = File.expand_path(input_path.to_s)
+raise("input does not exist: #{input_expanded}") unless File.file?(input_expanded)
+input_abs = File.realpath(input_expanded)
+canonical_output = lambda do |path|
+  expanded = File.expand_path(path.to_s)
+  parent = File.realpath(File.dirname(expanded))
+  File.join(parent, File.basename(expanded))
+end
+scene_abs = canonical_output.call(scene_path)
+report_abs = canonical_output.call(report_path)
+raise("scene output aliases input") if scene_abs == input_abs
+raise("report output aliases input") if report_abs == input_abs
+raise("scene and report outputs alias each other") if scene_abs == report_abs
+raise("refusing to overwrite scene output: #{scene_abs}") if File.exist?(scene_abs) || File.symlink?(scene_abs)
+raise("refusing to overwrite report output: #{report_abs}") if File.exist?(report_abs) || File.symlink?(report_abs)
+
+source(input_abs, top_name.to_s)
+report("FreePDK45 ACTIVE.3 source", report_abs)
+deep
+threads(thread_count)
+verbose(true)
+
+active = polygons(1, 0)
+pwell = polygons(2, 0)
+nwell = polygons(3, 0)
+well = nwell.or(pwell)
+
+capture_layout = RBA::Layout.new
+capture_layout.dbu = dbu
+capture_top = capture_layout.create_cell("KLAYOUT_CUDA_ACTIVE3_SCENE")
+capture_well = capture_layout.layer(RBA::LayerInfo.new(101, 0))
+capture_active = capture_layout.layer(RBA::LayerInfo.new(102, 0))
+
+well.data.insert_into(capture_layout, capture_top.cell_index, capture_well)
+active.data.insert_into(capture_layout, capture_top.cell_index, capture_active)
+capture_layout.write(scene_abs)
+info("ACTIVE3_CAPTURE scene=#{scene_abs} top=KLAYOUT_CUDA_ACTIVE3_SCENE well=101/0 active=102/0 dbu=#{capture_layout.dbu}")
+
+well.enclosing(active, 55.nm, euclidian).output(
+  "ACTIVE.3",
+  "ACTIVE.3 : Minimum enclosure/spacing of nwell/pwell to active: 55nm"
+)
+ </text>
+</klayout-macro>
