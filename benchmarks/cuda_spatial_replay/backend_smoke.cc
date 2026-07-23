@@ -464,6 +464,384 @@ bool run_self_fail_closed_gate() {
   return good;
 }
 
+bool valid_m1_result(const klayout_cuda_spatial_m1_result_v1 &result,
+                     int status) {
+  if (status != KLAYOUT_CUDA_SPATIAL_OK ||
+      result.status != KLAYOUT_CUDA_SPATIAL_OK ||
+      result.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      result.struct_size < sizeof(result) ||
+      (result.survivor_count != 0 && !result.survivors)) {
+    return false;
+  }
+  std::uint64_t previous = 0;
+  for (std::uint64_t index = 0; index < result.survivor_count; ++index) {
+    const auto &survivor = result.survivors[index];
+    if (survivor.contact_id == 0 ||
+        (index != 0 && survivor.contact_id <= previous) ||
+        (survivor.deficient_side_mask & ~0xfu) != 0 ||
+        (survivor.flags &
+         ~(KLAYOUT_CUDA_SPATIAL_M1_SURVIVOR_UNCERTAIN |
+           KLAYOUT_CUDA_SPATIAL_M1_SURVIVOR_DISALLOWED_MASK)) != 0) {
+      return false;
+    }
+    previous = survivor.contact_id;
+  }
+  return true;
+}
+
+void report_m1_failure(const char *name, int status,
+                       const klayout_cuda_spatial_m1_result_v1 &result) {
+  std::cerr << name << " failed: call_status=" << status
+            << " result_status=" << result.status
+            << " disposition=" << result.disposition
+            << " fallback_flags=" << result.fallback_flags
+            << " survivors=" << result.survivor_count
+            << " uncertain=" << result.uncertain_contact_count
+            << " disallowed=" << result.disallowed_contact_count
+            << " full_hits=" << result.full_side_hit_count
+            << " partials=" << result.partial_candidate_count
+            << " non_manhattan="
+            << result.non_manhattan_candidate_count
+            << " message=" << result.message << '\n';
+}
+
+int run_m1_request(
+    const std::vector<klayout_cuda_spatial_m1_contact_v1> &contacts,
+    const std::vector<klayout_cuda_spatial_m1_edge_v1> &edges,
+    klayout_cuda_spatial_config_v1 &config,
+    klayout_cuda_spatial_m1_result_v1 &result,
+    std::int64_t distance = 35) {
+  klayout_cuda_spatial_m1_request_v1 request{};
+  request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  request.struct_size = sizeof(request);
+  request.opcode =
+      KLAYOUT_CUDA_SPATIAL_M1_ENCLOSED_PROJECTION_ONE_OR_OPPOSITE;
+  request.contacts = contacts.data();
+  request.contact_count = contacts.size();
+  request.metal1_edges = edges.empty() ? nullptr : edges.data();
+  request.metal1_edge_count = edges.size();
+  request.distance = distance;
+  request.config = &config;
+  return klayout_cuda_spatial_run_m1_enclosure_v1(&request, &result);
+}
+
+klayout_cuda_spatial_m1_contact_v1 make_m1_contact(
+    std::int64_t left, std::int64_t bottom, std::uint64_t id,
+    std::uint32_t context, std::int64_t size = 65) {
+  return {left, bottom, left + size, bottom + size, id, context, 0};
+}
+
+void add_m1_mask_edges(
+    std::vector<klayout_cuda_spatial_m1_edge_v1> &edges,
+    const klayout_cuda_spatial_m1_contact_v1 &contact, std::uint32_t mask,
+    std::int64_t gap = 34) {
+  if (mask & 0x1u) {
+    edges.push_back({contact.left - gap, contact.bottom, contact.left - gap,
+                     contact.top, contact.context_id, 0});
+  }
+  if (mask & 0x2u) {
+    edges.push_back({contact.left, contact.top + gap, contact.right,
+                     contact.top + gap, contact.context_id, 0});
+  }
+  if (mask & 0x4u) {
+    edges.push_back({contact.right + gap, contact.top, contact.right + gap,
+                     contact.bottom, contact.context_id, 0});
+  }
+  if (mask & 0x8u) {
+    edges.push_back({contact.right, contact.bottom - gap, contact.left,
+                     contact.bottom - gap, contact.context_id, 0});
+  }
+}
+
+bool m1_mask_is_expected_waivable(std::uint32_t mask) {
+  return mask == 0 || (mask != 0 && (mask & (mask - 1)) == 0) ||
+         mask == 0x5u || mask == 0xau;
+}
+
+bool run_m1_all_masks_gate() {
+  auto config = make_config(128);
+  bool good = true;
+  for (std::uint32_t mask = 0; mask < 16; ++mask) {
+    std::vector<klayout_cuda_spatial_m1_contact_v1> contacts{
+        make_m1_contact(-32, -16, UINT64_C(0x100000000) + mask, 7)};
+    std::vector<klayout_cuda_spatial_m1_edge_v1> edges;
+    add_m1_mask_edges(edges, contacts.front(), mask);
+
+    klayout_cuda_spatial_m1_result_v1 result{};
+    const int status = run_m1_request(contacts, edges, config, result);
+    const bool waivable = m1_mask_is_expected_waivable(mask);
+    bool case_good =
+        valid_m1_result(result, status) &&
+        result.full_side_hit_count ==
+            static_cast<std::uint64_t>(__builtin_popcount(mask)) &&
+        result.partial_candidate_count == 0 &&
+        result.non_manhattan_candidate_count == 0 &&
+        result.uncertain_contact_count == 0 &&
+        result.disallowed_contact_count == (waivable ? 0u : 1u);
+    if (waivable) {
+      case_good =
+          case_good &&
+          result.disposition == KLAYOUT_CUDA_SPATIAL_M1_COMPLETE &&
+          result.survivor_count == 0;
+    } else {
+      case_good =
+          case_good &&
+          result.disposition == KLAYOUT_CUDA_SPATIAL_M1_DISALLOWED &&
+          result.survivor_count == 1 &&
+          result.survivors[0].contact_id == contacts[0].contact_id &&
+          result.survivors[0].deficient_side_mask == mask &&
+          result.survivors[0].flags ==
+              KLAYOUT_CUDA_SPATIAL_M1_SURVIVOR_DISALLOWED_MASK;
+    }
+    if (!case_good) {
+      report_m1_failure("CUDA M1 exhaustive mask oracle", status, result);
+      std::cerr << "  mask=0x" << std::hex << mask << std::dec
+                << " expected_waivable=" << waivable << '\n';
+    }
+    good = case_good && good;
+    klayout_cuda_spatial_release_m1_result_v1(&result);
+  }
+  if (good) {
+    std::cout << "CUDA M1 certificate exhaustive mask oracle passed: "
+                 "all 16 masks, accepted 0/singleton/0x5/0xa\n";
+  }
+  return good;
+}
+
+bool run_m1_boundary_context_uncertainty_gate() {
+  auto config = make_config(128);
+  bool good = true;
+
+  // Strict threshold: 34 is deficient, while 35 and 36 are not.
+  std::vector<klayout_cuda_spatial_m1_contact_v1> threshold_contacts{
+      make_m1_contact(0, 0, 700, 11)};
+  std::vector<klayout_cuda_spatial_m1_edge_v1> threshold_edges;
+  const auto &c = threshold_contacts.front();
+  threshold_edges.push_back(
+      {c.left - 34, c.bottom, c.left - 34, c.top, c.context_id, 0});
+  threshold_edges.push_back(
+      {c.left, c.top + 35, c.right, c.top + 35, c.context_id, 0});
+  threshold_edges.push_back(
+      {c.right + 36, c.top, c.right + 36, c.bottom, c.context_id, 0});
+  klayout_cuda_spatial_m1_result_v1 threshold{};
+  const int threshold_status =
+      run_m1_request(threshold_contacts, threshold_edges, config, threshold);
+  const bool threshold_good =
+      valid_m1_result(threshold, threshold_status) &&
+      threshold.disposition == KLAYOUT_CUDA_SPATIAL_M1_COMPLETE &&
+      threshold.full_side_hit_count == 1 && threshold.survivor_count == 0;
+  if (!threshold_good) {
+    report_m1_failure("CUDA M1 34/35/36 threshold gate", threshold_status,
+                      threshold);
+  }
+  good = threshold_good && good;
+  klayout_cuda_spatial_release_m1_result_v1(&threshold);
+
+  // Three disallowed masks arrive in intentionally non-sorted stable-ID order.
+  // The DSO must return only the compact stable-ID survivor list.
+  std::vector<klayout_cuda_spatial_m1_contact_v1> sorted_contacts{
+      make_m1_contact(0, 0, 900, 21),
+      make_m1_contact(1000, 0, 100, 22),
+      make_m1_contact(2000, 0, 500, 23)};
+  std::vector<klayout_cuda_spatial_m1_edge_v1> sorted_edges;
+  add_m1_mask_edges(sorted_edges, sorted_contacts[0], 0x3);
+  add_m1_mask_edges(sorted_edges, sorted_contacts[1], 0x7);
+  add_m1_mask_edges(sorted_edges, sorted_contacts[2], 0xf);
+  klayout_cuda_spatial_m1_result_v1 sorted{};
+  const int sorted_status =
+      run_m1_request(sorted_contacts, sorted_edges, config, sorted);
+  const bool sorted_good =
+      valid_m1_result(sorted, sorted_status) &&
+      sorted.disposition == KLAYOUT_CUDA_SPATIAL_M1_DISALLOWED &&
+      sorted.survivor_count == 3 && sorted.survivors[0].contact_id == 100 &&
+      sorted.survivors[0].deficient_side_mask == 0x7 &&
+      sorted.survivors[1].contact_id == 500 &&
+      sorted.survivors[1].deficient_side_mask == 0xf &&
+      sorted.survivors[2].contact_id == 900 &&
+      sorted.survivors[2].deficient_side_mask == 0x3;
+  if (!sorted_good) {
+    report_m1_failure("CUDA M1 sorted survivor gate", sorted_status, sorted);
+  }
+  good = sorted_good && good;
+  klayout_cuda_spatial_release_m1_result_v1(&sorted);
+
+  // A wrong-context disallowed mask must not interact with this contact.
+  std::vector<klayout_cuda_spatial_m1_contact_v1> context_contacts{
+      make_m1_contact(-100, -100, 701, 31)};
+  auto wrong_context = context_contacts.front();
+  wrong_context.context_id = 32;
+  std::vector<klayout_cuda_spatial_m1_edge_v1> context_edges;
+  add_m1_mask_edges(context_edges, wrong_context, 0xf);
+  klayout_cuda_spatial_m1_result_v1 context{};
+  const int context_status =
+      run_m1_request(context_contacts, context_edges, config, context);
+  const bool context_good =
+      valid_m1_result(context, context_status) &&
+      context.disposition == KLAYOUT_CUDA_SPATIAL_M1_COMPLETE &&
+      context.full_side_hit_count == 0 && context.survivor_count == 0;
+  if (!context_good) {
+    report_m1_failure("CUDA M1 hierarchy-context gate", context_status,
+                      context);
+  }
+  good = context_good && good;
+  klayout_cuda_spatial_release_m1_result_v1(&context);
+
+  // Whole top plus a partial left projection keeps the contact as uncertain.
+  std::vector<klayout_cuda_spatial_m1_contact_v1> uncertain_contacts{
+      make_m1_contact(0, 0, 702, 41)};
+  std::vector<klayout_cuda_spatial_m1_edge_v1> uncertain_edges;
+  add_m1_mask_edges(uncertain_edges, uncertain_contacts[0], 0x2);
+  uncertain_edges.push_back(
+      {-34, 10, -34, 55, uncertain_contacts[0].context_id, 0});
+  uncertain_edges.push_back(
+      {-20, 0, 20, 65, uncertain_contacts[0].context_id, 0});
+  klayout_cuda_spatial_m1_result_v1 uncertain{};
+  const int uncertain_status =
+      run_m1_request(uncertain_contacts, uncertain_edges, config, uncertain);
+  const bool uncertain_good =
+      valid_m1_result(uncertain, uncertain_status) &&
+      uncertain.disposition == KLAYOUT_CUDA_SPATIAL_M1_UNCERTAIN &&
+      uncertain.survivor_count == 1 &&
+      uncertain.survivors[0].contact_id == 702 &&
+      uncertain.survivors[0].deficient_side_mask == 0x2 &&
+      (uncertain.survivors[0].flags &
+       KLAYOUT_CUDA_SPATIAL_M1_SURVIVOR_UNCERTAIN) != 0 &&
+      uncertain.partial_candidate_count == 1 &&
+      uncertain.non_manhattan_candidate_count == 1 &&
+      uncertain.uncertain_contact_count == 1;
+  if (!uncertain_good) {
+    report_m1_failure("CUDA M1 partial/non-Manhattan uncertainty gate",
+                      uncertain_status, uncertain);
+  }
+  good = uncertain_good && good;
+  klayout_cuda_spatial_release_m1_result_v1(&uncertain);
+
+  if (good) {
+    std::cout << "CUDA M1 threshold/context/survivor/uncertainty gates "
+                 "passed\n";
+  }
+  return good;
+}
+
+bool run_m1_extrema_and_fail_closed_gate() {
+  auto config = make_config(128);
+  bool good = true;
+
+  const std::int64_t hi = std::numeric_limits<std::int64_t>::max() - 256;
+  const std::int64_t lo = std::numeric_limits<std::int64_t>::min() + 128;
+  std::vector<klayout_cuda_spatial_m1_contact_v1> extrema_contacts{
+      make_m1_contact(hi - 65, hi - 65, 0xfeed, 51),
+      make_m1_contact(lo, lo, 0xbeef, 52)};
+  std::vector<klayout_cuda_spatial_m1_edge_v1> extrema_edges;
+  add_m1_mask_edges(extrema_edges, extrema_contacts[0], 0x5);
+  add_m1_mask_edges(extrema_edges, extrema_contacts[1], 0x3);
+  klayout_cuda_spatial_m1_result_v1 extrema{};
+  const int extrema_status =
+      run_m1_request(extrema_contacts, extrema_edges, config, extrema);
+  const bool extrema_good =
+      valid_m1_result(extrema, extrema_status) &&
+      extrema.disposition == KLAYOUT_CUDA_SPATIAL_M1_DISALLOWED &&
+      extrema.survivor_count == 1 &&
+      extrema.survivors[0].contact_id == 0xbeef &&
+      extrema.survivors[0].deficient_side_mask == 0x3;
+  if (!extrema_good) {
+    report_m1_failure("CUDA M1 signed-coordinate extrema/rotation gate",
+                      extrema_status, extrema);
+  }
+  good = extrema_good && good;
+  klayout_cuda_spatial_release_m1_result_v1(&extrema);
+  const bool release_good =
+      extrema.survivors == nullptr && extrema.survivor_count == 0;
+  good = release_good && good;
+
+  std::vector<klayout_cuda_spatial_m1_contact_v1> malformed_contacts{
+      make_m1_contact(0, 0, 1, 61)};
+  malformed_contacts[0].right = malformed_contacts[0].left;
+  std::vector<klayout_cuda_spatial_m1_edge_v1> no_edges;
+  klayout_cuda_spatial_m1_result_v1 malformed{};
+  const int malformed_status =
+      run_m1_request(malformed_contacts, no_edges, config, malformed);
+  const bool malformed_good =
+      malformed_status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      malformed.status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      malformed.disposition == KLAYOUT_CUDA_SPATIAL_M1_UNCERTAIN &&
+      (malformed.fallback_flags &
+       KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW) != 0 &&
+      malformed.survivors == nullptr && malformed.survivor_count == 0;
+  if (!malformed_good) {
+    report_m1_failure("CUDA M1 malformed-contact gate", malformed_status,
+                      malformed);
+  }
+  good = malformed_good && good;
+  klayout_cuda_spatial_release_m1_result_v1(&malformed);
+
+  std::vector<klayout_cuda_spatial_m1_contact_v1> capacity_contacts{
+      make_m1_contact(0, 0, 2, 62)};
+  std::vector<klayout_cuda_spatial_m1_edge_v1> capacity_edges;
+  add_m1_mask_edges(capacity_edges, capacity_contacts[0], 0xf);
+  auto capacity_config = config;
+  capacity_config.max_pair_work = 1;
+  klayout_cuda_spatial_m1_result_v1 capacity{};
+  const int capacity_status = run_m1_request(
+      capacity_contacts, capacity_edges, capacity_config, capacity);
+  const bool capacity_good =
+      capacity_status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      capacity.status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      capacity.disposition == KLAYOUT_CUDA_SPATIAL_M1_UNCERTAIN &&
+      (capacity.fallback_flags &
+       KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY) != 0 &&
+      capacity.survivors == nullptr && capacity.survivor_count == 0;
+  if (!capacity_good) {
+    report_m1_failure("CUDA M1 pair-work-capacity gate", capacity_status,
+                      capacity);
+  }
+  good = capacity_good && good;
+  klayout_cuda_spatial_release_m1_result_v1(&capacity);
+
+  auto duplicate_contacts = capacity_contacts;
+  duplicate_contacts.push_back(make_m1_contact(1000, 0, 2, 63));
+  klayout_cuda_spatial_m1_result_v1 duplicate{};
+  const int duplicate_status =
+      run_m1_request(duplicate_contacts, no_edges, config, duplicate);
+  const bool duplicate_good =
+      duplicate_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      duplicate.status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      (duplicate.fallback_flags &
+       KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST) != 0 &&
+      duplicate.survivors == nullptr;
+  if (!duplicate_good) {
+    report_m1_failure("CUDA M1 duplicate-stable-ID gate", duplicate_status,
+                      duplicate);
+  }
+  good = duplicate_good && good;
+  klayout_cuda_spatial_release_m1_result_v1(&duplicate);
+
+  auto reserved_config = config;
+  reserved_config.reserved0 = 1;
+  klayout_cuda_spatial_m1_result_v1 reserved{};
+  const int reserved_status =
+      run_m1_request(capacity_contacts, no_edges, reserved_config, reserved);
+  const bool reserved_good =
+      reserved_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      reserved.status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      reserved.disposition == KLAYOUT_CUDA_SPATIAL_M1_UNCERTAIN &&
+      (reserved.fallback_flags &
+       KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST) != 0 &&
+      reserved.survivors == nullptr && reserved.survivor_count == 0;
+  if (!reserved_good) {
+    report_m1_failure("CUDA M1 reserved-config gate", reserved_status,
+                      reserved);
+  }
+  good = reserved_good && good;
+  klayout_cuda_spatial_release_m1_result_v1(&reserved);
+
+  if (good) {
+    std::cout << "CUDA M1 coordinate-extrema and fail-closed gates passed: "
+                 "malformed, duplicate ID, reserved config, capacity\n";
+  }
+  return good;
+}
+
 }  // namespace
 
 int main() {
@@ -480,5 +858,8 @@ int main() {
   good = run_self_complete_cell_smoke() && good;
   good = run_self_exact_oracle_gate() && good;
   good = run_self_fail_closed_gate() && good;
+  good = run_m1_all_masks_gate() && good;
+  good = run_m1_boundary_context_uncertainty_gate() && good;
+  good = run_m1_extrema_and_fail_closed_gate() && good;
   return good ? 0 : 1;
 }
