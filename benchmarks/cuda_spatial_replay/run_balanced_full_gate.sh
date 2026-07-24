@@ -7,12 +7,14 @@ Usage:
   bash run_balanced_full_gate.sh \
     --klayout PATH --backend PATH --source-deck PATH \
     --manifest PATH --input PATH --top-cell NAME --reference PATH \
-    [--python PATH] [--timeout-seconds N] [--without-contact4] [--keep-work]
+    [--python PATH] [--timeout-seconds N] [--jobs 8|10] \
+    [--without-contact4] \
+    [--with-implant12|--without-implant12] [--keep-work]
 
 Regenerates the qualified FreePDK45 live-CUDA deck, applies the three-way
 antenna split, coalesces CONTACT.6 into the grid owner, and runs the exact
-ten-owner balanced full-launch gate. The eight-job order and CUDA resource
-limits are fixed to the qualified configuration.
+ten-owner balanced full-launch gate. CUDA resource limits remain fixed to the
+qualified configuration; the launcher may use eight or ten process slots.
 
 The manifest must be bound to the generated deck and the ten owners. Reference
 may be either a raw or generator-stripped XML .lyrdb report. The merged report
@@ -22,6 +24,10 @@ checked before success.
 
 --without-contact4 retains every other qualified CUDA transaction and exists
 only to produce a same-binary CONTACT.4-off performance control.
+
+--with-implant12 and --without-implant12 both generate the identical fused
+IMPLANT.1/.2 transaction deck, then toggle only its runtime environment. The
+default omits that deck rewrite and preserves the older qualified gate.
 
 All generated decks, reports, logs, homes, and caches live under a fresh
 TMPDIR directory. They are removed unless --keep-work is specified.
@@ -51,6 +57,8 @@ python=${PYTHON:-python3}
 timeout_seconds=900
 keep_work=0
 contact4=1
+implant12=-1
+jobs=8
 
 while (($#)); do
   case "$1" in
@@ -99,12 +107,29 @@ while (($#)); do
       timeout_seconds=$2
       shift 2
       ;;
+    --jobs)
+      (($# >= 2)) || die "--jobs requires a value"
+      jobs=$2
+      shift 2
+      ;;
     --keep-work)
       keep_work=1
       shift
       ;;
     --without-contact4)
       contact4=0
+      shift
+      ;;
+    --with-implant12)
+      ((implant12 == -1)) ||
+        die "choose exactly one IMPLANT.1/.2 runtime mode"
+      implant12=1
+      shift
+      ;;
+    --without-implant12)
+      ((implant12 == -1)) ||
+        die "choose exactly one IMPLANT.1/.2 runtime mode"
+      implant12=0
       shift
       ;;
     -h|--help)
@@ -127,6 +152,8 @@ done
 [[ -n "${reference}" ]] || die "missing --reference"
 [[ "${timeout_seconds}" =~ ^[1-9][0-9]*$ ]] ||
   die "--timeout-seconds must be a positive integer"
+[[ "${jobs}" == 8 || "${jobs}" == 10 ]] ||
+  die "--jobs must be 8 or 10"
 
 [[ -x "${klayout}" ]] || die "KLayout is not executable: ${klayout}"
 [[ -f "${backend}" ]] || die "CUDA backend is missing: ${backend}"
@@ -187,9 +214,19 @@ run_transform() {
   fi
 }
 
+implant12_generator_args=()
+implant12_env=()
+if ((implant12 >= 0)); then
+  implant12_generator_args=(--implant12)
+  implant12_env=(
+    "KLAYOUT_CUDA_IMPLANT12=${implant12}"
+    "KLAYOUT_CUDA_IMPLANT12_TELEMETRY=${implant12}"
+  )
+fi
 run_transform "live CUDA deck generation" \
   "${python}" "${deck_generator}" \
-    --input "${source_deck}" --output "${live_deck}" --m1-contact
+    --input "${source_deck}" --output "${live_deck}" --m1-contact \
+    "${implant12_generator_args[@]}"
 run_transform "antenna split" \
   "${python}" "${antenna_split}" "${live_deck}" "${antenna_deck}"
 run_transform "CONTACT.6 grid coalescing" \
@@ -266,6 +303,7 @@ set +e
       KLAYOUT_CUDA_M1_CONTACT_TELEMETRY=1 \
       "KLAYOUT_CUDA_CONTACT4=${contact4}" \
       "KLAYOUT_CUDA_CONTACT4_TELEMETRY=${contact4}" \
+      "${implant12_env[@]}" \
       "${python}" "${runner}" \
         --klayout "${klayout}" \
         --deck "${balanced_deck}" \
@@ -275,7 +313,7 @@ set +e
         --metadata "${metadata}" \
         --manifest "${manifest}" \
         "${shard_args[@]}" \
-        --jobs 8 \
+        --jobs "${jobs}" \
         --cohort-id "${cohort}" \
         --replicate-index 1 \
         --replicate-count 1 \
@@ -330,6 +368,15 @@ elif grep -R -Fq --include='*.log' -- \
   "CUDA CONTACT.4" "${shard_dir}"; then
   die "CONTACT.4-off control unexpectedly invoked CONTACT.4 CUDA"
 fi
+if ((implant12 == 1)); then
+  require_telemetry \
+    "CUDA IMPLANT.1/.2 transaction: certified-empty" \
+    "IMPLANT.1/.2 certified-empty"
+elif ((implant12 == 0)) &&
+     grep -R -Fq --include='*.log' -- \
+       "CUDA IMPLANT.1/.2 transaction:" "${shard_dir}"; then
+  die "IMPLANT.1/.2-off control unexpectedly invoked IMPLANT CUDA"
+fi
 
 shard_count=$(grep -c '^shard ' "${launcher_log}" || true)
 [[ "${shard_count}" == "${#shards[@]}" ]] ||
@@ -343,7 +390,7 @@ if ! cmp -s -- "${reference_canonical}" "${report_canonical}"; then
 fi
 
 grep -R -nE --include='*.log' -- \
-  'CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA CONTACT\.4 empty certificate:|CUDA CONTACT\.4 live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_EDGE_CERT ' \
+  'CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA CONTACT\.4 empty certificate:|CUDA CONTACT\.4 live lowering:|CUDA IMPLANT\.1/\.2 transaction:|CUDA IMPLANT\.1/\.2 empty certificate:|CUDA IMPLANT\.1/\.2 live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_EDGE_CERT ' \
   "${shard_dir}" >"${work}/cuda-telemetry.txt"
 
 grep -E \
@@ -378,4 +425,4 @@ cat -- "${work}/launcher-summary.txt"
 cat -- "${work}/canonical-report-sha256.txt"
 cat -- "${work}/cuda-telemetry.txt"
 echo \
-  "BALANCED_FULL_CUDA_GATE ok owners=10 jobs=8 contact4=${contact4}"
+  "BALANCED_FULL_CUDA_GATE ok owners=10 jobs=${jobs} contact4=${contact4} implant12=${implant12}"
