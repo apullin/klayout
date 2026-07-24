@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Split the FreePDK45 antenna owner into three exact CPU process shards.
+"""Split the FreePDK45 antenna owner into exact CPU process shards.
 
 The input must be one of the shard-aware FreePDK45 decks derived from the
 qualified eight-owner deck.  The transform is deliberately fail-closed: every
@@ -10,6 +10,11 @@ The resulting owners are:
 * ``antenna_feol``: WELL.1, WELL.4, VT.1 and ACTIVE.4
 * ``antenna_m1_m2``: METAL1_ANTENNA and METAL2_ANTENNA
 * ``antenna_m3_m10``: METAL3_ANTENNA through METAL10_ANTENNA
+
+The optional ``--split-upper`` mode replaces the last owner with two:
+
+* ``antenna_m3``: METAL3_ANTENNA
+* ``antenna_m4_m10``: METAL4_ANTENNA through METAL10_ANTENNA
 
 Each metal owner rebuilds the exact cumulative connection prefix it needs.
 Lower-metal antenna checks are not executed while constructing the M3 prefix.
@@ -27,6 +32,8 @@ import xml.etree.ElementTree as ET
 FEOL_SHARD = "antenna_feol"
 LOWER_SHARD = "antenna_m1_m2"
 UPPER_SHARD = "antenna_m3_m10"
+M3_SHARD = "antenna_m3"
+M4_UPPER_SHARD = "antenna_m4_m10"
 ANTENNA_CATEGORIES = tuple(f"METAL{layer}_ANTENNA" for layer in range(1, 11))
 
 
@@ -41,7 +48,7 @@ def _replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
-def _antenna_section() -> str:
+def _antenna_section(split_upper: bool = False) -> str:
     lines = [
         "#   ANTENNA checks",
         "################",
@@ -68,9 +75,31 @@ def _antenna_section() -> str:
         'antenna_check(gate, metal2, 300.0, diode).output("METAL2_ANTENNA", "METAL2_ANTENNA : Ratio of Maximum Allowed (Field poly area or Metal Layer Area) to transistor gate area : 300:1")',
         "end",
         "",
-        "if run_antenna_m3_m10",
     ]
-    for layer in range(3, 11):
+    if split_upper:
+        lines.extend(
+            [
+                "if run_antenna_m3 || run_antenna_m4_m10",
+                "# build connection of poly+gate to metal3",
+                "connect(metal2, via2)",
+                "connect(via2, metal3)",
+                "",
+                "if run_antenna_m3",
+                'antenna_check(gate, metal3, 300.0, diode).output("METAL3_ANTENNA", "METAL3_ANTENNA : Ratio of Maximum Allowed (Field poly area or Metal Layer Area) to transistor gate area : 300:1")',
+                "",
+                "end",
+                "",
+                "end",
+                "",
+                "if run_antenna_m4_m10",
+            ]
+        )
+        first_upper = 4
+    else:
+        lines.append("if run_antenna_m3_m10")
+        first_upper = 3
+
+    for layer in range(first_upper, 11):
         lower = layer - 1
         lines.extend(
             [
@@ -82,15 +111,25 @@ def _antenna_section() -> str:
                 "",
             ]
         )
+
     lines.extend(["end", "", "end", ""])
     return "\n".join(lines)
 
 
-def split_deck(source: str) -> str:
-    """Return a deterministic LF-normalized three-way antenna deck."""
+def split_deck(source: str, *, split_upper: bool = False) -> str:
+    """Return a deterministic LF-normalized antenna-sharded deck."""
 
     text = source.replace("\r\n", "\n").replace("\r", "\n")
-    if any(name in text for name in (FEOL_SHARD, LOWER_SHARD, UPPER_SHARD)):
+    if any(
+        name in text
+        for name in (
+            FEOL_SHARD,
+            LOWER_SHARD,
+            UPPER_SHARD,
+            M3_SHARD,
+            M4_UPPER_SHARD,
+        )
+    ):
         raise TransformError("source deck is already antenna-split")
 
     for category in ANTENNA_CATEGORIES:
@@ -100,13 +139,26 @@ def split_deck(source: str) -> str:
                 f"{category}: expected one antenna output site, found {count}"
             )
 
+    if split_upper:
+        owner_declaration = (
+            'run_antenna_feol = drc_shard == "all" || drc_shard == "antenna_feol"\n'
+            'run_antenna_m1_m2 = drc_shard == "all" || drc_shard == "antenna_m1_m2"\n'
+            'run_antenna_m3 = drc_shard == "all" || drc_shard == "antenna_m3"\n'
+            'run_antenna_m4_m10 = drc_shard == "all" || drc_shard == "antenna_m4_m10"\n'
+            "run_antenna_checks = run_antenna_m1_m2 || run_antenna_m3 || "
+            "run_antenna_m4_m10\n"
+        )
+    else:
+        owner_declaration = (
+            'run_antenna_feol = drc_shard == "all" || drc_shard == "antenna_feol"\n'
+            'run_antenna_m1_m2 = drc_shard == "all" || drc_shard == "antenna_m1_m2"\n'
+            'run_antenna_m3_m10 = drc_shard == "all" || drc_shard == "antenna_m3_m10"\n'
+            "run_antenna_checks = run_antenna_m1_m2 || run_antenna_m3_m10\n"
+        )
     text = _replace_once(
         text,
         'run_antenna = drc_shard == "all" || drc_shard == "antenna"\n',
-        'run_antenna_feol = drc_shard == "all" || drc_shard == "antenna_feol"\n'
-        'run_antenna_m1_m2 = drc_shard == "all" || drc_shard == "antenna_m1_m2"\n'
-        'run_antenna_m3_m10 = drc_shard == "all" || drc_shard == "antenna_m3_m10"\n'
-        "run_antenna_checks = run_antenna_m1_m2 || run_antenna_m3_m10\n",
+        owner_declaration,
         "antenna owner declaration",
     )
     text = _replace_once(
@@ -140,7 +192,7 @@ def split_deck(source: str) -> str:
         raise TransformError("antenna section boundaries are not unique")
     start = text.index(start_marker)
     end = text.index(end_marker, start)
-    text = text[:start] + _antenna_section() + text[end:]
+    text = text[:start] + _antenna_section(split_upper) + text[end:]
 
     # Parse the macro as XML after transformation.  This catches missed entity
     # escaping before an expensive KLayout run.
@@ -178,6 +230,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force", action="store_true", help="replace an existing output"
     )
+    parser.add_argument(
+        "--split-upper",
+        action="store_true",
+        help="split METAL3 and METAL4-through-METAL10 into separate owners",
+    )
     return parser.parse_args()
 
 
@@ -189,7 +246,7 @@ def main() -> int:
         raise SystemExit(f"refusing to overwrite {args.output}; pass --force")
     try:
         source = args.input.read_bytes().decode("utf-8")
-        transformed = split_deck(source)
+        transformed = split_deck(source, split_upper=args.split_upper)
         _write_atomic(args.output, transformed)
     except (OSError, UnicodeDecodeError, TransformError) as exc:
         raise SystemExit(str(exc)) from exc

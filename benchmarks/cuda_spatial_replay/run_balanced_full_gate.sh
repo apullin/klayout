@@ -7,20 +7,22 @@ Usage:
   bash run_balanced_full_gate.sh \
     --klayout PATH --backend PATH --source-deck PATH \
     --manifest PATH --input PATH --top-cell NAME --reference PATH \
-    [--python PATH] [--timeout-seconds N] [--jobs 8|10] \
+    [--python PATH] [--timeout-seconds N] [--jobs 8|10|11] \
+    [--split-upper-antenna] \
     [--without-contact4] \
     [--with-implant12|--without-implant12] [--keep-work]
 
-Regenerates the qualified FreePDK45 live-CUDA deck, applies the three-way
-antenna split, coalesces CONTACT.6 into the grid owner, and runs the exact
-ten-owner balanced full-launch gate. CUDA resource limits remain fixed to the
-qualified configuration; the launcher may use eight or ten process slots.
+Regenerates the qualified FreePDK45 live-CUDA deck, applies the antenna split,
+coalesces CONTACT.6 into the grid owner, and runs the exact balanced full-launch
+gate. With --split-upper-antenna, METAL3 and METAL4-through-METAL10 checks use
+separate owners, for eleven owners total. CUDA resource limits remain fixed;
+the launcher may use eight, ten, or eleven process slots.
 
-The manifest must be bound to the generated deck and the ten owners. Reference
-may be either a raw or generator-stripped XML .lyrdb report. The merged report
-must match it after removing only the generator element. CUDA certificate
-telemetry, the canonical report, timings, hashes, and launcher provenance are
-checked before success.
+The manifest must be bound to the generated deck and selected owner set.
+Reference may be either a raw or generator-stripped XML .lyrdb report. The
+merged report must match it after removing only the generator element. CUDA
+certificate telemetry, the canonical report, timings, hashes, and launcher
+provenance are checked before success.
 
 --without-contact4 retains every other qualified CUDA transaction and exists
 only to produce a same-binary CONTACT.4-off performance control.
@@ -59,6 +61,7 @@ keep_work=0
 contact4=1
 implant12=-1
 jobs=8
+split_upper_antenna=0
 
 while (($#)); do
   case "$1" in
@@ -112,6 +115,10 @@ while (($#)); do
       jobs=$2
       shift 2
       ;;
+    --split-upper-antenna)
+      split_upper_antenna=1
+      shift
+      ;;
     --keep-work)
       keep_work=1
       shift
@@ -152,8 +159,8 @@ done
 [[ -n "${reference}" ]] || die "missing --reference"
 [[ "${timeout_seconds}" =~ ^[1-9][0-9]*$ ]] ||
   die "--timeout-seconds must be a positive integer"
-[[ "${jobs}" == 8 || "${jobs}" == 10 ]] ||
-  die "--jobs must be 8 or 10"
+[[ "${jobs}" == 8 || "${jobs}" == 10 || "${jobs}" == 11 ]] ||
+  die "--jobs must be 8, 10, or 11"
 
 [[ -x "${klayout}" ]] || die "KLayout is not executable: ${klayout}"
 [[ -f "${backend}" ]] || die "CUDA backend is missing: ${backend}"
@@ -227,8 +234,13 @@ run_transform "live CUDA deck generation" \
   "${python}" "${deck_generator}" \
     --input "${source_deck}" --output "${live_deck}" --m1-contact \
     "${implant12_generator_args[@]}"
+antenna_split_args=()
+if ((split_upper_antenna)); then
+  antenna_split_args=(--split-upper)
+fi
 run_transform "antenna split" \
-  "${python}" "${antenna_split}" "${live_deck}" "${antenna_deck}"
+  "${python}" "${antenna_split}" \
+    "${antenna_split_args[@]}" "${live_deck}" "${antenna_deck}"
 run_transform "CONTACT.6 grid coalescing" \
   "${python}" "${contact6_split}" \
     --owner grid "${antenna_deck}" "${balanced_deck}"
@@ -242,18 +254,34 @@ sed '/<generator>/d' "${reference}" >"${reference_canonical}"
 grep -Fq -- "<report-database>" "${reference_canonical}" ||
   die "reference is not an XML KLayout report database"
 
-shards=(
-  m1_width_space
-  implant_contact
-  antenna_m3_m10
-  antenna_m1_m2
-  m2_rules
-  m1_enclosure
-  via1_upper_active12
-  grid
-  m1_via_class
-  antenna_feol
-)
+if ((split_upper_antenna)); then
+  shards=(
+    m1_width_space
+    implant_contact
+    antenna_m4_m10
+    antenna_m3
+    antenna_m1_m2
+    m2_rules
+    m1_enclosure
+    via1_upper_active12
+    grid
+    m1_via_class
+    antenna_feol
+  )
+else
+  shards=(
+    m1_width_space
+    implant_contact
+    antenna_m3_m10
+    antenna_m1_m2
+    m2_rules
+    m1_enclosure
+    via1_upper_active12
+    grid
+    m1_via_class
+    antenna_feol
+  )
+fi
 shard_args=()
 for shard in "${shards[@]}"; do
   shard_args+=(--shard "${shard}")
@@ -425,4 +453,4 @@ cat -- "${work}/launcher-summary.txt"
 cat -- "${work}/canonical-report-sha256.txt"
 cat -- "${work}/cuda-telemetry.txt"
 echo \
-  "BALANCED_FULL_CUDA_GATE ok owners=10 jobs=${jobs} contact4=${contact4} implant12=${implant12}"
+  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} implant12=${implant12} split_upper_antenna=${split_upper_antenna}"

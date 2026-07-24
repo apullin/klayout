@@ -74,6 +74,34 @@ class SplitDeckTest(unittest.TestCase):
         with self.assertRaisesRegex(TransformError, "already antenna-split"):
             split_deck(source_deck().replace("antenna", "antenna_feol", 1))
 
+    def test_optional_upper_split_preserves_all_mode_order_and_one_prefix(self) -> None:
+        result = split_deck(source_deck(), split_upper=True)
+
+        self.assertIn('drc_shard == "antenna_m3"', result)
+        self.assertIn('drc_shard == "antenna_m4_m10"', result)
+        self.assertNotIn('drc_shard == "antenna_m3_m10"', result)
+        self.assertIn(
+            "if run_antenna_m3 || run_antenna_m4_m10",
+            result,
+        )
+        self.assertEqual(result.count("connect(metal2, via2)"), 1)
+        self.assertEqual(result.count("connect(via2, metal3)"), 1)
+
+        positions = [result.index(f'.output("{name}"') for name in ANTENNA_CATEGORIES]
+        self.assertEqual(positions, sorted(positions))
+        self.assertLess(
+            result.index("if run_antenna_m3"),
+            result.index('.output("METAL3_ANTENNA"'),
+        )
+        self.assertLess(
+            result.index("if run_antenna_m4_m10"),
+            result.index('.output("METAL4_ANTENNA"'),
+        )
+        self.assertLess(
+            result.index('.output("METAL3_ANTENNA"'),
+            result.index("connect(metal3, via3)"),
+        )
+
     def test_rejects_a_missing_output_site(self) -> None:
         source = source_deck().replace(
             '.output("METAL7_ANTENNA", "description 7")', ""
