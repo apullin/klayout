@@ -869,6 +869,37 @@ not just wall time.
     The old estimate assumed ten cumulative rebuilds.  Empty-target pruning
     removed six, so its present ceiling is much smaller and must be measured
     before implementation.
+    - [x] **Split the antenna owner into three CPU processes — completed:**
+      this is process scheduling on the CPU `perf` branch, not CUDA work.
+      The unchanged PGO executable ran `antenna_feol`, `antenna_m1_m2`, and
+      `antenna_m3_m10` as independent owners while preserving the cumulative
+      connectivity prefix required by each check.  Against the prior three-run
+      `antenna` mean of 114.409553 s, three exact x2 screens made the new
+      antenna critical path 55.402531, 56.556236, and 56.764035 s: a
+      56.240934 s mean, **50.84% less lane wall time** and **+103.43%
+      antenna throughput**, with 2.42% full-range spread.  The component means
+      are 22.506895 s FEOL, 50.393452 s M1/M2, and 56.240934 s M3--M10.
+
+      This removes antenna as a future stacked bottleneck; it does not speed
+      the present CPU-only full launch because M1 remains near 145 s.  Full
+      provenance-launch means changed only 156.691627 -> 156.006005 s
+      (**0.44% less**, treated as noise rather than a whole-run win).
+      All three clean merges have the trusted semantic SHA-256
+      `dd7b3a6f3c8303e105d5ac882261caf68f7f119da90ed40f801fb71800c46a47`
+      at 157 categories, one cell, and zero items.  The deliberately nonempty
+      hierarchical fixture proves full mode, split `all`, and the ten-owner
+      merge share semantic SHA-256
+      `409085bc15614329421b1b07a6fdd6b867fe8cad83a214a1f32a5d9986a595a4`
+      at 157 categories, two cells, and 86 items, including violations on both
+      sides of the M2/M3 owner boundary.
+
+      KLayout emits the antenna diagnostic declarations and named values in
+      process-dependent order.  The merger now canonicalizes only those named
+      fields, preserves positional values exactly, proves the complete tag
+      universe when creating a manifest, and permits a later clean layout to
+      emit an empty subset while still rejecting unknown or conflicting tags.
+      Keep `--jobs 8` with four KLayout threads per process so ten owners never
+      request more than 32 threads.
 14. [ ] **Device-neutral accelerator replay gate — active, orthogonal project**
     Do not translate the Ruby PDK deck to an accelerator language.  Build a
     device-neutral replay harness around spatial bin/sort plus candidate
@@ -1015,6 +1046,383 @@ not just wall time.
       a materially wider device-neutral target for an exact Manhattan
       intersect/split replay, with stateful production as a second kernel only
       if charged A/B evidence warrants it.
+    - [x] **Reject the disconnected-only CONTACT result:** the first
+      `DeepEdges` certificate accepted only an empty hierarchy-interaction set,
+      but the real 64K CONTACT workload was not disconnected.  In the valid
+      same-binary isolated A/B, control averaged 25.100 s and the attempted
+      certificate averaged 25.377 s, **0.277 s / 1.1% slower**, with identical
+      reports.  That result was rejected rather than booked as a win.
+
+    - [x] **Diagnose the apparent hierarchy interactions:** all **201,643**
+      returned marker pairs were byte-identical coincident boxes; there were
+      zero boundary-only, containment, or partial-area-overlap pairs.  The raw
+      GDS has 335,805 duplicate CONTACT-box pairs and local preprocessing
+      removes 134,162 of them, exactly accounting for the remaining 201,643.
+      They are real duplicate contact rectangles, not AABB false positives.
+
+    - [x] **Prove a strict duplicate-rectangle selected-empty result:** the
+      certificate now accepts a nonempty GPU pair set only for a true-only,
+      merged-semantics concrete `EdgeLengthFilter`, with no breakout, complex
+      transform, nonzero property, overflow, capacity failure, or source-cache
+      ambiguity.  Local EdgeOr must preserve the exact oriented edge multiset
+      including multiplicity, every provenance group must be exactly four full
+      axis-aligned rectangle sides, the filter must reject every canonical
+      edge, the GPU must return complete Success, and every interacting
+      transformed box must be byte-identical.  It then returns a fresh merged
+      empty result without publishing a source merged cache; every unmet guard
+      falls back to the legacy CPU path.
+
+    - [x] **Measure the real 64K CONTACT win:** three same-binary control runs
+      averaged **25.040 s** and three certificate runs averaged **18.697 s**:
+      **6.343 s / 25.3% less CONTACT-shard wall time**.  All six reports were
+      identical with SHA-256
+      `e29559d81e17f525a7978e8e402235dfa3a7f6ef408f3c7adbe7ef74d76b3c5e`.
+      The GPU self request was about 52 ms and the complete proof decision about
+      305–309 ms; those component timings are already charged in the candidate
+      wall time.
+
+    - [x] **Close the correctness gates:** the focused GPU integration gate
+      passed all 10 certificate tests, and the complete `dbDeepEdgesTests`
+      matrix passed **70/70** (35 non-editable plus 35 editable).  A nonempty
+      CONTACT-violation sentinel retained exactly four CONTACT.1 edge markers
+      and matching raw/semantic reports, so the shortcut cannot erase a real
+      selected-length violation.
+
+    - [x] **Keep whole-run accounting honest:** this 6.343 s CONTACT-shard
+      reduction currently removes **0.000 s** from the 156.692 s parallel
+      full-launch wall because M1 remains the critical lane (145.540 s versus
+      M2 at 138.225 s).  It creates useful CONTACT slack and can become a
+      whole-run saving only after the critical lanes move or at larger scale.
+
+    - [x] **Run the downstream-composed x2 CONTACT scale gate:** the
+      same-binary control took **218.32 s** and the certificate candidate took
+      **155.10 s**, removing **63.22 s / 28.96%** of this x2 CONTACT-shard wall.
+      Reports were identical with SHA-256
+      `9511c638ae7ed175e9bca5ece71068602b6c804bd230aecc5e56fa3cbefad305`.
+      The 369.611 ms GPU self request and 2,412.654 ms complete certificate
+      decision are charged inside the candidate wall.  Evidence:
+      `/home/pullin/personal/klayout/cuda-evidence-temp/contact-x2-duplicate-empty-ab-20260723T154225Z`.
+      This is explicitly a downstream-composed x2 CONTACT-shard result, not a
+      63.22 s saving from the original 156.692 s parallel full launch.
+
+    - [x] **Reject cuSpatial as the production geometry substrate:** its closest
+      join maps bounding boxes to leaves of a point quadtree, not KLayout's
+      context-qualified AABB/AABB or edge/edge joins.  Its geometry predicates
+      use floating-point GIS semantics and do not implement exact signed-int64
+      thresholds, KLayout projection/orientation modes, partial markers,
+      shielding, or hierarchy publication.  The final 25.04 release is
+      archived, and even the header API adds RMM while the full library adds
+      cuDF.  Keep using the maintained NVIDIA layer that actually fits this
+      workload—CCCL/CUB/Thrust—and implement the small exact integer kernels
+      directly.  Algorithmic ideas may be borrowed; no cuSpatial dependency
+      should be introduced.
+
+    - [x] **Reject two more M1 deck-only shortcuts:** local POLY.3/.4
+      edge-pair-to-polygon fusion changed the x2 M1 wall from 141.09 s to
+      140.00 s, only **0.77% less wall time**, below the stopping threshold.
+      It also exposed a general magnified-hierarchy defect: the compound
+      edge-pair-to-polygon wrapper drops the child check's
+      `MagnificationReducer`, so the fused form cannot be claimed equivalent
+      without a C++ reducer-composition fix.  The guarded local METAL1.3
+      rectangle filter was exact on the adversarial 21-item hierarchy fixture,
+      but the clean x2 probe produced 2,125,548 flat intermediate markers and
+      correctly fell back.  It regressed wall from **141.73 s to 445.99 s**;
+      keep the current guarded reversed-empty path.
+
+    - [x] **Qualify ACTIVE.3 as the first device-resident empty-result target:**
+      `well.enclosing(active, 55nm, euclidian)` took 41.58 s in the isolated
+      profiling microscope and published zero flat and hierarchical edge
+      pairs.  A separate no-shield (`transparent`) census also published
+      exactly zero pairs in 39.01 s wall and produced the same normalized
+      report.  The two timings are not an A/B performance comparison—the
+      shielded run carried `perf record` and ran beside other probes—but the
+      no-hit result proves that the first GPU certificate need not implement
+      shielding for this workload.  The input has 24,687,816 flat ACTIVE
+      polygon occurrences represented by only 716 stored polygons; WELL has
+      1,964 flat occurrences and 1,074 stored polygons.  Preserve that
+      hierarchy compression rather than serializing the flat universe.
+
+    - [ ] **Move the CUDA ownership boundary outward to a fused DRC plan:**
+      the successful ngspice-CUDA project showed that narrow device-evaluator
+      and solver-only seams lose to synchronization and Amdahl's law, while a
+      resident evaluator/assembly/solve/control pipeline delivered 8.44x
+      analysis and 6.73x total speedup.  Apply the same lesson here.  CPU setup
+      should lower immutable cell, instance-array, transform, edge-template,
+      rule, stable-ID, and report-ownership tables once.  GPU work should retain
+      those tables through hierarchy frontier expansion, spatial candidate
+      generation, exact predicates, rule-specific waiver/reduction, stable
+      sort/dedup, and survivor compaction.  Return only compact final marker
+      descriptors (zero records on a clean rule), never the raw candidate
+      stream.
+
+      Start with the exact ACTIVE.3 no-hit certificate, then reuse the same
+      device IR for METAL1.3's four-bit deficient-side reduction.  The latter
+      culls masks 0, singleton, and two-opposite and compacts only disallowed or
+      uncertain stable contact IDs.  The first KLayout integration may consume
+      only a complete zero-survivor result; the ABI and kernel must nevertheless
+      support bounded compact survivors so empty-only behavior is not baked
+      into the engine.  Unsupported transforms, properties, breakout cells,
+      overflow, queue/capacity exhaustion, or incomplete traversal must fail
+      closed to the unchanged CPU operation.  A general nonempty backend may
+      require several thousand lines and is not rejected on code volume alone;
+      exact oracle gates and whole-run savings decide whether each slice lands.
+
+      - [x] **Land the bounded METAL1.3 device-side analyze/cull kernel:** CUDA
+        now performs the context-qualified sparse broad phase, strict
+        projection-distance classification, four-side mask reduction, waiver,
+        deterministic sort, and survivor compaction without returning raw
+        pairs.  The additive ABI preserves the old v1 entry points.  Its
+        synthetic gates cover all 16 masks, the 34/35/36 threshold, contexts,
+        partial and non-Manhattan uncertainty, signed-coordinate extrema,
+        malformed requests, duplicate IDs, and capacity fallback.  Independent
+        review caught and fixed two initially fail-open internal-invariant
+        branches before commit; the hardened suite passes CUDA memcheck with
+        zero errors.  This is commit `93c51a8` on `fork/cuda`, not a production
+        KLayout speedup: a caller must still prove and fingerprint the complete
+        hierarchy/edge universe.
+
+      - [x] **Make the exact ACTIVE.3 derived scene reproducible:** the capture
+        harness derives `nwell.or(pwell)` and ACTIVE through the production
+        deep engine, uses `DeepRegion#insert_into` to retain hierarchy, replays
+        the rule from the captured operands, records a non-flattening census,
+        and publishes only after source/replay checks pass.  Clean tiny and 64K
+        gates pass; a deliberate nonempty fixture retains 4/4 markers.  The x2
+        scene represents 24,687,816 logical ACTIVE polygons with 716 stored
+        shapes and 570,294 instance records.  This is commit `8148bf5` on
+        `fork/cuda`; hashes are provenance, not hard-coded correctness values.
+
+      - [x] **Lower the ACTIVE.3 capture to deterministic device POD:** the
+        versioned `KACTSCN1` format preserves the cell/instance/array DAG,
+        directed Manhattan contours, layer bounds, and scene fingerprint in
+        bounded little-endian records.  Independent validation rejects
+        malformed, unsupported, truncated, or hash-mismatched scenes.  This is
+        commit `40462b3` on `fork/cuda`.
+
+      - [x] **Qualify the exact ACTIVE.3 device predicate:** the fixed 55 nm
+        Euclidean enclosure relation now has a shared CPU/CUDA implementation
+        with fail-closed uncertainty, exhaustive lattice,
+        randomized/extreme-coordinate, and direct KLayout differential gates.
+        This is commit `038623d` on `fork/cuda`.
+
+      - [x] **Join the bookends in a standalone contiguous ACTIVE.3 GPU
+        island — completed experimentally:** after checked packed-scene loading
+        and host context lowering, the device owns WELL expansion and indexing,
+        streams 98,754,896 transformed ACTIVE edges without materializing a
+        flat edge or candidate array, evaluates the exact predicate, and
+        returns only bounded counters/diagnostics.  Five fresh x2 processes had
+        an external median of **0.70 s**; the ACTIVE query itself took
+        **23.24 ms**, with identical zero-raw-hit/zero-uncertain censuses.
+        Against the roughly 41.58 s isolated CPU observation, that is
+        contextual evidence of about **40.88 s / 98.3% less wall time (roughly
+        59x)**.  It is not yet a same-binary production A/B, M1-shard saving,
+        or full-run result: the executable starts from an already captured
+        derived scene and has not replaced KLayout's live operation.  This is
+        commit `c3ceed2` on `fork/cuda`.  Follow-up commit `b1fd3da` corrected
+        the result contract: local ACTIVE union can remove a raw inner-edge
+        hit, so only zero raw hits are consumable; every raw hit requires
+        pristine CPU fallback.
+
+      - [x] **Integrate at the live ACTIVE.3 operation seam — completed,
+        isolated-process scope:** the default-off KLayout hook now lowers the
+        live merged-WELL/raw-ACTIVE DeepShapeStore hierarchy into digest-bound
+        POD and calls the additive CUDA entry point in-process.  Only a complete
+        zero-raw-hit result returns the already-created empty `DeepEdgePairs`;
+        every hit, uncertainty, unsupported shape/transform/property, malformed
+        echo, capacity limit, loader error, or exception runs the unchanged CPU
+        processor.  Three fresh same-binary isolated controls had external
+        walls **55.25/55.37/54.80 s**; three frozen candidates had
+        **2.99/2.95/2.96 s**.  The medians are **55.25 -> 2.96 s**, removing
+        **52.29 real seconds / 94.6% of process wall** (about 18.7x).  All
+        reports have canonical SHA-256
+        `681cd5f31b2407672e760f718a827721f15a9193f2f7464c12d5ce610d961ed7`.
+        Peak host RSS also fell from about 2.31 GiB to 0.55 GiB.  This is an
+        isolated derived-scene replay result; the raw-layout M1 result is
+        recorded separately below.
+
+        The live and standalone operand universes match exactly: 284 WELL
+        contexts / 8,924 edges, 788,174 ACTIVE contexts / 98,754,896 edges, and
+        44,623,826 candidates.  Live deep extraction prunes 780 contexts
+        containing neither operand, explaining its 848,485 versus packed
+        849,265 total without omitting geometry.  Deliberate nonempty and
+        raw-ACTIVE-union counterexamples both forced exact CPU fallback;
+        nested 3x2 arrays under all eight transforms passed; normal and live x2
+        Compute Sanitizer runs reported zero errors.  Independent review
+        returned SHIP after fixing a near-`uint32` device-loop wrap.  Commits
+        `766871b`, `ee91e1b`, and `a318f6e` are pushed to `fork/cuda`.
+
+      - [x] **Confirm the live certificate inside the actual x2 M1 lane:**
+        one isolated same-binary raw-layout A/B at `a318f6e` changed
+        `m1_enclosure` from **255.06 s to 203.12 s**, removing **51.94 real
+        seconds / 20.36% of lane wall**.  The integration build is slower than
+        the specialized formal PGO binary, so this comparison is deliberately
+        against its immediate feature-off control rather than the older
+        145.5-second PGO record.  Raw reports are byte-identical with SHA-256
+        `dd1199719a17c460a188bd05581e294fae597060cfc4cd75c5b53fba81f2c289`;
+        generator-stripped reports also match.  The candidate returned the
+        exact 44,623,826-candidate clean census with 189.72 ms live lowering,
+        267.15 ms backend time, and zero hit/uncertainty/fallback/device flags.
+        External process wall is authoritative: KLayout's verbose per-operation
+        `Elapsed` is aggregate CPU-like time and is not used as a wall
+        denominator.  This first qualified pair is not yet a repeated
+        statistical M1 result or a parallel full-launch measurement.
+
+      - [x] **Prove a reusable device-resident VIA1 sandwich on both metal
+        boundaries — completed experimentally:** exact packed-scene oracles
+        now retain the raw M1/VIA1 and M2/VIA1 hierarchies and execute the
+        complete production projection-enclosure chains.  CUDA expands the
+        20,178,022 logical VIA1 occurrences once, builds a cut self-grid,
+        accepts only exact coincident raw duplicates, rejects every other
+        touch/overlap, proves strict 75 nm Euclidean spacing, and streams the
+        enclosing-metal hierarchy through an exact positive containment
+        certificate.  Simple hole-free Manhattan metal polygons are lowered
+        to both exact X- and Y-slab rectangle subsets; unsupported cuts,
+        malformed scenes, overflow, capacity exhaustion, incomplete traversal,
+        counter mismatch, or any positive uncertainty fails closed.
+
+        Both full x2 scenes certify every VIA with zero enclosure misses,
+        unsafe overlaps, spacing violations, or device flags.  M2 expands to
+        22,947,380 metal rectangles; M1 expands to 41,109,338.  Five fresh
+        standalone processes give a **96.601 ms median M2 GPU plan** and
+        **0.633129 s median warm standalone total**, versus the contextual
+        126.49-second exact CPU METAL2.3-chain observation: about 125.857 s /
+        99.499% less wall and 199.8x throughput.  M1 gives a **118.416 ms
+        median GPU plan** and **1.265037 s median warm standalone total**,
+        versus the 62.66-second capture/oracle run containing the 58.010-second
+        enclosing and 2.930-second width stages: about 61.395 s / 97.981% less
+        wall and 49.5x throughput.  These are standalone derived-scene
+        comparisons, not a same-binary live or whole-run A/B; packed-scene
+        validation and host hierarchy lowering are charged, while live source
+        extraction and deck integration are not yet measured.
+
+        The same proof state implies six clean categories when fused:
+        METAL1.4, METAL2.3, and VIA1.1--.4.  Independent M1 and M2 medians sum
+        to 215.017 ms; reusing the resident VIA expansion/grid/pair pass should
+        reduce the combined call further, but that saving remains a projection
+        until measured.  Fifteen deterministic/adversarial gates cover exact
+        enclosure distance, X/Y slab witnesses, arrays and all orthogonal
+        transforms, exact duplicates, nonidentical touching fallback, axial
+        and diagonal 75 nm boundaries, missing enclosure, corrupt input, and
+        nonrectangular-cut decline.  CUDA memcheck reports zero errors on the
+        duplicate and spacing branches.  Capture, island, gate, and hardening
+        commits `2385939`, `5b9fd3c`, `8e47aa0`, `5906b80`, and `6df69d6` are
+        pushed to `fork/cuda`.
+
+      - [x] **Integrate the six-rule VIA1 sandwich as one atomic live plan:**
+        serialize raw M1/VIA1/M2 from their shared DeepShapeStore without
+        mutating or merging the CPU layers, invoke one optional DSO symbol,
+        retain VIA boxes and their CSR grid while reusing one metal scratch
+        allocation for M1 then M2, and return only a digest-bound six-bit clean
+        mask.  The deck may consume the result only when all six bits are
+        certified; every partial result, unsupported scene, error, or capacity
+        decline must run all six historical CPU chains unchanged.  Move those
+        categories into one existing shard owner rather than adding a process.
+        Qualify six deliberately nonempty sentinels, backend-missing/error
+        fallback, nested hierarchy, exact report equality, and a full x2
+        same-binary A/B before claiming any whole-run saving.
+        **Delivered:** the opt-in path preserves the original shard ownership
+        when disabled and moves all six rules into one existing owner only when
+        requested; every noncertificate runs the complete local CPU stack.
+        On x2, the fused backend handled 849,265 contexts, 41,109,338 M1
+        rectangles, 20,178,022 VIA occurrences, 22,947,380 M2 rectangles, and
+        672,673,286 VIA candidate pairs in 537.582 ms of device work after
+        1.172 seconds of live host lowering.  Against the original eight-shard
+        deck, `m1_via_class` fell 259.526 -> 59.832 seconds (**76.95% less**),
+        `m2_rules` 230.567 -> 100.867 seconds (**56.25% less**), and
+        `via1_upper_active12` 187.276 -> 59.982 seconds (**67.97% less**).
+        Co-locating the same six CPU rules for the isolated owner comparison
+        took 570.79 seconds versus 58.74 seconds with CUDA (**89.71% less**,
+        512.05 seconds saved).  The honest full-launch comparison was only
+        278.20 -> 275.97 seconds (**0.80% less**, not treated as a whole-run
+        win) because the unchanged `m1_enclosure` lane remained critical.
+        Canonical reports were byte-identical with SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+        Seventeen live geometry/fallback cases, 49 adversarial host-ABI cases,
+        both device smokes, independent host/device audits, and CUDA memcheck
+        all pass.  Implementation and gate commits `8e911a4` and `eff6057` are
+        pushed to `fork/cuda`.
+
+      - [x] **Integrate the qualified live CONTACT/METAL1.3 certificate:**
+        reuse the atomic projection backend with raw M1/CONTACT hierarchy
+        lowering, a single-rectangle fast path, and an exact integer-DBU
+        union-strip proof for split M1.  The same-binary x2
+        `m1_enclosure` lane changed 202.73 -> 88.06 seconds (**56.56% less**,
+        114.67 seconds saved).  The complete host-to-host transaction took
+        3,063.94 ms and the CUDA backend reported 235.58 ms; canonical reports
+        were identical with SHA-256
+        `d056b808e6f2134e60286e35247a92e3a2f6d2eaa26b463fd572aa7e0652146d`.
+        Fifteen live geometry/fallback cases, the existing seventeen-case VIA
+        regression, backend/oracle smokes, negative/grid-boundary and one-DBU
+        gap cases, and CUDA memcheck pass.  Implementation and gate commits
+        `4728aa4` and `3d144c8` are pushed to `fork/cuda`.  This is an
+        independently lowered certificate, not yet the resident fused tail
+        below; do not report the lane saving as a full-launch reduction.
+
+      - [x] **Reap the live CUDA wins with CPU-owner balancing:** stack the
+        qualified three-way antenna split, leave the compound METAL1.1/.2
+        traversal intact, and move only independent `CONTACT.6` from the
+        overloaded M1 width/space owner into the underloaded grid owner.
+        Three same-binary all-CUDA baselines had full-launch walls
+        208.568190, 209.288711, and 210.616450 s; three balanced candidates
+        took 184.556784, 186.398209, and 184.242187 s.  The means are
+        **209.491117 -> 185.065727 s: 24.425390 real seconds / 11.66% less
+        full wall time and +13.20% throughput**.  Baseline and candidate
+        full-range spreads are 0.98% and 1.17%.
+
+        Child-plus-merge means are 204.965780 -> 180.514787 s (**11.93%
+        less**).  M1 width/space becomes the sole pole at a 180.507539 s mean,
+        down from 204.958218 s.  The antenna pole falls from 191.356083 s to
+        96.299579 s for the slowest new owner (**49.68% less antenna-lane
+        wall**); grid rises only to 45.032370 s.  This is the first
+        configuration-level result that converts the large independent CUDA
+        lane reductions into a double-digit end-to-end win.
+
+        All six clean reports are canonically identical at SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`;
+        all three candidate raw merges are byte-identical at
+        `89fa723caf5ecd620993d62c2d2e63ca6eaf8c14fe0dac25a7abf9c2992c1472`.
+        CUDA-enabled shards also match CPU `all` exactly on the 86-item
+        antenna fixture, 99-item M1 sentinel, and 1,587-item mixed hierarchy,
+        including the moved CONTACT.6 marker and retained M1.1/.2 markers.
+        Their semantic SHA-256 values are respectively
+        `409085bc15614329421b1b07a6fdd6b867fe8cad83a214a1f32a5d9986a595a4`,
+        `265a2e1c58aed60bc89e8bd2ad2904147a1e53fcd7a2a7c8bfa8ddaa339cd1a2`,
+        and
+        `429d631ab89d9e0a54e4f6ed367223974b8caca564c461fda59ebda9dcbcd8d2`.
+        The transformed CUDA deck and bound manifest SHA-256 values are
+        `5e32231a9232a98b4bfc7475e2f9a9400d967787734072e5678c870ffde68573`
+        and
+        `5145c61ca568c05d82675f700f6b95c3b7135880adf081f90e5692492538c59f`.
+        The reusable fail-closed transform lives under
+        `benchmarks/freepdk45_contact6_split/` on `perf`; its grid mode is the
+        CUDA-specific balancing choice.
+
+      - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
+        WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
+        exact predicates, METAL1.3 guards, four-side reduction, and per-rule
+        clean/fallback state on device, and return one terminal result.  Source
+        and profile mapping projects roughly 95--100 seconds of the 145.5-second
+        M1 lane in this interval, but that is overlapping opportunity
+        accounting, not an additive measured saving.  The existing ACTIVE.3
+        and METAL1.3 kernels are the two proven endpoints.
+
+      - [ ] **Widen the resident plan across the post-derived M1 interval:**
+        after CPU construction of WELL and GATE, keep POLY.1/3/4/5/6,
+        ACTIVE.3, and METAL1.3 on device through terminal per-category culling.
+        This exposes about 95% of profiled M1 operation work without first
+        porting polygon Boolean construction.  POLY.3/4 require exact
+        edge-pair normalization, edge-pair-to-polygon conversion, zero-area
+        culling, and stable hierarchy ownership; a raw-hit-zero certificate is
+        insufficient.
+
+      - [ ] **Move hierarchy lowering onto the GPU and amortize residency:**
+        replace the current host context lowering with a bounded device
+        BFS/wavefront, then add a fingerprint-keyed resident scene cache with a
+        persistent CUDA context and reusable buffers.  Charge cold load,
+        validation, upload, queueing, fallback, and teardown separately from
+        warm reuse.  Extend the plan boundary leftward to raw layers and perform
+        WELL/GATE/FIELD-POLY Boolean construction on device only after the
+        post-derived executor is exact and beneficial; this is the whole-M1
+        endgame rather than a prerequisite for the next measured win.
 15. [ ] **Lean headless DRC build and developer-turnaround path**
     The accepted runtime is headless, but the standard build still compiles the
     full KLayout distribution.  The current graph has 1,877 object files; 724
