@@ -1725,13 +1725,12 @@ not just wall time.
           semantic SHA-256
           `409085bc15614329421b1b07a6fdd6b867fe8cad83a214a1f32a5d9986a595a4`.
           Implementation commit `19b7c54` is pushed.
-        - [ ] **Generalize the exact M1 width/space transaction to M2:** add a
-          separately enabled and digest-bound 140-DBU profile for the existing
-          atomic `METAL2.1/.2` batch.  First census the exact merged M2 scene:
-          the CPU batch is 60.23 s, but the 22.95-million-polygon raw upper
-          bound may exceed current edge/membership capacities.  Proceed to
-          production only when charged lowering plus backend replay models at
-          least 5 real seconds of eventual full-wall opportunity.
+        - [x] **Generalize the exact M1 width/space transaction to M2 —
+          correctness-complete, performance-deferred:** the separately enabled,
+          digest-bound 140-DBU `METAL2.1/.2` certificate is exact, but its final
+          aggregate production gate removes only 0.1--0.7 real owner seconds.
+          Keep it opt-in and do not spend a full M2 signoff run or enable it by
+          default until scene residency/amortization changes that bound.
 
           - [x] The additive host/backend profile and exact runtime-distance
             predicate are committed as `e4ce247` and `e638ac0`.  Focused DB
@@ -1752,17 +1751,48 @@ not just wall time.
             **92.25 to 118.66 s**.  The corresponding `drc_batch` moved from
             57.46 to 76.78 s.  Evidence:
             `cuda-runs/m2-width-space-sniff.ld2a7u`.
-          - [ ] **Remove duplicate quadratic contour validation before the
-            second M2 production A/B:** both the KLayout serializer and the
-            backend independently perform an all-pairs self-intersection check
-            for every merged Manhattan contour.  Preserve fail-closed exactness
-            with one shared near-linear validator, retain adversarial
-            malformed-contour gates, then repeat the focused clean/hit/fallback
-            and production timing gates.  The 57.46-second CPU batch contains
-            roughly 47.4 s of common merged-geometry preparation, so the
-            bounded M2 prize is approximately 10 real owner seconds, or
-            9--10 real seconds off the current full-wall plateau once M2 falls
-            behind the 91.6-second neighboring owner.
+          - [x] **Remove duplicate quadratic contour validation and repeat the
+            M2 production A/B:** commits `1cb90b6` and `56caeb5` restore the
+            original exported C++ layout, give M2 an independent capability
+            symbol, add exact 139-DBU hit/cross-profile rejection gates, and
+            replace both all-edge-pairs contour checks with one shared exact
+            `O(E log E)` sweep/Fenwick validator.  It matched 50,000 committed
+            randomized oracle cases plus 5.1 million independently enumerated
+            contours.  On the exact 13,166-polygon/4,380,228-edge production
+            scene, the two validation passes take 2.42 s combined.
+
+            Charged live lowering plus backend call fell from **29.385 to a
+            four-run mean of 5.008 real seconds** (**24.377 s / 82.96% less**);
+            the GPU pipeline itself remains roughly 0.3--0.4 s.  All candidate,
+            control, and trusted reference reports retain canonical SHA-256
+            `b817dc5b2158a5a04316daae8e27ec7fbf7e82341f961a3464c17937c8d9d77e`.
+            However, three concurrent same-build pairs measured **95.857 s
+            control versus 95.157 s candidate** (**0.700 s / 0.73% less**), and
+            including the isolated pair gives four-run means of **95.558 versus
+            95.458 s** (**0.100 s / 0.10% less**).  The earlier 5--10-second
+            projection confused KLayout's aggregate/user CPU timers with
+            critical-path wall time: the stock four-thread rule work was
+            already parallel.  This is below the integration threshold, so no
+            M2-enabled full gate is claimed.  Evidence:
+            `cuda-runs/m2-width-space-sniff.0N6WtT` and
+            `cuda-runs/m2-width-space-aggregate3.MnEJLC`.
+            The M2-disabled eleven-owner regression gate nevertheless passed
+            at 100.86 s with canonical full-report SHA-256
+            `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+            The validator also shortened the already-enabled M1 width/space
+            owner from **78.443 to 57.074 real seconds** (**21.369 s / 27.24%
+            less**); full wall moved only 101.66 -> 100.86 s (**0.80% less**)
+            because unchanged M2 remained the pole.  Evidence:
+            `cuda-runs/klayout-balanced-full-cuda-gate.cRBR3S`.
+          - [ ] **Memoize exact translation-equivalent contour validation:**
+            the M2 scene has 13,166 contours but only 71 exact edge sequences
+            modulo translation.  A read-only prototype reduced one exact pass
+            from roughly 1.40 to 0.18 s; independent host and DSO caches project
+            about 2.4 s less serialized preparation.  Preserve fail-closed
+            behavior by scanning every edge/bounds/area, caching only a fully
+            validated contour, and requiring an overflow-safe coordinate-by-
+            coordinate translation proof on every hash hit.  This is a
+            low-risk 2--3% owner experiment, not yet a full-wall claim.
         - [ ] **Fuse POLY.3 and POLY.4 into one exact terminal-empty CUDA
           transaction:** upload the shared derived gate once and evaluate the
           110/140-DBU projection-enclosure profiles atomically.  The certificate
