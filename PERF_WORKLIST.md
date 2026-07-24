@@ -1603,6 +1603,65 @@ not just wall time.
           specialization.  Evidence is retained under
           `/home/pullin/personal/klayout/.scratchpad/cuda-runs/`.
 
+      - [x] **Reuse the atomic M1-contact proof for CONTACT.1-.3 and
+        METAL1.3:** commit `0c901b5` makes one stronger M1-containment,
+        exact-cut, spacing, and enclosure certificate serve all four fixed
+        FreePDK45 categories. Every hit, changed rule, unsupported scene,
+        capacity decline, missing backend, or error executes the untouched CPU
+        expressions exactly once. The live gate passes both owning shards over
+        15 fixtures and 120 canonical report comparisons.
+
+        On the production x2 `implant_contact` owner, the same generic-`O2`
+        binary changed **219.20 -> 132.33 s: 86.87 real seconds / 39.63% less
+        owner wall time**, with canonical report SHA-256
+        `b0e94aa57f09535c1b283e47838fba1830ffd17f9f88c9e15c9c2512aff95f56`.
+        Full computations after the change were 142.59 and 144.89 s versus a
+        clean 162.81-second pre-change gate. A second 162.31-second control
+        overlapped small live-fixture launches, so no two-control aggregate is
+        promoted here. The exact owner A/B and integrity gate, not the
+        contaminated control, are the accepted evidence.
+
+      - [x] **Port the exact CONTACT.4 empty certificate to CUDA:** commit
+        `f12e1c4` indexes all raw CONTACT edges, streams the merged ACTIVE
+        hierarchy, restores the relation's primary/secondary order, and
+        evaluates the strict 5 nm Euclidean enclosure predicate. Only a
+        digest-bound zero-hit result with exact census conservation and no
+        uncertainty/fallback/device flags skips the historical CPU expression.
+        The focused gate passes 480,038 GPU/oracle/KLayout predicate
+        classifications plus 19 live CPU-oracle cases spanning strict
+        boundaries, endpoint distance, partial projection, collinear
+        degeneracies, raw/merged differences, hierarchy transforms, changed
+        semantics/options/order/DBU, missing backend, and capacity fallback.
+
+        A first exact production attempt exposed and rejected a contended
+        per-candidate global reservation: it spent 35.008 s in the backend and
+        made the owner slower at 150.41 s. Per-thread exact accounting reduced
+        the same 31,899,588-candidate backend to 3.978 s. The isolated
+        same-binary owner A/B then changed **132.50 -> 120.29 s: 12.21 real
+        seconds / 9.22% less owner wall time**, with canonical SHA-256
+        `b0e94aa57f09535c1b283e47838fba1830ffd17f9f88c9e15c9c2512aff95f56`.
+
+        Two explicit same-binary CONTACT.4-off full controls (141.67, 142.69
+        s) and two candidates (129.39, 129.38 s) changed mean wall
+        **142.18 -> 129.385 s: 12.795 real seconds / 9.00% less full wall
+        time**. Mean `implant_contact` owner wall changed 137.240 -> 124.473 s:
+        **12.767 real seconds / 9.30% less owner wall time**. All four merged
+        reports retained canonical SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+
+      - [ ] **Fuse IMPLANT.1 and IMPLANT.2 as one atomic CUDA transaction:**
+        rewrite only the two fixed projection-separation expressions into one
+        exact batch, lower the merged implant primary plus gate and raw CONTACT
+        secondaries once, build one resident implant index, and return two
+        ordered clean/fallback states. Preserve the historical
+        `.polygons.without_area(0)` publication path and run both original CPU
+        expressions exactly once on any hit or decline. The prior qualified
+        profile attributed about 57.456 CPU-seconds to these two rules; its
+        wall/CPU ratio projected roughly 37.9 seconds of gross owner-wall
+        opportunity before lowering and backend overhead. Re-census and charge
+        that opportunity against the new 124.47-second pole before making a
+        whole-run claim.
+
       - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
         WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
         exact predicates, METAL1.3 guards, four-side reduction, and per-rule

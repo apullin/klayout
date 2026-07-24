@@ -7,7 +7,7 @@ Usage:
   bash run_balanced_full_gate.sh \
     --klayout PATH --backend PATH --source-deck PATH \
     --manifest PATH --input PATH --top-cell NAME --reference PATH \
-    [--python PATH] [--timeout-seconds N] [--keep-work]
+    [--python PATH] [--timeout-seconds N] [--without-contact4] [--keep-work]
 
 Regenerates the qualified FreePDK45 live-CUDA deck, applies the three-way
 antenna split, coalesces CONTACT.6 into the grid owner, and runs the exact
@@ -19,6 +19,9 @@ may be either a raw or generator-stripped XML .lyrdb report. The merged report
 must match it after removing only the generator element. CUDA certificate
 telemetry, the canonical report, timings, hashes, and launcher provenance are
 checked before success.
+
+--without-contact4 retains every other qualified CUDA transaction and exists
+only to produce a same-binary CONTACT.4-off performance control.
 
 All generated decks, reports, logs, homes, and caches live under a fresh
 TMPDIR directory. They are removed unless --keep-work is specified.
@@ -47,6 +50,7 @@ reference=
 python=${PYTHON:-python3}
 timeout_seconds=900
 keep_work=0
+contact4=1
 
 while (($#)); do
   case "$1" in
@@ -97,6 +101,10 @@ while (($#)); do
       ;;
     --keep-work)
       keep_work=1
+      shift
+      ;;
+    --without-contact4)
+      contact4=0
       shift
       ;;
     -h|--help)
@@ -256,8 +264,8 @@ set +e
       KLAYOUT_CUDA_SPATIAL_MAX_CANDIDATES=30000000 \
       KLAYOUT_CUDA_M1_CONTACT=1 \
       KLAYOUT_CUDA_M1_CONTACT_TELEMETRY=1 \
-      KLAYOUT_CUDA_CONTACT4=1 \
-      KLAYOUT_CUDA_CONTACT4_TELEMETRY=1 \
+      "KLAYOUT_CUDA_CONTACT4=${contact4}" \
+      "KLAYOUT_CUDA_CONTACT4_TELEMETRY=${contact4}" \
       "${python}" "${runner}" \
         --klayout "${klayout}" \
         --deck "${balanced_deck}" \
@@ -314,9 +322,14 @@ require_telemetry \
 require_telemetry \
   "CUDA M1 contact transaction: certified-empty" \
   "M1-contact certified-empty"
-require_telemetry \
-  "CUDA CONTACT.4 empty certificate: outcome=certified-empty" \
-  "CONTACT.4 certified-empty"
+if ((contact4)); then
+  require_telemetry \
+    "CUDA CONTACT.4 empty certificate: outcome=certified-empty" \
+    "CONTACT.4 certified-empty"
+elif grep -R -Fq --include='*.log' -- \
+  "CUDA CONTACT.4" "${shard_dir}"; then
+  die "CONTACT.4-off control unexpectedly invoked CONTACT.4 CUDA"
+fi
 
 shard_count=$(grep -c '^shard ' "${launcher_log}" || true)
 [[ "${shard_count}" == "${#shards[@]}" ]] ||
@@ -364,4 +377,5 @@ cat -- "${time_file}"
 cat -- "${work}/launcher-summary.txt"
 cat -- "${work}/canonical-report-sha256.txt"
 cat -- "${work}/cuda-telemetry.txt"
-echo "BALANCED_FULL_CUDA_GATE ok owners=10 jobs=8"
+echo \
+  "BALANCED_FULL_CUDA_GATE ok owners=10 jobs=8 contact4=${contact4}"

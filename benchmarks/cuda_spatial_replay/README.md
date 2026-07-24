@@ -381,6 +381,58 @@ were identical with SHA-256
 These are critical-lane and transaction measurements, not a claim that the
 parallel full launcher fell by 114.67 s.
 
+The later `implant_contact` same-binary production gate changed 219.20 to
+132.33 s: **86.87 real seconds / 39.63% less owner wall time**. Both reports
+retained canonical SHA-256
+`b0e94aa57f09535c1b283e47838fba1830ffd17f9f88c9e15c9c2512aff95f56`.
+This owner-local result includes the CONTACT.1-.3 transaction but predates the
+separate CONTACT.4 certificate below.
+
+### Live CONTACT.4 certificate
+
+`KLAYOUT_CUDA_CONTACT4=1` enables a narrowly qualified clean-only certificate
+for the exact FreePDK45 expression
+`active.enclosing(cont, 5.nm, euclidian)` at 0.5 nm DBU. The host requires a
+merged ACTIVE 1/0 primary and raw CONTACT 10/0 secondary from the same
+DeepShapeStore, hierarchy root, and layout. It lowers the complete hierarchy
+once, indexes raw CONTACT edges, streams merged ACTIVE edges, and restores
+primary/secondary order before the exact 10-DBU predicate. A zero-hit result
+is consumable only when the digest and all request/result census fields echo,
+the actual candidate count is within capacity, and hit, uncertainty, fallback,
+and device flags are all zero. Every other outcome runs the untouched CPU
+expression exactly once.
+
+Telemetry is enabled with `KLAYOUT_CUDA_CONTACT4_TELEMETRY=1`. The focused
+gate covers strict 9/10-DBU spacing, Euclidean 6/7 versus 6/8 endpoint
+distance, partial projection, collinear touch/overlap/separation, raw geometry
+whose merge changes edge subsegments, hierarchy transforms and arrays, raw
+primary semantics, changed options, reversed operands, wrong DBU, missing
+backend, and capacity fallback:
+
+```sh
+benchmarks/cuda_spatial_replay/run_contact4_live_gate.sh \
+  --klayout /path/to/klayout \
+  --backend /path/to/libklayout_cuda_spatial_backend.so
+```
+
+The gate passes 480,038 direct GPU/oracle/KLayout predicate comparisons and
+19 live CPU-oracle cases: 14 qualified CUDA cases, five qualification
+declines, and two explicit fail-closed lanes. On the production x2
+`implant_contact` owner, a same-binary external-wall A/B changed **132.50 to
+120.29 s: 12.21 real seconds / 9.22% less owner wall time**. The backend
+classified exactly 31,899,588 candidates in 3.978 s after 3.379 s of host
+lowering, with zero hits or uncertainty. Both reports retained canonical
+SHA-256
+`b0e94aa57f09535c1b283e47838fba1830ffd17f9f88c9e15c9c2512aff95f56`.
+
+Two same-binary full-gate controls and two CONTACT.4 candidates changed mean
+wall from **142.18 to 129.385 s: 12.795 real seconds / 9.00% less full wall
+time**. Individual control walls were 141.67 and 142.69 s; candidates were
+129.39 and 129.38 s. Mean `implant_contact` owner wall changed 137.240 to
+124.473 s: **12.767 real seconds / 9.30% less owner wall time**. Every merged
+report retained canonical SHA-256
+`01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+
 ### Balanced full-launch gate
 
 `run_balanced_full_gate.sh` packages the qualified configuration-level gate.
@@ -392,14 +444,14 @@ eight-owner source, applies the three-way antenna transform, and moves only
 The runner fixes the qualified ten-owner launch order, eight-process limit,
 four deck threads per process, CUDA resource limits, and certificate opt-ins.
 It then requires ACTIVE.3, METAL1.1/METAL1.2, VIA1-stack,
-and CONTACT.1-.3/METAL1.3 telemetry before comparing the canonical merged
-report. The older CONTACT.1 selected-empty certificate is intentionally not
-required because the atomic M1-contact certificate bypasses that CPU
-expression. Supply the deck-bound manifest created from a CPU `drc_shard=all`
-reference and the ten CUDA-enabled shard reports. Do not create the reference
-with CUDA enabled: that changes historical category order even when the
-semantic report is
-otherwise equal.
+CONTACT.1-.3/METAL1.3, and CONTACT.4 telemetry before comparing the canonical
+merged report. The older CONTACT.1 selected-empty certificate is intentionally
+not required because the atomic M1-contact certificate bypasses that CPU
+expression. `--without-contact4` retains every other opt-in and provides an
+explicit same-binary performance control. Supply the deck-bound manifest
+created from a CPU `drc_shard=all` reference and the ten CUDA-enabled shard
+reports. Do not create the reference with CUDA enabled: that changes
+historical category order even when the semantic report is otherwise equal.
 
 ```sh
 bash benchmarks/cuda_spatial_replay/run_balanced_full_gate.sh \
@@ -417,8 +469,8 @@ The qualified source deck, generated balanced deck, manifest, x2 input, and
 canonical report SHA-256 values are respectively:
 
 - `3e981b9389a67c6c1c4b08f0640d8750ca78990c868c5686fa8ebbd401cba72c`
-- `5e32231a9232a98b4bfc7475e2f9a9400d967787734072e5678c870ffde68573`
-- `5145c61ca568c05d82675f700f6b95c3b7135880adf081f90e5692492538c59f`
+- `5b2d78c211cff3a68388f22b6d74e67011272d0b851d635da28123c8c95bda33`
+- `769fd241d6f07fbab2543e30a2f15ee257ad5b960216321cce72d7c189b0bdc1`
 - `74911a2111a3421912e54538bf55cd12e50164f43cd1a8c47411602e64c91d98`
 - `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`
 
