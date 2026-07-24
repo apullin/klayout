@@ -112,6 +112,7 @@ def write_report(
     *,
     category_descriptions: dict[str, str] | None = None,
     cells: list[tuple[object, ...]] | None = None,
+    tags: list[tuple[str, str]] | None = None,
     top_cell: str = "TOP",
     original_file: str = "/fixture/design.gds",
 ) -> None:
@@ -124,10 +125,13 @@ def write_report(
     _text(root, "generator", "drc: script='/fixture/deck.lydrc'")
     _text(root, "top-cell", top_cell)
 
-    tags = ET.SubElement(root, "tags")
-    tag = ET.SubElement(tags, "tag")
-    _text(tag, "name", "review")
-    _text(tag, "description", "fixture tag")
+    tags_root = ET.SubElement(root, "tags")
+    for tag_name, tag_description in (
+        tags if tags is not None else [("review", "fixture tag")]
+    ):
+        tag = ET.SubElement(tags_root, "tag")
+        _text(tag, "name", tag_name)
+        _text(tag, "description", tag_description)
 
     category_root = ET.SubElement(root, "categories")
     category_containers: dict[tuple[str, ...], ET.Element] = {(): category_root}
@@ -326,6 +330,127 @@ class ReportFixture(unittest.TestCase):
 
 
 class MergeReportsTests(ReportFixture):
+    def test_manifest_accepts_unordered_tag_subsets_and_uses_canonical_order(
+        self,
+    ) -> None:
+        reference = self.directory / "tag-reference.lyrdb"
+        first = self.directory / "tag-first.lyrdb"
+        second = self.directory / "tag-second.lyrdb"
+        manifest = self.directory / "tag-manifest.json"
+        output = self.directory / "tag-merged.lyrdb"
+        item_a = {
+            "marker": "tag-a",
+            "category": "RULE.A",
+            "tags": "#alpha",
+        }
+        item_b = {
+            "marker": "tag-b",
+            "category": "RULE.B",
+            "tags": "#beta",
+        }
+        reference_tags = [("beta", "second"), ("alpha", "first")]
+        write_report(
+            reference,
+            ["RULE.A", "RULE.B"],
+            [item_a, item_b],
+            tags=reference_tags,
+        )
+        write_report(first, ["RULE.A"], [item_a], tags=[("alpha", "first")])
+        write_report(second, ["RULE.B"], [item_b], tags=[("beta", "second")])
+
+        merger.create_manifest(
+            reference, [("first", first), ("second", second)], manifest
+        )
+        merger.merge_reports(
+            manifest, [("second", second), ("first", first)], output
+        )
+
+        self.assertEqual(
+            merger._tags(merger._parse_report(output)),
+            (("alpha", "first"), ("beta", "second")),
+        )
+        self.assertEqual(item_markers(output), ["tag-a", "tag-b"])
+
+    def test_manifest_and_merge_canonicalize_tagged_value_order(self) -> None:
+        reference = self.directory / "value-reference.lyrdb"
+        first = self.directory / "value-first.lyrdb"
+        second = self.directory / "value-second.lyrdb"
+        manifest = self.directory / "value-manifest.json"
+        output = self.directory / "value-merged.lyrdb"
+        tags = [("alpha", ""), ("beta", "")]
+        reference_item = {
+            "marker": "tagged-values",
+            "category": "RULE.A",
+            "values": [
+                "polygon: (0,0;0,1;1,1;1,0)",
+                "[#beta] float: 2",
+                "[#alpha] float: 1",
+            ],
+        }
+        shard_item = {
+            **reference_item,
+            "values": [
+                "polygon: (0,0;0,1;1,1;1,0)",
+                "[#alpha] float: 1",
+                "[#beta] float: 2",
+            ],
+        }
+        write_report(reference, ["RULE.A", "RULE.B"], [reference_item], tags=tags)
+        write_report(first, ["RULE.A"], [shard_item], tags=list(reversed(tags)))
+        write_report(second, ["RULE.B"], [], tags=[])
+
+        merger.create_manifest(
+            reference, [("first", first), ("second", second)], manifest
+        )
+        merger.merge_reports(
+            manifest, [("second", second), ("first", first)], output
+        )
+
+        values = item_for_marker(output, "tagged-values").find("values")
+        assert values is not None
+        self.assertEqual(
+            [value.text for value in values],
+            [
+                "polygon: (0,0;0,1;1,1;1,0)",
+                "[#alpha] float: 1",
+                "[#beta] float: 2",
+            ],
+        )
+
+    def test_manifest_rejects_an_unknown_shard_tag(self) -> None:
+        unknown = self.rewrite_report(
+            "odd-unknown-tag.lyrdb",
+            ["RULE.C", "RULE.A"],
+            [self.items[name] for name in ("C-1", "A-1", "A-2")],
+            tags=[("review", "fixture tag"), ("unknown", "")],
+        )
+        with self.assertRaisesRegex(ValueError, "unknown tag declaration"):
+            merger.create_manifest(
+                self.reference,
+                [("odd", unknown), ("even", self.even)],
+                self.directory / "unknown-tag-manifest.json",
+            )
+
+    def test_manifest_rejects_an_incomplete_tag_union(self) -> None:
+        no_tags_odd = self.rewrite_report(
+            "odd-no-tags.lyrdb",
+            ["RULE.C", "RULE.A"],
+            [self.items[name] for name in ("C-1", "A-1", "A-2")],
+            tags=[],
+        )
+        no_tags_even = self.rewrite_report(
+            "even-no-tags.lyrdb",
+            ["RULE.D", "RULE.B"],
+            [self.items[name] for name in ("D-1", "B-1")],
+            tags=[],
+        )
+        with self.assertRaisesRegex(ValueError, "tag declaration union is missing"):
+            merger.create_manifest(
+                self.reference,
+                [("odd", no_tags_odd), ("even", no_tags_even)],
+                self.directory / "missing-tag-manifest.json",
+            )
+
     def test_create_manifest_never_overwrites_an_input(self) -> None:
         before = self.reference.read_bytes()
         with self.assertRaises(ValueError):

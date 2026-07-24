@@ -139,6 +139,34 @@ def _tags(root: ET.Element) -> tuple[tuple[str, str], ...]:
     return tuple(result)
 
 
+def _merge_tag_subset(
+    merged: dict[str, str],
+    actual: Sequence[tuple[str, str]],
+    expected: Mapping[str, str],
+    context: str,
+) -> None:
+    """Validate and accumulate an unordered subset of trusted report tags."""
+
+    for name, description in actual:
+        expected_description = expected.get(name)
+        if expected_description is None:
+            raise ReportError(f"{context}: unknown tag declaration {name!r}")
+        if description != expected_description:
+            raise ReportError(f"{context}: conflicting tag declaration {name!r}")
+        previous = merged.get(name)
+        if previous is not None and previous != description:
+            raise ReportError(f"{context}: shards disagree about tag {name!r}")
+        merged[name] = description
+
+
+def _require_complete_tag_union(
+    merged: Mapping[str, str], expected: Mapping[str, str], context: str
+) -> None:
+    missing = sorted(set(expected) - set(merged))
+    if missing:
+        raise ReportError(f"{context}: tag declaration union is missing {missing!r}")
+
+
 def _categories(root: ET.Element) -> list[tuple[tuple[str, ...], str]]:
     result: list[tuple[tuple[str, ...], str]] = []
     seen: set[tuple[str, ...]] = set()
@@ -215,6 +243,31 @@ def _fingerprint(node: ET.Element) -> tuple[object, ...]:
         text,
         tuple(_fingerprint(child) for child in node),
     )
+
+
+def _is_tagged_value(value: ET.Element) -> bool:
+    text = value.text or ""
+    return text.startswith("[#") and "]" in text[2:]
+
+
+def _canonicalize_tagged_values(item: ET.Element) -> None:
+    """Sort associative ``[#tag]`` values while preserving positional values."""
+
+    values = item.find("values")
+    assert values is not None
+    positional = [value for value in values if not _is_tagged_value(value)]
+    tagged = sorted(
+        (value for value in values if _is_tagged_value(value)),
+        key=_fingerprint,
+    )
+    if tagged:
+        values[:] = positional + tagged
+
+
+def _item_fingerprint(item: ET.Element) -> tuple[object, ...]:
+    canonical = copy.deepcopy(item)
+    _canonicalize_tagged_values(canonical)
+    return _fingerprint(canonical)
 
 
 def _qname(name: str, variant: str) -> str:
@@ -352,7 +405,7 @@ def _items(
 def _item_counter(root: ET.Element) -> Counter[tuple[object, ...]]:
     container = root.find("items")
     assert container is not None
-    return Counter(_fingerprint(item) for item in container)
+    return Counter(_item_fingerprint(item) for item in container)
 
 
 def _atomic_json(path: Path, value: object) -> None:
@@ -411,6 +464,8 @@ def create_manifest(
     named = _named_roots(shards)
     reference_metadata = _metadata(reference)
     reference_tags = _tags(reference)
+    expected_tags = dict(reference_tags)
+    supplied_tags: dict[str, str] = {}
     reference_categories = _categories(reference)
     reference_category_map = dict(reference_categories)
 
@@ -428,8 +483,9 @@ def create_manifest(
             shard_generator = metadata["generator"]
         elif metadata["generator"] != shard_generator:
             raise ReportError(f"{path}: shard generators disagree")
-        if _tags(root) != reference_tags:
-            raise ReportError(f"{path}: tag declarations differ from reference")
+        _merge_tag_subset(
+            supplied_tags, _tags(root), expected_tags, f"{path}: tag declarations"
+        )
         for category_path, description in _categories(root):
             if category_path in owners:
                 raise ReportError(
@@ -438,6 +494,10 @@ def create_manifest(
                 )
             owners[category_path] = name
             supplied[category_path] = description
+
+    _require_complete_tag_union(
+        supplied_tags, expected_tags, "shard tag declarations"
+    )
 
     if supplied != reference_category_map:
         missing = sorted(set(reference_category_map) - set(supplied))
@@ -498,7 +558,7 @@ def create_manifest(
         "shards": [name for name, _, _ in named],
         "tags": [
             {"name": name, "description": description}
-            for name, description in reference_tags
+            for name, description in sorted(reference_tags)
         ],
         "categories": [
             {
@@ -751,9 +811,18 @@ def merge_reports(
     expected_tags = tuple(
         (entry["name"], entry["description"]) for entry in manifest["tags"]
     )
+    expected_tag_map = dict(expected_tags)
+    supplied_tags: dict[str, str] = {}
     for name, path, root in named:
-        if _tags(root) != expected_tags:
-            raise ReportError(f"{path}: tag declarations differ from manifest")
+        _merge_tag_subset(
+            supplied_tags,
+            _tags(root),
+            expected_tag_map,
+            f"{path}: tag declarations",
+        )
+    _require_complete_tag_union(
+        supplied_tags, expected_tag_map, "shard tag declarations"
+    )
 
     manifest_categories = manifest["categories"]
     category_entries = {
@@ -810,6 +879,7 @@ def merge_reports(
     for entry in manifest_categories:
         path = tuple(entry["path"])
         for item in items_by_category[path]:
+            _canonicalize_tagged_values(item)
             items_node.append(item)
             item_count += 1
 
