@@ -20,6 +20,7 @@ set_target_properties(cuda_spatial_replay PROPERTIES
 )
 
 add_library(klayout_cuda_spatial_backend SHARED
+  poly34_backend.cu
   spatial_backend.cu
   via1_stack_backend.cu
 )
@@ -45,6 +46,14 @@ target_include_directories(cuda_spatial_backend_smoke PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
 )
 target_link_libraries(cuda_spatial_backend_smoke PRIVATE
+  klayout_cuda_spatial_backend
+)
+
+add_executable(poly34_backend_smoke poly34_backend_smoke.cc)
+target_include_directories(poly34_backend_smoke PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+target_link_libraries(poly34_backend_smoke PRIVATE
   klayout_cuda_spatial_backend
 )
 

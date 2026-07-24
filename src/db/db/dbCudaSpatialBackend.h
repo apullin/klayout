@@ -123,6 +123,47 @@ struct DB_PUBLIC CudaM1WidthSpaceAttempt
   std::string message;
 };
 
+struct DB_PUBLIC CudaPoly34Attempt
+{
+  enum Disposition
+  {
+    Disabled,
+    CertifiedEmpty,
+    NotEmpty,
+    BackendFallback,
+    BackendError,
+    InvalidResult
+  };
+
+  CudaPoly34Attempt ();
+
+  Disposition disposition;
+  uint32_t certified_empty_mask;
+  uint32_t fallback_flags;
+  uint32_t device_flags;
+  uint64_t context_count;
+  uint64_t poly_context_count;
+  uint64_t active_context_count;
+  uint64_t gate_context_count;
+  uint64_t cell_count;
+  uint64_t box_count;
+  uint64_t flat_poly_box_count;
+  uint64_t flat_active_box_count;
+  uint64_t flat_gate_box_count;
+  uint64_t poly_membership_count;
+  uint64_t active_membership_count;
+  uint64_t poly_query_visit_count;
+  uint64_t active_query_visit_count;
+  uint64_t poly_candidate_count;
+  uint64_t active_candidate_count;
+  uint64_t poly_terminal_empty_count;
+  uint64_t active_terminal_empty_count;
+  uint64_t atomic_terminal_empty_count;
+  uint64_t fallback_gate_count;
+  uint64_t total_ns;
+  std::string message;
+};
+
 struct DB_PUBLIC CudaVia1StackAttempt
 {
   enum Disposition
@@ -317,6 +358,19 @@ DB_PUBLIC bool cuda_spatial_m1_width_space_requested ();
 
 /** Return true only when the independent M2 width/space opt-in and symbol exist. */
 DB_PUBLIC bool cuda_spatial_m2_width_space_requested ();
+
+/**
+ * Invoke the optional atomic POLY.3/POLY.4 terminal-empty certificate.
+ *
+ * Only CertifiedEmpty is consumable.  Every positive-area or conservative
+ * miss, uncertainty, malformed echo, capacity, loader or CUDA outcome
+ * requires the complete unchanged two-rule CPU transaction.
+ */
+DB_PUBLIC CudaPoly34Attempt cuda_spatial_try_poly34_empty (
+  const klayout_cuda_spatial_poly34_request_v1 &request);
+
+/** Return true only when the independent POLY.3/.4 opt-in and symbol exist. */
+DB_PUBLIC bool cuda_spatial_poly34_requested ();
 
 /**
  * Invoke the optional atomic M1/VIA1/M2 six-rule empty certificate.

@@ -1,14 +1,16 @@
 # POLY.3/POLY.4 terminal-empty correctness milestone
 
-This milestone is intentionally limited to the correctness question that must
-be answered before a host ABI or live-deck transaction is added:
+This work began with the correctness question that had to be answered before a
+host ABI or live-deck transaction could be added:
 
 > Can a bounded rectangle-union CUDA classifier safely prove that
 > `enclosing(..., projection).polygons.without_area(0)` is empty for the
 > qualified 110 and 140 DBU profiles?
 
-It does not make a performance claim and does not alter the production host,
-ABI, deck, or report path.
+The standalone predicate, production-volume census, and separately enabled
+live transaction are now all present.  The live path remains additive and
+fail-closed; this milestone does not alter a production deck or book a
+whole-run performance saving.
 
 ## Exact terminal semantics
 
@@ -188,7 +190,52 @@ bash benchmarks/cuda_spatial_replay/run_poly34_production_dry_run.sh \
   --input /path/to/layout.gds --top TOP
 ```
 
-The next step may add a separately enabled, digest-bound host/backend
-transaction. It must reuse the already-derived hierarchical layers or lower
-them into a packed scene; the 159-second flat census construction is not an
-acceptable live path. No whole-run saving is booked by this dry-run milestone.
+## Additive live transaction
+
+The separately enabled live path avoids the 159-second flat census
+construction.  Its host bridge first checks both the POLY.3/.4 opt-in and the
+independent backend symbol, then explicitly merges the same hierarchical POLY,
+ACTIVE, and derived GATE operands used by the historical rules.  It packs only
+exact per-cell box unions and regular orthogonal instance contexts.  Store,
+layout, top-cell, layer, count, capacity, and complete-scene identities are
+bound into a SHA-256 digest.
+
+The `nvcc`-compiled backend revalidates the request and digest, expands the
+compact hierarchy on device, constructs bounded POLY and ACTIVE spatial
+windows, and applies both exact terminal predicates atomically.  It returns
+clean only when every GATE occurrence certifies both profiles.  A genuine hit,
+uncertain predicate, malformed request, disabled or missing backend, capacity
+limit, or CUDA error executes both pristine CPU expressions.
+
+The focused live gate has seven CPU oracles and seven accelerated cases: flat
+clean, clean Manhattan non-box primary decomposition, 2,048-occurrence
+hierarchical clean, a six-occurrence asymmetric rotated-array hit, independent
+genuine POLY.3 and POLY.4 hits, and a mixed two-rule hit.  It also proves that
+an unqualified source layer, a configured backend with the feature disabled,
+and a missing backend perform no scene lowering, and that a forced
+device-capacity failure falls back atomically.  All 18 complete,
+generator-stripped `.lyrdb` reports are canonical-identical to their CPU
+oracle, including ordered categories and cell/report structure:
+
+```text
+POLY34_LIVE_GATE ok gate=cpu-oracle cases=7 categories=2
+POLY34_LIVE_GATE ok gate=cuda clean=3 hits=4 reports=cpu-identical atomic=1 transformed-hit=1 manhattan-primary=1
+POLY34_LIVE_GATE ok gate=wrong-layer report=cpu-identical no-lowering=1
+POLY34_LIVE_GATE ok gate=backend-off report=cpu-identical
+POLY34_LIVE_GATE ok gate=missing-backend report=cpu-identical
+POLY34_LIVE_GATE ok gate=capacity report=cpu-identical
+POLY34_LIVE_GATE PASS oracles=7 cuda=7 wrong-layer=1 backend-off=1 missing=1 capacity=1 reports=18
+```
+
+Reproduce against built host and backend artifacts with:
+
+```sh
+bash benchmarks/cuda_spatial_replay/run_poly34_live_gate.sh \
+  --klayout /path/to/klayout \
+  --backend /path/to/libklayout_cuda_spatial_backend.so
+```
+
+The existing aggregate CUDA ABI/oracle smoke and VIA1-stack backend smoke also
+pass with the new independent symbol linked into the shared backend.  This is
+an integrity milestone, not a production/full-design performance gate, so no
+whole-run saving is booked here.

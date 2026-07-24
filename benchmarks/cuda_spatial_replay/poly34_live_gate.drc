@@ -1,0 +1,46 @@
+# Focused live POLY.3/POLY.4 atomic CUDA integration gate.
+
+raise("missing -rd input=PATH") unless $input
+raise("missing -rd topcell=NAME") unless $topcell
+raise("missing -rd output=PATH") unless $output
+
+source($input, $topcell)
+report("POLY.3/.4 live CUDA gate", $output)
+deep
+
+poly = input(($poly_layer || 9).to_i, 0)
+active = input(1, 0)
+gate = poly & active
+
+if poly.cuda_poly34_clean?(active, gate)
+  empty = polygon_layer
+  empty.output(
+    "POLY.3",
+    "POLY.3 : Minimum poly extension beyond active : 55nm"
+  )
+  empty.output(
+    "POLY.4",
+    "POLY.4 : Minimum enclosure of active around gate : 70nm"
+  )
+  accelerated = 1
+else
+  poly.enclosing(gate, 55.nm, projection)
+    .polygons.without_area(0)
+    .output(
+      "POLY.3",
+      "POLY.3 : Minimum poly extension beyond active : 55nm"
+    )
+  active.enclosing(gate, 70.nm, projection)
+    .polygons.without_area(0)
+    .output(
+      "POLY.4",
+      "POLY.4 : Minimum enclosure of active around gate : 70nm"
+    )
+  accelerated = 0
+end
+
+puts(
+  "POLY34_LIVE_DECK ok" \
+  " top=#{$topcell}" \
+  " accelerated=#{accelerated}"
+)

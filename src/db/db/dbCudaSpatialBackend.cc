@@ -64,6 +64,21 @@ CudaM1WidthSpaceAttempt::CudaM1WidthSpaceAttempt ()
   //  nothing yet
 }
 
+CudaPoly34Attempt::CudaPoly34Attempt ()
+  : disposition (Disabled), certified_empty_mask (0), fallback_flags (0),
+    device_flags (0), context_count (0), poly_context_count (0),
+    active_context_count (0), gate_context_count (0), cell_count (0),
+    box_count (0), flat_poly_box_count (0), flat_active_box_count (0),
+    flat_gate_box_count (0), poly_membership_count (0),
+    active_membership_count (0), poly_query_visit_count (0),
+    active_query_visit_count (0), poly_candidate_count (0),
+    active_candidate_count (0), poly_terminal_empty_count (0),
+    active_terminal_empty_count (0), atomic_terminal_empty_count (0),
+    fallback_gate_count (0), total_ns (0)
+{
+  //  nothing yet
+}
+
 CudaVia1StackAttempt::CudaVia1StackAttempt ()
   : disposition (Disabled), certified_empty_mask (0), fallback_flags (0),
     device_flags (0), context_count (0), flat_metal1_box_count (0),
@@ -391,6 +406,9 @@ public:
         env_enabled ("KLAYOUT_CUDA_M2_WIDTH_SPACE")),
       m_m2_width_space_telemetry (
         env_enabled ("KLAYOUT_CUDA_M2_WIDTH_SPACE_TELEMETRY")),
+      m_poly34_enabled (env_enabled ("KLAYOUT_CUDA_POLY34")),
+      m_poly34_telemetry (
+        env_enabled ("KLAYOUT_CUDA_POLY34_TELEMETRY")),
       m_via1_stack_enabled (env_enabled ("KLAYOUT_CUDA_VIA1_STACK")),
       m_via1_stack_telemetry (
         env_enabled ("KLAYOUT_CUDA_VIA1_STACK_TELEMETRY")),
@@ -399,7 +417,8 @@ public:
         env_enabled ("KLAYOUT_CUDA_M1_CONTACT_TELEMETRY")),
       m_handle (0), m_run_bipartite (0), m_run_self (0),
       m_run_active3 (0), m_run_implant12 (0), m_run_m1_width_space (0),
-      m_run_m2_width_space (0), m_run_via1_stack (0), m_release (0),
+      m_run_m2_width_space (0), m_run_poly34 (0),
+      m_run_via1_stack (0), m_release (0),
       m_min_records (100000)
   {
     const char *setting = std::getenv ("KLAYOUT_CUDA_SPATIAL_BACKEND");
@@ -450,6 +469,11 @@ public:
           GetProcAddress (
             reinterpret_cast<HMODULE> (m_handle),
             "klayout_cuda_spatial_run_m2_width_space_empty_v1"));
+      m_run_poly34 =
+        reinterpret_cast<klayout_cuda_spatial_run_poly34_empty_v1_func> (
+          GetProcAddress (
+            reinterpret_cast<HMODULE> (m_handle),
+            "klayout_cuda_spatial_run_poly34_empty_v1"));
       m_run_via1_stack =
         reinterpret_cast<klayout_cuda_spatial_run_via1_stack_empty_v1_func> (
           GetProcAddress (
@@ -489,6 +513,10 @@ public:
           dlsym (
             m_handle,
             "klayout_cuda_spatial_run_m2_width_space_empty_v1"));
+      m_run_poly34 =
+        reinterpret_cast<klayout_cuda_spatial_run_poly34_empty_v1_func> (
+          dlsym (
+            m_handle, "klayout_cuda_spatial_run_poly34_empty_v1"));
       m_run_via1_stack =
         reinterpret_cast<klayout_cuda_spatial_run_via1_stack_empty_v1_func> (
           dlsym (
@@ -512,6 +540,7 @@ public:
       m_run_implant12 = 0;
       m_run_m1_width_space = 0;
       m_run_m2_width_space = 0;
+      m_run_poly34 = 0;
       m_run_via1_stack = 0;
       m_release = 0;
       tl::warn << m_error;
@@ -605,6 +634,21 @@ public:
     return m_m2_width_space_telemetry;
   }
 
+  bool poly34_ready () const
+  {
+    return m_poly34_enabled && m_run_poly34;
+  }
+
+  bool poly34_enabled () const
+  {
+    return m_poly34_enabled;
+  }
+
+  bool poly34_telemetry () const
+  {
+    return m_poly34_telemetry;
+  }
+
   bool via1_stack_enabled () const
   {
     return m_via1_stack_enabled;
@@ -687,6 +731,11 @@ public:
     return m_run_m2_width_space;
   }
 
+  klayout_cuda_spatial_run_poly34_empty_v1_func run_poly34 () const
+  {
+    return m_run_poly34;
+  }
+
   klayout_cuda_spatial_run_via1_stack_empty_v1_func run_via1_stack () const
   {
     return m_run_via1_stack;
@@ -710,6 +759,8 @@ private:
   bool m_m1_width_space_telemetry;
   bool m_m2_width_space_enabled;
   bool m_m2_width_space_telemetry;
+  bool m_poly34_enabled;
+  bool m_poly34_telemetry;
   bool m_via1_stack_enabled;
   bool m_via1_stack_telemetry;
   bool m_m1_contact_enabled;
@@ -721,6 +772,7 @@ private:
   klayout_cuda_spatial_run_implant12_empty_v1_func m_run_implant12;
   klayout_cuda_spatial_run_m1_width_space_empty_v1_func m_run_m1_width_space;
   klayout_cuda_spatial_run_m2_width_space_empty_v1_func m_run_m2_width_space;
+  klayout_cuda_spatial_run_poly34_empty_v1_func m_run_poly34;
   klayout_cuda_spatial_run_via1_stack_empty_v1_func m_run_via1_stack;
   klayout_cuda_spatial_release_result_v1_func m_release;
   uint64_t m_min_records;
@@ -884,6 +936,53 @@ void log_metal_width_space_attempt (
            << " uncertain="
            << (attempt.width_uncertain_count +
                attempt.space_uncertain_count)
+           << " total_ms=" << (double (attempt.total_ns) / 1.0e6)
+           << " fallback_flags=" << attempt.fallback_flags
+           << " device_flags=" << attempt.device_flags
+           << (attempt.message.empty () ? "" : " message=")
+           << attempt.message;
+}
+
+void log_poly34_attempt (const CudaPoly34Attempt &attempt)
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  if (! module.poly34_telemetry ()) {
+    return;
+  }
+
+  const char *outcome = "unknown";
+  switch (attempt.disposition) {
+  case CudaPoly34Attempt::CertifiedEmpty:
+    outcome = "certified-empty";
+    break;
+  case CudaPoly34Attempt::NotEmpty:
+    outcome = "not-empty-cpu-fallback";
+    break;
+  case CudaPoly34Attempt::BackendFallback:
+    outcome = "fallback";
+    break;
+  case CudaPoly34Attempt::BackendError:
+    outcome = "error";
+    break;
+  case CudaPoly34Attempt::InvalidResult:
+    outcome = "invalid-result";
+    break;
+  case CudaPoly34Attempt::Disabled:
+    outcome = "disabled";
+    break;
+  }
+
+  tl::info << "CUDA POLY.3/.4 terminal-empty certificate:"
+           << " outcome=" << outcome
+           << " contexts=" << attempt.context_count
+           << " poly_boxes=" << attempt.flat_poly_box_count
+           << " active_boxes=" << attempt.flat_active_box_count
+           << " gates=" << attempt.flat_gate_box_count
+           << " certified_mask=" << attempt.certified_empty_mask
+           << " poly_candidates=" << attempt.poly_candidate_count
+           << " active_candidates=" << attempt.active_candidate_count
+           << " atomic_empty=" << attempt.atomic_terminal_empty_count
+           << " fallback_gates=" << attempt.fallback_gate_count
            << " total_ms=" << (double (attempt.total_ns) / 1.0e6)
            << " fallback_flags=" << attempt.fallback_flags
            << " device_flags=" << attempt.device_flags
@@ -1727,6 +1826,254 @@ bool cuda_spatial_m2_width_space_requested ()
 {
   CudaSpatialModule &module = cuda_spatial_module ();
   return module.enabled () && module.m2_width_space_ready ();
+}
+
+CudaPoly34Attempt cuda_spatial_try_poly34_empty (
+  const klayout_cuda_spatial_poly34_request_v1 &request)
+{
+  CudaPoly34Attempt attempt;
+  CudaSpatialModule &module = cuda_spatial_module ();
+  if (! module.poly34_enabled ()) {
+    return attempt;
+  }
+  if (! module.enabled ()) {
+    attempt.disposition = CudaPoly34Attempt::BackendError;
+    attempt.message = module.error ().empty ()
+      ? "CUDA spatial backend is unavailable"
+      : module.error ();
+    log_poly34_attempt (attempt);
+    return attempt;
+  }
+  if (! module.poly34_ready ()) {
+    attempt.disposition = CudaPoly34Attempt::BackendFallback;
+    attempt.fallback_flags =
+      KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+    attempt.message =
+      "CUDA spatial backend has no POLY.3/.4 empty-certificate entry point";
+    log_poly34_attempt (attempt);
+    return attempt;
+  }
+  if (request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      request.struct_size != sizeof (request) ||
+      request.opcode != KLAYOUT_CUDA_SPATIAL_POLY34_TERMINAL_EMPTY ||
+      request.option_flags !=
+        KLAYOUT_CUDA_SPATIAL_POLY34_QUALIFIED_OPTIONS ||
+      request.format_version != 1 ||
+      request.dbu_per_micron != 2000 ||
+      request.requested_mask != KLAYOUT_CUDA_SPATIAL_POLY34_ALL_RULES ||
+      request.device < 0 || request.reserved0 != 0 ||
+      request.identity_reserved != 0 ||
+      request.context_reserved != 0 || request.cell_reserved != 0 ||
+      request.box_reserved != 0 || request.capacity_reserved != 0 ||
+      request.reserved1 [0] != 0 || request.reserved1 [1] != 0 ||
+      request.poly3_distance != 110 || request.poly4_distance != 140 ||
+      request.grid_cell_size <= 0 ||
+      request.max_candidates_per_gate != 64 ||
+      ! request.context_count || ! request.contexts ||
+      ! request.poly_context_count || ! request.poly_contexts ||
+      request.poly_offset_count != request.poly_context_count ||
+      ! request.poly_offsets ||
+      ! request.active_context_count || ! request.active_contexts ||
+      request.active_offset_count != request.active_context_count ||
+      ! request.active_offsets ||
+      ! request.gate_context_count || ! request.gate_contexts ||
+      request.gate_offset_count != request.gate_context_count ||
+      ! request.gate_offsets ||
+      ! request.cell_count || ! request.cells ||
+      ! request.box_count || ! request.boxes ||
+      request.context_record_bytes !=
+        sizeof (klayout_cuda_spatial_poly34_context_v1) ||
+      request.cell_record_bytes !=
+        sizeof (klayout_cuda_spatial_poly34_cell_v1) ||
+      request.box_record_bytes !=
+        sizeof (klayout_cuda_spatial_poly34_box_v1) ||
+      ! request.flat_poly_box_count ||
+      ! request.flat_active_box_count ||
+      ! request.flat_gate_box_count ||
+      request.scene_left >= request.scene_right ||
+      request.scene_bottom >= request.scene_top ||
+      ! request.max_contexts || ! request.max_flat_boxes ||
+      ! request.max_grid_cells || ! request.max_poly_memberships ||
+      ! request.max_active_memberships || ! request.max_query_visits ||
+      ! request.max_candidate_work ||
+      request.context_count > request.max_contexts ||
+      request.context_count > std::numeric_limits<uint32_t>::max () ||
+      request.cell_count > request.context_count ||
+      request.cell_count > std::numeric_limits<uint32_t>::max () ||
+      request.box_count > request.max_flat_boxes ||
+      request.flat_poly_box_count >
+        std::numeric_limits<uint32_t>::max () ||
+      request.flat_active_box_count >
+        std::numeric_limits<uint32_t>::max () ||
+      request.flat_gate_box_count >
+        std::numeric_limits<uint32_t>::max ()) {
+    attempt.disposition = CudaPoly34Attempt::InvalidResult;
+    attempt.message = "CUDA POLY34 caller supplied an unqualified request";
+    log_poly34_attempt (attempt);
+    return attempt;
+  }
+
+  klayout_cuda_spatial_poly34_result_v1 result;
+  std::memset (&result, 0, sizeof (result));
+  result.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  result.struct_size = sizeof (result);
+  result.status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  result.disposition = KLAYOUT_CUDA_SPATIAL_POLY34_UNCERTAIN;
+
+  int status = KLAYOUT_CUDA_SPATIAL_ERROR;
+  try {
+    status = module.run_poly34 () (&request, &result);
+  } catch (const std::exception &ex) {
+    attempt.disposition = CudaPoly34Attempt::BackendError;
+    attempt.message = ex.what ();
+    log_poly34_attempt (attempt);
+    return attempt;
+  } catch (...) {
+    attempt.disposition = CudaPoly34Attempt::BackendError;
+    attempt.message =
+      "unknown exception while calling CUDA POLY34 backend";
+    log_poly34_attempt (attempt);
+    return attempt;
+  }
+
+  attempt.certified_empty_mask = result.certified_empty_mask;
+  attempt.fallback_flags = result.fallback_flags;
+  attempt.device_flags = result.device_flags;
+  attempt.context_count = result.context_count;
+  attempt.poly_context_count = result.poly_context_count;
+  attempt.active_context_count = result.active_context_count;
+  attempt.gate_context_count = result.gate_context_count;
+  attempt.cell_count = result.cell_count;
+  attempt.box_count = result.box_count;
+  attempt.flat_poly_box_count = result.flat_poly_box_count;
+  attempt.flat_active_box_count = result.flat_active_box_count;
+  attempt.flat_gate_box_count = result.flat_gate_box_count;
+  attempt.poly_membership_count = result.poly_membership_count;
+  attempt.active_membership_count = result.active_membership_count;
+  attempt.poly_query_visit_count = result.poly_query_visit_count;
+  attempt.active_query_visit_count = result.active_query_visit_count;
+  attempt.poly_candidate_count = result.poly_candidate_count;
+  attempt.active_candidate_count = result.active_candidate_count;
+  attempt.poly_terminal_empty_count = result.poly_terminal_empty_count;
+  attempt.active_terminal_empty_count = result.active_terminal_empty_count;
+  attempt.atomic_terminal_empty_count =
+    result.atomic_terminal_empty_count;
+  attempt.fallback_gate_count = result.fallback_gate_count;
+  attempt.total_ns = result.total_ns;
+  attempt.message.assign (
+    result.message,
+    std::find (
+      result.message, result.message + sizeof (result.message), '\0'));
+
+  if (result.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      result.struct_size < sizeof (result) ||
+      result.reserved0 != 0 || result.reserved1 != 0 ||
+      result.identity_reserved != 0) {
+    attempt.disposition = CudaPoly34Attempt::InvalidResult;
+    attempt.message =
+      "CUDA POLY34 backend returned an incompatible result";
+    log_poly34_attempt (attempt);
+    return attempt;
+  }
+
+  if (status == KLAYOUT_CUDA_SPATIAL_OK &&
+      result.status == KLAYOUT_CUDA_SPATIAL_OK) {
+    const bool echo_matches =
+      result.opcode == request.opcode &&
+      result.option_flags == request.option_flags &&
+      result.format_version == request.format_version &&
+      result.requested_mask == request.requested_mask &&
+      result.dbu_per_micron == request.dbu_per_micron &&
+      result.root_cell == request.root_cell &&
+      result.device == request.device &&
+      result.poly3_distance == request.poly3_distance &&
+      result.poly4_distance == request.poly4_distance &&
+      result.grid_cell_size == request.grid_cell_size &&
+      result.store_identity == request.store_identity &&
+      result.layout_identity == request.layout_identity &&
+      result.top_cell_identity == request.top_cell_identity &&
+      result.poly_layer_id == request.poly_layer_id &&
+      result.active_layer_id == request.active_layer_id &&
+      result.gate_layer_id == request.gate_layer_id &&
+      std::equal (
+        result.scene_digest, result.scene_digest + 32,
+        request.scene_digest) &&
+      result.context_count == request.context_count &&
+      result.poly_context_count == request.poly_context_count &&
+      result.active_context_count == request.active_context_count &&
+      result.gate_context_count == request.gate_context_count &&
+      result.cell_count == request.cell_count &&
+      result.box_count == request.box_count &&
+      result.flat_poly_box_count == request.flat_poly_box_count &&
+      result.flat_active_box_count == request.flat_active_box_count &&
+      result.flat_gate_box_count == request.flat_gate_box_count &&
+      result.expanded_poly_box_count == request.flat_poly_box_count &&
+      result.expanded_active_box_count == request.flat_active_box_count &&
+      result.expanded_gate_box_count == request.flat_gate_box_count;
+    const bool counters_possible =
+      result.grid_cell_count <= request.max_grid_cells &&
+      result.poly_membership_count <= request.max_poly_memberships &&
+      result.active_membership_count <= request.max_active_memberships &&
+      result.poly_query_visit_count <= request.max_query_visits &&
+      result.active_query_visit_count <= request.max_query_visits &&
+      result.poly_candidate_count <= request.max_candidate_work &&
+      result.active_candidate_count <= request.max_candidate_work &&
+      result.poly_terminal_empty_count <= request.flat_gate_box_count &&
+      result.active_terminal_empty_count <= request.flat_gate_box_count &&
+      result.atomic_terminal_empty_count <=
+        result.poly_terminal_empty_count &&
+      result.atomic_terminal_empty_count <=
+        result.active_terminal_empty_count &&
+      result.fallback_gate_count <= request.flat_gate_box_count &&
+      result.atomic_terminal_empty_count + result.fallback_gate_count ==
+        request.flat_gate_box_count &&
+      result.maximum_poly_candidates <=
+        request.max_candidates_per_gate &&
+      result.maximum_active_candidates <=
+        request.max_candidates_per_gate;
+    if (! echo_matches || ! counters_possible ||
+        result.fallback_flags != KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE ||
+        result.device_flags != 0) {
+      attempt.disposition = CudaPoly34Attempt::InvalidResult;
+      attempt.message =
+        "CUDA POLY34 backend returned a mismatched or impossible proof";
+    } else if (
+      result.disposition == KLAYOUT_CUDA_SPATIAL_POLY34_COMPLETE &&
+      result.certified_empty_mask ==
+        KLAYOUT_CUDA_SPATIAL_POLY34_ALL_RULES &&
+      result.poly_terminal_empty_count == request.flat_gate_box_count &&
+      result.active_terminal_empty_count == request.flat_gate_box_count &&
+      result.atomic_terminal_empty_count == request.flat_gate_box_count &&
+      result.fallback_gate_count == 0) {
+      attempt.disposition = CudaPoly34Attempt::CertifiedEmpty;
+    } else if (
+      result.disposition == KLAYOUT_CUDA_SPATIAL_POLY34_NOT_EMPTY &&
+      result.certified_empty_mask !=
+        KLAYOUT_CUDA_SPATIAL_POLY34_ALL_RULES &&
+      result.fallback_gate_count != 0) {
+      attempt.disposition = CudaPoly34Attempt::NotEmpty;
+    } else {
+      attempt.disposition = CudaPoly34Attempt::InvalidResult;
+      attempt.message =
+        "CUDA POLY34 backend returned an inconsistent disposition";
+    }
+  } else if (
+    status == KLAYOUT_CUDA_SPATIAL_FALLBACK ||
+    result.status == KLAYOUT_CUDA_SPATIAL_FALLBACK) {
+    attempt.disposition = CudaPoly34Attempt::BackendFallback;
+  } else {
+    attempt.disposition = CudaPoly34Attempt::BackendError;
+  }
+
+  log_poly34_attempt (attempt);
+  return attempt;
+}
+
+bool cuda_spatial_poly34_requested ()
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  return module.poly34_enabled () && module.enabled () &&
+         module.poly34_ready ();
 }
 
 CudaVia1StackAttempt cuda_spatial_try_via1_stack_empty (

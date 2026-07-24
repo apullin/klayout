@@ -29,6 +29,7 @@
 #include "dbOriginalLayerRegion.h"
 #include "dbPolygonTools.h"
 #include "dbLayoutUtils.h"
+#include "dbLayerProperties.h"
 #include "dbShapes.h"
 #include "dbDeepShapeStore.h"
 #include "dbRegion.h"
@@ -36,6 +37,8 @@
 #include "dbRegionProcessors.h"
 #include "dbCompoundOperation.h"
 #include "dbCudaImplant12.h"
+#include "dbCudaPoly34.h"
+#include "dbCudaSpatialBackend.h"
 #include "dbCudaVia1Stack.h"
 #include "dbLayoutToNetlist.h"
 #include "dbPropertiesRepository.h"
@@ -1339,6 +1342,60 @@ static bool cuda_implant12_clean (
          db::cuda_implant12_try_empty (
            deep_implant->deep_layer (), deep_gate->deep_layer (),
            deep_contact->deep_layer ());
+}
+
+static bool cuda_poly34_clean (
+  const db::Region *poly, const db::Region *active,
+  const db::Region *gate)
+{
+  // The merge operation below can itself be substantial.  Resolve the
+  // independent opt-in/backend capability before touching any deep layer so
+  // a disabled or missing backend preserves the pristine CPU path.
+  if (! db::cuda_spatial_poly34_requested ()) {
+    return false;
+  }
+  const db::DeepRegion *deep_poly =
+    dynamic_cast<const db::DeepRegion *> (poly->delegate ());
+  const db::DeepRegion *deep_active =
+    dynamic_cast<const db::DeepRegion *> (active->delegate ());
+  const db::DeepRegion *deep_gate =
+    dynamic_cast<const db::DeepRegion *> (gate->delegate ());
+  if (! deep_poly || ! deep_active || ! deep_gate ||
+      ! poly->merged_semantics () ||
+      ! active->merged_semantics () ||
+      ! gate->merged_semantics ()) {
+    return false;
+  }
+  const db::DeepLayer &raw_poly = deep_poly->deep_layer ();
+  const db::DeepLayer &raw_active = deep_active->deep_layer ();
+  const db::DeepLayer &raw_gate = deep_gate->deep_layer ();
+  if (raw_poly.layer () >= raw_poly.layout ().layers () ||
+      raw_active.layer () >= raw_active.layout ().layers () ||
+      raw_gate.layer () >= raw_gate.layout ().layers () ||
+      ! raw_poly.layout ().get_properties (raw_poly.layer ()).log_equal (
+          db::LayerProperties (9, 0)) ||
+      ! raw_active.layout ().get_properties (raw_active.layer ()).log_equal (
+          db::LayerProperties (1, 0)) ||
+      ! raw_gate.layout ().get_properties (raw_gate.layer ()).log_equal (
+          db::LayerProperties ())) {
+    return false;
+  }
+  try {
+    // Explicitly materialize the same exact merged operands required by the
+    // historical projection-enclosure checks.  The original regions remain
+    // untouched and are still available to both CPU expressions on decline.
+    db::CudaPoly34BuildSpec spec;
+    spec.poly_is_exact_merged = true;
+    spec.active_is_exact_merged = true;
+    spec.gate_is_exact_merged = true;
+    spec.freepdk45_layer_contract = true;
+    return db::cuda_poly34_try_empty (
+      deep_poly->merged_deep_layer (),
+      deep_active->merged_deep_layer (),
+      deep_gate->merged_deep_layer (), spec);
+  } catch (...) {
+    return false;
+  }
 }
 
 static size_t data_id (const db::Region *r)
@@ -4385,6 +4442,17 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "primary followed by raw GATE and CONTACT operands. It returns true only "
     "when both ordered FreePDK45 rules are completely certified empty. False "
     "requires both historical CPU expressions.\n"
+  ) +
+  method_ext (
+    "cuda_poly34_clean?", &cuda_poly34_clean,
+    gsi::arg ("active"), gsi::arg ("gate"),
+    "@brief Tries the optional atomic CUDA POLY.3/POLY.4 certificate\n"
+    "\n"
+    "This internal fail-closed hook explicitly obtains exact merged POLY, "
+    "ACTIVE and derived GATE deep layers, then attempts both fixed projection "
+    "profiles as one digest-bound transaction. True certifies both historical "
+    "terminal output categories empty. False requires both original CPU "
+    "expressions.\n"
   ) +
   method_ext ("data_id", &data_id,
     "@brief Returns the data ID (a unique identifier for the underlying data storage)\n"

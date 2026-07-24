@@ -956,6 +956,243 @@ klayout_cuda_spatial_run_m2_width_space_empty_v1 (
   struct klayout_cuda_spatial_m1_width_space_result_v1 *result);
 
 /*
+ * Optional atomic FreePDK45 POLY.3/POLY.4 terminal-empty certificate.
+ *
+ * The caller supplies three exact merged hierarchical domains: POLY, ACTIVE
+ * and their already-derived GATE intersection.  The backend expands the
+ * compact box templates, constructs complete bounded candidate windows for
+ * the fixed 110/140-DBU projection-enclosure profiles and applies the exact
+ * zero-area-terminal certificate to every GATE box.
+ *
+ * No partial result is consumable.  The historical two-rule CPU transaction
+ * may be skipped only when disposition is COMPLETE, both rule bits are
+ * certified, every GATE is atomically terminal-empty and every proof echo
+ * matches.  A positive-area profile, conservative miss, malformed record,
+ * capacity exhaustion or CUDA error requires both original CPU expressions.
+ */
+enum klayout_cuda_spatial_poly34_opcode
+{
+  KLAYOUT_CUDA_SPATIAL_POLY34_TERMINAL_EMPTY = 1
+};
+
+enum klayout_cuda_spatial_poly34_rule
+{
+  KLAYOUT_CUDA_SPATIAL_POLY3_RULE = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_POLY4_RULE = 1u << 1
+};
+
+#define KLAYOUT_CUDA_SPATIAL_POLY34_ALL_RULES ((1u << 2) - 1u)
+
+enum klayout_cuda_spatial_poly34_domain
+{
+  KLAYOUT_CUDA_SPATIAL_POLY34_POLY_DOMAIN = 0,
+  KLAYOUT_CUDA_SPATIAL_POLY34_ACTIVE_DOMAIN = 1,
+  KLAYOUT_CUDA_SPATIAL_POLY34_GATE_DOMAIN = 2,
+  KLAYOUT_CUDA_SPATIAL_POLY34_DOMAIN_COUNT = 3
+};
+
+enum klayout_cuda_spatial_poly34_option_flag
+{
+  KLAYOUT_CUDA_SPATIAL_POLY34_EXACT_MERGED_DOMAINS = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_POLY34_SAME_STORE_LAYOUT_TOP = 1u << 1,
+  KLAYOUT_CUDA_SPATIAL_POLY34_NO_BREAKOUT = 1u << 2,
+  KLAYOUT_CUDA_SPATIAL_POLY34_PROJECTION = 1u << 3,
+  KLAYOUT_CUDA_SPATIAL_POLY34_IGNORE_PROPERTIES = 1u << 4,
+  KLAYOUT_CUDA_SPATIAL_POLY34_INCLUDE_TOUCHING = 1u << 5,
+  KLAYOUT_CUDA_SPATIAL_POLY34_ZERO_AREA_TERMINAL = 1u << 6,
+  KLAYOUT_CUDA_SPATIAL_POLY34_RECTANGULAR_GATE = 1u << 7,
+  KLAYOUT_CUDA_SPATIAL_POLY34_EXACT_PRIMARY_BOX_UNIONS = 1u << 8,
+  KLAYOUT_CUDA_SPATIAL_POLY34_ORDERED_OUTPUTS = 1u << 9
+};
+
+#define KLAYOUT_CUDA_SPATIAL_POLY34_QUALIFIED_OPTIONS ((1u << 10) - 1u)
+
+enum klayout_cuda_spatial_poly34_disposition
+{
+  KLAYOUT_CUDA_SPATIAL_POLY34_COMPLETE = 0,
+  KLAYOUT_CUDA_SPATIAL_POLY34_NOT_EMPTY = 1,
+  KLAYOUT_CUDA_SPATIAL_POLY34_UNCERTAIN = 2
+};
+
+struct klayout_cuda_spatial_poly34_context_v1
+{
+  int64_t tx;
+  int64_t ty;
+  uint32_t cell_id;
+  uint32_t transform_code;
+};
+
+struct klayout_cuda_spatial_poly34_box_v1
+{
+  int64_t left;
+  int64_t bottom;
+  int64_t right;
+  int64_t top;
+};
+
+struct klayout_cuda_spatial_poly34_domain_span_v1
+{
+  uint64_t box_begin;
+  uint32_t box_count;
+  uint32_t reserved0;
+};
+
+struct klayout_cuda_spatial_poly34_cell_v1
+{
+  uint64_t source_cell_index;
+  struct klayout_cuda_spatial_poly34_domain_span_v1
+    domains[KLAYOUT_CUDA_SPATIAL_POLY34_DOMAIN_COUNT];
+};
+
+struct klayout_cuda_spatial_poly34_request_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  uint32_t root_cell;
+  uint32_t requested_mask;
+  int32_t device;
+  uint32_t reserved0;
+
+  int64_t poly3_distance;
+  int64_t poly4_distance;
+  int64_t grid_cell_size;
+  uint64_t store_identity;
+  uint64_t layout_identity;
+  uint64_t top_cell_identity;
+  uint32_t poly_layer_id;
+  uint32_t active_layer_id;
+  uint32_t gate_layer_id;
+  uint32_t identity_reserved;
+
+  const void *contexts;
+  uint64_t context_count;
+  uint32_t context_record_bytes;
+  uint32_t context_reserved;
+  const uint32_t *poly_contexts;
+  uint64_t poly_context_count;
+  const uint64_t *poly_offsets;
+  uint64_t poly_offset_count;
+  const uint32_t *active_contexts;
+  uint64_t active_context_count;
+  const uint64_t *active_offsets;
+  uint64_t active_offset_count;
+  const uint32_t *gate_contexts;
+  uint64_t gate_context_count;
+  const uint64_t *gate_offsets;
+  uint64_t gate_offset_count;
+  const void *cells;
+  uint64_t cell_count;
+  uint32_t cell_record_bytes;
+  uint32_t cell_reserved;
+  const void *boxes;
+  uint64_t box_count;
+  uint32_t box_record_bytes;
+  uint32_t box_reserved;
+
+  uint64_t flat_poly_box_count;
+  uint64_t flat_active_box_count;
+  uint64_t flat_gate_box_count;
+  int64_t scene_left;
+  int64_t scene_bottom;
+  int64_t scene_right;
+  int64_t scene_top;
+
+  uint64_t max_contexts;
+  uint64_t max_flat_boxes;
+  uint64_t max_grid_cells;
+  uint64_t max_poly_memberships;
+  uint64_t max_active_memberships;
+  uint64_t max_query_visits;
+  uint64_t max_candidate_work;
+  uint32_t max_candidates_per_gate;
+  uint32_t capacity_reserved;
+  uint8_t scene_digest[32];
+  uint64_t reserved1[2];
+};
+
+struct klayout_cuda_spatial_poly34_result_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t status;
+  uint32_t fallback_flags;
+  uint32_t disposition;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t requested_mask;
+  uint32_t certified_empty_mask;
+  uint32_t dbu_per_micron;
+  uint32_t root_cell;
+  int32_t device;
+  uint32_t device_flags;
+  uint32_t reserved0;
+  uint32_t reserved1;
+
+  int64_t poly3_distance;
+  int64_t poly4_distance;
+  int64_t grid_cell_size;
+  uint64_t store_identity;
+  uint64_t layout_identity;
+  uint64_t top_cell_identity;
+  uint32_t poly_layer_id;
+  uint32_t active_layer_id;
+  uint32_t gate_layer_id;
+  uint32_t identity_reserved;
+  uint8_t scene_digest[32];
+
+  uint64_t context_count;
+  uint64_t poly_context_count;
+  uint64_t active_context_count;
+  uint64_t gate_context_count;
+  uint64_t cell_count;
+  uint64_t box_count;
+  uint64_t flat_poly_box_count;
+  uint64_t flat_active_box_count;
+  uint64_t flat_gate_box_count;
+  uint64_t expanded_poly_box_count;
+  uint64_t expanded_active_box_count;
+  uint64_t expanded_gate_box_count;
+  uint64_t grid_cell_count;
+  uint64_t poly_membership_count;
+  uint64_t active_membership_count;
+  uint64_t poly_query_visit_count;
+  uint64_t active_query_visit_count;
+  uint64_t poly_candidate_count;
+  uint64_t active_candidate_count;
+  uint64_t poly_terminal_empty_count;
+  uint64_t active_terminal_empty_count;
+  uint64_t atomic_terminal_empty_count;
+  uint64_t fallback_gate_count;
+  uint64_t maximum_poly_candidates;
+  uint64_t maximum_active_candidates;
+
+  uint64_t setup_ns;
+  uint64_t h2d_ns;
+  uint64_t expand_ns;
+  uint64_t poly_grid_ns;
+  uint64_t poly_query_ns;
+  uint64_t active_grid_ns;
+  uint64_t active_query_ns;
+  uint64_t d2h_ns;
+  uint64_t total_ns;
+  char message[192];
+};
+
+typedef int (*klayout_cuda_spatial_run_poly34_empty_v1_func) (
+  const struct klayout_cuda_spatial_poly34_request_v1 *,
+  struct klayout_cuda_spatial_poly34_result_v1 *);
+
+KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_poly34_empty_v1 (
+  const struct klayout_cuda_spatial_poly34_request_v1 *request,
+  struct klayout_cuda_spatial_poly34_result_v1 *result);
+
+/*
  * Optional atomic VIA1-stack empty certificate.
  *
  * The caller supplies one qualified hierarchy containing raw M1, VIA1 and M2
