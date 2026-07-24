@@ -6,7 +6,8 @@ usage() {
 Usage:
   bash run_implant12_live_gate.sh \
     --stock-klayout PATH --deck PATH \
-    [--live-klayout PATH] [--python PATH] [--keep-work]
+    [--live-klayout PATH] [--backend PATH] \
+    [--python PATH] [--keep-work]
 
 Builds deterministic boundary and nonempty IMPLANT.1/.2 fixtures, generates
 the opt-in fail-closed transaction deck, and compares complete CPU reports:
@@ -14,7 +15,9 @@ the opt-in fail-closed transaction deck, and compares complete CPU reports:
   * the source deck with no generated transaction;
   * the generated deck with its runtime opt-in disabled;
   * the generated deck requested on a binary without the optional method;
-  * optionally, a live binary whose unavailable backend must decline.
+  * optionally, a live binary whose unavailable backend must decline;
+  * optionally, that live binary with the CUDA backend, where the clean
+    boundary must certify empty and every nonempty case must fall back.
 
 Every candidate must be byte-identical to the source report after removing
 the report-generator line. All work remains under a fresh TMPDIR directory
@@ -34,6 +37,7 @@ deck_generator="${here}/make_via1_stack_live_deck.py"
 stock_klayout=
 live_klayout=
 source_deck=
+backend=
 python=${PYTHON:-python3}
 keep_work=0
 
@@ -52,6 +56,11 @@ while (($#)); do
     --deck)
       (($# >= 2)) || die "--deck requires a value"
       source_deck=$2
+      shift 2
+      ;;
+    --backend)
+      (($# >= 2)) || die "--backend requires a value"
+      backend=$2
       shift 2
       ;;
     --python)
@@ -85,12 +94,20 @@ if [[ -n "${live_klayout}" ]]; then
   [[ -x "${live_klayout}" ]] ||
     die "live KLayout is not executable: ${live_klayout}"
 fi
+if [[ -n "${backend}" ]]; then
+  [[ -n "${live_klayout}" ]] ||
+    die "--backend requires --live-klayout"
+  [[ -f "${backend}" ]] || die "CUDA backend is missing: ${backend}"
+fi
 python=$(command -v -- "${python}") ||
   die "Python interpreter is not executable: ${python}"
 stock_klayout=$(readlink -f -- "${stock_klayout}")
 source_deck=$(readlink -f -- "${source_deck}")
 if [[ -n "${live_klayout}" ]]; then
   live_klayout=$(readlink -f -- "${live_klayout}")
+fi
+if [[ -n "${backend}" ]]; then
+  backend=$(readlink -f -- "${backend}")
 fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/klayout-implant12-live-gate.XXXXXX")
@@ -132,6 +149,13 @@ run_klayout() {
   )
   if [[ "${mode}" == requested ]]; then
     command+=(KLAYOUT_CUDA_IMPLANT12=1)
+  elif [[ "${mode}" == cuda ]]; then
+    command+=(
+      KLAYOUT_CUDA_SPATIAL_BACKEND="${backend}"
+      KLAYOUT_CUDA_SPATIAL_TELEMETRY=1
+      KLAYOUT_CUDA_IMPLANT12=1
+      KLAYOUT_CUDA_IMPLANT12_TELEMETRY=1
+    )
   elif [[ "${mode}" != off ]]; then
     die "internal error: unknown mode ${mode}"
   fi
@@ -237,12 +261,40 @@ assert_transaction() {
   if [[ "${mode}" == off ]]; then
     ((count == 0)) ||
       die "${top}: opt-in-off path emitted transaction telemetry"
-  else
+  elif [[ "${mode}" == requested ]]; then
     [[ "${count}" == 1 ]] ||
       die "${top}: expected one transaction line, found ${count}"
     grep -Fq -- \
       "CUDA IMPLANT.1/.2 transaction: full-cpu-fallback" "${log}" ||
       die "${top}: requested transaction did not fail closed"
+  elif [[ "${mode}" == cuda ]]; then
+    [[ "${count}" == 1 ]] ||
+      die "${top}: expected one accelerated transaction line, found ${count}"
+    local backend_count
+    backend_count=$(
+      grep -Fc -- "CUDA IMPLANT.1/.2 empty certificate:" "${log}" || true
+    )
+    [[ "${backend_count}" == 1 ]] ||
+      die "${top}: expected one backend certificate line, found ${backend_count}"
+    if [[ "${top}" == IMPLANT12_BOUNDARY ]]; then
+      grep -Fq -- \
+        "CUDA IMPLANT.1/.2 transaction: certified-empty" "${log}" ||
+        die "${top}: accelerated boundary did not certify empty"
+      grep -Fq -- \
+        "CUDA IMPLANT.1/.2 empty certificate: outcome=certified-empty" \
+        "${log}" ||
+        die "${top}: backend did not report a certified-empty boundary"
+    else
+      grep -Fq -- \
+        "CUDA IMPLANT.1/.2 transaction: full-cpu-fallback" "${log}" ||
+        die "${top}: accelerated hit case did not execute the CPU fallback"
+      grep -Fq -- \
+        "CUDA IMPLANT.1/.2 empty certificate: outcome=raw-hits-cpu-fallback" \
+        "${log}" ||
+        die "${top}: backend did not report raw hits"
+    fi
+  else
+    die "internal error: unknown transaction mode ${mode}"
   fi
 }
 
@@ -308,6 +360,23 @@ if [[ -n "${live_klayout}" ]]; then
   done
   echo \
     "IMPLANT12_LIVE_GATE ok gate=live-fallback cases=${#cases[@]} report=source-identical"
+  ((lanes += 1))
+fi
+
+if [[ -n "${backend}" ]]; then
+  for top in "${cases[@]}"; do
+    run_case accelerated "${live_klayout}" cuda "${live_deck}" "${top}"
+    compare_reports source-off accelerated "${top}"
+    if [[ "${top}" == IMPLANT12_BOUNDARY ]]; then
+      disposition=certified-empty
+    else
+      disposition=raw-hits-full-cpu-fallback
+    fi
+    echo \
+      "IMPLANT12_LIVE_GATE ok lane=accelerated case=${top} disposition=${disposition} report=source-identical"
+  done
+  echo \
+    "IMPLANT12_LIVE_GATE ok gate=accelerated clean=1 fallback=3 report=source-identical"
   ((lanes += 1))
 fi
 
