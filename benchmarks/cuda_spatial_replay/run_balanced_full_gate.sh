@@ -10,6 +10,7 @@ Usage:
     [--python PATH] [--timeout-seconds N] [--jobs 8|10|11] \
     [--split-upper-antenna] \
     [--without-contact4] \
+    [--with-m2-width-space|--without-m2-width-space] \
     [--with-implant12|--without-implant12] [--keep-work]
 
 Regenerates the qualified FreePDK45 live-CUDA deck, applies the antenna split,
@@ -26,6 +27,10 @@ provenance are checked before success.
 
 --without-contact4 retains every other qualified CUDA transaction and exists
 only to produce a same-binary CONTACT.4-off performance control.
+
+--with-m2-width-space and --without-m2-width-space preserve the same deck and
+toggle only the separately qualified METAL2.1/.2 runtime transaction.  The
+default leaves its environment unset for compatibility with historical gates.
 
 --with-implant12 and --without-implant12 both generate the identical fused
 IMPLANT.1/.2 transaction deck, then toggle only its runtime environment. The
@@ -60,6 +65,7 @@ timeout_seconds=900
 keep_work=0
 contact4=1
 implant12=-1
+m2_width_space=-1
 jobs=8
 split_upper_antenna=0
 
@@ -125,6 +131,14 @@ while (($#)); do
       ;;
     --without-contact4)
       contact4=0
+      shift
+      ;;
+    --with-m2-width-space)
+      m2_width_space=1
+      shift
+      ;;
+    --without-m2-width-space)
+      m2_width_space=0
       shift
       ;;
     --with-implant12)
@@ -233,6 +247,13 @@ if ((implant12 >= 0)); then
     "KLAYOUT_CUDA_IMPLANT12_TELEMETRY=${implant12}"
   )
 fi
+m2_width_space_env=()
+if ((m2_width_space >= 0)); then
+  m2_width_space_env=(
+    "KLAYOUT_CUDA_M2_WIDTH_SPACE=${m2_width_space}"
+    "KLAYOUT_CUDA_M2_WIDTH_SPACE_TELEMETRY=${m2_width_space}"
+  )
+fi
 run_transform "live CUDA deck generation" \
   "${python}" "${deck_generator}" \
     --input "${source_deck}" --output "${live_deck}" --m1-contact \
@@ -319,6 +340,7 @@ set +e
       KLAYOUT_CUDA_ACTIVE3_TELEMETRY=1 \
       KLAYOUT_CUDA_M1_WIDTH_SPACE=1 \
       KLAYOUT_CUDA_M1_WIDTH_SPACE_TELEMETRY=1 \
+      "${m2_width_space_env[@]}" \
       KLAYOUT_CUDA_VIA1_STACK=1 \
       KLAYOUT_CUDA_VIA1_STACK_TELEMETRY=1 \
       KLAYOUT_CUDA_DISCONNECTED_MERGE=1 \
@@ -385,6 +407,15 @@ require_telemetry \
 require_telemetry \
   "CUDA M1 width/space empty certificate: outcome=certified-empty" \
   "M1 width/space certified-empty"
+if ((m2_width_space == 1)); then
+  require_telemetry \
+    "CUDA M2 width/space empty certificate: outcome=certified-empty" \
+    "M2 width/space certified-empty"
+elif ((m2_width_space == 0)) &&
+     grep -R -Fq --include='*.log' -- \
+       "CUDA M2 width/space" "${shard_dir}"; then
+  die "M2 width/space-off control unexpectedly invoked M2 CUDA"
+fi
 require_telemetry \
   "CUDA VIA1 stack empty certificate: outcome=certified-empty" \
   "VIA1-stack certified-empty"
@@ -421,7 +452,7 @@ if ! cmp -s -- "${reference_canonical}" "${report_canonical}"; then
 fi
 
 grep -R -nE --include='*.log' -- \
-  'CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA CONTACT\.4 empty certificate:|CUDA CONTACT\.4 live lowering:|CUDA IMPLANT\.1/\.2 transaction:|CUDA IMPLANT\.1/\.2 empty certificate:|CUDA IMPLANT\.1/\.2 live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_EDGE_CERT ' \
+  'CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M2 width/space empty certificate:|CUDA M2 width/space live lowering:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA CONTACT\.4 empty certificate:|CUDA CONTACT\.4 live lowering:|CUDA IMPLANT\.1/\.2 transaction:|CUDA IMPLANT\.1/\.2 empty certificate:|CUDA IMPLANT\.1/\.2 live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_EDGE_CERT ' \
   "${shard_dir}" >"${work}/cuda-telemetry.txt"
 
 grep -E \
@@ -456,4 +487,4 @@ cat -- "${work}/launcher-summary.txt"
 cat -- "${work}/canonical-report-sha256.txt"
 cat -- "${work}/cuda-telemetry.txt"
 echo \
-  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} implant12=${implant12} split_upper_antenna=${split_upper_antenna}"
+  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} m2_width_space=${m2_width_space} implant12=${implant12} split_upper_antenna=${split_upper_antenna}"
