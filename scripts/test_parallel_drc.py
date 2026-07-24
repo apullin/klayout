@@ -451,6 +451,55 @@ class MergeReportsTests(ReportFixture):
                 self.directory / "missing-tag-manifest.json",
             )
 
+    def test_merge_accepts_a_clean_layout_without_dynamic_tags(self) -> None:
+        no_tags_odd = self.rewrite_report(
+            "clean-odd.lyrdb",
+            ["RULE.C", "RULE.A"],
+            [],
+            tags=[],
+        )
+        no_tags_even = self.rewrite_report(
+            "clean-even.lyrdb",
+            ["RULE.D", "RULE.B"],
+            [],
+            tags=[],
+        )
+
+        output = self.merge(
+            [("odd", no_tags_odd), ("even", no_tags_even)],
+            "clean-merged.lyrdb",
+        )
+        reverse = self.merge(
+            [("even", no_tags_even), ("odd", no_tags_odd)],
+            "clean-merged-reverse.lyrdb",
+        )
+
+        self.assertEqual(merger._tags(merger._parse_report(output)), ())
+        self.assertEqual(item_markers(output), [])
+        self.assertEqual(output.read_bytes(), reverse.read_bytes())
+
+    def test_merge_rejects_a_tag_outside_the_manifest_universe(self) -> None:
+        unknown = self.rewrite_report(
+            "odd-unknown-merge-tag.lyrdb",
+            ["RULE.C", "RULE.A"],
+            [self.items[name] for name in ("C-1", "A-1", "A-2")],
+            tags=[("review", "fixture tag"), ("unknown", "")],
+        )
+
+        with self.assertRaisesRegex(ValueError, "unknown tag declaration"):
+            self.merge([("odd", unknown), ("even", self.even)])
+
+    def test_merge_rejects_a_conflicting_manifest_tag_description(self) -> None:
+        conflicting = self.rewrite_report(
+            "odd-conflicting-merge-tag.lyrdb",
+            ["RULE.C", "RULE.A"],
+            [self.items[name] for name in ("C-1", "A-1", "A-2")],
+            tags=[("review", "different description")],
+        )
+
+        with self.assertRaisesRegex(ValueError, "conflicting tag declaration"):
+            self.merge([("odd", conflicting), ("even", self.even)])
+
     def test_create_manifest_never_overwrites_an_input(self) -> None:
         before = self.reference.read_bytes()
         with self.assertRaises(ValueError):

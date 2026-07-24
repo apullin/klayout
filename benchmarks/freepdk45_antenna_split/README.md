@@ -26,9 +26,11 @@ antenna markers.
 
 KLayout emits antenna diagnostic tag declarations and tagged values in
 process-dependent order. The merger treats those named fields as associative,
-sorts them in its output, and still preserves positional values exactly.
-`semantic_report_hash.py` applies the same normalization when comparing a
-trusted full report with the merged result.
+sorts them in its output, and still preserves positional values exactly. A
+manifest proves the complete trusted tag universe, while a later layout may
+emit any subset of it (including none for a clean run); unknown or conflicting
+tags still fail closed. `semantic_report_hash.py` applies the same
+normalization when comparing a trusted full report with the merged result.
 
 Keep `--jobs 8` while the deck requests four threads per process. CLI shard
 order is launch order, so schedule the long antenna owners in the first wave.

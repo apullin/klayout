@@ -820,8 +820,10 @@ def merge_reports(
             expected_tag_map,
             f"{path}: tag declarations",
         )
-    _require_complete_tag_union(
-        supplied_tags, expected_tag_map, "shard tag declarations"
+    active_tags = tuple(
+        (name, description)
+        for name, description in expected_tags
+        if name in supplied_tags
     )
 
     manifest_categories = manifest["categories"]
@@ -866,7 +868,7 @@ def merge_reports(
     _append_leaf(output, "generator", manifest_metadata["generator"])
     _append_leaf(output, "top-cell", first_metadata["top-cell"])
     tags_node = ET.SubElement(output, "tags")
-    for name, description in expected_tags:
+    for name, description in active_tags:
         tag = ET.SubElement(tags_node, "tag")
         _append_leaf(tag, "name", name)
         _append_leaf(tag, "description", description)
