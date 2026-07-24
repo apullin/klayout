@@ -3684,6 +3684,20 @@ CODE
         self.data.cuda_m1_contact_clean?(metal1.data)
       end
     end
+
+    # Internal, fail-closed acceleration hook for the qualified FreePDK45
+    # IMPLANT.1/IMPLANT.2 transaction.  The receiver is the exact merged
+    # IMPLANT primary; GATE and CONTACT retain their raw region state.
+    def cuda_implant12_clean?(gate, contact)
+      @engine._context("cuda_implant12_clean?") do
+        check_is_layer(gate)
+        check_is_layer(contact)
+        requires_region
+        gate.requires_region
+        contact.requires_region
+        self.data.cuda_implant12_clean?(gate.data, contact.data)
+      end
+    end
     
     # %DRC%
     # @name area

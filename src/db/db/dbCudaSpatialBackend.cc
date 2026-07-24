@@ -11,6 +11,7 @@
 */
 
 #include "dbCudaSpatialBackend.h"
+#include "dbCudaImplant12Digest.h"
 #include "dbCudaVia1StackDigest.h"
 #include "tlLog.h"
 
@@ -83,6 +84,29 @@ CudaVia1StackAttempt::CudaVia1StackAttempt ()
   //  nothing yet
 }
 
+CudaImplant12Attempt::CudaImplant12Attempt ()
+  : disposition (Disabled), certified_empty_mask (0), clean_mask (0),
+    fallback_flags (0), device_flags (0), context_count (0),
+    implant_context_count (0), gate_context_count (0),
+    contact_context_count (0), cell_count (0), contour_count (0),
+    edge_count (0), flat_implant_polygon_count (0),
+    flat_gate_polygon_count (0), flat_contact_polygon_count (0),
+    flat_implant_contour_count (0), flat_gate_contour_count (0),
+    flat_contact_contour_count (0), flat_implant_edge_count (0),
+    flat_gate_edge_count (0), flat_contact_edge_count (0),
+    implant_expanded_edge_count (0), gate_processed_edge_count (0),
+    contact_processed_edge_count (0), grid_cell_count (0),
+    implant_membership_count (0), gate_query_visit_count (0),
+    gate_candidate_count (0), gate_raw_hit_count (0),
+    gate_uncertain_count (0), contact_query_visit_count (0),
+    contact_candidate_count (0), contact_raw_hit_count (0),
+    contact_uncertain_count (0), setup_ns (0), h2d_ns (0),
+    implant_expand_ns (0), grid_count_ns (0), grid_build_ns (0),
+    gate_query_ns (0), contact_query_ns (0), d2h_ns (0), total_ns (0)
+{
+  //  nothing yet
+}
+
 namespace
 {
 
@@ -93,6 +117,31 @@ bool checked_multiply_u64 (
     return false;
   }
   result = first * second;
+  return true;
+}
+
+bool checked_add_u64 (
+  uint64_t first, uint64_t second, uint64_t &result)
+{
+  if (second > std::numeric_limits<uint64_t>::max () - first) {
+    return false;
+  }
+  result = first + second;
+  return true;
+}
+
+bool strictly_increasing_context_ids (
+  const uint32_t *contexts, uint64_t count, uint64_t context_count)
+{
+  if (! contexts || ! count) {
+    return false;
+  }
+  for (uint64_t index = 0; index < count; ++index) {
+    if (contexts [index] >= context_count ||
+        (index && contexts [index - 1] >= contexts [index])) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -150,6 +199,152 @@ bool qualified_via1_stack_request (
            digest.begin (), digest.end (), request.scene_digest);
 }
 
+bool qualified_implant12_request (
+  const klayout_cuda_spatial_implant12_request_v1 &request)
+{
+  uint64_t expected_offset_count = 0;
+  uint64_t flat_polygons = 0;
+  uint64_t flat_contours = 0;
+  uint64_t flat_edges = 0;
+  uint64_t minimum_edges = 0;
+  uint64_t minimum_implant_edges = 0;
+  uint64_t minimum_gate_edges = 0;
+  uint64_t minimum_contact_edges = 0;
+  if (! checked_add_u64 (
+        request.implant_context_count, 1, expected_offset_count) ||
+      ! checked_add_u64 (
+        request.flat_implant_polygon_count,
+        request.flat_gate_polygon_count, flat_polygons) ||
+      ! checked_add_u64 (
+        flat_polygons, request.flat_contact_polygon_count, flat_polygons) ||
+      ! checked_add_u64 (
+        request.flat_implant_contour_count,
+        request.flat_gate_contour_count, flat_contours) ||
+      ! checked_add_u64 (
+        flat_contours, request.flat_contact_contour_count, flat_contours) ||
+      ! checked_add_u64 (
+        request.flat_implant_edge_count,
+        request.flat_gate_edge_count, flat_edges) ||
+      ! checked_add_u64 (
+        flat_edges, request.flat_contact_edge_count, flat_edges) ||
+      ! checked_multiply_u64 (flat_contours, 4, minimum_edges) ||
+      ! checked_multiply_u64 (
+        request.flat_implant_contour_count, 4, minimum_implant_edges) ||
+      ! checked_multiply_u64 (
+        request.flat_gate_contour_count, 4, minimum_gate_edges) ||
+      ! checked_multiply_u64 (
+        request.flat_contact_contour_count, 4, minimum_contact_edges)) {
+    return false;
+  }
+
+  if (request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      request.struct_size != sizeof (request) ||
+      request.opcode !=
+        KLAYOUT_CUDA_SPATIAL_IMPLANT12_RAW_SUPERSET_EMPTY ||
+      request.option_flags !=
+        KLAYOUT_CUDA_SPATIAL_IMPLANT12_QUALIFIED_OPTIONS ||
+      request.format_version != 1 ||
+      request.dbu_per_micron != 2000 ||
+      request.requested_mask != KLAYOUT_CUDA_SPATIAL_IMPLANT12_ALL_RULES ||
+      request.device < 0 || request.reserved0 != 0 ||
+      request.context_reserved != 0 || request.cell_reserved != 0 ||
+      request.contour_reserved != 0 || request.edge_reserved != 0 ||
+      request.reserved1 [0] != 0 || request.reserved1 [1] != 0 ||
+      request.implant1_distance != 140 ||
+      request.implant2_distance != 50 ||
+      request.grid_cell_size != 2000 ||
+      ! request.context_count || ! request.contexts ||
+      request.context_record_bytes !=
+        sizeof (klayout_cuda_spatial_implant12_context_v1) ||
+      ! request.implant_context_count || ! request.implant_contexts ||
+      request.implant_edge_offset_count != expected_offset_count ||
+      ! request.implant_edge_offsets ||
+      ! request.gate_context_count || ! request.gate_contexts ||
+      ! request.contact_context_count || ! request.contact_contexts ||
+      ! request.cell_count || ! request.cells ||
+      request.cell_record_bytes !=
+        sizeof (klayout_cuda_spatial_implant12_cell_v1) ||
+      ! request.contour_count || ! request.contours ||
+      request.contour_record_bytes !=
+        sizeof (klayout_cuda_spatial_implant12_contour_v1) ||
+      ! request.edge_count || ! request.edges ||
+      request.edge_record_bytes !=
+        sizeof (klayout_cuda_spatial_implant12_edge_v1) ||
+      ! request.flat_implant_polygon_count ||
+      ! request.flat_gate_polygon_count ||
+      ! request.flat_contact_polygon_count ||
+      request.flat_implant_polygon_count !=
+        request.flat_implant_contour_count ||
+      request.flat_gate_polygon_count !=
+        request.flat_gate_contour_count ||
+      request.flat_contact_polygon_count !=
+        request.flat_contact_contour_count ||
+      request.flat_implant_edge_count < minimum_implant_edges ||
+      request.flat_gate_edge_count < minimum_gate_edges ||
+      request.flat_contact_edge_count < minimum_contact_edges ||
+      flat_edges < minimum_edges ||
+      request.implant_left >= request.implant_right ||
+      request.implant_bottom >= request.implant_top ||
+      ! request.max_contexts || ! request.max_grid_cells ||
+      ! request.max_implant_memberships ||
+      ! request.max_gate_query_visits ||
+      ! request.max_gate_candidate_work ||
+      ! request.max_contact_query_visits ||
+      ! request.max_contact_candidate_work ||
+      ! request.max_flat_polygons ||
+      ! request.max_flat_contours || ! request.max_flat_edges ||
+      request.max_contexts > std::numeric_limits<uint32_t>::max () ||
+      request.max_grid_cells > std::numeric_limits<uint32_t>::max () ||
+      request.max_implant_memberships >
+        std::numeric_limits<uint32_t>::max () ||
+      request.context_count > request.max_contexts ||
+      request.context_count > std::numeric_limits<uint32_t>::max () ||
+      request.root_cell >= request.cell_count ||
+      request.cell_count > request.context_count ||
+      request.cell_count > std::numeric_limits<uint32_t>::max () ||
+      request.contour_count > request.max_flat_contours ||
+      request.contour_count > std::numeric_limits<uint32_t>::max () ||
+      request.edge_count > request.max_flat_edges ||
+      request.edge_count > std::numeric_limits<uint32_t>::max () ||
+      request.implant_context_count > request.context_count ||
+      request.gate_context_count > request.context_count ||
+      request.contact_context_count > request.context_count ||
+      request.flat_implant_edge_count >
+        std::numeric_limits<uint32_t>::max () ||
+      flat_polygons > request.max_flat_polygons ||
+      flat_contours > request.max_flat_contours ||
+      flat_edges > request.max_flat_edges ||
+      request.implant_edge_offsets [0] != 0 ||
+      request.implant_edge_offsets [request.implant_edge_offset_count - 1] !=
+        request.flat_implant_edge_count) {
+    return false;
+  }
+
+  if (! strictly_increasing_context_ids (
+        request.implant_contexts, request.implant_context_count,
+        request.context_count) ||
+      ! strictly_increasing_context_ids (
+        request.gate_contexts, request.gate_context_count,
+        request.context_count) ||
+      ! strictly_increasing_context_ids (
+        request.contact_contexts, request.contact_context_count,
+        request.context_count)) {
+    return false;
+  }
+  for (uint64_t offset = 1;
+       offset < request.implant_edge_offset_count; ++offset) {
+    if (request.implant_edge_offsets [offset - 1] >=
+        request.implant_edge_offsets [offset]) {
+      return false;
+    }
+  }
+
+  std::array<uint8_t, 32> digest;
+  return db::cuda_implant12_digest::request_digest (request, digest) &&
+         std::equal (
+           digest.begin (), digest.end (), request.scene_digest);
+}
+
 uint64_t env_u64 (const char *name, uint64_t default_value)
 {
   const char *value = std::getenv (name);
@@ -183,6 +378,9 @@ public:
       m_contact4_enabled (env_enabled ("KLAYOUT_CUDA_CONTACT4")),
       m_contact4_telemetry (
         env_enabled ("KLAYOUT_CUDA_CONTACT4_TELEMETRY")),
+      m_implant12_enabled (env_enabled ("KLAYOUT_CUDA_IMPLANT12")),
+      m_implant12_telemetry (
+        env_enabled ("KLAYOUT_CUDA_IMPLANT12_TELEMETRY")),
       m_m1_width_space_enabled (
         env_enabled ("KLAYOUT_CUDA_M1_WIDTH_SPACE")),
       m_m1_width_space_telemetry (
@@ -194,7 +392,7 @@ public:
       m_m1_contact_telemetry (
         env_enabled ("KLAYOUT_CUDA_M1_CONTACT_TELEMETRY")),
       m_handle (0), m_run_bipartite (0), m_run_self (0),
-      m_run_active3 (0), m_run_m1_width_space (0),
+      m_run_active3 (0), m_run_implant12 (0), m_run_m1_width_space (0),
       m_run_via1_stack (0), m_release (0),
       m_min_records (100000)
   {
@@ -231,6 +429,11 @@ public:
         GetProcAddress (reinterpret_cast<HMODULE> (m_handle), "klayout_cuda_spatial_run_self_v1"));
       m_run_active3 = reinterpret_cast<klayout_cuda_spatial_run_active3_empty_v1_func> (
         GetProcAddress (reinterpret_cast<HMODULE> (m_handle), "klayout_cuda_spatial_run_active3_empty_v1"));
+      m_run_implant12 =
+        reinterpret_cast<klayout_cuda_spatial_run_implant12_empty_v1_func> (
+          GetProcAddress (
+            reinterpret_cast<HMODULE> (m_handle),
+            "klayout_cuda_spatial_run_implant12_empty_v1"));
       m_run_m1_width_space =
         reinterpret_cast<klayout_cuda_spatial_run_m1_width_space_empty_v1_func> (
           GetProcAddress (
@@ -261,6 +464,10 @@ public:
         dlsym (m_handle, "klayout_cuda_spatial_run_self_v1"));
       m_run_active3 = reinterpret_cast<klayout_cuda_spatial_run_active3_empty_v1_func> (
         dlsym (m_handle, "klayout_cuda_spatial_run_active3_empty_v1"));
+      m_run_implant12 =
+        reinterpret_cast<klayout_cuda_spatial_run_implant12_empty_v1_func> (
+          dlsym (
+            m_handle, "klayout_cuda_spatial_run_implant12_empty_v1"));
       m_run_m1_width_space =
         reinterpret_cast<klayout_cuda_spatial_run_m1_width_space_empty_v1_func> (
           dlsym (
@@ -286,6 +493,7 @@ public:
       m_run_bipartite = 0;
       m_run_self = 0;
       m_run_active3 = 0;
+      m_run_implant12 = 0;
       m_run_m1_width_space = 0;
       m_run_via1_stack = 0;
       m_release = 0;
@@ -328,6 +536,21 @@ public:
   bool contact4_enabled () const
   {
     return m_contact4_enabled;
+  }
+
+  bool implant12_ready () const
+  {
+    return m_implant12_enabled && m_run_implant12;
+  }
+
+  bool implant12_enabled () const
+  {
+    return m_implant12_enabled;
+  }
+
+  bool implant12_telemetry () const
+  {
+    return m_implant12_telemetry;
   }
 
   bool via1_stack_ready () const
@@ -415,6 +638,11 @@ public:
     return m_run_active3;
   }
 
+  klayout_cuda_spatial_run_implant12_empty_v1_func run_implant12 () const
+  {
+    return m_run_implant12;
+  }
+
   klayout_cuda_spatial_run_m1_width_space_empty_v1_func
   run_m1_width_space () const
   {
@@ -438,6 +666,8 @@ private:
   bool m_active3_telemetry;
   bool m_contact4_enabled;
   bool m_contact4_telemetry;
+  bool m_implant12_enabled;
+  bool m_implant12_telemetry;
   bool m_m1_width_space_enabled;
   bool m_m1_width_space_telemetry;
   bool m_via1_stack_enabled;
@@ -448,6 +678,7 @@ private:
   klayout_cuda_spatial_run_bipartite_v1_func m_run_bipartite;
   klayout_cuda_spatial_run_self_v1_func m_run_self;
   klayout_cuda_spatial_run_active3_empty_v1_func m_run_active3;
+  klayout_cuda_spatial_run_implant12_empty_v1_func m_run_implant12;
   klayout_cuda_spatial_run_m1_width_space_empty_v1_func m_run_m1_width_space;
   klayout_cuda_spatial_run_via1_stack_empty_v1_func m_run_via1_stack;
   klayout_cuda_spatial_release_result_v1_func m_release;
@@ -661,6 +892,58 @@ void log_via1_stack_attempt (const CudaVia1StackAttempt &attempt)
            << " fallback_flags=" << attempt.fallback_flags
            << " device_flags=" << attempt.device_flags
            << (attempt.message.empty () ? "" : " message=") << attempt.message;
+}
+
+void log_implant12_attempt (const CudaImplant12Attempt &attempt)
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  if (! module.implant12_telemetry ()) {
+    return;
+  }
+
+  const char *outcome = "unknown";
+  switch (attempt.disposition) {
+  case CudaImplant12Attempt::CertifiedEmpty:
+    outcome = "certified-empty";
+    break;
+  case CudaImplant12Attempt::RawHits:
+    outcome = "raw-hits-cpu-fallback";
+    break;
+  case CudaImplant12Attempt::BackendFallback:
+    outcome = "fallback";
+    break;
+  case CudaImplant12Attempt::BackendError:
+    outcome = "error";
+    break;
+  case CudaImplant12Attempt::InvalidResult:
+    outcome = "invalid-result";
+    break;
+  case CudaImplant12Attempt::Disabled:
+    outcome = "disabled";
+    break;
+  }
+
+  tl::info << "CUDA IMPLANT.1/.2 empty certificate:"
+           << " outcome=" << outcome
+           << " contexts=" << attempt.context_count
+           << " implant_edges=" << attempt.flat_implant_edge_count
+           << " gate_edges=" << attempt.flat_gate_edge_count
+           << " contact_edges=" << attempt.flat_contact_edge_count
+           << " certified_mask=" << attempt.certified_empty_mask
+           << " clean_mask=" << attempt.clean_mask
+           << " grid_cells=" << attempt.grid_cell_count
+           << " memberships=" << attempt.implant_membership_count
+           << " gate_candidates=" << attempt.gate_candidate_count
+           << " gate_hits=" << attempt.gate_raw_hit_count
+           << " gate_uncertain=" << attempt.gate_uncertain_count
+           << " contact_candidates=" << attempt.contact_candidate_count
+           << " contact_hits=" << attempt.contact_raw_hit_count
+           << " contact_uncertain=" << attempt.contact_uncertain_count
+           << " total_ms=" << (double (attempt.total_ns) / 1.0e6)
+           << " fallback_flags=" << attempt.fallback_flags
+           << " device_flags=" << attempt.device_flags
+           << (attempt.message.empty () ? "" : " message=")
+           << attempt.message;
 }
 
 klayout_cuda_spatial_config_v1 make_config ()
@@ -1618,6 +1901,256 @@ bool cuda_spatial_m1_contact_requested ()
 {
   CudaSpatialModule &module = cuda_spatial_module ();
   return module.enabled () && module.m1_contact_ready ();
+}
+
+CudaImplant12Attempt cuda_spatial_try_implant12_empty (
+  const klayout_cuda_spatial_implant12_request_v1 &request)
+{
+  CudaImplant12Attempt attempt;
+  CudaSpatialModule &module = cuda_spatial_module ();
+  if (! module.implant12_enabled ()) {
+    return attempt;
+  }
+  if (! module.enabled ()) {
+    attempt.disposition = CudaImplant12Attempt::BackendError;
+    attempt.message = module.error ().empty ()
+      ? "CUDA spatial backend is unavailable"
+      : module.error ();
+    log_implant12_attempt (attempt);
+    return attempt;
+  }
+  if (! module.implant12_ready ()) {
+    attempt.disposition = CudaImplant12Attempt::BackendFallback;
+    attempt.fallback_flags =
+      KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+    attempt.message =
+      "CUDA spatial backend has no IMPLANT.1/.2 empty-certificate entry point";
+    log_implant12_attempt (attempt);
+    return attempt;
+  }
+  if (! qualified_implant12_request (request)) {
+    attempt.disposition = CudaImplant12Attempt::InvalidResult;
+    attempt.message =
+      "CUDA IMPLANT.1/.2 caller supplied an unqualified request";
+    log_implant12_attempt (attempt);
+    return attempt;
+  }
+
+  klayout_cuda_spatial_implant12_result_v1 result;
+  std::memset (&result, 0, sizeof (result));
+  result.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  result.struct_size = sizeof (result);
+  result.status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  result.disposition = KLAYOUT_CUDA_SPATIAL_IMPLANT12_UNCERTAIN;
+
+  int status = KLAYOUT_CUDA_SPATIAL_ERROR;
+  try {
+    status = module.run_implant12 () (&request, &result);
+  } catch (const std::exception &ex) {
+    attempt.disposition = CudaImplant12Attempt::BackendError;
+    attempt.message = ex.what ();
+    log_implant12_attempt (attempt);
+    return attempt;
+  } catch (...) {
+    attempt.disposition = CudaImplant12Attempt::BackendError;
+    attempt.message =
+      "unknown exception while calling CUDA IMPLANT.1/.2 backend";
+    log_implant12_attempt (attempt);
+    return attempt;
+  }
+
+  attempt.certified_empty_mask = result.certified_empty_mask;
+  attempt.clean_mask = result.clean_mask;
+  attempt.fallback_flags = result.fallback_flags;
+  attempt.device_flags = result.device_flags;
+  attempt.context_count = result.context_count;
+  attempt.implant_context_count = result.implant_context_count;
+  attempt.gate_context_count = result.gate_context_count;
+  attempt.contact_context_count = result.contact_context_count;
+  attempt.cell_count = result.cell_count;
+  attempt.contour_count = result.contour_count;
+  attempt.edge_count = result.edge_count;
+  attempt.flat_implant_polygon_count =
+    result.flat_implant_polygon_count;
+  attempt.flat_gate_polygon_count = result.flat_gate_polygon_count;
+  attempt.flat_contact_polygon_count =
+    result.flat_contact_polygon_count;
+  attempt.flat_implant_contour_count =
+    result.flat_implant_contour_count;
+  attempt.flat_gate_contour_count = result.flat_gate_contour_count;
+  attempt.flat_contact_contour_count =
+    result.flat_contact_contour_count;
+  attempt.flat_implant_edge_count = result.flat_implant_edge_count;
+  attempt.flat_gate_edge_count = result.flat_gate_edge_count;
+  attempt.flat_contact_edge_count = result.flat_contact_edge_count;
+  attempt.implant_expanded_edge_count =
+    result.implant_expanded_edge_count;
+  attempt.gate_processed_edge_count = result.gate_processed_edge_count;
+  attempt.contact_processed_edge_count =
+    result.contact_processed_edge_count;
+  attempt.grid_cell_count = result.grid_cell_count;
+  attempt.implant_membership_count = result.implant_membership_count;
+  attempt.gate_query_visit_count = result.gate_query_visit_count;
+  attempt.gate_candidate_count = result.gate_candidate_count;
+  attempt.gate_raw_hit_count = result.gate_raw_hit_count;
+  attempt.gate_uncertain_count = result.gate_uncertain_count;
+  attempt.contact_query_visit_count = result.contact_query_visit_count;
+  attempt.contact_candidate_count = result.contact_candidate_count;
+  attempt.contact_raw_hit_count = result.contact_raw_hit_count;
+  attempt.contact_uncertain_count = result.contact_uncertain_count;
+  attempt.setup_ns = result.setup_ns;
+  attempt.h2d_ns = result.h2d_ns;
+  attempt.implant_expand_ns = result.implant_expand_ns;
+  attempt.grid_count_ns = result.grid_count_ns;
+  attempt.grid_build_ns = result.grid_build_ns;
+  attempt.gate_query_ns = result.gate_query_ns;
+  attempt.contact_query_ns = result.contact_query_ns;
+  attempt.d2h_ns = result.d2h_ns;
+  attempt.total_ns = result.total_ns;
+  attempt.message.assign (
+    result.message,
+    std::find (
+      result.message, result.message + sizeof (result.message), '\0'));
+
+  if (result.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      result.struct_size != sizeof (result) ||
+      result.reserved0 != 0 || result.reserved1 != 0) {
+    attempt.disposition = CudaImplant12Attempt::InvalidResult;
+    attempt.message =
+      "CUDA IMPLANT.1/.2 backend returned an incompatible result";
+    log_implant12_attempt (attempt);
+    return attempt;
+  }
+
+  if (status == KLAYOUT_CUDA_SPATIAL_OK &&
+      result.status == KLAYOUT_CUDA_SPATIAL_OK) {
+    const bool echo_matches =
+      result.opcode == request.opcode &&
+      result.option_flags == request.option_flags &&
+      result.format_version == request.format_version &&
+      result.requested_mask == request.requested_mask &&
+      result.dbu_per_micron == request.dbu_per_micron &&
+      result.root_cell == request.root_cell &&
+      result.implant1_distance == request.implant1_distance &&
+      result.implant2_distance == request.implant2_distance &&
+      result.grid_cell_size == request.grid_cell_size &&
+      result.implant_left == request.implant_left &&
+      result.implant_bottom == request.implant_bottom &&
+      result.implant_right == request.implant_right &&
+      result.implant_top == request.implant_top &&
+      std::equal (
+        result.scene_digest, result.scene_digest + 32,
+        request.scene_digest) &&
+      result.context_count == request.context_count &&
+      result.implant_context_count == request.implant_context_count &&
+      result.gate_context_count == request.gate_context_count &&
+      result.contact_context_count == request.contact_context_count &&
+      result.cell_count == request.cell_count &&
+      result.contour_count == request.contour_count &&
+      result.edge_count == request.edge_count &&
+      result.flat_implant_polygon_count ==
+        request.flat_implant_polygon_count &&
+      result.flat_gate_polygon_count == request.flat_gate_polygon_count &&
+      result.flat_contact_polygon_count ==
+        request.flat_contact_polygon_count &&
+      result.flat_implant_contour_count ==
+        request.flat_implant_contour_count &&
+      result.flat_gate_contour_count == request.flat_gate_contour_count &&
+      result.flat_contact_contour_count ==
+        request.flat_contact_contour_count &&
+      result.flat_implant_edge_count == request.flat_implant_edge_count &&
+      result.flat_gate_edge_count == request.flat_gate_edge_count &&
+      result.flat_contact_edge_count == request.flat_contact_edge_count;
+
+    uint64_t maximum_gate_candidates = 0;
+    uint64_t maximum_contact_candidates = 0;
+    const bool gate_product_fits = checked_multiply_u64 (
+      request.flat_implant_edge_count, request.flat_gate_edge_count,
+      maximum_gate_candidates);
+    const bool contact_product_fits = checked_multiply_u64 (
+      request.flat_implant_edge_count, request.flat_contact_edge_count,
+      maximum_contact_candidates);
+    const bool counters_fit =
+      result.implant_expanded_edge_count ==
+        request.flat_implant_edge_count &&
+      result.gate_processed_edge_count == request.flat_gate_edge_count &&
+      result.contact_processed_edge_count ==
+        request.flat_contact_edge_count &&
+      result.grid_cell_count != 0 &&
+      result.grid_cell_count <= request.max_grid_cells &&
+      result.implant_membership_count >=
+        result.implant_expanded_edge_count &&
+      result.implant_membership_count <=
+        request.max_implant_memberships &&
+      result.gate_query_visit_count <= request.max_gate_query_visits &&
+      result.gate_candidate_count <= request.max_gate_candidate_work &&
+      (! gate_product_fits ||
+       result.gate_candidate_count <= maximum_gate_candidates) &&
+      result.gate_raw_hit_count <= result.gate_candidate_count &&
+      result.gate_uncertain_count <=
+        result.gate_candidate_count - result.gate_raw_hit_count &&
+      result.contact_query_visit_count <=
+        request.max_contact_query_visits &&
+      result.contact_candidate_count <=
+        request.max_contact_candidate_work &&
+      (! contact_product_fits ||
+       result.contact_candidate_count <= maximum_contact_candidates) &&
+      result.contact_raw_hit_count <= result.contact_candidate_count &&
+      result.contact_uncertain_count <=
+        result.contact_candidate_count - result.contact_raw_hit_count &&
+      (result.certified_empty_mask & ~request.requested_mask) == 0 &&
+      (result.clean_mask & ~request.requested_mask) == 0;
+
+    if (! echo_matches || ! counters_fit ||
+        result.fallback_flags != KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE ||
+        result.device_flags != 0) {
+      attempt.disposition = CudaImplant12Attempt::InvalidResult;
+      attempt.message =
+        "CUDA IMPLANT.1/.2 backend returned a mismatched proof echo";
+    } else if (
+      result.disposition == KLAYOUT_CUDA_SPATIAL_IMPLANT12_COMPLETE &&
+      result.certified_empty_mask == request.requested_mask &&
+      result.clean_mask == request.requested_mask &&
+      result.gate_raw_hit_count == 0 &&
+      result.gate_uncertain_count == 0 &&
+      result.contact_raw_hit_count == 0 &&
+      result.contact_uncertain_count == 0) {
+      attempt.disposition = CudaImplant12Attempt::CertifiedEmpty;
+    } else if (
+      result.disposition == KLAYOUT_CUDA_SPATIAL_IMPLANT12_RAW_HITS &&
+      (result.gate_raw_hit_count != 0 ||
+       result.contact_raw_hit_count != 0) &&
+      result.gate_uncertain_count == 0 &&
+      result.contact_uncertain_count == 0 &&
+      (result.certified_empty_mask != request.requested_mask ||
+       result.clean_mask != request.requested_mask)) {
+      attempt.disposition = CudaImplant12Attempt::RawHits;
+    } else if (
+      result.disposition == KLAYOUT_CUDA_SPATIAL_IMPLANT12_UNCERTAIN &&
+      (result.gate_uncertain_count != 0 ||
+       result.contact_uncertain_count != 0)) {
+      attempt.disposition = CudaImplant12Attempt::BackendFallback;
+    } else {
+      attempt.disposition = CudaImplant12Attempt::InvalidResult;
+      attempt.message =
+        "CUDA IMPLANT.1/.2 backend returned an inconsistent disposition";
+    }
+  } else if (
+    status == KLAYOUT_CUDA_SPATIAL_FALLBACK ||
+    result.status == KLAYOUT_CUDA_SPATIAL_FALLBACK) {
+    attempt.disposition = CudaImplant12Attempt::BackendFallback;
+  } else {
+    attempt.disposition = CudaImplant12Attempt::BackendError;
+  }
+
+  log_implant12_attempt (attempt);
+  return attempt;
+}
+
+bool cuda_spatial_implant12_requested ()
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  return module.enabled () && module.implant12_ready ();
 }
 
 } // namespace db

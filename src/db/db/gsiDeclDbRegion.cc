@@ -35,6 +35,7 @@
 #include "dbFillTool.h"
 #include "dbRegionProcessors.h"
 #include "dbCompoundOperation.h"
+#include "dbCudaImplant12.h"
 #include "dbCudaVia1Stack.h"
 #include "dbLayoutToNetlist.h"
 #include "dbPropertiesRepository.h"
@@ -1318,6 +1319,26 @@ static bool cuda_m1_contact_clean (
          contact->merged_semantics () && metal1->merged_semantics () &&
          db::cuda_m1_contact_try_empty (
            deep_metal1->deep_layer (), deep_contact->deep_layer ());
+}
+
+static bool cuda_implant12_clean (
+  const db::Region *implant, const db::Region *gate,
+  const db::Region *contact)
+{
+  const db::DeepRegion *deep_implant =
+    dynamic_cast<const db::DeepRegion *> (implant->delegate ());
+  const db::DeepRegion *deep_gate =
+    dynamic_cast<const db::DeepRegion *> (gate->delegate ());
+  const db::DeepRegion *deep_contact =
+    dynamic_cast<const db::DeepRegion *> (contact->delegate ());
+  return deep_implant && deep_gate && deep_contact &&
+         implant->merged_semantics () && gate->merged_semantics () &&
+         contact->merged_semantics () &&
+         implant->is_merged () && ! gate->is_merged () &&
+         ! contact->is_merged () &&
+         db::cuda_implant12_try_empty (
+           deep_implant->deep_layer (), deep_gate->deep_layer (),
+           deep_contact->deep_layer ());
 }
 
 static size_t data_id (const db::Region *r)
@@ -4354,6 +4375,16 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "contact size and spacing, full M1 containment, and two-opposite-side M1 "
     "enclosure rules are all certified empty. False requires every historical "
     "CPU rule.\n"
+  ) +
+  method_ext (
+    "cuda_implant12_clean?", &cuda_implant12_clean,
+    gsi::arg ("gate"), gsi::arg ("contact"),
+    "@brief Tries the optional atomic CUDA IMPLANT.1/IMPLANT.2 certificate\n"
+    "\n"
+    "This internal fail-closed hook accepts only an exact merged IMPLANT "
+    "primary followed by raw GATE and CONTACT operands. It returns true only "
+    "when both ordered FreePDK45 rules are completely certified empty. False "
+    "requires both historical CPU expressions.\n"
   ) +
   method_ext ("data_id", &data_id,
     "@brief Returns the data ID (a unique identifier for the underlying data storage)\n"

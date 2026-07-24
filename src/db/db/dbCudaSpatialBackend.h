@@ -172,6 +172,66 @@ struct DB_PUBLIC CudaVia1StackAttempt
   std::string message;
 };
 
+struct DB_PUBLIC CudaImplant12Attempt
+{
+  enum Disposition
+  {
+    Disabled,
+    CertifiedEmpty,
+    RawHits,
+    BackendFallback,
+    BackendError,
+    InvalidResult
+  };
+
+  CudaImplant12Attempt ();
+
+  Disposition disposition;
+  uint32_t certified_empty_mask;
+  uint32_t clean_mask;
+  uint32_t fallback_flags;
+  uint32_t device_flags;
+  uint64_t context_count;
+  uint64_t implant_context_count;
+  uint64_t gate_context_count;
+  uint64_t contact_context_count;
+  uint64_t cell_count;
+  uint64_t contour_count;
+  uint64_t edge_count;
+  uint64_t flat_implant_polygon_count;
+  uint64_t flat_gate_polygon_count;
+  uint64_t flat_contact_polygon_count;
+  uint64_t flat_implant_contour_count;
+  uint64_t flat_gate_contour_count;
+  uint64_t flat_contact_contour_count;
+  uint64_t flat_implant_edge_count;
+  uint64_t flat_gate_edge_count;
+  uint64_t flat_contact_edge_count;
+  uint64_t implant_expanded_edge_count;
+  uint64_t gate_processed_edge_count;
+  uint64_t contact_processed_edge_count;
+  uint64_t grid_cell_count;
+  uint64_t implant_membership_count;
+  uint64_t gate_query_visit_count;
+  uint64_t gate_candidate_count;
+  uint64_t gate_raw_hit_count;
+  uint64_t gate_uncertain_count;
+  uint64_t contact_query_visit_count;
+  uint64_t contact_candidate_count;
+  uint64_t contact_raw_hit_count;
+  uint64_t contact_uncertain_count;
+  uint64_t setup_ns;
+  uint64_t h2d_ns;
+  uint64_t implant_expand_ns;
+  uint64_t grid_count_ns;
+  uint64_t grid_build_ns;
+  uint64_t gate_query_ns;
+  uint64_t contact_query_ns;
+  uint64_t d2h_ns;
+  uint64_t total_ns;
+  std::string message;
+};
+
 /**
  * Try the optional CUDA bipartite broad phase.
  *
@@ -272,6 +332,19 @@ DB_PUBLIC bool cuda_spatial_via1_stack_requested ();
  * VIA1-stack projection-certificate symbol.
  */
 DB_PUBLIC bool cuda_spatial_m1_contact_requested ();
+
+/**
+ * Invoke the optional atomic IMPLANT.1/IMPLANT.2 empty certificate.
+ *
+ * Only CertifiedEmpty is consumable.  Raw hits, uncertainty, partial masks,
+ * malformed echoes, capacity exhaustion and loader failures all retain both
+ * unchanged CPU rules.
+ */
+DB_PUBLIC CudaImplant12Attempt cuda_spatial_try_implant12_empty (
+  const klayout_cuda_spatial_implant12_request_v1 &request);
+
+/** Return true only when the IMPLANT.1/.2 opt-in and symbol exist. */
+DB_PUBLIC bool cuda_spatial_implant12_requested ();
 
 } // namespace db
 

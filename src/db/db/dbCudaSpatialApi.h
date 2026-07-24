@@ -461,6 +461,273 @@ KLAYOUT_CUDA_SPATIAL_EXPORT int klayout_cuda_spatial_run_active3_empty_v1 (
   struct klayout_cuda_spatial_active3_result_v1 *result);
 
 /*
+ * Optional atomic FreePDK45 IMPLANT.1/IMPLANT.2 empty certificate.
+ *
+ * The caller supplies one qualified hierarchy with three ordered geometry
+ * domains: an exact merged IMPLANT primary, a raw GATE secondary superset and
+ * a raw CONTACT secondary superset.  The backend expands and indexes IMPLANT
+ * once, then streams GATE and CONTACT while the grid remains resident.
+ *
+ * A raw hit is not a publishable KLayout marker.  It merely requests the
+ * unchanged two-rule CPU transaction.  Both rules may be skipped only when
+ * disposition is COMPLETE and both certified_empty_mask and clean_mask equal
+ * ALL_RULES.  Partial clean masks are diagnostic and never independently
+ * consumable.
+ */
+enum klayout_cuda_spatial_implant12_opcode
+{
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_RAW_SUPERSET_EMPTY = 1
+};
+
+enum klayout_cuda_spatial_implant12_rule
+{
+  KLAYOUT_CUDA_SPATIAL_IMPLANT1_RULE = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT2_RULE = 1u << 1
+};
+
+#define KLAYOUT_CUDA_SPATIAL_IMPLANT12_ALL_RULES ((1u << 2) - 1u)
+
+enum klayout_cuda_spatial_implant12_domain
+{
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_IMPLANT_DOMAIN = 0,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_GATE_DOMAIN = 1,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_CONTACT_DOMAIN = 2,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_DOMAIN_COUNT = 3
+};
+
+enum klayout_cuda_spatial_implant12_option_flag
+{
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_MERGED_IMPLANT_PRIMARY = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_RAW_GATE_SUPERSET = 1u << 1,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_RAW_CONTACT_SUPERSET = 1u << 2,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_SAME_STORE_LAYOUT_TOP = 1u << 3,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_NO_BREAKOUT = 1u << 4,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_SPACE_RELATION = 1u << 5,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_DIFFERENT_POLYGONS = 1u << 6,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_PROJECTION = 1u << 7,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_IGNORE_ANGLE_90 = 1u << 8,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_WHOLE_EDGES_FALSE = 1u << 9,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_PROJECTION_DEFAULTS = 1u << 10,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_SHIELDED = 1u << 11,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_NO_FILTERS_OR_NEGATIVE = 1u << 12,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_IGNORE_PROPERTIES = 1u << 13,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_INCLUDE_TOUCHING = 1u << 14,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_ORDERED_OUTPUTS = 1u << 15,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_MANHATTAN_CONTOURS = 1u << 16
+};
+
+#define KLAYOUT_CUDA_SPATIAL_IMPLANT12_QUALIFIED_OPTIONS \
+  ((1u << 17) - 1u)
+
+enum klayout_cuda_spatial_implant12_contour_flag
+{
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_HULL = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_HOLE = 1u << 1
+};
+
+enum klayout_cuda_spatial_implant12_disposition
+{
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_COMPLETE = 0,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_RAW_HITS = 1,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT12_UNCERTAIN = 2
+};
+
+struct klayout_cuda_spatial_implant12_context_v1
+{
+  int64_t tx;
+  int64_t ty;
+  uint32_t cell_id;
+  uint32_t transform_code;
+};
+
+struct klayout_cuda_spatial_implant12_domain_span_v1
+{
+  uint64_t contour_begin;
+  uint64_t edge_begin;
+  uint32_t polygon_count;
+  uint32_t contour_count;
+  uint32_t edge_count;
+  uint32_t reserved0;
+};
+
+struct klayout_cuda_spatial_implant12_cell_v1
+{
+  uint64_t source_cell_index;
+  struct klayout_cuda_spatial_implant12_domain_span_v1
+    domains[KLAYOUT_CUDA_SPATIAL_IMPLANT12_DOMAIN_COUNT];
+};
+
+struct klayout_cuda_spatial_implant12_contour_v1
+{
+  uint64_t edge_begin;
+  uint32_t polygon_id;
+  uint32_t contour_id;
+  uint32_t edge_count;
+  uint32_t flags;
+};
+
+struct klayout_cuda_spatial_implant12_edge_v1
+{
+  int64_t x1;
+  int64_t y1;
+  int64_t x2;
+  int64_t y2;
+};
+
+/*
+ * Record pointers are byte-addressed so a qualified C++ scene can bind its
+ * existing vector storage after proving sizeof/offsetof compatibility,
+ * without a multi-million-record repack or cross-type aliasing.
+ */
+struct klayout_cuda_spatial_implant12_request_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  uint32_t root_cell;
+  uint32_t requested_mask;
+  int32_t device;
+  uint32_t reserved0;
+  int64_t implant1_distance;
+  int64_t implant2_distance;
+  int64_t grid_cell_size;
+
+  const void *contexts;
+  uint64_t context_count;
+  uint32_t context_record_bytes;
+  uint32_t context_reserved;
+  const uint32_t *implant_contexts;
+  uint64_t implant_context_count;
+  const uint64_t *implant_edge_offsets;
+  uint64_t implant_edge_offset_count;
+  const uint32_t *gate_contexts;
+  uint64_t gate_context_count;
+  const uint32_t *contact_contexts;
+  uint64_t contact_context_count;
+  const void *cells;
+  uint64_t cell_count;
+  uint32_t cell_record_bytes;
+  uint32_t cell_reserved;
+  const void *contours;
+  uint64_t contour_count;
+  uint32_t contour_record_bytes;
+  uint32_t contour_reserved;
+  const void *edges;
+  uint64_t edge_count;
+  uint32_t edge_record_bytes;
+  uint32_t edge_reserved;
+
+  uint64_t flat_implant_polygon_count;
+  uint64_t flat_gate_polygon_count;
+  uint64_t flat_contact_polygon_count;
+  uint64_t flat_implant_contour_count;
+  uint64_t flat_gate_contour_count;
+  uint64_t flat_contact_contour_count;
+  uint64_t flat_implant_edge_count;
+  uint64_t flat_gate_edge_count;
+  uint64_t flat_contact_edge_count;
+  int64_t implant_left;
+  int64_t implant_bottom;
+  int64_t implant_right;
+  int64_t implant_top;
+
+  uint64_t max_contexts;
+  uint64_t max_grid_cells;
+  uint64_t max_implant_memberships;
+  uint64_t max_gate_query_visits;
+  uint64_t max_gate_candidate_work;
+  uint64_t max_contact_query_visits;
+  uint64_t max_contact_candidate_work;
+  uint64_t max_flat_polygons;
+  uint64_t max_flat_contours;
+  uint64_t max_flat_edges;
+  uint8_t scene_digest[32];
+  uint64_t reserved1[2];
+};
+
+struct klayout_cuda_spatial_implant12_result_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t status;
+  uint32_t fallback_flags;
+  uint32_t disposition;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t requested_mask;
+  uint32_t certified_empty_mask;
+  uint32_t clean_mask;
+  uint32_t dbu_per_micron;
+  uint32_t root_cell;
+  uint32_t device_flags;
+  uint32_t reserved0;
+  uint32_t reserved1;
+  int64_t implant1_distance;
+  int64_t implant2_distance;
+  int64_t grid_cell_size;
+  int64_t implant_left;
+  int64_t implant_bottom;
+  int64_t implant_right;
+  int64_t implant_top;
+  uint8_t scene_digest[32];
+
+  uint64_t context_count;
+  uint64_t implant_context_count;
+  uint64_t gate_context_count;
+  uint64_t contact_context_count;
+  uint64_t cell_count;
+  uint64_t contour_count;
+  uint64_t edge_count;
+  uint64_t flat_implant_polygon_count;
+  uint64_t flat_gate_polygon_count;
+  uint64_t flat_contact_polygon_count;
+  uint64_t flat_implant_contour_count;
+  uint64_t flat_gate_contour_count;
+  uint64_t flat_contact_contour_count;
+  uint64_t flat_implant_edge_count;
+  uint64_t flat_gate_edge_count;
+  uint64_t flat_contact_edge_count;
+
+  uint64_t implant_expanded_edge_count;
+  uint64_t gate_processed_edge_count;
+  uint64_t contact_processed_edge_count;
+  uint64_t grid_cell_count;
+  uint64_t implant_membership_count;
+  uint64_t gate_query_visit_count;
+  uint64_t gate_candidate_count;
+  uint64_t gate_raw_hit_count;
+  uint64_t gate_uncertain_count;
+  uint64_t contact_query_visit_count;
+  uint64_t contact_candidate_count;
+  uint64_t contact_raw_hit_count;
+  uint64_t contact_uncertain_count;
+
+  uint64_t setup_ns;
+  uint64_t h2d_ns;
+  uint64_t implant_expand_ns;
+  uint64_t grid_count_ns;
+  uint64_t grid_build_ns;
+  uint64_t gate_query_ns;
+  uint64_t contact_query_ns;
+  uint64_t d2h_ns;
+  uint64_t total_ns;
+  char message[192];
+};
+
+typedef int (*klayout_cuda_spatial_run_implant12_empty_v1_func) (
+  const struct klayout_cuda_spatial_implant12_request_v1 *,
+  struct klayout_cuda_spatial_implant12_result_v1 *);
+
+KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_implant12_empty_v1 (
+  const struct klayout_cuda_spatial_implant12_request_v1 *request,
+  struct klayout_cuda_spatial_implant12_result_v1 *result);
+
+/*
  * Optional atomic METAL1.1/METAL1.2 empty certificate.
  *
  * The caller passes the pointer-free arrays published by

@@ -187,6 +187,7 @@ SOURCES = \
   dbHierarchyBuilder.cc \
   dbLocalOperation.cc \
   dbCudaActive3.cc \
+  dbCudaImplant12.cc \
   dbCudaM1WidthSpace.cc \
   dbCudaSpatialBackend.cc \
   dbCudaVia1Stack.cc \
@@ -374,6 +375,8 @@ HEADERS = \
   dbCommon.h \
   dbCudaActive3.h \
   dbCudaActive3Digest.h \
+  dbCudaImplant12.h \
+  dbCudaImplant12Digest.h \
   dbCudaM1WidthSpace.h \
   dbCudaSpatialApi.h \
   dbCudaSpatialBackend.h \

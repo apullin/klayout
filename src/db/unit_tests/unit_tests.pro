@@ -9,6 +9,7 @@ include($$PWD/../../lib_ut.pri)
 SOURCES = \
   dbCellInstanceSetHasherTests.cc \
   dbCompoundOperationTests.cc \
+  dbCudaImplant12Tests.cc \
   dbCudaM1WidthSpaceTests.cc \
   dbEdgeNeighborhoodTests.cc \
   dbFillToolTests.cc \
