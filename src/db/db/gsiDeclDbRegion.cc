@@ -4348,11 +4348,12 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
   method_ext (
     "cuda_m1_contact_clean?", &cuda_m1_contact_clean,
     gsi::arg ("metal1"),
-    "@brief Tries the optional CUDA CONTACT/METAL1.3 empty certificate\n"
+    "@brief Tries the optional CUDA CONTACT.1-.3/METAL1.3 empty certificate\n"
     "\n"
     "This internal fail-closed hook returns true only when the qualified "
-    "contact domain and two-opposite-side M1 enclosure rule are certified "
-    "empty. False requires the complete historical CPU chain.\n"
+    "contact size and spacing, full M1 containment, and two-opposite-side M1 "
+    "enclosure rules are all certified empty. False requires every historical "
+    "CPU rule.\n"
   ) +
   method_ext ("data_id", &data_id,
     "@brief Returns the data ID (a unique identifier for the underlying data storage)\n"

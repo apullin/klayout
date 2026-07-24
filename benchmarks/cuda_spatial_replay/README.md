@@ -317,23 +317,29 @@ Generator-stripped reports were byte-identical at SHA-256
 The live speculative path took 29.586 s, including 12.331 s of scene lowering
 and a 17.255 s backend call; the backend device-pipeline timer was 504.110 ms.
 
-### Live CONTACT/METAL1.3 certificate
+### Live CONTACT.1-.3/METAL1.3 certificate
 
 `KLAYOUT_CUDA_M1_CONTACT=1` enables a separate fail-closed use of the VIA1
-stack ABI for the FreePDK45 CONTACT/METAL1.3 rule. The receiver must be raw
-CONTACT 10/0, the witness must be raw M1 11/0, and the shared layout must use
-0.5 nm DBU. Every cut must be a 65 nm rectangle, satisfy 75 nm spacing, be
-contained by the M1 union, and have at least 35 nm projection enclosure on two
-opposite sides. The host currently serializes `(M1, CONTACT, M1)` into one
+stack ABI for the fixed FreePDK45 CONTACT.1-.3 and METAL1.3 rules. The receiver
+must be raw CONTACT 10/0, the witness must be raw M1 11/0, and the shared layout
+must use 0.5 nm DBU. Every cut must be a 65 nm rectangle, satisfy 75 nm spacing,
+be contained by the M1 union, and have at least 35 nm projection enclosure on
+two opposite sides. M1 containment is stronger than CONTACT.3's
+active-or-poly-or-M1 union, so one complete certificate proves all four output
+categories empty. The host currently serializes `(M1, CONTACT, M1)` into one
 request; this is not a persistent or fused ACTIVE.3-through-METAL1.3
 transaction.
 
-Only a complete empty certificate emits an empty METAL1.3 category. Properties,
-unsupported geometry or transforms, malformed or partial backend results,
-capacity limits, cut size/spacing failures, missing M1 containment, or an
-enclosure miss run the complete historical CPU expression. Telemetry is
-enabled with `KLAYOUT_CUDA_M1_CONTACT_TELEMETRY=1`. The fail-closed capacity
-variables and defaults are:
+The generated deck invokes one transaction when either `implant_contact` or
+`m1_enclosure` owns a consumer (and still only one in unsplit `all` mode).
+Only a complete empty certificate emits empty CONTACT.1-.3 or METAL1.3
+categories. Properties, unsupported geometry or transforms, malformed or
+partial backend results, capacity limits, cut size/spacing failures, missing
+M1 containment, or an enclosure miss execute the untouched historical CPU
+rules exactly once in the current owner. The transform matches the original
+CONTACT.1-.3 text exactly and refuses a changed rule rather than accelerating
+it. Telemetry is enabled with `KLAYOUT_CUDA_M1_CONTACT_TELEMETRY=1`. The
+fail-closed capacity variables and defaults are:
 
 - `KLAYOUT_CUDA_M1_CONTACT_MAX_CONTEXTS=4000000`;
 - `KLAYOUT_CUDA_M1_CONTACT_MAX_GRID_CELLS=16000000`;
@@ -356,13 +362,14 @@ benchmarks/cuda_spatial_replay/run_m1_contact_live_gate.sh \
   --deck freepdk45-eight-way-dual-repack.lydrc
 ```
 
-The live gate covers 15 deterministic layouts across source-off,
-generated-off, stock-requested fallback, live-requested fallback, and CUDA
-lanes. It checks equality and deficient-side combinations, exact cut spacing,
-overlap/touch/duplicates, outside-M1 and malformed domains, hierarchy
-transforms, and a split-M1 union witness. Backend smokes additionally cover
-negative coordinates, a grid-boundary seam, and horizontal and vertical
-one-DBU gaps.
+The live gate covers both `implant_contact` and `m1_enclosure` owners over 15
+deterministic layouts across source-off, generated-off, stock-requested
+fallback, live-requested fallback, and CUDA lanes. It checks exact
+CONTACT.1-.3 marker counts, equality and deficient-side combinations, exact
+cut spacing, overlap/touch/duplicates, outside-M1 and malformed domains,
+hierarchy transforms, a split-M1 union witness, and rejection of a changed
+CONTACT.2 rule. Backend smokes additionally cover negative coordinates, a
+grid-boundary seam, and horizontal and vertical one-DBU gaps.
 
 On the downstream-composed FreePDK45 x2 `m1_enclosure` shard, a same-binary
 external-wall A/B changed 202.73 to 88.06 s: 114.67 s, or **56.56%**, less
@@ -377,7 +384,7 @@ parallel full launcher fell by 114.67 s.
 ### Balanced full-launch gate
 
 `run_balanced_full_gate.sh` packages the qualified configuration-level gate.
-It regenerates the live VIA1-stack plus CONTACT/METAL1.3 deck from the
+It regenerates the live VIA1-stack plus CONTACT.1-.3/METAL1.3 deck from the
 eight-owner source, applies the three-way antenna transform, and moves only
 `CONTACT.6` into the underloaded grid owner. The compound `METAL1.1` and
 `METAL1.2` traversal remains intact.
@@ -385,11 +392,13 @@ eight-owner source, applies the three-way antenna transform, and moves only
 The runner fixes the qualified ten-owner launch order, eight-process limit,
 four deck threads per process, CUDA resource limits, and certificate opt-ins.
 It then requires ACTIVE.3, METAL1.1/METAL1.2, VIA1-stack,
-CONTACT/METAL1.3, and selected-empty DeepEdges telemetry before comparing the
-canonical merged report. Supply the deck-bound manifest created from a CPU
-`drc_shard=all` reference and the ten CUDA-enabled shard reports. Do not create
-the reference with CUDA enabled: that changes historical category order even
-when the semantic report is
+and CONTACT.1-.3/METAL1.3 telemetry before comparing the canonical merged
+report. The older CONTACT.1 selected-empty certificate is intentionally not
+required because the atomic M1-contact certificate bypasses that CPU
+expression. Supply the deck-bound manifest created from a CPU `drc_shard=all`
+reference and the ten CUDA-enabled shard reports. Do not create the reference
+with CUDA enabled: that changes historical category order even when the
+semantic report is
 otherwise equal.
 
 ```sh

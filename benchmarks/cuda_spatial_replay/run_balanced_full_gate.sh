@@ -278,7 +278,7 @@ printf '%s\n' "${rc}" >"${work}/exit-status.txt"
 if ((rc != 0)); then
   echo "BALANCED_FULL_CUDA_GATE failed rc=${rc} work=${work}" >&2
   cat -- "${time_file}" >&2 || true
-  tail -200 -- "${launcher_log}" >&2 || true
+  tail -n 200 -- "${launcher_log}" >&2 || true
   exit "${rc}"
 fi
 
@@ -312,9 +312,6 @@ require_telemetry \
 require_telemetry \
   "CUDA M1 contact transaction: certified-empty" \
   "M1-contact certified-empty"
-require_telemetry \
-  "KLAYOUT_DEEP_EDGE_CERT status=success reason=selected-empty" \
-  "DeepEdges selected-empty"
 
 shard_count=$(grep -c '^shard ' "${launcher_log}" || true)
 [[ "${shard_count}" == "${#shards[@]}" ]] ||

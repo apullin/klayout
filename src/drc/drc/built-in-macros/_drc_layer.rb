@@ -3675,7 +3675,7 @@ CODE
     end
 
     # Internal, fail-closed acceleration hook for the qualified FreePDK45
-    # CONTACT/METAL1.3 relation.  The receiver is CONTACT.
+    # CONTACT.1-.3/METAL1.3 transaction.  The receiver is CONTACT.
     def cuda_m1_contact_clean?(metal1)
       @engine._context("cuda_m1_contact_clean?") do
         check_is_layer(metal1)

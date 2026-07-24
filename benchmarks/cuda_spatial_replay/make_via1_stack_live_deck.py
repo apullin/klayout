@@ -146,18 +146,59 @@ via2_edges_with_less_enclosure""",
 def add_m1_contact(text: str) -> str:
     text = replace_once(
         text,
+        """if run_implant_contact
+
+#   Implant""",
+        """# The fixed M1-contact certificate is stronger than both consumers:
+# exact 65nm contact boxes, 75nm contact spacing, full M1 containment, and
+# the METAL1.3 two-opposite-side enclosure relation.  Keep one transaction
+# when the unsplit deck owns both consumers; each split owner otherwise gets
+# its own fail-closed transaction.
+m1_contact_request = ENV["KLAYOUT_CUDA_M1_CONTACT"].to_s
+m1_contact_requested = !m1_contact_request.empty? &amp;&amp; m1_contact_request != "0" &amp;&amp; m1_contact_request != "false" &amp;&amp; m1_contact_request != "off"
+m1_contact_owner = m1_contact_requested &amp;&amp; (run_implant_contact || run_m1_enclosure)
+m1_contact_clean = m1_contact_owner &amp;&amp; cont.respond_to?(:cuda_m1_contact_clean?) &amp;&amp; cont.cuda_m1_contact_clean?(metal1)
+m1_contact_empty = polygon_layer if m1_contact_clean
+info("CUDA M1 contact transaction: #{m1_contact_clean ? 'certified-empty' : 'full-cpu-fallback'}") if m1_contact_owner
+
+if run_implant_contact
+
+#   Implant""",
+        "M1-contact owner transaction",
+    )
+    text = replace_once(
+        text,
+        """#   Contact
+cont.edges.without_length(65.nm).output("CONTACT.1", "CONTACT.1 : Minimum/Maximum width of contact : 65nm")
+cont.space(75.nm, euclidian).output("CONTACT.2", "CONTACT.2 : Minimum spacing of contact : 75nm")
+cont.not(active).not(poly).not(metal1).output("CONTACT.3", "CONTACT.3 : contact must be inside active or poly or metal1")
+active.enclosing(cont, 5.nm, euclidian).output("CONTACT.4", "CONTACT.4 : Minimum enclosure of active around contact : 5nm")""",
+        """#   Contact
+# Match the three original expressions as one exact transaction.  The CUDA
+# certificate's M1-containment proof is stronger than CONTACT.3's
+# active-or-poly-or-M1 union; no CONTACT.1-.3 result can survive on success.
+# Every decline executes each untouched CPU expression exactly once.
+if m1_contact_clean
+  m1_contact_empty.output("CONTACT.1", "CONTACT.1 : Minimum/Maximum width of contact : 65nm")
+  m1_contact_empty.output("CONTACT.2", "CONTACT.2 : Minimum spacing of contact : 75nm")
+  m1_contact_empty.output("CONTACT.3", "CONTACT.3 : contact must be inside active or poly or metal1")
+else
+  cont.edges.without_length(65.nm).output("CONTACT.1", "CONTACT.1 : Minimum/Maximum width of contact : 65nm")
+  cont.space(75.nm, euclidian).output("CONTACT.2", "CONTACT.2 : Minimum spacing of contact : 75nm")
+  cont.not(active).not(poly).not(metal1).output("CONTACT.3", "CONTACT.3 : contact must be inside active or poly or metal1")
+end
+active.enclosing(cont, 5.nm, euclidian).output("CONTACT.4", "CONTACT.4 : Minimum enclosure of active around contact : 5nm")""",
+        "CONTACT.1-.3 transaction",
+    )
+    text = replace_once(
+        text,
         """if run_m1_enclosure
 
 # The inside/enclosing relation""",
         """if run_m1_enclosure
 
-m1_contact_request = ENV["KLAYOUT_CUDA_M1_CONTACT"].to_s
-m1_contact_requested = !m1_contact_request.empty? &amp;&amp; m1_contact_request != "0" &amp;&amp; m1_contact_request != "false" &amp;&amp; m1_contact_request != "off"
-m1_contact_clean = m1_contact_requested &amp;&amp; cont.respond_to?(:cuda_m1_contact_clean?) &amp;&amp; cont.cuda_m1_contact_clean?(metal1)
-info("CUDA M1 contact transaction: #{m1_contact_clean ? 'certified-empty' : 'full-cpu-fallback'}") if m1_contact_requested
-
 if m1_contact_clean
-  polygon_layer.output("METAL1.3", "METAL1.3 : Minimum enclosure around contact on two opposite sides : 35nm")
+  m1_contact_empty.output("METAL1.3", "METAL1.3 : Minimum enclosure around contact on two opposite sides : 35nm")
 else
 
 # The inside/enclosing relation""",

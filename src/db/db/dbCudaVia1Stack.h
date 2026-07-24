@@ -31,11 +31,12 @@ DB_PUBLIC bool cuda_via1_stack_try_empty (
   const db::DeepLayer &raw_metal2);
 
 /**
- * Try the qualified FreePDK45 CONTACT/METAL1.3 empty certificate.
+ * Try the qualified FreePDK45 CONTACT.1-.3/METAL1.3 empty certificate.
  *
- * This reuses the stronger cut-size, cut-spacing, and two-opposite-side
- * projection proof from the VIA1-stack backend.  False is a normal decline and
- * requires the caller to execute the complete historical CPU chain.
+ * This reuses the stronger cut-size, cut-spacing, full-M1-containment, and
+ * two-opposite-side projection proof from the VIA1-stack backend.  A true
+ * result therefore certifies CONTACT.1-.3 and METAL1.3 empty.  False is a
+ * normal decline and requires the caller to execute every historical CPU rule.
  */
 DB_PUBLIC bool cuda_m1_contact_try_empty (
   const db::DeepLayer &raw_metal1, const db::DeepLayer &raw_contact);

@@ -10,11 +10,13 @@ Usage:
     [--generate-only] [--keep-work]
 
 Builds a deterministic 15-case CONTACT/M1 fixture and an opt-in live-CUDA
-variant of the supplied FreePDK45 deck.  CUDA-off reports must remain identical
-to the source deck.  Requested runs without a usable backend must select the
-historical CPU rule.  With a live binary and backend, qualified clean cases
-must receive the empty certificate, while rule violations and unsupported
-domains must fail closed to a stock-identical CPU report.
+variant of the supplied FreePDK45 deck.  Both implant_contact CONTACT.1-.3 and
+m1_enclosure METAL1.3 owners are checked.  CUDA-off reports must remain
+identical to the source deck.  Requested runs without a usable backend must
+select each historical CPU rule exactly once.  With a live binary and backend,
+qualified clean cases must receive the shared empty certificate, while rule
+violations and unsupported domains must fail closed to stock-identical CPU
+reports.
 
 All generated layouts, decks, reports, logs, homes, and caches live under a
 fresh TMPDIR directory.  They are removed unless --keep-work is specified.
@@ -220,15 +222,50 @@ assert_deck_count 1 \
   "CUDA M1 contact transaction:" \
   "transaction telemetry"
 assert_deck_count 1 \
-  'polygon_layer.output("METAL1.3"' \
-  "certified-empty output"
+  "m1_contact_owner = m1_contact_requested" \
+  "shared owner gate"
+assert_deck_count 1 \
+  'm1_contact_empty.output("CONTACT.1"' \
+  "CONTACT.1 certified-empty output"
+assert_deck_count 1 \
+  'm1_contact_empty.output("CONTACT.2"' \
+  "CONTACT.2 certified-empty output"
+assert_deck_count 1 \
+  'm1_contact_empty.output("CONTACT.3"' \
+  "CONTACT.3 certified-empty output"
+assert_deck_count 1 \
+  'm1_contact_empty.output("METAL1.3"' \
+  "METAL1.3 certified-empty output"
 m1_clean_guard_count=$(
   grep -Ec -- '^if m1_contact_clean$' "${live_deck}" || true
 )
-[[ "${m1_clean_guard_count}" == 1 ]] ||
-  die "M1 certificate guard: expected 1, found ${m1_clean_guard_count}"
+[[ "${m1_clean_guard_count}" == 2 ]] ||
+  die "M1 certificate guards: expected 2, found ${m1_clean_guard_count}"
+
+# The transform itself is the exact rule matcher.  A changed CONTACT.2
+# distance must be rejected instead of being silently accelerated.
+mutated_source="${work}/m1-contact-mutated-source.lydrc"
+mutated_output="${work}/m1-contact-mutated-output.lydrc"
+mutation_log="${work}/logs/deck-mutation.log"
+sed \
+  's/cont\.space(75\.nm, euclidian)\.output("CONTACT\.2"/cont.space(76.nm, euclidian).output("CONTACT.2"/' \
+  "${source_deck}" >"${mutated_source}"
+cmp -s -- "${source_deck}" "${mutated_source}" &&
+  die "CONTACT.2 mutation did not change the source deck"
+if "${python}" "${deck_generator}" \
+  --input "${mutated_source}" --output "${mutated_output}" --m1-contact \
+  >"${mutation_log}" 2>&1; then
+  die "changed CONTACT.2 rule was incorrectly accepted"
+fi
+grep -Fq -- \
+  "CONTACT.1-.3 transaction: expected one source block, found 0" \
+  "${mutation_log}" ||
+  {
+    cat -- "${mutation_log}" >&2
+    die "changed CONTACT.2 rule did not fail at the exact matcher"
+  }
 echo \
-  "M1_CONTACT_LIVE_GATE ok gate=deck deterministic=1 transaction=1 certificate_output=1"
+  "M1_CONTACT_LIVE_GATE ok gate=deck deterministic=1 transaction=1 certificate_outputs=4 exact_matcher=1"
 
 if ((generate_only)); then
   echo "M1_CONTACT_LIVE_GATE ok gate=generate-only"
@@ -257,6 +294,21 @@ declare -A expected_error=(
   [M1_CONTACT_ADJACENT_DEFICIENT]=1
 )
 
+declare -A expected_contact1=(
+  [M1_CONTACT_BAD_SIZE]=2
+  [M1_CONTACT_OVERLAP]=2
+  [M1_CONTACT_TOUCH]=2
+  [M1_CONTACT_NONRECT]=6
+)
+
+declare -A expected_contact2=(
+  [M1_CONTACT_SPACING_149]=1
+)
+
+declare -A expected_contact3=(
+  [M1_CONTACT_OUTSIDE_M1]=1
+)
+
 declare -A cuda_clean=(
   [M1_CONTACT_CLEAN]=1
   [M1_CONTACT_ENCLOSURE_70]=1
@@ -277,16 +329,38 @@ canonicalize_report() {
 assert_report() {
   local report=$1
   local top=$2
+  local owner=$3
   local count
   grep -Fq -- "<top-cell>${top}</top-cell>" "${report}" ||
     die "${top}: report top-cell marker is missing"
-  count=$(
-    grep -Fc -- "<category>'METAL1.3'</category>" "${report}" || true
-  )
-  if [[ -n "${expected_error[${top}]:-}" ]]; then
-    ((count > 0)) || die "${top}: expected METAL1.3, but found no item"
+
+  if [[ "${owner}" == m1_enclosure ]]; then
+    count=$(
+      grep -Fc -- "<category>'METAL1.3'</category>" "${report}" || true
+    )
+    if [[ -n "${expected_error[${top}]:-}" ]]; then
+      ((count > 0)) || die "${owner}/${top}: expected METAL1.3, but found no item"
+    else
+      ((count == 0)) ||
+        die "${owner}/${top}: unexpected METAL1.3 item count ${count}"
+    fi
+  elif [[ "${owner}" == implant_contact ]]; then
+    local expected
+    for rule in 1 2 3; do
+      count=$(
+        grep -Fc -- "<category>'CONTACT.${rule}'</category>" \
+          "${report}" || true
+      )
+      case "${rule}" in
+        1) expected=${expected_contact1[${top}]:-0} ;;
+        2) expected=${expected_contact2[${top}]:-0} ;;
+        3) expected=${expected_contact3[${top}]:-0} ;;
+      esac
+      [[ "${count}" == "${expected}" ]] ||
+        die "${owner}/${top}: CONTACT.${rule} expected ${expected}, found ${count}"
+    done
   else
-    ((count == 0)) || die "${top}: unexpected METAL1.3 item count ${count}"
+    die "internal error: unknown owner ${owner}"
   fi
 }
 
@@ -327,23 +401,25 @@ run_case() {
   local mode=$3
   local deck=$4
   local top=$5
-  local lane_dir="${work}/reports/${lane}"
+  local owner=$6
+  local lane_dir="${work}/reports/${lane}/${owner}"
   local report="${lane_dir}/${top}.lyrdb"
-  local log="${work}/logs/${lane}-${top}.log"
+  local log="${work}/logs/${lane}-${owner}-${top}.log"
 
   mkdir -p -- "${lane_dir}"
-  if ! run_klayout "${mode}" "${lane}-${top}" "${binary}" -b \
+  if ! run_klayout "${mode}" "${lane}-${owner}-${top}" "${binary}" -b \
     -r "${deck}" \
     -rd "input=${fixture}" \
     -rd "topcell=${top}" \
     -rd "output=${report}" \
-    -rd "drc_shard=m1_enclosure" \
+    -rd "drc_shard=${owner}" \
     >"${log}" 2>&1; then
     cat -- "${log}" >&2
-    die "${lane}/${top}: DRC invocation failed"
+    die "${lane}/${owner}/${top}: DRC invocation failed"
   fi
-  [[ -s "${report}" ]] || die "${lane}/${top}: DRC produced no report"
-  assert_report "${report}" "${top}"
+  [[ -s "${report}" ]] ||
+    die "${lane}/${owner}/${top}: DRC produced no report"
+  assert_report "${report}" "${top}" "${owner}"
   assert_transaction "${mode}" "${top}" "${log}"
 }
 
@@ -351,56 +427,72 @@ compare_reports() {
   local reference_lane=$1
   local candidate_lane=$2
   local top=$3
-  local reference="${work}/reports/${reference_lane}/${top}.lyrdb"
-  local candidate="${work}/reports/${candidate_lane}/${top}.lyrdb"
-  local reference_canonical="${work}/reports/${reference_lane}/${top}.canonical.lyrdb"
-  local candidate_canonical="${work}/reports/${candidate_lane}/${top}.canonical.lyrdb"
+  local owner=$4
+  local reference="${work}/reports/${reference_lane}/${owner}/${top}.lyrdb"
+  local candidate="${work}/reports/${candidate_lane}/${owner}/${top}.lyrdb"
+  local reference_canonical="${work}/reports/${reference_lane}/${owner}/${top}.canonical.lyrdb"
+  local candidate_canonical="${work}/reports/${candidate_lane}/${owner}/${top}.canonical.lyrdb"
   canonicalize_report "${reference}" "${reference_canonical}"
   canonicalize_report "${candidate}" "${candidate_canonical}"
   cmp -s -- "${reference_canonical}" "${candidate_canonical}" ||
-    die "${candidate_lane}/${top}: report differs from ${reference_lane}"
+    die "${candidate_lane}/${owner}/${top}: report differs from ${reference_lane}"
 }
 
-# Source and generated decks must be observably identical with opt-in off.
-for top in "${cases[@]}"; do
-  run_case source-off "${stock_klayout}" off "${source_deck}" "${top}"
-  run_case generated-off "${stock_klayout}" off "${live_deck}" "${top}"
-  compare_reports source-off generated-off "${top}"
+# Source and generated decks must be observably identical with opt-in off for
+# both consumers of the shared certificate.
+owners=(implant_contact m1_enclosure)
+for owner in "${owners[@]}"; do
+  for top in "${cases[@]}"; do
+    run_case source-off "${stock_klayout}" off \
+      "${source_deck}" "${top}" "${owner}"
+    run_case generated-off "${stock_klayout}" off \
+      "${live_deck}" "${top}" "${owner}"
+    compare_reports source-off generated-off "${top}" "${owner}"
+  done
 done
 echo \
-  "M1_CONTACT_LIVE_GATE ok gate=default-off cases=${#cases[@]} report=source-identical"
+  "M1_CONTACT_LIVE_GATE ok gate=default-off owners=${#owners[@]} cases=${#cases[@]} report=source-identical"
 
 # A binary without the optional method is the stock compatibility oracle.
-for top in "${cases[@]}"; do
-  run_case stock-requested "${stock_klayout}" requested "${live_deck}" "${top}"
-  compare_reports source-off stock-requested "${top}"
+for owner in "${owners[@]}"; do
+  for top in "${cases[@]}"; do
+    run_case stock-requested "${stock_klayout}" requested \
+      "${live_deck}" "${top}" "${owner}"
+    compare_reports source-off stock-requested "${top}" "${owner}"
+  done
 done
 echo \
-  "M1_CONTACT_LIVE_GATE ok gate=stock-requested-fallback cases=${#cases[@]} report=source-identical"
+  "M1_CONTACT_LIVE_GATE ok gate=stock-requested-fallback owners=${#owners[@]} cases=${#cases[@]} report=source-identical"
 
 if [[ -n "${live_klayout}" ]]; then
-  for top in "${cases[@]}"; do
-    run_case live-fallback "${live_klayout}" requested "${live_deck}" "${top}"
-    compare_reports source-off live-fallback "${top}"
+  for owner in "${owners[@]}"; do
+    for top in "${cases[@]}"; do
+      run_case live-fallback "${live_klayout}" requested \
+        "${live_deck}" "${top}" "${owner}"
+      compare_reports source-off live-fallback "${top}" "${owner}"
+    done
   done
   echo \
-    "M1_CONTACT_LIVE_GATE ok gate=live-requested-fallback cases=${#cases[@]} report=source-identical"
+    "M1_CONTACT_LIVE_GATE ok gate=live-requested-fallback owners=${#owners[@]} cases=${#cases[@]} report=source-identical"
 fi
 
 if [[ -n "${backend}" ]]; then
-  for top in "${cases[@]}"; do
-    run_case cuda "${live_klayout}" cuda "${live_deck}" "${top}"
-    compare_reports source-off cuda "${top}"
-    if [[ -n "${cuda_clean[${top}]:-}" ]]; then
-      disposition=certified-empty
-    else
-      disposition=full-cpu-fallback
-    fi
-    echo \
-      "M1_CONTACT_LIVE_GATE ok lane=cuda case=${top} disposition=${disposition} report=source-identical"
+  for owner in "${owners[@]}"; do
+    for top in "${cases[@]}"; do
+      run_case cuda "${live_klayout}" cuda \
+        "${live_deck}" "${top}" "${owner}"
+      compare_reports source-off cuda "${top}" "${owner}"
+      if [[ -n "${cuda_clean[${top}]:-}" ]]; then
+        disposition=certified-empty
+      else
+        disposition=full-cpu-fallback
+      fi
+      echo \
+        "M1_CONTACT_LIVE_GATE ok lane=cuda owner=${owner} case=${top} disposition=${disposition} report=source-identical"
+    done
   done
   echo \
-    "M1_CONTACT_LIVE_GATE ok gate=cuda clean=${#cuda_clean[@]} fallback=$((${#cases[@]} - ${#cuda_clean[@]})) report=source-identical"
+    "M1_CONTACT_LIVE_GATE ok gate=cuda owners=${#owners[@]} clean_per_owner=${#cuda_clean[@]} fallback_per_owner=$((${#cases[@]} - ${#cuda_clean[@]})) report=source-identical"
 fi
 
 # One source oracle plus generated-off and stock-requested candidates.
@@ -408,4 +500,4 @@ lanes=3
 [[ -z "${live_klayout}" ]] || ((lanes += 1))
 [[ -z "${backend}" ]] || ((lanes += 1))
 echo \
-  "M1_CONTACT_LIVE_GATE PASS cases=${#cases[@]} lanes=${lanes} comparisons=$(((${lanes} - 1) * ${#cases[@]}))"
+  "M1_CONTACT_LIVE_GATE PASS owners=${#owners[@]} cases=${#cases[@]} lanes=${lanes} comparisons=$(((${lanes} - 1) * ${#owners[@]} * ${#cases[@]}))"
