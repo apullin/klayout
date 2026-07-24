@@ -1196,6 +1196,22 @@ not just wall time.
         all pass.  Implementation and gate commits `8e911a4` and `eff6057` are
         pushed to `fork/cuda`.
 
+      - [x] **Integrate the qualified live CONTACT/METAL1.3 certificate:**
+        reuse the atomic projection backend with raw M1/CONTACT hierarchy
+        lowering, a single-rectangle fast path, and an exact integer-DBU
+        union-strip proof for split M1.  The same-binary x2
+        `m1_enclosure` lane changed 202.73 -> 88.06 seconds (**56.56% less**,
+        114.67 seconds saved).  The complete host-to-host transaction took
+        3,063.94 ms and the CUDA backend reported 235.58 ms; canonical reports
+        were identical with SHA-256
+        `d056b808e6f2134e60286e35247a92e3a2f6d2eaa26b463fd572aa7e0652146d`.
+        Fifteen live geometry/fallback cases, the existing seventeen-case VIA
+        regression, backend/oracle smokes, negative/grid-boundary and one-DBU
+        gap cases, and CUDA memcheck pass.  Implementation and gate commits
+        `4728aa4` and `3d144c8` are pushed to `fork/cuda`.  This is an
+        independently lowered certificate, not yet the resident fused tail
+        below; do not report the lane saving as a full-launch reduction.
+
       - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
         WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
         exact predicates, METAL1.3 guards, four-side reduction, and per-rule
