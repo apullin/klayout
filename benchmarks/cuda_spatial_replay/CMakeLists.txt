@@ -69,6 +69,24 @@ set_target_properties(active3_exact_predicate_test PROPERTIES
   CUDA_RESOLVE_DEVICE_SYMBOLS OFF
 )
 
+add_executable(m1_width_space_exact_predicate_test
+  m1_width_space_exact_predicate.cu
+  m1_width_space_exact_predicate_test.cc
+  ../../src/db/db/dbEdgePairRelations.cc
+)
+target_include_directories(m1_width_space_exact_predicate_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/tl/tl
+)
+target_compile_options(m1_width_space_exact_predicate_test PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(m1_width_space_exact_predicate_test PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+)
+
 add_executable(active3_scene_island
   active3_scene_island.cu
 )
