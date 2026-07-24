@@ -221,6 +221,31 @@ if run_m1_via_class""",
     return text
 
 
+def add_implant12(text: str) -> str:
+    return replace_once(
+        text,
+        """implant.separation(gate, 70.nm, projection).polygons.without_area(0).output("IMPLANT.1", "IMPLANT.1 : Minimum spacing of nimplant/ pimplant to channel : 70nm")
+implant.separation(cont, 25.nm, projection).polygons.without_area(0).output("IMPLANT.2", "IMPLANT.1 : Minimum spacing of nimplant/ pimplant to contact : 25nm")""",
+        """# One qualified transaction may prove both fixed projection-separation
+# categories empty.  The generated opt-in is fail-closed: a missing method or
+# any host/backend decline executes each historical CPU expression unchanged.
+implant12_request = ENV["KLAYOUT_CUDA_IMPLANT12"].to_s
+implant12_requested = !implant12_request.empty? &amp;&amp; implant12_request != "0" &amp;&amp; implant12_request != "false" &amp;&amp; implant12_request != "off"
+implant12_clean = implant12_requested &amp;&amp; implant.respond_to?(:cuda_implant12_clean?) &amp;&amp; implant.cuda_implant12_clean?(gate, cont)
+implant12_empty = polygon_layer if implant12_clean
+info("CUDA IMPLANT.1/.2 transaction: #{implant12_clean ? 'certified-empty' : 'full-cpu-fallback'}") if implant12_requested
+
+if implant12_clean
+  implant12_empty.output("IMPLANT.1", "IMPLANT.1 : Minimum spacing of nimplant/ pimplant to channel : 70nm")
+  implant12_empty.output("IMPLANT.2", "IMPLANT.1 : Minimum spacing of nimplant/ pimplant to contact : 25nm")
+else
+  implant.separation(gate, 70.nm, projection).polygons.without_area(0).output("IMPLANT.1", "IMPLANT.1 : Minimum spacing of nimplant/ pimplant to channel : 70nm")
+  implant.separation(cont, 25.nm, projection).polygons.without_area(0).output("IMPLANT.2", "IMPLANT.1 : Minimum spacing of nimplant/ pimplant to contact : 25nm")
+end""",
+        "IMPLANT.1/.2 transaction",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True, type=Path)
@@ -230,10 +255,17 @@ def main() -> int:
         action="store_true",
         help="also add the fail-closed CONTACT/METAL1.3 certificate",
     )
+    parser.add_argument(
+        "--implant12",
+        action="store_true",
+        help="also add the fail-closed IMPLANT.1/.2 transaction",
+    )
     args = parser.parse_args()
 
     source = args.input.read_text(encoding="utf-8")
     output = transform(source)
+    if args.implant12:
+        output = add_implant12(output)
     if args.m1_contact:
         output = add_m1_contact(output)
     args.output.parent.mkdir(parents=True, exist_ok=True)
