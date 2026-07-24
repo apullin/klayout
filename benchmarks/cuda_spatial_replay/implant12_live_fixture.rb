@@ -44,12 +44,21 @@ insert_gate(
   poly,
   RBA::Box.new(539, 100, 800, 300)
 )
+# Keep the other transaction lane nonempty and clean so this fixture exercises
+# the backend's RAW_HITS disposition instead of declining an absent operand.
+implant1_hit.shapes(cont).insert(RBA::Box.new(2_000, 100, 2_100, 200))
 
 # One DBU inside only the 25 nm limit. Use pplus to cover both contributors to
 # the merged implant layer.
 implant2_hit = layout.create_cell("IMPLANT12_IMPLANT2_HIT")
 implant2_hit.shapes(pplus).insert(RBA::Box.new(0, 0, 400, 400))
 implant2_hit.shapes(cont).insert(RBA::Box.new(449, 100, 579, 230))
+insert_gate(
+  implant2_hit,
+  active,
+  poly,
+  RBA::Box.new(2_000, 100, 2_100, 200)
+)
 
 # Exercise both ordered result categories through a transformed hierarchy.
 both_leaf = layout.create_cell("IMPLANT12_BOTH_HIT_LEAF")
