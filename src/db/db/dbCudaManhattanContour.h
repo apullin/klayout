@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <utility>
 #include <vector>
 
@@ -304,6 +305,275 @@ ValidationResult validate (const std::vector<Edge> &edges)
   }
   return ValidationResult::Valid;
 }
+
+/**
+ * Hard limits for the exact translation-equivalence cache.
+ *
+ * The edge limit bounds owned representative storage.  The per-key limit
+ * bounds work even if an adversarial input produces many identical hashes.
+ */
+struct TranslationCacheLimits
+{
+  TranslationCacheLimits ()
+    : max_representatives (4096),
+      max_cached_edges (1048576),
+      max_representatives_per_key (8)
+  {
+    //  nothing else
+  }
+
+  size_t max_representatives;
+  size_t max_cached_edges;
+  size_t max_representatives_per_key;
+};
+
+struct TranslationCacheStatistics
+{
+  TranslationCacheStatistics ()
+    : lookups (0), cache_hits (0), full_validations (0),
+      cached_representatives (0), cached_edges (0),
+      exact_comparison_misses (0), capacity_bypasses (0)
+  {
+    //  nothing else
+  }
+
+  size_t lookups;
+  size_t cache_hits;
+  size_t full_validations;
+  size_t cached_representatives;
+  size_t cached_edges;
+  size_t exact_comparison_misses;
+  size_t capacity_bypasses;
+};
+
+namespace detail
+{
+
+struct TranslationCacheKey
+{
+  size_t edge_count;
+  uint64_t hash_a;
+  uint64_t hash_b;
+};
+
+inline bool operator< (
+  const TranslationCacheKey &a, const TranslationCacheKey &b)
+{
+  if (a.edge_count != b.edge_count) {
+    return a.edge_count < b.edge_count;
+  }
+  if (a.hash_a != b.hash_a) {
+    return a.hash_a < b.hash_a;
+  }
+  return a.hash_b < b.hash_b;
+}
+
+struct ExactDelta
+{
+  uint64_t magnitude;
+  bool negative;
+};
+
+inline ExactDelta exact_delta (int64_t value, int64_t origin)
+{
+  if (value >= origin) {
+    return ExactDelta {
+      uint64_t (value) - uint64_t (origin), false
+    };
+  }
+  return ExactDelta {
+    uint64_t (origin) - uint64_t (value), true
+  };
+}
+
+inline bool operator== (const ExactDelta &a, const ExactDelta &b)
+{
+  return a.magnitude == b.magnitude && a.negative == b.negative;
+}
+
+template <unsigned HashBits>
+struct TranslationHashMask
+{
+  static uint64_t value ()
+  {
+    return (UINT64_C (1) << HashBits) - 1;
+  }
+};
+
+template <>
+struct TranslationHashMask<64>
+{
+  static uint64_t value ()
+  {
+    return ~UINT64_C (0);
+  }
+};
+
+inline void hash_byte (
+  uint64_t &hash_a, uint64_t &hash_b, uint8_t byte)
+{
+  hash_a ^= uint64_t (byte);
+  hash_a *= UINT64_C (1099511628211);
+  hash_b ^= uint64_t (byte);
+  hash_b *= UINT64_C (14029467366897019727);
+}
+
+inline void hash_delta (
+  uint64_t &hash_a, uint64_t &hash_b, const ExactDelta &delta)
+{
+  hash_byte (hash_a, hash_b, delta.negative ? 1 : 0);
+  for (unsigned shift = 0; shift < 64; shift += 8) {
+    hash_byte (
+      hash_a, hash_b, uint8_t (delta.magnitude >> shift));
+  }
+}
+
+template <class Edge>
+TranslationCacheKey translation_cache_key (
+  const std::vector<Edge> &edges)
+{
+  uint64_t hash_a = UINT64_C (1469598103934665603);
+  uint64_t hash_b = UINT64_C (7809847782465536322);
+  const int64_t origin_x = edges.front ().x1;
+  const int64_t origin_y = edges.front ().y1;
+  for (typename std::vector<Edge>::const_iterator edge = edges.begin ();
+       edge != edges.end (); ++edge) {
+    hash_delta (
+      hash_a, hash_b, exact_delta (edge->x1, origin_x));
+    hash_delta (
+      hash_a, hash_b, exact_delta (edge->y1, origin_y));
+    hash_delta (
+      hash_a, hash_b, exact_delta (edge->x2, origin_x));
+    hash_delta (
+      hash_a, hash_b, exact_delta (edge->y2, origin_y));
+  }
+  return TranslationCacheKey { edges.size (), hash_a, hash_b };
+}
+
+template <class Edge>
+bool exact_translation_equivalent (
+  const std::vector<Edge> &a, const std::vector<Edge> &b)
+{
+  if (a.size () != b.size () || a.empty ()) {
+    return false;
+  }
+
+  const int64_t a_origin_x = a.front ().x1;
+  const int64_t a_origin_y = a.front ().y1;
+  const int64_t b_origin_x = b.front ().x1;
+  const int64_t b_origin_y = b.front ().y1;
+  for (size_t i = 0; i < a.size (); ++i) {
+    if (! (exact_delta (a [i].x1, a_origin_x) ==
+           exact_delta (b [i].x1, b_origin_x)) ||
+        ! (exact_delta (a [i].y1, a_origin_y) ==
+           exact_delta (b [i].y1, b_origin_y)) ||
+        ! (exact_delta (a [i].x2, a_origin_x) ==
+           exact_delta (b [i].x2, b_origin_x)) ||
+        ! (exact_delta (a [i].y2, a_origin_y) ==
+           exact_delta (b [i].y2, b_origin_y))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+} // namespace detail
+
+/**
+ * Memoize only exact translations of contours already proven Valid.
+ *
+ * Hashes only select a bounded candidate bucket.  Every hit is confirmed by
+ * an overflow-free, coordinate-by-coordinate translation comparison.  A
+ * mismatch or any capacity limit always runs the full validator, and invalid
+ * contours are never cached.
+ */
+template <class Edge, unsigned HashBits = 64>
+class TranslationValidationCache
+{
+public:
+  explicit TranslationValidationCache (
+    const TranslationCacheLimits &limits = TranslationCacheLimits ())
+    : m_limits (limits), m_statistics (), m_representatives ()
+  {
+    //  nothing else
+    static_assert (
+      HashBits <= 64,
+      "translation-cache hash width cannot exceed uint64");
+  }
+
+  ValidationResult validate_contour (const std::vector<Edge> &edges)
+  {
+    ++m_statistics.lookups;
+
+    if (! edges.empty () &&
+        edges.size () <= m_limits.max_cached_edges) {
+      detail::TranslationCacheKey key =
+        detail::translation_cache_key (edges);
+      const uint64_t hash_mask =
+        detail::TranslationHashMask<HashBits>::value ();
+      key.hash_a &= hash_mask;
+      key.hash_b &= hash_mask;
+      typename RepresentativeMap::const_iterator bucket =
+        m_representatives.find (key);
+      if (bucket != m_representatives.end ()) {
+        for (typename RepresentativeList::const_iterator representative =
+               bucket->second.begin ();
+             representative != bucket->second.end (); ++representative) {
+          if (detail::exact_translation_equivalent (
+                edges, *representative)) {
+            ++m_statistics.cache_hits;
+            return ValidationResult::Valid;
+          }
+          ++m_statistics.exact_comparison_misses;
+        }
+      }
+
+      ++m_statistics.full_validations;
+      const ValidationResult result =
+        cuda_manhattan_contour::validate (edges);
+      if (result != ValidationResult::Valid) {
+        return result;
+      }
+
+      const size_t bucket_size =
+        bucket == m_representatives.end () ? 0 : bucket->second.size ();
+      if (m_statistics.cached_representatives <
+            m_limits.max_representatives &&
+          edges.size () <=
+            m_limits.max_cached_edges - m_statistics.cached_edges &&
+          bucket_size < m_limits.max_representatives_per_key) {
+        m_representatives [key].push_back (edges);
+        ++m_statistics.cached_representatives;
+        m_statistics.cached_edges += edges.size ();
+      } else {
+        ++m_statistics.capacity_bypasses;
+      }
+      return result;
+    }
+
+    ++m_statistics.full_validations;
+    const ValidationResult result =
+      cuda_manhattan_contour::validate (edges);
+    if (result == ValidationResult::Valid) {
+      ++m_statistics.capacity_bypasses;
+    }
+    return result;
+  }
+
+  const TranslationCacheStatistics &statistics () const
+  {
+    return m_statistics;
+  }
+
+private:
+  typedef std::vector<std::vector<Edge> > RepresentativeList;
+  typedef std::map<
+    detail::TranslationCacheKey, RepresentativeList> RepresentativeMap;
+
+  TranslationCacheLimits m_limits;
+  TranslationCacheStatistics m_statistics;
+  RepresentativeMap m_representatives;
+};
 
 } // namespace cuda_manhattan_contour
 
