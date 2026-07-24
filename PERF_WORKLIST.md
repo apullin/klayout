@@ -1823,13 +1823,22 @@ not just wall time.
             census construction, while the complete candidate scans took
             4.84 + 3.98 s and classification 0.044 s.  Commit `5ffa042`;
             evidence `cuda-runs/poly34-production-dry-run.ktYpv1`.
-          - [ ] **Integrate the atomic POLY.3/.4 clean-only transaction:**
+          - [x] **Integrate the atomic POLY.3/.4 clean-only transaction:**
             reuse and pack the already-derived hierarchical POLY/ACTIVE/GATE
             regions, generate the bounded windows on device, and return one
             digest-bound result.  Do not put the expensive flat census path in
             production.  Require clean, nonempty-hit, capacity, malformed,
             missing-backend, CPU-fallback, and exact live-report differentials
-            before booking wall time.
+            before booking wall time.  The additive live transaction now
+            passes seven CPU oracles, seven CUDA lanes (three clean
+            certificates and four atomic hit fallbacks), wrong-layer,
+            feature-off, and missing-backend no-lowering lanes, and
+            forced-capacity fallback: all 18 complete canonical reports are
+            CPU-identical.  The live set includes a 2,048-occurrence hierarchy
+            census, a six-occurrence asymmetric transformed positive hit, and
+            exact Manhattan-primary decomposition.  The existing aggregate
+            CUDA ABI/oracle and VIA1-stack smokes also pass.  No
+            production/full wall time is booked by this integrity milestone.
         - [ ] **Reuse the cumulative M3 prefix for the M4 antenna check:** the
           current owner spends roughly 78.33 aggregate CPU-seconds extracting
           and evaluating M3, then rebuilding almost the entire graph for M4

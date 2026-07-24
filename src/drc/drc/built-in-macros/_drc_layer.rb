@@ -3698,6 +3698,20 @@ CODE
         self.data.cuda_implant12_clean?(gate.data, contact.data)
       end
     end
+
+    # Internal, fail-closed acceleration hook for the qualified atomic
+    # FreePDK45 POLY.3/POLY.4 transaction.  The receiver is POLY; ACTIVE and
+    # the already-derived GATE intersection are explicit operands.
+    def cuda_poly34_clean?(active, gate)
+      @engine._context("cuda_poly34_clean?") do
+        check_is_layer(active)
+        check_is_layer(gate)
+        requires_region
+        active.requires_region
+        gate.requires_region
+        self.data.cuda_poly34_clean?(active.data, gate.data)
+      end
+    end
     
     # %DRC%
     # @name area
