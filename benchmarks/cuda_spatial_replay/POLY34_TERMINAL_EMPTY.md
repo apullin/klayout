@@ -128,15 +128,67 @@ The standalone rectangle-union terminal classifier is a **correctness GO** once
 the full seeded differential gate passes: it is conservative and has no
 observed false-clean path.
 
-Live host/ABI integration remains **NO-GO** at this milestone. Before that
-step, a production dry run must gather the complete bounded primary candidate
-window for every gate occurrence and report:
+The subsequent production-volume milestone is also a **GO for live
+integration**. `poly34_production_dry_run.cc` reads the pinned layout through
+KLayout's database library, constructs the exact flat merged POLY, ACTIVE, and
+GATE regions, and decomposes each rectilinear primary union into canonical
+`TD_simple` boxes. A two-pass KLayout box scan then gathers every primary box
+whose bounding box is less than the rule distance from each gate. Geometry
+outside that square window cannot intersect the projected side bands examined
+by the certificate. Boundary-only boxes at exactly the distance contribute no
+positive area and are intentionally excluded.
 
-- maximum and distribution of candidate rectangles per gate;
-- per-profile and atomic certificate coverage;
-- unsupported/capacity counts; and
-- exact agreement with the unchanged CPU terminal categories.
+On the FreePDK45 x2 input, the complete candidate census was:
 
-That dry run decides whether the conservative classifier has useful production
-coverage. No timing or whole-run saving may be booked from this correctness
-milestone.
+```text
+profile  gates      raw candidates  maximum  p50  p99  capacity >64
+POLY.3   3,401,254  4,462,594       2        1    2    0
+POLY.4   3,401,254  3,403,326       4        1    1    0
+```
+
+Both conservative profiles certified all 3,401,254 gates, so their atomic
+conjunction also had 100% coverage with zero fallback or unsupported
+occurrences. The unchanged KLayout projection checks independently produced
+6,802,508 raw edge pairs for each profile. Every one normalized to a zero-area
+polygon; the deck's `without_area(0)` therefore retained zero markers, exactly
+matching the atomic certificate.
+
+A fully materialized 64-bit-box/CSR representation requires at least
+451,288,546 bytes (430.4 MiB) before allocator and spatial-index workspace:
+
+```text
+gate boxes             108,840,128
+primary boxes          246,360,896
+candidate offsets       54,420,080
+candidate identities    31,463,680
+profile/atomic results  10,203,762
+```
+
+The qualified read-only run took 234.90 seconds internally and 242.06 seconds
+charged, with 8,304,532 KiB (7.92 GiB) peak RSS. This is deliberately a
+one-time exhaustive census, not a live implementation estimate: 156.56 seconds
+were spent flattening and merging production regions, the two exact KLayout
+oracle checks took 33.62 and 28.41 seconds, the complete candidate scans took
+4.84 and 3.98 seconds, and both certificate passes together took about 0.044
+seconds.
+Evidence is in
+`cuda-runs/poly34-production-dry-run.ktYpv1`.
+
+Reproduce the deterministic boundary gate with:
+
+```sh
+bash benchmarks/cuda_spatial_replay/run_poly34_production_dry_run_gate.sh \
+  --klayout /path/to/klayout
+```
+
+Or run the production census directly:
+
+```sh
+bash benchmarks/cuda_spatial_replay/run_poly34_production_dry_run.sh \
+  --input /path/to/layout.gds --top TOP
+```
+
+The next step may add a separately enabled, digest-bound host/backend
+transaction. It must reuse the already-derived hierarchical layers or lower
+them into a packed scene; the 159-second flat census construction is not an
+acceptable live path. No whole-run saving is booked by this dry-run milestone.
