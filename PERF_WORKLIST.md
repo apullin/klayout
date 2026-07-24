@@ -1732,11 +1732,13 @@ not just wall time.
           `409085bc15614329421b1b07a6fdd6b867fe8cad83a214a1f32a5d9986a595a4`.
           Implementation commit `19b7c54` is pushed.
         - [x] **Generalize the exact M1 width/space transaction to M2 —
-          correctness-complete, performance-deferred:** the separately enabled,
-          digest-bound 140-DBU `METAL2.1/.2` certificate is exact, but its final
-          aggregate production gate removes only 0.1--0.7 real owner seconds.
-          Keep it opt-in and do not spend a full M2 signoff run or enable it by
-          default until scene residency/amortization changes that bound.
+          correctness-complete, performance-qualified but still opt-in:** the
+          separately enabled, digest-bound 140-DBU `METAL2.1/.2` certificate is
+          exact.  Translation-cache follow-up raises the focused production
+          saving to 1.980 real owner seconds / 2.06%, but a full eleven-owner
+          run remains flat because another owner reaches the same critical
+          path.  Keep it opt-in until scene residency/amortization increases
+          the end-to-end bound.
 
           - [x] The additive host/backend profile and exact runtime-distance
             predicate are committed as `e4ce247` and `e638ac0`.  Focused DB
@@ -1778,8 +1780,9 @@ not just wall time.
             95.458 s** (**0.100 s / 0.10% less**).  The earlier 5--10-second
             projection confused KLayout's aggregate/user CPU timers with
             critical-path wall time: the stock four-thread rule work was
-            already parallel.  This is below the integration threshold, so no
-            M2-enabled full gate is claimed.  Evidence:
+            already parallel.  This checkpoint was below the integration
+            threshold, so it did not yet justify an M2-enabled full gate.
+            Evidence:
             `cuda-runs/m2-width-space-sniff.0N6WtT` and
             `cuda-runs/m2-width-space-aggregate3.MnEJLC`.
             The M2-disabled eleven-owner regression gate nevertheless passed
@@ -1790,15 +1793,34 @@ not just wall time.
             less**); full wall moved only 101.66 -> 100.86 s (**0.80% less**)
             because unchanged M2 remained the pole.  Evidence:
             `cuda-runs/klayout-balanced-full-cuda-gate.cRBR3S`.
-          - [ ] **Memoize exact translation-equivalent contour validation:**
-            the M2 scene has 13,166 contours but only 71 exact edge sequences
-            modulo translation.  A read-only prototype reduced one exact pass
-            from roughly 1.40 to 0.18 s; independent host and DSO caches project
-            about 2.4 s less serialized preparation.  Preserve fail-closed
-            behavior by scanning every edge/bounds/area, caching only a fully
-            validated contour, and requiring an overflow-safe coordinate-by-
-            coordinate translation proof on every hash hit.  This is a
-            low-risk 2--3% owner experiment, not yet a full-wall claim.
+          - [x] **Memoize exact translation-equivalent contour validation:**
+            commit `338c2c8` adds independent bounded host and DSO caches.  Every
+            contour still receives coordinate/bounds/area checks; only fully
+            valid representatives are cached, and every hash hit receives an
+            overflow-free coordinate-by-coordinate translation proof.  Forced
+            collisions, full-range integer deltas, cache exhaustion, invalid
+            colliders, 50,000 committed differential cases, two million
+            independent randomized cases, sanitizers, focused host tests, and
+            CUDA/backend/predicate smokes all pass.
+
+            On the exact 13,166-contour production scene, 71 full validations
+            plus 13,095 exact hits reduced the median two-pass validator from
+            **2.499490 to 0.408784 s** (**2.090706 s / 83.65% less**).  Three
+            same-build production pairs measured **96.037 s control versus
+            94.057 s candidate** (**1.980 s / 2.06% less owner wall**, +2.11%
+            throughput), with canonical report SHA-256
+            `b817dc5b2158a5a04316daae8e27ec7fbf7e82341f961a3464c17937c8d9d77e`.
+            Evidence: `cuda-runs/m2-width-space-aggregate3.ZHPAcm`.
+
+            The exact M2-enabled eleven-owner gate also passed with canonical
+            full-report SHA-256
+            `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+            It took 101.47 s versus the preceding M2-disabled 100.86-second
+            gate (**0.61 s / 0.60% longer**, not a full-wall win): `m2_rules`
+            reached 96.312 s while independent `m1_enclosure` reached
+            96.111 s, hiding the focused saving under the next pole and normal
+            run variation.  Evidence:
+            `cuda-runs/klayout-balanced-full-cuda-gate.jXRiJY`.
         - [ ] **Fuse POLY.3 and POLY.4 into one exact terminal-empty CUDA
           transaction:** upload the shared derived gate once and evaluate the
           110/140-DBU projection-enclosure profiles atomically.  The certificate
@@ -1878,6 +1900,16 @@ not just wall time.
         WELL/GATE/FIELD-POLY Boolean construction on device only after the
         post-derived executor is exact and beneficial; this is the whole-M1
         endgame rather than a prerequisite for the next measured win.
+
+        - [x] **Rule out runtime CUDA compilation as the M2 preparation cost:**
+          `cuobjdump --list-elf` confirms the installed backend contains native
+          `sm_86` cubins; there is no PTX/NVRTC lowering in the measured path.
+          The former 29.385-second transaction was data-dependent KLayout
+          hierarchy/geometry lowering and duplicate CPU structural validation.
+          A warm service can amortize this only by retaining the parsed layout,
+          canonical packed scenes, CUDA context, and device buffers across rule
+          or job boundaries; ordinary filesystem cache warmth cannot preserve
+          those process-local objects.
 
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
