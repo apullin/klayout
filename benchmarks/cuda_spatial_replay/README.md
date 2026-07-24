@@ -382,6 +382,39 @@ provenance, external wall time, per-owner timings, and CUDA telemetry under
 its temporary work directory. Without `--keep-work`, that directory is
 removed after the gate.
 
+### Production host-build result
+
+Rebuilding the current CUDA host at clean commit `f15739559610a8c3`, tree
+`3f5ec23262ed2a27`, with Clang 22, full LTO/LLD, and `znver2` code generation
+turned the qualified balanced configuration into a second end-to-end win. The
+CUDA backend, deck, manifest, x2 input, owner order, and eight-job limit were
+unchanged.
+
+Three preceding balanced full-launch walls were 184.556784, 186.398209, and
+184.242187 seconds. Three production-build runs took 155.075069, 156.075237,
+and 156.136431 seconds. The means are 185.065727 -> 155.762246 seconds:
+**29.303481 real seconds / 15.83% less wall time and +18.81% throughput**.
+The new full-range spread is 0.68%. Child-plus-merge fell 18.17%, from
+180.514787 to 147.723113 seconds.
+
+M1 width/space remains the pole at 147.715584 seconds mean, 18.17% below its
+preceding 180.507539 seconds. Implant/contact follows at 132.263260 seconds,
+17.57% below 160.457722 seconds. Every counted run produced all four required
+CUDA certificate families. All three raw reports are byte-identical at
+SHA-256
+`89fa723caf5ecd620993d62c2d2e63ca6eaf8c14fe0dac25a7abf9c2992c1472`;
+all canonical reports retain
+`01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+
+The 29:26.31 source-bound build produced:
+
+- executable SHA-256
+  `007f6ddc0750d7b6b8d6c8287756a2e7a94dca298e5a4ded0c4e4bb6cb5cc252`;
+- build-manifest SHA-256
+  `26b7137e6fe9ff45ed0051e302d255af7fc8c1cbc4ff39eef1269fc6f3982fce`;
+- lifecycle-state SHA-256
+  `3a9383a9df70cf57df21425941ee83b1eb36aa6beacbefe69d2cf238f0aedb78`.
+
 ### Opt-in `DeepEdges` merge certificate
 
 `KLAYOUT_CUDA_DISCONNECTED_MERGE=1` enables a separate, fail-closed

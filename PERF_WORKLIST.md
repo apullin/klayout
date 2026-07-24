@@ -1396,6 +1396,43 @@ not just wall time.
         `benchmarks/freepdk45_contact6_split/` on `perf`; its grid mode is the
         CUDA-specific balancing choice.
 
+      - [x] **Rebuild the CUDA host with the production CPU configuration:**
+        a clean source-bound Clang 22, full-LTO/LLD, `znver2` control build
+        reused the identical CUDA backend, deck, manifest, x2 input, ten-owner
+        order, and eight-job limit.  The preceding balanced means are the
+        immediate comparison.  Three new full-launch walls were 155.075069,
+        156.075237, and 156.136431 s, giving
+        **185.065727 -> 155.762246 s: 29.303481 real seconds / 15.83% less
+        full wall time and +18.81% throughput**.  Candidate full-range spread
+        is 0.68%.
+
+        Child-plus-merge changed 180.514787 -> 147.723113 s (**18.17% less**).
+        M1 width/space remains the pole at a 147.715584 s mean, down from
+        180.507539 s (**18.17% less**); implant/contact follows at 132.263260
+        s, down from 160.457722 s (**17.57% less**).  All three raw reports are
+        byte-identical at SHA-256
+        `89fa723caf5ecd620993d62c2d2e63ca6eaf8c14fe0dac25a7abf9c2992c1472`
+        and all canonical reports retain
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+        Every counted run produced the ACTIVE.3, VIA1-stack,
+        CONTACT/METAL1.3, and selected-empty certificates.
+
+        The 29:26.31 build is bound to commit
+        `f15739559610a8c31b21bf47a185ee22eaeded86`, tree
+        `3f5ec23262ed2a2797f5b8a6f47d5fa0ff979337`, executable SHA-256
+        `007f6ddc0750d7b6b8d6c8287756a2e7a94dca298e5a4ded0c4e4bb6cb5cc252`,
+        build-manifest SHA-256
+        `26b7137e6fe9ff45ed0051e302d255af7fc8c1cbc4ff39eef1269fc6f3982fce`,
+        and lifecycle-state SHA-256
+        `3a9383a9df70cf57df21425941ee83b1eb36aa6beacbefe69d2cf238f0aedb78`.
+
+      - [ ] **Retrain mixed PGO for the current CUDA host:** no profile from
+        the pre-CUDA source is valid for this tree.  If the production-build
+        result clears the whole-run gate, generate fresh profiles with one
+        balanced FreePDK45 CUDA x2 run and one real Sky130 S5 run, weight by
+        measured counter totals, build a source-bound PGO-use bundle, and
+        require at least 5% on both one-pair screens before formal cohorts.
+
       - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
         WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
         exact predicates, METAL1.3 guards, four-side reduction, and per-rule
