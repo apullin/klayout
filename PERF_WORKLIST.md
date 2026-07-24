@@ -1243,6 +1243,45 @@ not just wall time.
         independently lowered certificate, not yet the resident fused tail
         below; do not report the lane saving as a full-launch reduction.
 
+      - [x] **Reap the live CUDA wins with CPU-owner balancing:** stack the
+        qualified three-way antenna split, leave the compound METAL1.1/.2
+        traversal intact, and move only independent `CONTACT.6` from the
+        overloaded M1 width/space owner into the underloaded grid owner.
+        Three same-binary all-CUDA baselines had full-launch walls
+        208.568190, 209.288711, and 210.616450 s; three balanced candidates
+        took 184.556784, 186.398209, and 184.242187 s.  The means are
+        **209.491117 -> 185.065727 s: 24.425390 real seconds / 11.66% less
+        full wall time and +13.20% throughput**.  Baseline and candidate
+        full-range spreads are 0.98% and 1.17%.
+
+        Child-plus-merge means are 204.965780 -> 180.514787 s (**11.93%
+        less**).  M1 width/space becomes the sole pole at a 180.507539 s mean,
+        down from 204.958218 s.  The antenna pole falls from 191.356083 s to
+        96.299579 s for the slowest new owner (**49.68% less antenna-lane
+        wall**); grid rises only to 45.032370 s.  This is the first
+        configuration-level result that converts the large independent CUDA
+        lane reductions into a double-digit end-to-end win.
+
+        All six clean reports are canonically identical at SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`;
+        all three candidate raw merges are byte-identical at
+        `89fa723caf5ecd620993d62c2d2e63ca6eaf8c14fe0dac25a7abf9c2992c1472`.
+        CUDA-enabled shards also match CPU `all` exactly on the 86-item
+        antenna fixture, 99-item M1 sentinel, and 1,587-item mixed hierarchy,
+        including the moved CONTACT.6 marker and retained M1.1/.2 markers.
+        Their semantic SHA-256 values are respectively
+        `409085bc15614329421b1b07a6fdd6b867fe8cad83a214a1f32a5d9986a595a4`,
+        `265a2e1c58aed60bc89e8bd2ad2904147a1e53fcd7a2a7c8bfa8ddaa339cd1a2`,
+        and
+        `429d631ab89d9e0a54e4f6ed367223974b8caca564c461fda59ebda9dcbcd8d2`.
+        The transformed CUDA deck and bound manifest SHA-256 values are
+        `5e32231a9232a98b4bfc7475e2f9a9400d967787734072e5678c870ffde68573`
+        and
+        `5145c61ca568c05d82675f700f6b95c3b7135880adf081f90e5692492538c59f`.
+        The reusable fail-closed transform lives under
+        `benchmarks/freepdk45_contact6_split/` on `perf`; its grid mode is the
+        CUDA-specific balancing choice.
+
       - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
         WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
         exact predicates, METAL1.3 guards, four-side reduction, and per-rule
