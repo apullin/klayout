@@ -15,6 +15,10 @@ KLayout responsibilities. The earlier description of the integration as
 different-layer-only is therefore stale. The normal build has no CUDA headers
 or CUDA link dependency.
 
+The later contiguous clean-certificate islands are documented separately:
+[`ACTIVE3_GPU_ISLAND.md`](ACTIVE3_GPU_ISLAND.md) and
+[`M1_WIDTH_SPACE_GPU_ISLAND.md`](M1_WIDTH_SPACE_GPU_ISLAND.md).
+
 ## KLayout-pointer-free record contract
 
 The on-disk/host replay record is an 80-byte POD with:

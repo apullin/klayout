@@ -1547,6 +1547,36 @@ not just wall time.
         conservatively.  First prove a non-consuming width/space scene island
         and production census; integrate only the atomic two-rule result.
 
+        - [x] The standalone CUDA scene island now owns hierarchy-context edge
+          expansion, one shared uniform-grid index, exact width/spacing
+          candidate classification, and terminal clean/fallback reduction.
+          Its 19 fail-closed and boundary fixtures pass, as does the separate
+          100,077-case exact-predicate gate.  At the measured production flat
+          count, a deliberately regular 2,680,764-polygon stress scene expands
+          10,723,056 edges and classifies 101,117,574 unique pairs in
+          **189.9--193.9 ms warm total**, including roughly 123--127 ms of host
+          validation/lowering and **66.9--67.4 ms** from upload through the
+          compact result.  This is a scale/throughput proof, not yet the
+          production-layout timing claim.
+
+        - [x] Replayed the exact merged-M1 x2 capture through the scene island
+          with producer-bound scene and source-GDS digests.  The canonical
+          scene contains 543,760 stored / 2,680,764 flat polygons and
+          7,320,532 stored / 24,432,912 flat edges.  CUDA classified
+          276,872,266 unique candidate pairs in **200.5--212.2 ms**, with zero
+          hits, uncertainty, or device flags.  Standalone load plus exhaustive
+          host validation made the charged replay **11.68--12.73 seconds
+          total**.  The old
+          generic Ruby exporter was rejected for this bridge because it
+          materializes every geometry record and becomes a heap/GC bottleneck;
+          the canonical C++ export takes 23.35 seconds and is not part of a
+          future in-process live request.
+
+        - [ ] Integrate the proven atomic clean-only transaction into the live
+          width/space batch and measure whole-run wall.  Use the canonical host
+          scene directly so file loading, redundant hashing, and standalone
+          CUDA initialization are avoided or amortized.
+
       - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
         WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
         exact predicates, METAL1.3 guards, four-side reduction, and per-rule
@@ -1577,6 +1607,17 @@ not just wall time.
         WELL/GATE/FIELD-POLY Boolean construction on device only after the
         post-derived executor is exact and beneficial; this is the whole-M1
         endgame rather than a prerequisite for the next measured win.
+
+      - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
+        after the live M1 width/spacing and implant/contact plans establish the
+        second and third reusable compositions, separate canonical
+        geometry/hierarchy scenes, resident spatial indexes, exact predicate
+        primitives, reductions, rule-plan composition, and fail-closed result
+        contracts from KLayout-specific lowering and report publication.
+        KLayout should become a thin adapter from its region/rule graph into
+        this engine.  Preserve an implementation-neutral plan/scene boundary
+        so a later TT-Metalium backend can reuse semantics and differential
+        gates without pretending CUDA kernels are portable source.
 15. [ ] **Lean headless DRC build and developer-turnaround path**
     The accepted runtime is headless, but the standard build still compiles the
     full KLayout distribution.  The current graph has 1,877 object files; 724
