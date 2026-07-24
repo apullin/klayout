@@ -1525,6 +1525,28 @@ not just wall time.
         `/tmp/klayout-provenance-parallel-ab-20260724T131851Z/`.  The rejected
         source remains uncommitted in its isolated worktree for audit.
 
+      - [ ] **Port the current METAL1.1/.2 pole as one atomic CUDA
+        transaction:** keep the qualified shared
+        `drc_batch([width(euclidian) < 65.nm, space(euclidian) < 65.nm])`
+        operation intact, lower the exact merged-M1 contour hierarchy once,
+        and run both predicates against one device-resident edge index.  A
+        clean-only first production path may skip the CPU batch only when both
+        rules are complete and empty with an exact request/result digest,
+        zero uncertainty, and zero fallback/device flags; any hit or
+        unsupported case runs the untouched CPU batch exactly once.
+
+        This is now the first CUDA priority.  Current PGO observations put
+        `m1_width_space` at roughly 132--134 seconds while
+        `implant_contact` follows at roughly 118 seconds.  Eliminating the M1
+        owner therefore has an immediate whole-run ceiling of about
+        **14.7--15.6 real seconds / roughly 10--11% less wall time** before
+        the implant/contact owner becomes the next pole.  The implementation
+        must cover exact Euclidean width and space boundaries, merged contour
+        and same-polygon identity, hierarchy transforms/ownership, touching
+        and coincident geometry, notches, and shielding, or decline
+        conservatively.  First prove a non-consuming width/space scene island
+        and production census; integrate only the atomic two-rule result.
+
       - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
         WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
         exact predicates, METAL1.3 guards, four-side reduction, and per-rule
@@ -1533,7 +1555,9 @@ not just wall time.
         seconds of its 145.5-second M1 lane in this interval, but that is
         overlapping opportunity accounting, not an additive measured saving.
         The existing ACTIVE.3 and METAL1.3 kernels are the two proven
-        endpoints.
+        endpoints.  This remains a valid later residency project, but its
+        present owner is only roughly 69--72 seconds and therefore cannot
+        reduce the current whole-run wall until the two longer owners move.
 
       - [ ] **Widen the resident plan across the post-derived M1 interval:**
         after CPU construction of WELL and GATE, keep POLY.1/3/4/5/6,
