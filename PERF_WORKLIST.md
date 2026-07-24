@@ -66,6 +66,12 @@ bounded, or judged not worth doing.
   selected dependencies, 27 plugins, per-shard timing/RSS, and all three
   orchestrator scripts.  One concurrent batch remains exploratory; acceptance
   requires at least three independent batches.
+- [x] **Separate KLayout CPU timers from critical-path wall:** verbose
+  `Elapsed` and `Total elapsed` are explicitly `RBA::Timer.sys +
+  RBA::Timer.user` in `_drc_engine.rb`; they measure aggregate process CPU
+  work, not elapsed wall time.  Never use them for a wall-time speedup claim.
+  Use the launcher's monotonic wall or `/usr/bin/time` for latency, and retain
+  these engine timers only to explain where CPU work moved.
 
 ## Benchmark ladder
 
