@@ -1063,6 +1063,7 @@ namespace m1ws = klayout_cuda::m1_width_space;
 
 constexpr std::int64_t kM1WsCoordinateLimit = INT64_C(1000000000000);
 constexpr std::int64_t kM1WsDistance = INT64_C(130);
+constexpr std::int64_t kM2WsDistance = INT64_C(140);
 constexpr std::int64_t kM1WsGridCellSize = INT64_C(512);
 
 enum M1WsDeviceFlag : std::uint32_t {
@@ -3555,19 +3556,25 @@ bool m1ws_positive_collinear_overlap(
 
 bool m1ws_basic_request_valid(
     const klayout_cuda_spatial_m1_width_space_request_v1 &request) {
+  const bool qualified_profile =
+      (request.opcode ==
+           KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_MERGED_EMPTY &&
+       request.width_distance == kM1WsDistance &&
+       request.spacing_distance == kM1WsDistance) ||
+      (request.opcode ==
+           KLAYOUT_CUDA_SPATIAL_M2_WIDTH_SPACE_MERGED_EMPTY &&
+       request.width_distance == kM2WsDistance &&
+       request.spacing_distance == kM2WsDistance);
   return
       request.abi_version == KLAYOUT_CUDA_SPATIAL_ABI_VERSION &&
       request.struct_size >= sizeof(request) &&
-      request.opcode ==
-          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_MERGED_EMPTY &&
+      qualified_profile &&
       request.option_flags ==
           KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_QUALIFIED_OPTIONS &&
       request.format_version == 1 && request.dbu_per_micron == 2000 &&
       request.scene_reserved == 0 && request.device >= 0 &&
       request.reserved0 == 0 && request.reserved1[0] == 0 &&
       request.reserved1[1] == 0 &&
-      request.width_distance == kM1WsDistance &&
-      request.spacing_distance == kM1WsDistance &&
       request.grid_cell_size == kM1WsGridCellSize &&
       request.context_record_bytes ==
           sizeof(klayout_cuda_spatial_m1_width_space_context_v1) &&
@@ -4267,7 +4274,7 @@ int run_m1ws_request(
         KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
     set_message(
         result, "unsupported, malformed, or digest-mismatched "
-                "M1 width/space request");
+                "metal width/space request");
     return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
   }
   m1ws_echo_request(*request, result);
@@ -4312,7 +4319,7 @@ int run_m1ws_request(
       result->disposition =
           KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN;
       set_message(
-          result, "M1 width/space device, predicate, or capacity gate "
+          result, "metal width/space device, predicate, or capacity gate "
                   "declined the atomic certificate");
       result->total_ns = elapsed_ns(total_begin, Clock::now());
       return KLAYOUT_CUDA_SPATIAL_FALLBACK;
@@ -4322,7 +4329,7 @@ int run_m1ws_request(
       result->disposition =
           KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_RAW_HITS;
       set_message(
-          result, "M1 width/space raw hits require both pristine CPU "
+          result, "metal width/space raw hits require both pristine CPU "
                   "rules");
       result->total_ns = elapsed_ns(total_begin, Clock::now());
       return KLAYOUT_CUDA_SPATIAL_FALLBACK;
@@ -4331,7 +4338,11 @@ int run_m1ws_request(
     result->disposition =
         KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_COMPLETE;
     set_message(
-        result, "complete atomic METAL1.1/METAL1.2 empty certificate");
+        result,
+        request->opcode ==
+            KLAYOUT_CUDA_SPATIAL_M2_WIDTH_SPACE_MERGED_EMPTY
+          ? "complete atomic METAL2.1/METAL2.2 empty certificate"
+          : "complete atomic METAL1.1/METAL1.2 empty certificate");
     result->total_ns = elapsed_ns(total_begin, Clock::now());
     return KLAYOUT_CUDA_SPATIAL_OK;
   } catch (const std::exception &ex) {
@@ -4344,7 +4355,7 @@ int run_m1ws_request(
     result->fallback_flags =
         KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
     set_message(
-        result, "unknown CUDA M1 width/space backend exception");
+        result, "unknown CUDA metal width/space backend exception");
   }
   result->total_ns = elapsed_ns(total_begin, Clock::now());
   return KLAYOUT_CUDA_SPATIAL_ERROR;

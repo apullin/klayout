@@ -33,6 +33,8 @@ using klayout_cuda::m1_width_space::Verdict;
 
 constexpr std::int64_t kDistance =
     klayout_cuda::m1_width_space::kQualifiedSceneCoordinateDistance;
+constexpr std::int64_t kM2Distance =
+    klayout_cuda::m1_width_space::kM2QualifiedSceneCoordinateDistance;
 constexpr std::uint64_t kPolygonA = 17;
 constexpr std::uint64_t kPolygonB = 29;
 
@@ -183,6 +185,36 @@ std::vector<NamedCase> make_named_cases() {
             kPolygonB, Rule::kSpace),
        kDistance, Verdict::kViolation, true},
 
+      // Independent strict 140-DBU METAL2.1/.2 profile.
+      {"m2 width horizontal 139",
+       pair(east, edge(200, -139, 0, -139), kPolygonA, kPolygonA,
+            Rule::kWidth),
+       kM2Distance, Verdict::kViolation, true},
+      {"m2 width horizontal 140",
+       pair(east, edge(200, -140, 0, -140), kPolygonA, kPolygonA,
+            Rule::kWidth),
+       kM2Distance, Verdict::kNoViolation, true},
+      {"m2 width horizontal 141",
+       pair(east, edge(200, -141, 0, -141), kPolygonA, kPolygonA,
+            Rule::kWidth),
+       kM2Distance, Verdict::kNoViolation, true},
+      {"m2 space horizontal 139",
+       pair(east, edge(200, 139, 0, 139), kPolygonA, kPolygonB,
+            Rule::kSpace),
+       kM2Distance, Verdict::kViolation, true},
+      {"m2 space horizontal 140",
+       pair(east, edge(200, 140, 0, 140), kPolygonA, kPolygonB,
+            Rule::kSpace),
+       kM2Distance, Verdict::kNoViolation, true},
+      {"m2 corner vector inside circle",
+       pair(edge(0, 0, 100, 0), edge(300, -112, 183, -112), kPolygonA,
+            kPolygonA, Rule::kWidth),
+       kM2Distance, Verdict::kViolation, true},
+      {"m2 corner vector exact 84-112-140",
+       pair(edge(0, 0, 100, 0), edge(300, -112, 184, -112), kPolygonA,
+            kPolygonA, Rule::kWidth),
+       kM2Distance, Verdict::kNoViolation, true},
+
       // The scanner does not present different polygons to WidthRelation.
       {"width different polygon metadata",
        pair(east, edge(200, -1, 0, -1), kPolygonA, kPolygonB,
@@ -289,7 +321,8 @@ std::vector<NamedCase> make_named_cases() {
   };
 }
 
-void test_named_cases(std::vector<CandidatePair> *qualified_batch,
+void test_named_cases(std::vector<CandidatePair> *m1_batch,
+                      std::vector<CandidatePair> *m2_batch,
                       std::uint64_t *checked_count) {
   for (const NamedCase &test : make_named_cases()) {
     const Verdict host =
@@ -303,15 +336,18 @@ void test_named_cases(std::vector<CandidatePair> *qualified_batch,
                       source);
     }
     if (test.distance == kDistance) {
-      qualified_batch->push_back(test.candidate);
+      m1_batch->push_back(test.candidate);
+    } else if (test.distance == kM2Distance) {
+      m2_batch->push_back(test.candidate);
     }
     ++*checked_count;
   }
 }
 
-void test_random_source_differential(std::vector<CandidatePair> *batch,
-                                     std::uint64_t *checked_count) {
-  std::mt19937_64 rng(UINT64_C(0x4d31574944544853));
+void test_random_source_differential(
+    std::vector<CandidatePair> *batch, std::int64_t distance,
+    std::uint64_t seed, std::uint64_t *checked_count) {
+  std::mt19937_64 rng(seed);
   std::uniform_int_distribution<std::int64_t> coordinate(-2000, 2000);
   std::uniform_int_distribution<std::int64_t> length(1, 500);
   std::uniform_int_distribution<std::int64_t> displacement(-220, 220);
@@ -377,9 +413,9 @@ void test_random_source_differential(std::vector<CandidatePair> *batch,
              same_polygon ? kPolygonA : kPolygonB, rule);
     const Verdict host =
         klayout_cuda::m1_width_space::classify_pair_bounded(candidate,
-                                                            kDistance);
+                                                            distance);
     const Verdict source =
-        klayout_edge_relation_oracle(candidate, kDistance);
+        klayout_edge_relation_oracle(candidate, distance);
     if (host != source) {
       throw std::runtime_error(
           "random KLayout differential mismatch at index " +
@@ -393,17 +429,19 @@ void test_random_source_differential(std::vector<CandidatePair> *batch,
 }
 
 void test_cuda_parity(const std::vector<CandidatePair> &batch,
+                      std::int64_t distance, const char *profile,
                       std::uint64_t *checked_count) {
   std::vector<Verdict> device(batch.size());
   std::string error;
   if (!klayout_cuda::m1_width_space::classify_batch(
-          batch.data(), batch.size(), kDistance, device.data(), &error)) {
-    throw std::runtime_error("CUDA batch failed: " + error);
+          batch.data(), batch.size(), distance, device.data(), &error)) {
+    throw std::runtime_error(std::string(profile) +
+                             " CUDA batch failed: " + error);
   }
   for (std::size_t i = 0; i < batch.size(); ++i) {
     const Verdict host =
         klayout_cuda::m1_width_space::classify_pair_bounded(batch[i],
-                                                            kDistance);
+                                                            distance);
     if (device[i] != host) {
       throw std::runtime_error(
           "host/device mismatch at index " + std::to_string(i) + ": " +
@@ -413,12 +451,20 @@ void test_cuda_parity(const std::vector<CandidatePair> &batch,
     }
   }
   *checked_count += batch.size();
+}
 
+void test_invalid_distance(std::uint64_t *checked_count) {
+  std::string error;
   const CandidatePair invalid_distance_pair =
       pair(edge(0, 0, 100, 0), edge(100, -1, 0, -1), kPolygonA,
            kPolygonA, Rule::kWidth);
-  for (const std::int64_t invalid_distance : std::array<std::int64_t, 2>{
-           129, 131}) {
+  for (const std::int64_t invalid_distance : std::array<std::int64_t, 4>{
+           129, 131, 139, 141}) {
+    require_verdict(
+        "host invalid distance",
+        klayout_cuda::m1_width_space::classify_pair_bounded(
+            invalid_distance_pair, invalid_distance),
+        Verdict::kUncertain);
     Verdict device_verdict = Verdict::kNoViolation;
     if (!klayout_cuda::m1_width_space::classify_batch(
             &invalid_distance_pair, 1, invalid_distance, &device_verdict,
@@ -455,13 +501,21 @@ void test_batch_contract(std::uint64_t *checked_count) {
 int main() {
   try {
     std::uint64_t checked_count = 0;
-    std::vector<CandidatePair> qualified_batch;
-    test_named_cases(&qualified_batch, &checked_count);
-    test_random_source_differential(&qualified_batch, &checked_count);
-    test_cuda_parity(qualified_batch, &checked_count);
+    std::vector<CandidatePair> m1_batch;
+    std::vector<CandidatePair> m2_batch;
+    test_named_cases(&m1_batch, &m2_batch, &checked_count);
+    test_random_source_differential(
+        &m1_batch, kDistance, UINT64_C(0x4d31574944544853),
+        &checked_count);
+    test_random_source_differential(
+        &m2_batch, kM2Distance, UINT64_C(0x4d32574944544853),
+        &checked_count);
+    test_cuda_parity(m1_batch, kDistance, "M1", &checked_count);
+    test_cuda_parity(m2_batch, kM2Distance, "M2", &checked_count);
+    test_invalid_distance(&checked_count);
     test_batch_contract(&checked_count);
     std::cout << "m1 width/space exact predicate: PASS (" << checked_count
-              << " checks; " << qualified_batch.size()
+              << " checks; " << (m1_batch.size() + m2_batch.size())
               << " KLayout-source differential/device pairs)\n";
     return 0;
   } catch (const std::exception &error) {

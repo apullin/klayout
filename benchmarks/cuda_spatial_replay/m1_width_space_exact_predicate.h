@@ -39,6 +39,13 @@ inline constexpr std::int64_t kQualifiedSceneCoordinateDistance =
     kM1RuleDistancePicometers / kQualifiedSceneDbuPicometers;
 static_assert(kQualifiedSceneCoordinateDistance == 130,
               "0.065 um / 0.0005 um must be 130 DBU");
+inline constexpr std::int64_t kM2RuleDistancePicometers = 70000;
+static_assert(kM2RuleDistancePicometers % kQualifiedSceneDbuPicometers == 0,
+              "qualified M2 distance must be integral in scene DBU");
+inline constexpr std::int64_t kM2QualifiedSceneCoordinateDistance =
+    kM2RuleDistancePicometers / kQualifiedSceneDbuPicometers;
+static_assert(kM2QualifiedSceneCoordinateDistance == 140,
+              "0.070 um / 0.0005 um must be 140 DBU");
 
 // Polygon IDs must identify merged polygons in the fully resolved hierarchy
 // context.  UINT64_MAX is reserved so missing topology metadata fails closed.
@@ -201,7 +208,8 @@ KLAYOUT_CUDA_M1_HD inline bool second_is_right_of_first(
 // and any non-FreePDK45 distance return kUncertain.
 KLAYOUT_CUDA_M1_HD inline Verdict classify_pair_bounded(
     const CandidatePair &pair, std::int64_t distance) {
-  if (distance != kQualifiedSceneCoordinateDistance ||
+  if ((distance != kQualifiedSceneCoordinateDistance &&
+       distance != kM2QualifiedSceneCoordinateDistance) ||
       pair.first_polygon_id == kUnknownPolygonId ||
       pair.second_polygon_id == kUnknownPolygonId ||
       !detail::source_coordinate_differences_are_safe(pair)) {
@@ -281,18 +289,19 @@ KLAYOUT_CUDA_M1_HD inline Verdict classify_pair_bounded(
                                  pair.second.x1, pair.second.x2)
           : detail::interval_gap(pair.first.y1, pair.first.y2,
                                  pair.second.y1, pair.second.y2);
-  constexpr std::uint64_t kDistance =
-      static_cast<std::uint64_t>(kQualifiedSceneCoordinateDistance);
+  const std::uint64_t qualified_distance =
+      static_cast<std::uint64_t>(distance);
 
   // The source uses a strict distance test.  Checking each component first
   // keeps the subsequent squares tiny and overflow-free.
-  if (perpendicular_gap >= kDistance || projection_gap >= kDistance) {
+  if (perpendicular_gap >= qualified_distance ||
+      projection_gap >= qualified_distance) {
     return Verdict::kNoViolation;
   }
   const std::uint64_t squared_distance =
       perpendicular_gap * perpendicular_gap +
       projection_gap * projection_gap;
-  return squared_distance < kDistance * kDistance
+  return squared_distance < qualified_distance * qualified_distance
              ? Verdict::kViolation
              : Verdict::kNoViolation;
 }

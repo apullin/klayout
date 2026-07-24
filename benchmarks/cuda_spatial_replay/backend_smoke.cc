@@ -1493,6 +1493,57 @@ bool run_m1ws_abi_smoke() {
   }
   good = clean_good && good;
 
+  M1WsSmokeScene m2_clean =
+      make_m1ws_scene({rectangle(0, 0, 300, 140)});
+  m2_clean.request.opcode =
+      KLAYOUT_CUDA_SPATIAL_M2_WIDTH_SPACE_MERGED_EMPTY;
+  m2_clean.request.width_distance = 140;
+  m2_clean.request.spacing_distance = 140;
+  set_m1ws_digest(m2_clean);
+  klayout_cuda_spatial_m1_width_space_result_v1 m2_clean_result{};
+  const int m2_clean_status =
+      klayout_cuda_spatial_run_m1_width_space_empty_v1(
+          &m2_clean.request, &m2_clean_result);
+  const bool m2_clean_good =
+      m2_clean_status == KLAYOUT_CUDA_SPATIAL_OK &&
+      m2_clean_result.status == KLAYOUT_CUDA_SPATIAL_OK &&
+      m2_clean_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_COMPLETE &&
+      m2_clean_result.opcode == m2_clean.request.opcode &&
+      m2_clean_result.width_distance == 140 &&
+      m2_clean_result.spacing_distance == 140 &&
+      m2_clean_result.width_hit_count == 0 &&
+      m2_clean_result.space_hit_count == 0 &&
+      m2_clean_result.width_uncertain_count == 0 &&
+      m2_clean_result.space_uncertain_count == 0 &&
+      m2_clean_result.fallback_flags == 0 &&
+      m2_clean_result.device_flags == 0 &&
+      valid_m1ws_counters(m2_clean_result);
+  if (!m2_clean_good) {
+    report_m1ws_failure(
+        "CUDA M2 width/space clean certificate", m2_clean_status,
+        m2_clean_result);
+  }
+  good = m2_clean_good && good;
+
+  m2_clean.request.spacing_distance = 130;
+  set_m1ws_digest(m2_clean);
+  klayout_cuda_spatial_m1_width_space_result_v1 mixed_profile{};
+  const int mixed_profile_status =
+      klayout_cuda_spatial_run_m1_width_space_empty_v1(
+          &m2_clean.request, &mixed_profile);
+  const bool mixed_profile_good =
+      mixed_profile_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      mixed_profile.status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      mixed_profile.disposition ==
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN;
+  if (!mixed_profile_good) {
+    report_m1ws_failure(
+        "CUDA M2 mixed-profile rejection", mixed_profile_status,
+        mixed_profile);
+  }
+  good = mixed_profile_good && good;
+
   M1WsSmokeScene width_hit =
       make_m1ws_scene({rectangle(0, 0, 300, 129)});
   set_m1ws_digest(width_hit);
@@ -1603,9 +1654,9 @@ bool run_m1ws_abi_smoke() {
   good = capacity_good && good;
 
   if (good) {
-    std::cout << "CUDA M1 width/space additive ABI smoke passed: "
-                 "atomic clean, width/space raw-hit fallback, digest/"
-                 "stride/capacity rejection\n";
+    std::cout << "CUDA M1/M2 width/space additive ABI smoke passed: "
+                 "atomic clean profiles, mixed-profile rejection, width/"
+                 "space raw-hit fallback, digest/stride/capacity rejection\n";
   }
   return good;
 }
