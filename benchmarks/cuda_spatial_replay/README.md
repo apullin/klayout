@@ -317,6 +317,15 @@ Generator-stripped reports were byte-identical at SHA-256
 The live speculative path took 29.586 s, including 12.331 s of scene lowering
 and a 17.255 s backend call; the backend device-pipeline timer was 504.110 ms.
 
+`KLAYOUT_CUDA_M2_WIDTH_SPACE=1` independently enables the corresponding exact
+140/140-DBU `METAL2.1/.2` profile. The host infers M1 versus M2 only from the
+qualified distance pair, preserving the original exported
+`CudaM1WidthSpaceBuildSpec` C++ layout. M2 lowering additionally requires the
+additive `klayout_cuda_spatial_run_m2_width_space_empty_v1` symbol. An ABI-v1
+backend exposing only the legacy M1 entry point therefore remains M1-only and
+declines M2 before constructing its scene. Each entry point rejects the other
+profile's opcode/distance combination.
+
 ### Live CONTACT.1-.3/METAL1.3 certificate
 
 `KLAYOUT_CUDA_M1_CONTACT=1` enables a separate fail-closed use of the VIA1

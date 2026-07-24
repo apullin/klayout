@@ -75,23 +75,6 @@ public:
   }
 };
 
-bool profile_is_valid (CudaMetalWidthSpaceProfile profile)
-{
-  return profile == CudaMetalWidthSpaceProfile::Metal1 ||
-         profile == CudaMetalWidthSpaceProfile::Metal2;
-}
-
-int64_t profile_distance (CudaMetalWidthSpaceProfile profile)
-{
-  if (profile == CudaMetalWidthSpaceProfile::Metal1) {
-    return qualified_m1_distance;
-  }
-  if (profile == CudaMetalWidthSpaceProfile::Metal2) {
-    return qualified_m2_distance;
-  }
-  throw M1WidthSpaceDecline ("unknown metal width/space profile");
-}
-
 bool scene_distance_is_qualified (int64_t width_distance,
                                   int64_t spacing_distance)
 {
@@ -730,9 +713,8 @@ void validate_inputs (
     throw M1WidthSpaceDecline (
       "future integration did not assert merged M1 semantics");
   }
-  if (! profile_is_valid (spec.profile) ||
-      spec.width_distance != profile_distance (spec.profile) ||
-      spec.spacing_distance != profile_distance (spec.profile) ||
+  if (! scene_distance_is_qualified (
+        spec.width_distance, spec.spacing_distance) ||
       ! options_are_qualified (spec.width_options) ||
       ! options_are_qualified (spec.spacing_options)) {
     throw M1WidthSpaceDecline (
@@ -1036,8 +1018,7 @@ CudaM1WidthSpaceSceneLimits::CudaM1WidthSpaceSceneLimits ()
 }
 
 CudaM1WidthSpaceBuildSpec::CudaM1WidthSpaceBuildSpec ()
-  : profile (CudaMetalWidthSpaceProfile::Metal1),
-    width_distance (qualified_m1_distance),
+  : width_distance (qualified_m1_distance),
     spacing_distance (qualified_m1_distance),
     width_options (),
     spacing_options (),
@@ -1207,14 +1188,19 @@ bool cuda_m1_width_space_try_empty (
   const db::DeepLayer &merged_metal1,
   const CudaM1WidthSpaceBuildSpec &spec)
 {
-  const bool metal2 = spec.profile == CudaMetalWidthSpaceProfile::Metal2;
+  const bool metal1 =
+    spec.width_distance == qualified_m1_distance &&
+    spec.spacing_distance == qualified_m1_distance;
+  const bool metal2 =
+    spec.width_distance == qualified_m2_distance &&
+    spec.spacing_distance == qualified_m2_distance;
   const bool telemetry = env_enabled (
     metal2 ? "KLAYOUT_CUDA_M2_WIDTH_SPACE_TELEMETRY"
            : "KLAYOUT_CUDA_M1_WIDTH_SPACE_TELEMETRY");
   const std::chrono::steady_clock::time_point begin =
     std::chrono::steady_clock::now ();
   try {
-    if (! profile_is_valid (spec.profile) ||
+    if (! (metal1 || metal2) ||
         ! (metal2 ? db::cuda_spatial_m2_width_space_requested ()
                   : db::cuda_spatial_m1_width_space_requested ())) {
       return false;

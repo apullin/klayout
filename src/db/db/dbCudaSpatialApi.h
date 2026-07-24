@@ -728,7 +728,7 @@ klayout_cuda_spatial_run_implant12_empty_v1 (
   struct klayout_cuda_spatial_implant12_result_v1 *result);
 
 /*
- * Optional atomic METAL1.1/METAL1.2 empty certificate.
+ * Optional atomic METAL1.1/METAL1.2 and METAL2.1/METAL2.2 empty certificate.
  *
  * The caller passes the pointer-free arrays published by
  * CudaM1WidthSpaceScene.  Array records below deliberately match those
@@ -740,7 +740,9 @@ klayout_cuda_spatial_run_implant12_empty_v1 (
  * remove complete pairs but cannot create one, so COMPLETE with zero raw hits
  * certifies both rules empty.  A hit is diagnostic only and, like uncertainty,
  * capacity exhaustion, a malformed request, or a CUDA error, requires the
- * caller to execute both pristine CPU rules.
+ * caller to execute both pristine CPU rules.  The two profile-specific entry
+ * points below accept only opcode 1 at 130/130 DBU and opcode 2 at 140/140
+ * DBU, respectively.
  */
 enum klayout_cuda_spatial_m1_width_space_opcode
 {
@@ -934,9 +936,22 @@ struct klayout_cuda_spatial_m1_width_space_result_v1
 typedef int (*klayout_cuda_spatial_run_m1_width_space_empty_v1_func) (
   const struct klayout_cuda_spatial_m1_width_space_request_v1 *,
   struct klayout_cuda_spatial_m1_width_space_result_v1 *);
+typedef int (*klayout_cuda_spatial_run_m2_width_space_empty_v1_func) (
+  const struct klayout_cuda_spatial_m1_width_space_request_v1 *,
+  struct klayout_cuda_spatial_m1_width_space_result_v1 *);
 
 KLAYOUT_CUDA_SPATIAL_EXPORT int
 klayout_cuda_spatial_run_m1_width_space_empty_v1 (
+  const struct klayout_cuda_spatial_m1_width_space_request_v1 *request,
+  struct klayout_cuda_spatial_m1_width_space_result_v1 *result);
+
+/*
+ * Independent optional M2 capability and entry point.  Hosts must require
+ * this symbol before lowering an M2 scene: an ABI-v1 backend that exports
+ * only the legacy M1 symbol is M1-only even though the request POD is shared.
+ */
+KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_m2_width_space_empty_v1 (
   const struct klayout_cuda_spatial_m1_width_space_request_v1 *request,
   struct klayout_cuda_spatial_m1_width_space_result_v1 *result);
 

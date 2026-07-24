@@ -2482,7 +2482,6 @@ try_cuda_m1_width_space_batch (
     return db::cuda_m1_width_space_try_empty (polygons, spec);
   }
 
-  spec.profile = db::CudaMetalWidthSpaceProfile::Metal2;
   spec.width_distance = 140;
   spec.spacing_distance = 140;
   return

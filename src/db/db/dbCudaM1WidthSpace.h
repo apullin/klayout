@@ -26,12 +26,6 @@ namespace db
 
 class DeepLayer;
 
-enum class CudaMetalWidthSpaceProfile : uint32_t
-{
-  Metal1 = 1,
-  Metal2 = 2
-};
-
 /**
  * Capacity limits for speculative M1 width/space scene construction.
  *
@@ -58,7 +52,6 @@ struct DB_PUBLIC CudaM1WidthSpaceSceneLimits
  */
 struct DB_PUBLIC CudaM1WidthSpaceBuildSpec
 {
-  CudaMetalWidthSpaceProfile profile;
   db::Coord width_distance;
   db::Coord spacing_distance;
   db::RegionCheckOptions width_options;

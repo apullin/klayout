@@ -14,11 +14,15 @@ cmake -S "${here}" -B "${build_dir}/backend-cmake" \
   -DCMAKE_CUDA_ARCHITECTURES=86
 cmake --build "${build_dir}/backend-cmake" \
   --target cuda_spatial_backend_smoke via1_stack_backend_smoke \
+    klayout_cuda_spatial_legacy_m1_backend m2_backend_capability_smoke \
   -j "${BUILD_JOBS:-16}"
 
 echo "== runtime backend ABI gate =="
 "${build_dir}/backend-cmake/cuda_spatial_backend_smoke"
 "${build_dir}/backend-cmake/via1_stack_backend_smoke"
+"${build_dir}/backend-cmake/m2_backend_capability_smoke" \
+  "${build_dir}/backend-cmake/libklayout_cuda_spatial_legacy_m1_backend.so" \
+  "${build_dir}/backend-cmake/libklayout_cuda_spatial_backend.so"
 
 env TMPDIR="${build_dir}/tmp" \
   "${nvcc}" -O3 -std=c++17 -arch=sm_86 -ccbin "${host_cxx}" \

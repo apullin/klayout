@@ -1502,7 +1502,7 @@ bool run_m1ws_abi_smoke() {
   set_m1ws_digest(m2_clean);
   klayout_cuda_spatial_m1_width_space_result_v1 m2_clean_result{};
   const int m2_clean_status =
-      klayout_cuda_spatial_run_m1_width_space_empty_v1(
+      klayout_cuda_spatial_run_m2_width_space_empty_v1(
           &m2_clean.request, &m2_clean_result);
   const bool m2_clean_good =
       m2_clean_status == KLAYOUT_CUDA_SPATIAL_OK &&
@@ -1526,23 +1526,150 @@ bool run_m1ws_abi_smoke() {
   }
   good = m2_clean_good && good;
 
-  m2_clean.request.spacing_distance = 130;
-  set_m1ws_digest(m2_clean);
-  klayout_cuda_spatial_m1_width_space_result_v1 mixed_profile{};
-  const int mixed_profile_status =
-      klayout_cuda_spatial_run_m1_width_space_empty_v1(
-          &m2_clean.request, &mixed_profile);
-  const bool mixed_profile_good =
-      mixed_profile_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
-      mixed_profile.status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
-      mixed_profile.disposition ==
-          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN;
-  if (!mixed_profile_good) {
+  M1WsSmokeScene m2_width_hit =
+      make_m1ws_scene({rectangle(0, 0, 300, 139)});
+  m2_width_hit.request.opcode =
+      KLAYOUT_CUDA_SPATIAL_M2_WIDTH_SPACE_MERGED_EMPTY;
+  m2_width_hit.request.width_distance = 140;
+  m2_width_hit.request.spacing_distance = 140;
+  set_m1ws_digest(m2_width_hit);
+  klayout_cuda_spatial_m1_width_space_result_v1 m2_width_result{};
+  const int m2_width_status =
+      klayout_cuda_spatial_run_m2_width_space_empty_v1(
+          &m2_width_hit.request, &m2_width_result);
+  const bool m2_width_good =
+      m2_width_status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      m2_width_result.status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      m2_width_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_RAW_HITS &&
+      m2_width_result.fallback_flags == 0 &&
+      m2_width_result.device_flags == 0 &&
+      m2_width_result.width_hit_count != 0 &&
+      m2_width_result.space_hit_count == 0 &&
+      m2_width_result.width_uncertain_count == 0 &&
+      m2_width_result.space_uncertain_count == 0 &&
+      valid_m1ws_counters(m2_width_result);
+  if (!m2_width_good) {
     report_m1ws_failure(
-        "CUDA M2 mixed-profile rejection", mixed_profile_status,
-        mixed_profile);
+        "CUDA M2 139-DBU width raw-hit fallback", m2_width_status,
+        m2_width_result);
   }
-  good = mixed_profile_good && good;
+  good = m2_width_good && good;
+
+  M1WsSmokeScene m2_space_hit = make_m1ws_scene({
+      rectangle(0, 0, 200, 300),
+      rectangle(339, 0, 539, 300)});
+  m2_space_hit.request.opcode =
+      KLAYOUT_CUDA_SPATIAL_M2_WIDTH_SPACE_MERGED_EMPTY;
+  m2_space_hit.request.width_distance = 140;
+  m2_space_hit.request.spacing_distance = 140;
+  set_m1ws_digest(m2_space_hit);
+  klayout_cuda_spatial_m1_width_space_result_v1 m2_space_result{};
+  const int m2_space_status =
+      klayout_cuda_spatial_run_m2_width_space_empty_v1(
+          &m2_space_hit.request, &m2_space_result);
+  const bool m2_space_good =
+      m2_space_status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      m2_space_result.status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      m2_space_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_RAW_HITS &&
+      m2_space_result.fallback_flags == 0 &&
+      m2_space_result.device_flags == 0 &&
+      m2_space_result.space_hit_count != 0 &&
+      m2_space_result.width_hit_count == 0 &&
+      m2_space_result.width_uncertain_count == 0 &&
+      m2_space_result.space_uncertain_count == 0 &&
+      valid_m1ws_counters(m2_space_result);
+  if (!m2_space_good) {
+    report_m1ws_failure(
+        "CUDA M2 139-DBU spacing raw-hit fallback", m2_space_status,
+        m2_space_result);
+  }
+  good = m2_space_good && good;
+
+  M1WsSmokeScene opcode1_distance140 =
+      make_m1ws_scene({rectangle(0, 0, 300, 140)});
+  opcode1_distance140.request.width_distance = 140;
+  opcode1_distance140.request.spacing_distance = 140;
+  set_m1ws_digest(opcode1_distance140);
+  klayout_cuda_spatial_m1_width_space_result_v1 opcode1_distance140_result{};
+  const int opcode1_distance140_status =
+      klayout_cuda_spatial_run_m1_width_space_empty_v1(
+          &opcode1_distance140.request, &opcode1_distance140_result);
+  const bool opcode1_distance140_good =
+      opcode1_distance140_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      opcode1_distance140_result.status ==
+          KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      opcode1_distance140_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN &&
+      opcode1_distance140_result.fallback_flags ==
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+  if (!opcode1_distance140_good) {
+    report_m1ws_failure(
+        "CUDA opcode1 plus 140/140 rejection",
+        opcode1_distance140_status, opcode1_distance140_result);
+  }
+  good = opcode1_distance140_good && good;
+
+  M1WsSmokeScene opcode2_distance130 =
+      make_m1ws_scene({rectangle(0, 0, 300, 130)});
+  opcode2_distance130.request.opcode =
+      KLAYOUT_CUDA_SPATIAL_M2_WIDTH_SPACE_MERGED_EMPTY;
+  set_m1ws_digest(opcode2_distance130);
+  klayout_cuda_spatial_m1_width_space_result_v1 opcode2_distance130_result{};
+  const int opcode2_distance130_status =
+      klayout_cuda_spatial_run_m2_width_space_empty_v1(
+          &opcode2_distance130.request, &opcode2_distance130_result);
+  const bool opcode2_distance130_good =
+      opcode2_distance130_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      opcode2_distance130_result.status ==
+          KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      opcode2_distance130_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN &&
+      opcode2_distance130_result.fallback_flags ==
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+  if (!opcode2_distance130_good) {
+    report_m1ws_failure(
+        "CUDA opcode2 plus 130/130 rejection",
+        opcode2_distance130_status, opcode2_distance130_result);
+  }
+  good = opcode2_distance130_good && good;
+
+  klayout_cuda_spatial_m1_width_space_result_v1 m2_on_m1_symbol{};
+  const int m2_on_m1_symbol_status =
+      klayout_cuda_spatial_run_m1_width_space_empty_v1(
+          &m2_clean.request, &m2_on_m1_symbol);
+  const bool m2_on_m1_symbol_good =
+      m2_on_m1_symbol_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      m2_on_m1_symbol.status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      m2_on_m1_symbol.disposition ==
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN &&
+      m2_on_m1_symbol.fallback_flags ==
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+  if (!m2_on_m1_symbol_good) {
+    report_m1ws_failure(
+        "CUDA M2 request on legacy M1 symbol rejection",
+        m2_on_m1_symbol_status, m2_on_m1_symbol);
+  }
+  good = m2_on_m1_symbol_good && good;
+
+  klayout_cuda_spatial_m1_width_space_result_v1 m1_on_m2_symbol{};
+  const int m1_on_m2_symbol_status =
+      klayout_cuda_spatial_run_m2_width_space_empty_v1(
+          &clean.request, &m1_on_m2_symbol);
+  const bool m1_on_m2_symbol_good =
+      m1_on_m2_symbol_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      m1_on_m2_symbol.status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      m1_on_m2_symbol.disposition ==
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN &&
+      m1_on_m2_symbol.fallback_flags ==
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+  if (!m1_on_m2_symbol_good) {
+    report_m1ws_failure(
+        "CUDA M1 request on M2 symbol rejection",
+        m1_on_m2_symbol_status, m1_on_m2_symbol);
+  }
+  good = m1_on_m2_symbol_good && good;
 
   M1WsSmokeScene width_hit =
       make_m1ws_scene({rectangle(0, 0, 300, 129)});
@@ -1655,8 +1782,9 @@ bool run_m1ws_abi_smoke() {
 
   if (good) {
     std::cout << "CUDA M1/M2 width/space additive ABI smoke passed: "
-                 "atomic clean profiles, mixed-profile rejection, width/"
-                 "space raw-hit fallback, digest/stride/capacity rejection\n";
+                 "profile-specific symbols, atomic clean profiles, exact "
+                 "129/139-DBU width/space raw-hit fallback, cross-profile "
+                 "rejection, digest/stride/capacity rejection\n";
   }
   return good;
 }

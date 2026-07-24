@@ -48,6 +48,31 @@ target_link_libraries(cuda_spatial_backend_smoke PRIVATE
   klayout_cuda_spatial_backend
 )
 
+add_library(klayout_cuda_spatial_legacy_m1_backend SHARED
+  legacy_m1_width_space_backend.cc
+)
+target_include_directories(klayout_cuda_spatial_legacy_m1_backend PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+target_compile_definitions(klayout_cuda_spatial_legacy_m1_backend PRIVATE
+  KLAYOUT_CUDA_SPATIAL_BACKEND_BUILD
+)
+set_target_properties(klayout_cuda_spatial_legacy_m1_backend PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+)
+
+add_executable(m2_backend_capability_smoke
+  m2_backend_capability_smoke.cc
+)
+target_include_directories(m2_backend_capability_smoke PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+if(CMAKE_DL_LIBS)
+  target_link_libraries(m2_backend_capability_smoke PRIVATE
+    ${CMAKE_DL_LIBS}
+  )
+endif()
+
 add_executable(via1_stack_backend_smoke via1_stack_backend_smoke.cc)
 target_include_directories(via1_stack_backend_smoke PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db

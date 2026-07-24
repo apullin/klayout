@@ -24,6 +24,27 @@
 namespace
 {
 
+// Keep the exported BuildSpec layout compatible with the original M1-only
+// seam.  M2 is inferred from its exact 140/140 distance pair; adding a public
+// profile field here would shift every legacy member in already-built clients.
+struct LegacyCudaM1WidthSpaceBuildSpecLayout
+{
+  db::Coord width_distance;
+  db::Coord spacing_distance;
+  db::RegionCheckOptions width_options;
+  db::RegionCheckOptions spacing_options;
+  bool inputs_are_merged;
+};
+
+static_assert (
+  sizeof (db::CudaM1WidthSpaceBuildSpec) ==
+    sizeof (LegacyCudaM1WidthSpaceBuildSpecLayout),
+  "CudaM1WidthSpaceBuildSpec public ABI size changed");
+static_assert (
+  alignof (db::CudaM1WidthSpaceBuildSpec) ==
+    alignof (LegacyCudaM1WidthSpaceBuildSpecLayout),
+  "CudaM1WidthSpaceBuildSpec public ABI alignment changed");
+
 db::DeepLayer make_flat_m1 (db::DeepShapeStore &store)
 {
   db::Region seed;
@@ -36,6 +57,32 @@ db::DeepLayer make_flat_m1 (db::DeepShapeStore &store)
 
 TEST(1_FailClosedAndDigest)
 {
+  db::CudaM1WidthSpaceBuildSpec abi_spec;
+  LegacyCudaM1WidthSpaceBuildSpecLayout legacy_abi_spec;
+  const char *abi_base = reinterpret_cast<const char *> (&abi_spec);
+  const char *legacy_base =
+    reinterpret_cast<const char *> (&legacy_abi_spec);
+  EXPECT_EQ (
+    reinterpret_cast<const char *> (&abi_spec.width_distance) - abi_base,
+    reinterpret_cast<const char *> (&legacy_abi_spec.width_distance) -
+      legacy_base);
+  EXPECT_EQ (
+    reinterpret_cast<const char *> (&abi_spec.spacing_distance) - abi_base,
+    reinterpret_cast<const char *> (&legacy_abi_spec.spacing_distance) -
+      legacy_base);
+  EXPECT_EQ (
+    reinterpret_cast<const char *> (&abi_spec.width_options) - abi_base,
+    reinterpret_cast<const char *> (&legacy_abi_spec.width_options) -
+      legacy_base);
+  EXPECT_EQ (
+    reinterpret_cast<const char *> (&abi_spec.spacing_options) - abi_base,
+    reinterpret_cast<const char *> (&legacy_abi_spec.spacing_options) -
+      legacy_base);
+  EXPECT_EQ (
+    reinterpret_cast<const char *> (&abi_spec.inputs_are_merged) - abi_base,
+    reinterpret_cast<const char *> (&legacy_abi_spec.inputs_are_merged) -
+      legacy_base);
+
   db::DeepShapeStore store ("TOP", 0.0005);
   const db::DeepLayer metal1 = make_flat_m1 (store);
 
@@ -99,7 +146,6 @@ TEST(1_FailClosedAndDigest)
   EXPECT_EQ (repeated.digest == scene.digest, true);
 
   db::CudaM1WidthSpaceBuildSpec m2_spec;
-  m2_spec.profile = db::CudaMetalWidthSpaceProfile::Metal2;
   m2_spec.width_distance = 140;
   m2_spec.spacing_distance = 140;
   m2_spec.inputs_are_merged = true;
@@ -119,8 +165,8 @@ TEST(1_FailClosedAndDigest)
       metal1, metal1, m2_spec, limits, m2_scene, &reason),
     false);
   EXPECT_EQ (m2_scene.flat_polygon_count, uint64_t (31));
-  m2_spec.width_distance = 140;
-  m2_spec.profile = static_cast<db::CudaMetalWidthSpaceProfile> (99);
+  m2_spec.width_distance = 141;
+  m2_spec.spacing_distance = 141;
   EXPECT_EQ (
     db::cuda_m1_width_space_build_scene (
       metal1, metal1, m2_spec, limits, m2_scene, &reason),
