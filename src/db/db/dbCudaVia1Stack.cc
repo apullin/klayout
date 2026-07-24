@@ -295,6 +295,9 @@ bool manhattan_segments_intersect (
 std::vector<ContourEdge> checked_contour (
   const db::Shape &shape, db::Box &bbox, __int128 &twice_area)
 {
+  if (shape.prop_id () != 0) {
+    throw Via1StackDecline ("operand polygon has properties");
+  }
   if (! shape.is_box () && ! shape.is_polygon ()) {
     throw Via1StackDecline ("operand layer contains a non-polygon shape");
   }
@@ -878,7 +881,7 @@ LiveScene serialize_live_scene (
 
 bool eligible (
   const db::DeepLayer &metal1, const db::DeepLayer &via1,
-  const db::DeepLayer &metal2)
+  const db::DeepLayer &metal2, bool contact_mode)
 {
   const db::LayerProperties &metal1_properties =
     metal1.layout ().get_properties (metal1.layer ());
@@ -886,6 +889,18 @@ bool eligible (
     via1.layout ().get_properties (via1.layer ());
   const db::LayerProperties &metal2_properties =
     metal2.layout ().get_properties (metal2.layer ());
+  const bool layer_contract = contact_mode
+    ? metal1.layer () != via1.layer () &&
+      metal1.layer () == metal2.layer () &&
+      metal1_properties.log_equal (db::LayerProperties (11, 0)) &&
+      via1_properties.log_equal (db::LayerProperties (10, 0)) &&
+      metal2_properties.log_equal (db::LayerProperties (11, 0))
+    : metal1.layer () != via1.layer () &&
+      metal1.layer () != metal2.layer () &&
+      via1.layer () != metal2.layer () &&
+      metal1_properties.log_equal (db::LayerProperties (11, 0)) &&
+      via1_properties.log_equal (db::LayerProperties (12, 0)) &&
+      metal2_properties.log_equal (db::LayerProperties (13, 0));
   return
     metal1.store () == via1.store () &&
     metal1.store () == metal2.store () &&
@@ -900,44 +915,59 @@ bool eligible (
     metal1.breakout_cells () == 0 &&
     via1.breakout_cells () == 0 &&
     metal2.breakout_cells () == 0 &&
-    metal1.layer () != via1.layer () &&
-    metal1.layer () != metal2.layer () &&
-    via1.layer () != metal2.layer () &&
-    metal1_properties.log_equal (db::LayerProperties (11, 0)) &&
-    via1_properties.log_equal (db::LayerProperties (12, 0)) &&
-    metal2_properties.log_equal (db::LayerProperties (13, 0)) &&
+    layer_contract &&
     metal1.layout ().dbu () == 0.0005;
 }
 
 } // anonymous namespace
 
-bool cuda_via1_stack_try_empty (
+static bool cuda_stack_try_empty_impl (
   const db::DeepLayer &raw_metal1, const db::DeepLayer &raw_via1,
-  const db::DeepLayer &raw_metal2)
+  const db::DeepLayer &raw_metal2, bool contact_mode)
 {
   const bool telemetry =
-    env_enabled ("KLAYOUT_CUDA_VIA1_STACK_TELEMETRY");
+    env_enabled (
+      contact_mode
+        ? "KLAYOUT_CUDA_M1_CONTACT_TELEMETRY"
+        : "KLAYOUT_CUDA_VIA1_STACK_TELEMETRY");
+  const char *label =
+    contact_mode ? "CUDA M1 contact live lowering:"
+                 : "CUDA VIA1 stack live lowering:";
   const std::chrono::steady_clock::time_point begin =
     std::chrono::steady_clock::now ();
   try {
-    if (! db::cuda_spatial_via1_stack_requested () ||
-        ! eligible (raw_metal1, raw_via1, raw_metal2)) {
+    const bool requested = contact_mode
+      ? db::cuda_spatial_m1_contact_requested ()
+      : db::cuda_spatial_via1_stack_requested ();
+    if (! requested ||
+        ! eligible (raw_metal1, raw_via1, raw_metal2, contact_mode)) {
       return false;
     }
 
     const uint64_t max_contexts = env_u64 (
-      "KLAYOUT_CUDA_VIA1_STACK_MAX_CONTEXTS", default_max_contexts);
+      contact_mode
+        ? "KLAYOUT_CUDA_M1_CONTACT_MAX_CONTEXTS"
+        : "KLAYOUT_CUDA_VIA1_STACK_MAX_CONTEXTS",
+      default_max_contexts);
     const uint64_t max_grid_cells = env_u64 (
-      "KLAYOUT_CUDA_VIA1_STACK_MAX_GRID_CELLS",
+      contact_mode
+        ? "KLAYOUT_CUDA_M1_CONTACT_MAX_GRID_CELLS"
+        : "KLAYOUT_CUDA_VIA1_STACK_MAX_GRID_CELLS",
       default_max_grid_cells);
     const uint64_t max_metal_memberships = env_u64 (
-      "KLAYOUT_CUDA_VIA1_STACK_MAX_METAL_MEMBERSHIPS",
+      contact_mode
+        ? "KLAYOUT_CUDA_M1_CONTACT_MAX_METAL_MEMBERSHIPS"
+        : "KLAYOUT_CUDA_VIA1_STACK_MAX_METAL_MEMBERSHIPS",
       default_max_metal_memberships);
     const uint64_t max_via_memberships = env_u64 (
-      "KLAYOUT_CUDA_VIA1_STACK_MAX_VIA_MEMBERSHIPS",
+      contact_mode
+        ? "KLAYOUT_CUDA_M1_CONTACT_MAX_CUT_MEMBERSHIPS"
+        : "KLAYOUT_CUDA_VIA1_STACK_MAX_VIA_MEMBERSHIPS",
       default_max_via_memberships);
     const uint64_t max_pair_work = env_u64 (
-      "KLAYOUT_CUDA_VIA1_STACK_MAX_PAIR_WORK",
+      contact_mode
+        ? "KLAYOUT_CUDA_M1_CONTACT_MAX_PAIR_WORK"
+        : "KLAYOUT_CUDA_VIA1_STACK_MAX_PAIR_WORK",
       default_max_pair_work);
     if (! max_contexts || ! max_grid_cells || ! max_metal_memberships ||
         ! max_via_memberships || ! max_pair_work) {
@@ -1011,7 +1041,7 @@ bool cuda_via1_stack_try_empty (
     const double live_total_ms =
       std::chrono::duration<double, std::milli> (end - begin).count ();
     if (telemetry) {
-      tl::info << "CUDA VIA1 stack live lowering:"
+      tl::info << label
                << " contexts=" << request.context_count
                << " cells=" << request.cell_count
                << " stored_boxes=" << request.box_count
@@ -1027,7 +1057,7 @@ bool cuda_via1_stack_try_empty (
   } catch (const std::exception &ex) {
     if (telemetry) {
       try {
-        tl::info << "CUDA VIA1 stack live lowering:"
+        tl::info << label
                  << " outcome=cpu-fallback message=" << ex.what ();
       } catch (...) {
         //  Telemetry must never turn a speculative decline into an error.
@@ -1036,7 +1066,7 @@ bool cuda_via1_stack_try_empty (
   } catch (...) {
     if (telemetry) {
       try {
-        tl::info << "CUDA VIA1 stack live lowering:"
+        tl::info << label
                  << " outcome=cpu-fallback message=unknown exception";
       } catch (...) {
         //  Telemetry must never turn a speculative decline into an error.
@@ -1044,6 +1074,21 @@ bool cuda_via1_stack_try_empty (
     }
   }
   return false;
+}
+
+bool cuda_via1_stack_try_empty (
+  const db::DeepLayer &raw_metal1, const db::DeepLayer &raw_via1,
+  const db::DeepLayer &raw_metal2)
+{
+  return cuda_stack_try_empty_impl (
+    raw_metal1, raw_via1, raw_metal2, false);
+}
+
+bool cuda_m1_contact_try_empty (
+  const db::DeepLayer &raw_metal1, const db::DeepLayer &raw_contact)
+{
+  return cuda_stack_try_empty_impl (
+    raw_metal1, raw_contact, raw_metal1, true);
 }
 
 } // namespace db

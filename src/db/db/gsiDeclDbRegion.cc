@@ -1307,6 +1307,19 @@ static bool cuda_via1_stack_clean (
            deep_metal2->deep_layer ());
 }
 
+static bool cuda_m1_contact_clean (
+  const db::Region *contact, const db::Region *metal1)
+{
+  const db::DeepRegion *deep_contact =
+    dynamic_cast<const db::DeepRegion *> (contact->delegate ());
+  const db::DeepRegion *deep_metal1 =
+    dynamic_cast<const db::DeepRegion *> (metal1->delegate ());
+  return deep_contact && deep_metal1 &&
+         contact->merged_semantics () && metal1->merged_semantics () &&
+         db::cuda_m1_contact_try_empty (
+           deep_metal1->deep_layer (), deep_contact->deep_layer ());
+}
+
 static size_t data_id (const db::Region *r)
 {
   return r->delegate ()->data_id ();
@@ -4331,6 +4344,15 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "This internal acceleration hook returns true only when all qualified "
     "M1/VIA1/M2 rules are certified empty. False is a normal fail-closed "
     "outcome and requires the complete CPU rule stack.\n"
+  ) +
+  method_ext (
+    "cuda_m1_contact_clean?", &cuda_m1_contact_clean,
+    gsi::arg ("metal1"),
+    "@brief Tries the optional CUDA CONTACT/METAL1.3 empty certificate\n"
+    "\n"
+    "This internal fail-closed hook returns true only when the qualified "
+    "contact domain and two-opposite-side M1 enclosure rule are certified "
+    "empty. False requires the complete historical CPU chain.\n"
   ) +
   method_ext ("data_id", &data_id,
     "@brief Returns the data ID (a unique identifier for the underlying data storage)\n"

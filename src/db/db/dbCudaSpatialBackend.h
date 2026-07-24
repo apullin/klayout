@@ -202,6 +202,12 @@ DB_PUBLIC CudaVia1StackAttempt cuda_spatial_try_via1_stack_empty (
 /** Return true only when the VIA1-stack opt-in and optional symbol exist. */
 DB_PUBLIC bool cuda_spatial_via1_stack_requested ();
 
+/**
+ * Return true when the CONTACT/METAL1.3 opt-in can reuse the qualified
+ * VIA1-stack projection-certificate symbol.
+ */
+DB_PUBLIC bool cuda_spatial_m1_contact_requested ();
+
 } // namespace db
 
 #endif

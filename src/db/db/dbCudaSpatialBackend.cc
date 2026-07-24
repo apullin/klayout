@@ -171,6 +171,9 @@ public:
       m_via1_stack_enabled (env_enabled ("KLAYOUT_CUDA_VIA1_STACK")),
       m_via1_stack_telemetry (
         env_enabled ("KLAYOUT_CUDA_VIA1_STACK_TELEMETRY")),
+      m_m1_contact_enabled (env_enabled ("KLAYOUT_CUDA_M1_CONTACT")),
+      m_m1_contact_telemetry (
+        env_enabled ("KLAYOUT_CUDA_M1_CONTACT_TELEMETRY")),
       m_handle (0), m_run_bipartite (0), m_run_self (0),
       m_run_active3 (0), m_run_via1_stack (0), m_release (0),
       m_min_records (100000)
@@ -296,6 +299,21 @@ public:
     return m_via1_stack_enabled;
   }
 
+  bool m1_contact_ready () const
+  {
+    return m_m1_contact_enabled && m_run_via1_stack;
+  }
+
+  bool m1_contact_enabled () const
+  {
+    return m_m1_contact_enabled;
+  }
+
+  bool m1_contact_telemetry () const
+  {
+    return m_m1_contact_telemetry;
+  }
+
   bool telemetry () const
   {
     return m_telemetry;
@@ -353,6 +371,8 @@ private:
   bool m_active3_telemetry;
   bool m_via1_stack_enabled;
   bool m_via1_stack_telemetry;
+  bool m_m1_contact_enabled;
+  bool m_m1_contact_telemetry;
   void *m_handle;
   klayout_cuda_spatial_run_bipartite_v1_func m_run_bipartite;
   klayout_cuda_spatial_run_self_v1_func m_run_self;
@@ -432,7 +452,8 @@ void log_active3_attempt (const CudaActive3Attempt &attempt)
 void log_via1_stack_attempt (const CudaVia1StackAttempt &attempt)
 {
   CudaSpatialModule &module = cuda_spatial_module ();
-  if (! module.via1_stack_telemetry ()) {
+  if (! module.via1_stack_telemetry () &&
+      ! module.m1_contact_telemetry ()) {
     return;
   }
 
@@ -986,7 +1007,7 @@ CudaVia1StackAttempt cuda_spatial_try_via1_stack_empty (
 {
   CudaVia1StackAttempt attempt;
   CudaSpatialModule &module = cuda_spatial_module ();
-  if (! module.via1_stack_enabled ()) {
+  if (! module.via1_stack_enabled () && ! module.m1_contact_enabled ()) {
     return attempt;
   }
   if (! module.enabled ()) {
@@ -997,7 +1018,7 @@ CudaVia1StackAttempt cuda_spatial_try_via1_stack_empty (
     log_via1_stack_attempt (attempt);
     return attempt;
   }
-  if (! module.via1_stack_ready ()) {
+  if (! module.via1_stack_ready () && ! module.m1_contact_ready ()) {
     attempt.disposition = CudaVia1StackAttempt::BackendFallback;
     attempt.fallback_flags =
       KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
@@ -1208,6 +1229,12 @@ bool cuda_spatial_via1_stack_requested ()
 {
   CudaSpatialModule &module = cuda_spatial_module ();
   return module.enabled () && module.via1_stack_ready ();
+}
+
+bool cuda_spatial_m1_contact_requested ()
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  return module.enabled () && module.m1_contact_ready ();
 }
 
 } // namespace db

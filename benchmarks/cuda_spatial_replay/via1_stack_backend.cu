@@ -58,6 +58,7 @@ enum ViaDeviceFlag : std::uint32_t {
   kViaGridCounterOverflow = 1u << 1,
   kViaGridCapacityExceeded = 1u << 2,
   kViaInvalidDeviceRecord = 1u << 3,
+  kViaWorkCounterOverflow = 1u << 4,
 };
 
 enum ViaLayer : std::uint32_t {
@@ -93,6 +94,7 @@ struct ViaPairCounters {
 struct ProjectionCounters {
   unsigned long long vias_queried;
   unsigned long long candidate_boxes;
+  unsigned long long union_candidate_visits;
   unsigned long long certified;
   unsigned long long misses;
 };
@@ -858,6 +860,139 @@ via_projection_certificate(
           metal.top - via.top >= distance);
 }
 
+__device__ void
+via_count_union_candidate(
+    unsigned long long *candidate_visits, std::uint32_t *status)
+{
+  if (*candidate_visits == ULLONG_MAX) {
+    atomicOr(status, std::uint32_t(kViaWorkCounterOverflow));
+  } else {
+    ++*candidate_visits;
+  }
+}
+
+__device__ bool
+via_union_covers_horizontal_strip(
+    const ViaBox &via, const ViaBox *metals, std::uint32_t metal_count,
+    ViaGrid grid, const std::uint32_t *counts,
+    const std::uint32_t *offsets, const std::uint32_t *members,
+    std::int64_t distance, unsigned long long *candidate_visits,
+    std::uint32_t *status)
+{
+  const std::int64_t target_left = via.left - distance;
+  const std::int64_t target_right = via.right + distance;
+  const std::int64_t grid_x0 =
+      via_floor_div(target_left, grid.cell_size);
+  const std::int64_t grid_x1 =
+      via_floor_div(target_right - 1, grid.cell_size);
+  const std::int64_t maximum_x =
+      grid.base_x + static_cast<std::int64_t>(grid.width) - 1;
+  const std::int64_t maximum_y =
+      grid.base_y + static_cast<std::int64_t>(grid.height) - 1;
+  if (grid_x0 < grid.base_x || grid_x1 > maximum_x) return false;
+
+  for (std::int64_t y = via.bottom; y < via.top; ++y) {
+    const std::int64_t grid_y = via_floor_div(y, grid.cell_size);
+    if (grid_y < grid.base_y || grid_y > maximum_y) return false;
+    std::int64_t cursor = target_left;
+    while (cursor < target_right) {
+      std::int64_t farthest = cursor;
+      for (std::int64_t grid_x = grid_x0;
+           grid_x <= grid_x1; ++grid_x) {
+        const std::uint64_t cell_id =
+            via_grid_index(grid, grid_x, grid_y);
+        const std::uint32_t begin = offsets[cell_id];
+        const std::uint32_t end = begin + counts[cell_id];
+        for (std::uint32_t position = begin; position < end; ++position) {
+          via_count_union_candidate(candidate_visits, status);
+          const std::uint32_t metal_id = members[position];
+          if (metal_id >= metal_count) {
+            atomicOr(status, std::uint32_t(kViaInvalidDeviceRecord));
+            continue;
+          }
+          const ViaBox metal = metals[metal_id];
+          if (metal.bottom <= y && metal.top >= y + 1 &&
+              metal.left <= cursor && metal.right > farthest) {
+            farthest = min(metal.right, target_right);
+          }
+        }
+      }
+      if (farthest == cursor) return false;
+      cursor = farthest;
+    }
+  }
+  return true;
+}
+
+__device__ bool
+via_union_covers_vertical_strip(
+    const ViaBox &via, const ViaBox *metals, std::uint32_t metal_count,
+    ViaGrid grid, const std::uint32_t *counts,
+    const std::uint32_t *offsets, const std::uint32_t *members,
+    std::int64_t distance, unsigned long long *candidate_visits,
+    std::uint32_t *status)
+{
+  const std::int64_t target_bottom = via.bottom - distance;
+  const std::int64_t target_top = via.top + distance;
+  const std::int64_t grid_y0 =
+      via_floor_div(target_bottom, grid.cell_size);
+  const std::int64_t grid_y1 =
+      via_floor_div(target_top - 1, grid.cell_size);
+  const std::int64_t maximum_x =
+      grid.base_x + static_cast<std::int64_t>(grid.width) - 1;
+  const std::int64_t maximum_y =
+      grid.base_y + static_cast<std::int64_t>(grid.height) - 1;
+  if (grid_y0 < grid.base_y || grid_y1 > maximum_y) return false;
+
+  for (std::int64_t x = via.left; x < via.right; ++x) {
+    const std::int64_t grid_x = via_floor_div(x, grid.cell_size);
+    if (grid_x < grid.base_x || grid_x > maximum_x) return false;
+    std::int64_t cursor = target_bottom;
+    while (cursor < target_top) {
+      std::int64_t farthest = cursor;
+      for (std::int64_t grid_y = grid_y0;
+           grid_y <= grid_y1; ++grid_y) {
+        const std::uint64_t cell_id =
+            via_grid_index(grid, grid_x, grid_y);
+        const std::uint32_t begin = offsets[cell_id];
+        const std::uint32_t end = begin + counts[cell_id];
+        for (std::uint32_t position = begin; position < end; ++position) {
+          via_count_union_candidate(candidate_visits, status);
+          const std::uint32_t metal_id = members[position];
+          if (metal_id >= metal_count) {
+            atomicOr(status, std::uint32_t(kViaInvalidDeviceRecord));
+            continue;
+          }
+          const ViaBox metal = metals[metal_id];
+          if (metal.left <= x && metal.right >= x + 1 &&
+              metal.bottom <= cursor && metal.top > farthest) {
+            farthest = min(metal.top, target_top);
+          }
+        }
+      }
+      if (farthest == cursor) return false;
+      cursor = farthest;
+    }
+  }
+  return true;
+}
+
+__device__ bool
+via_projection_union_certificate(
+    const ViaBox &via, const ViaBox *metals, std::uint32_t metal_count,
+    ViaGrid grid, const std::uint32_t *counts,
+    const std::uint32_t *offsets, const std::uint32_t *members,
+    std::int64_t distance, unsigned long long *candidate_visits,
+    std::uint32_t *status)
+{
+  return via_union_covers_horizontal_strip(
+             via, metals, metal_count, grid, counts, offsets, members,
+             distance, candidate_visits, status) ||
+         via_union_covers_vertical_strip(
+             via, metals, metal_count, grid, counts, offsets, members,
+             distance, candidate_visits, status);
+}
+
 __global__ void
 via_query_projection_kernel(
     const ViaBox *vias, std::uint32_t via_count,
@@ -868,6 +1003,7 @@ via_query_projection_kernel(
 {
   unsigned long long local_queried = 0;
   unsigned long long local_candidates = 0;
+  unsigned long long local_union_candidates = 0;
   unsigned long long local_certified = 0;
   unsigned long long local_misses = 0;
   for (std::uint64_t via_id =
@@ -905,6 +1041,11 @@ via_query_projection_kernel(
         }
       }
     }
+    if (!certified) {
+      certified = via_projection_union_certificate(
+          via, metals, metal_count, grid, counts, offsets, members,
+          distance, &local_union_candidates, status);
+    }
     if (certified) {
       ++local_certified;
     } else {
@@ -914,6 +1055,13 @@ via_query_projection_kernel(
   if (local_queried) atomicAdd(&counters->vias_queried, local_queried);
   if (local_candidates) {
     atomicAdd(&counters->candidate_boxes, local_candidates);
+  }
+  if (local_union_candidates) {
+    const unsigned long long previous = atomicAdd(
+        &counters->union_candidate_visits, local_union_candidates);
+    if (previous > ULLONG_MAX - local_union_candidates) {
+      atomicOr(status, std::uint32_t(kViaWorkCounterOverflow));
+    }
   }
   if (local_certified) {
     atomicAdd(&counters->certified, local_certified);
@@ -1439,7 +1587,10 @@ run_via_pipeline(const ViaRequest &request)
         *host_candidates = host_projection.candidate_boxes;
         *host_certified = host_projection.certified;
         *host_misses = host_projection.misses;
-        if (*host_candidates > request.max_pair_work) {
+        const __int128 projection_work =
+            static_cast<__int128>(host_projection.candidate_boxes) +
+            host_projection.union_candidate_visits;
+        if (projection_work > request.max_pair_work) {
           result.fallback_flags =
               KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY;
           return false;

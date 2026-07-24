@@ -3673,6 +3673,17 @@ CODE
         self.data.cuda_via1_stack_clean?(metal1.data, metal2.data)
       end
     end
+
+    # Internal, fail-closed acceleration hook for the qualified FreePDK45
+    # CONTACT/METAL1.3 relation.  The receiver is CONTACT.
+    def cuda_m1_contact_clean?(metal1)
+      @engine._context("cuda_m1_contact_clean?") do
+        check_is_layer(metal1)
+        requires_region
+        metal1.requires_region
+        self.data.cuda_m1_contact_clean?(metal1.data)
+      end
+    end
     
     # %DRC%
     # @name area

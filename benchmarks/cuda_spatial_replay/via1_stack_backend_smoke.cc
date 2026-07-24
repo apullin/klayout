@@ -26,26 +26,26 @@ require(bool condition, const std::string &message)
 
 Result
 run_case(
-    const std::string &name, const Box &metal1,
-    const std::vector<Box> &vias, const Box &metal2,
+    const std::string &name, const std::vector<Box> &metal1,
+    const std::vector<Box> &vias, const std::vector<Box> &metal2,
     bool corrupt_digest = false)
 {
   const Context contexts[] = {{0, 0, 0, 0}};
   const std::uint32_t layer_contexts[] = {0};
   const std::uint64_t layer_offsets[] = {0};
   std::vector<Box> boxes;
-  boxes.reserve(vias.size() + 2);
-  boxes.push_back(metal1);
+  boxes.reserve(metal1.size() + vias.size() + metal2.size());
+  boxes.insert(boxes.end(), metal1.begin(), metal1.end());
   boxes.insert(boxes.end(), vias.begin(), vias.end());
-  boxes.push_back(metal2);
+  boxes.insert(boxes.end(), metal2.begin(), metal2.end());
 
   const Cell cells[] = {{
       0,
-      1,
-      static_cast<std::uint64_t>(1 + vias.size()),
-      1,
+      static_cast<std::uint64_t>(metal1.size()),
+      static_cast<std::uint64_t>(metal1.size() + vias.size()),
+      static_cast<std::uint32_t>(metal1.size()),
       static_cast<std::uint32_t>(vias.size()),
-      1,
+      static_cast<std::uint32_t>(metal2.size()),
       0}};
 
   std::int64_t scene_left = boxes.front().left;
@@ -91,9 +91,9 @@ run_case(
   request.cell_count = 1;
   request.boxes = boxes.data();
   request.box_count = boxes.size();
-  request.flat_metal1_box_count = 1;
+  request.flat_metal1_box_count = metal1.size();
   request.flat_via1_box_count = vias.size();
-  request.flat_metal2_box_count = 1;
+  request.flat_metal2_box_count = metal2.size();
   request.scene_left = scene_left;
   request.scene_bottom = scene_bottom;
   request.scene_right = scene_right;
@@ -167,6 +167,17 @@ run_case(
   return result;
 }
 
+Result
+run_case(
+    const std::string &name, const Box &metal1,
+    const std::vector<Box> &vias, const Box &metal2,
+    bool corrupt_digest = false)
+{
+  return run_case(
+      name, std::vector<Box>{metal1}, vias, std::vector<Box>{metal2},
+      corrupt_digest);
+}
+
 }  // namespace
 
 int
@@ -184,6 +195,69 @@ main()
             clean.metal1_miss_count == 0 &&
             clean.metal2_miss_count == 0,
         "clean: complete certificate was not returned");
+
+    const Box union_via = {70, 70, 200, 200};
+    const std::vector<Box> horizontal_union = {
+        {0, 70, 135, 200}, {135, 70, 270, 200}};
+    const std::vector<Box> vertical_union = {
+        {70, 0, 200, 135}, {70, 135, 200, 270}};
+    const Result union_clean =
+        run_case(
+            "union-clean", horizontal_union, {union_via},
+            vertical_union);
+    require(
+        union_clean.disposition ==
+                KLAYOUT_CUDA_SPATIAL_VIA1_STACK_COMPLETE &&
+            union_clean.certified_empty_mask ==
+                KLAYOUT_CUDA_SPATIAL_VIA1_STACK_ALL_RULES &&
+            union_clean.metal1_miss_count == 0 &&
+            union_clean.metal2_miss_count == 0,
+        "union-clean: exact cross-strip unions were not certified");
+
+    const std::vector<Box> one_dbu_gap = {
+        {0, 70, 134, 200}, {135, 70, 270, 200}};
+    const Result union_gap =
+        run_case(
+            "union-gap", one_dbu_gap, {union_via},
+            vertical_union);
+    require(
+        union_gap.disposition ==
+                KLAYOUT_CUDA_SPATIAL_VIA1_STACK_NOT_EMPTY &&
+            union_gap.metal1_miss_count == 1 &&
+            union_gap.metal2_miss_count == 0 &&
+            union_gap.certified_empty_mask == 0x36u,
+        "union-gap: one-DBU cross-strip gap was not retained");
+
+    const std::vector<Box> vertical_one_dbu_gap = {
+        {70, 0, 200, 134}, {70, 135, 200, 270}};
+    const Result vertical_union_gap =
+        run_case(
+            "vertical-union-gap", horizontal_union, {union_via},
+            vertical_one_dbu_gap);
+    require(
+        vertical_union_gap.disposition ==
+                KLAYOUT_CUDA_SPATIAL_VIA1_STACK_NOT_EMPTY &&
+            vertical_union_gap.metal1_miss_count == 0 &&
+            vertical_union_gap.metal2_miss_count == 1 &&
+            vertical_union_gap.certified_empty_mask == 0x0fu,
+        "vertical-union-gap: one-DBU cross-strip gap was not retained");
+
+    const Box grid_boundary_via = {1935, -130, 2065, 0};
+    const std::vector<Box> boundary_union = {
+        {1865, -130, 2000, 0}, {2000, -130, 2135, 0}};
+    const Box boundary_clean_metal = {1800, -300, 2200, 200};
+    const Result boundary_clean =
+        run_case(
+            "negative-grid-boundary", boundary_union, {grid_boundary_via},
+            {boundary_clean_metal});
+    require(
+        boundary_clean.disposition ==
+                KLAYOUT_CUDA_SPATIAL_VIA1_STACK_COMPLETE &&
+            boundary_clean.certified_empty_mask ==
+                KLAYOUT_CUDA_SPATIAL_VIA1_STACK_ALL_RULES &&
+            boundary_clean.metal1_miss_count == 0 &&
+            boundary_clean.metal2_miss_count == 0,
+        "negative-grid-boundary: exact X=2000 union seam was not certified");
 
     const Box miss_metal2 = {0, 0, 260, 130};
     const Result miss =
@@ -283,9 +357,10 @@ main()
         "bad-digest", clean_metal, {clean_via}, clean_metal, true);
 
     std::cout
-        << "VIA1-stack backend smoke passed: clean, miss, spacing, "
-           "spacing-equality, diagonal-equality, size, touch, duplicate, "
-           "bad-digest\n";
+        << "VIA1-stack backend smoke passed: clean, union-clean, "
+           "horizontal-gap, vertical-gap, negative-grid-boundary, miss, "
+           "spacing, spacing-equality, diagonal-equality, size, touch, "
+           "duplicate, bad-digest\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr << "VIA1-stack backend smoke failed: " << error.what() << "\n";
