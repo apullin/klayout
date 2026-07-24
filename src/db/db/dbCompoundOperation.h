@@ -553,6 +553,22 @@ public:
     return children ();
   }
 
+  /**
+   *  @brief Tests for the exact ordered width/spacing batch shape
+   *
+   *  This predicate is deliberately narrow.  It accepts exactly two children:
+   *  a single-polygon width check over the primary input followed by a
+   *  same-layer spacing check over the foreign input.  Distances and every
+   *  RegionCheckOptions field must equal the supplied qualified values, and
+   *  the outer property constraint must be IgnoreProperties.
+   */
+  bool matches_m1_width_space_checks (
+    db::Coord width_distance,
+    const db::RegionCheckOptions &width_options,
+    db::Coord spacing_distance,
+    const db::RegionCheckOptions &spacing_options,
+    db::PropertyConstraint property_constraint) const;
+
   virtual ResultType result_type () const
   {
     return m_result_type;
@@ -1695,6 +1711,12 @@ private:
   PolygonToEdgePairProcessorBase *mp_proc;
   bool m_owns_proc;
 
+  bool matches_single_polygon_primary_check (
+    db::edge_relation_type relation, db::Coord distance,
+    const db::RegionCheckOptions &options) const;
+
+  friend class CompoundRegionMultiOutputOperationNode;
+
   void processed (db::Layout *, const db::PolygonWithProperties &p, std::vector<db::EdgePairWithProperties> &res) const;
   void processed (db::Layout *layout, const db::PolygonRefWithProperties &p, std::vector<db::EdgePairWithProperties> &res) const;
   void processed (db::Layout *, const db::PolygonWithProperties &p, const db::ICplxTrans &tr, std::vector<db::EdgePairWithProperties> &res) const;
@@ -1782,6 +1804,12 @@ private:
   bool m_has_other;
   bool m_is_other_merged;
   db::MagnificationReducer m_vars;
+
+  bool matches_foreign_check (
+    db::edge_relation_type relation, bool different_polygons,
+    db::Coord distance, const db::RegionCheckOptions &options) const;
+
+  friend class CompoundRegionMultiOutputOperationNode;
 };
 
 

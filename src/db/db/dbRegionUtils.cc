@@ -354,6 +354,27 @@ SinglePolygonCheck::SinglePolygonCheck (db::edge_relation_type rel, db::Coord d,
   : m_relation (rel), m_d (d), m_options (options)
 { }
 
+bool
+SinglePolygonCheck::matches (
+  db::edge_relation_type relation, db::Coord distance,
+  const db::RegionCheckOptions &options) const
+{
+  return
+    m_relation == relation &&
+    m_d == distance &&
+    m_options.whole_edges == options.whole_edges &&
+    m_options.metrics == options.metrics &&
+    m_options.ignore_angle == options.ignore_angle &&
+    m_options.min_projection == options.min_projection &&
+    m_options.max_projection == options.max_projection &&
+    m_options.zd_mode == options.zd_mode &&
+    m_options.shielded == options.shielded &&
+    m_options.opposite_filter == options.opposite_filter &&
+    m_options.rect_filter == options.rect_filter &&
+    m_options.negative == options.negative &&
+    m_options.prop_constraint == options.prop_constraint;
+}
+
 void
 SinglePolygonCheck::process (const db::PolygonWithProperties &polygon, std::vector<db::EdgePairWithProperties> &res) const
 {

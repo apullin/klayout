@@ -51,6 +51,18 @@ CudaActive3Attempt::CudaActive3Attempt ()
   //  nothing yet
 }
 
+CudaM1WidthSpaceAttempt::CudaM1WidthSpaceAttempt ()
+  : disposition (Disabled), fallback_flags (0), device_flags (0),
+    context_count (0), metal_context_count (0), cell_count (0),
+    polygon_count (0), edge_count (0), flat_polygon_count (0),
+    flat_edge_count (0), grid_cell_count (0), membership_count (0),
+    pair_work_count (0), unique_edge_pair_count (0), width_pair_count (0),
+    space_pair_count (0), width_hit_count (0), space_hit_count (0),
+    width_uncertain_count (0), space_uncertain_count (0), total_ns (0)
+{
+  //  nothing yet
+}
+
 CudaVia1StackAttempt::CudaVia1StackAttempt ()
   : disposition (Disabled), certified_empty_mask (0), fallback_flags (0),
     device_flags (0), context_count (0), flat_metal1_box_count (0),
@@ -168,6 +180,10 @@ public:
     : m_enabled (false), m_telemetry (false),
       m_active3_enabled (env_enabled ("KLAYOUT_CUDA_ACTIVE3")),
       m_active3_telemetry (env_enabled ("KLAYOUT_CUDA_ACTIVE3_TELEMETRY")),
+      m_m1_width_space_enabled (
+        env_enabled ("KLAYOUT_CUDA_M1_WIDTH_SPACE")),
+      m_m1_width_space_telemetry (
+        env_enabled ("KLAYOUT_CUDA_M1_WIDTH_SPACE_TELEMETRY")),
       m_via1_stack_enabled (env_enabled ("KLAYOUT_CUDA_VIA1_STACK")),
       m_via1_stack_telemetry (
         env_enabled ("KLAYOUT_CUDA_VIA1_STACK_TELEMETRY")),
@@ -175,7 +191,8 @@ public:
       m_m1_contact_telemetry (
         env_enabled ("KLAYOUT_CUDA_M1_CONTACT_TELEMETRY")),
       m_handle (0), m_run_bipartite (0), m_run_self (0),
-      m_run_active3 (0), m_run_via1_stack (0), m_release (0),
+      m_run_active3 (0), m_run_m1_width_space (0),
+      m_run_via1_stack (0), m_release (0),
       m_min_records (100000)
   {
     const char *setting = std::getenv ("KLAYOUT_CUDA_SPATIAL_BACKEND");
@@ -211,6 +228,11 @@ public:
         GetProcAddress (reinterpret_cast<HMODULE> (m_handle), "klayout_cuda_spatial_run_self_v1"));
       m_run_active3 = reinterpret_cast<klayout_cuda_spatial_run_active3_empty_v1_func> (
         GetProcAddress (reinterpret_cast<HMODULE> (m_handle), "klayout_cuda_spatial_run_active3_empty_v1"));
+      m_run_m1_width_space =
+        reinterpret_cast<klayout_cuda_spatial_run_m1_width_space_empty_v1_func> (
+          GetProcAddress (
+            reinterpret_cast<HMODULE> (m_handle),
+            "klayout_cuda_spatial_run_m1_width_space_empty_v1"));
       m_run_via1_stack =
         reinterpret_cast<klayout_cuda_spatial_run_via1_stack_empty_v1_func> (
           GetProcAddress (
@@ -236,6 +258,11 @@ public:
         dlsym (m_handle, "klayout_cuda_spatial_run_self_v1"));
       m_run_active3 = reinterpret_cast<klayout_cuda_spatial_run_active3_empty_v1_func> (
         dlsym (m_handle, "klayout_cuda_spatial_run_active3_empty_v1"));
+      m_run_m1_width_space =
+        reinterpret_cast<klayout_cuda_spatial_run_m1_width_space_empty_v1_func> (
+          dlsym (
+            m_handle,
+            "klayout_cuda_spatial_run_m1_width_space_empty_v1"));
       m_run_via1_stack =
         reinterpret_cast<klayout_cuda_spatial_run_via1_stack_empty_v1_func> (
           dlsym (
@@ -256,6 +283,7 @@ public:
       m_run_bipartite = 0;
       m_run_self = 0;
       m_run_active3 = 0;
+      m_run_m1_width_space = 0;
       m_run_via1_stack = 0;
       m_release = 0;
       tl::warn << m_error;
@@ -292,6 +320,21 @@ public:
   bool via1_stack_ready () const
   {
     return m_via1_stack_enabled && m_run_via1_stack;
+  }
+
+  bool m1_width_space_ready () const
+  {
+    return m_m1_width_space_enabled && m_run_m1_width_space;
+  }
+
+  bool m1_width_space_enabled () const
+  {
+    return m_m1_width_space_enabled;
+  }
+
+  bool m1_width_space_telemetry () const
+  {
+    return m_m1_width_space_telemetry;
   }
 
   bool via1_stack_enabled () const
@@ -354,6 +397,12 @@ public:
     return m_run_active3;
   }
 
+  klayout_cuda_spatial_run_m1_width_space_empty_v1_func
+  run_m1_width_space () const
+  {
+    return m_run_m1_width_space;
+  }
+
   klayout_cuda_spatial_run_via1_stack_empty_v1_func run_via1_stack () const
   {
     return m_run_via1_stack;
@@ -369,6 +418,8 @@ private:
   bool m_telemetry;
   bool m_active3_enabled;
   bool m_active3_telemetry;
+  bool m_m1_width_space_enabled;
+  bool m_m1_width_space_telemetry;
   bool m_via1_stack_enabled;
   bool m_via1_stack_telemetry;
   bool m_m1_contact_enabled;
@@ -377,6 +428,7 @@ private:
   klayout_cuda_spatial_run_bipartite_v1_func m_run_bipartite;
   klayout_cuda_spatial_run_self_v1_func m_run_self;
   klayout_cuda_spatial_run_active3_empty_v1_func m_run_active3;
+  klayout_cuda_spatial_run_m1_width_space_empty_v1_func m_run_m1_width_space;
   klayout_cuda_spatial_run_via1_stack_empty_v1_func m_run_via1_stack;
   klayout_cuda_spatial_release_result_v1_func m_release;
   uint64_t m_min_records;
@@ -447,6 +499,59 @@ void log_active3_attempt (const CudaActive3Attempt &attempt)
            << " fallback_flags=" << attempt.fallback_flags
            << " device_flags=" << attempt.device_flags
            << (attempt.message.empty () ? "" : " message=") << attempt.message;
+}
+
+void log_m1_width_space_attempt (const CudaM1WidthSpaceAttempt &attempt)
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  if (! module.m1_width_space_telemetry ()) {
+    return;
+  }
+
+  const char *outcome = "unknown";
+  switch (attempt.disposition) {
+  case CudaM1WidthSpaceAttempt::CertifiedEmpty:
+    outcome = "certified-empty";
+    break;
+  case CudaM1WidthSpaceAttempt::RawHits:
+    outcome = "raw-hits-cpu-fallback";
+    break;
+  case CudaM1WidthSpaceAttempt::BackendFallback:
+    outcome = "fallback";
+    break;
+  case CudaM1WidthSpaceAttempt::BackendError:
+    outcome = "error";
+    break;
+  case CudaM1WidthSpaceAttempt::InvalidResult:
+    outcome = "invalid-result";
+    break;
+  case CudaM1WidthSpaceAttempt::Disabled:
+    outcome = "disabled";
+    break;
+  }
+
+  tl::info << "CUDA M1 width/space empty certificate:"
+           << " outcome=" << outcome
+           << " contexts=" << attempt.context_count
+           << " metal_contexts=" << attempt.metal_context_count
+           << " polygons=" << attempt.flat_polygon_count
+           << " edges=" << attempt.flat_edge_count
+           << " grid_cells=" << attempt.grid_cell_count
+           << " memberships=" << attempt.membership_count
+           << " pair_work=" << attempt.pair_work_count
+           << " unique_pairs=" << attempt.unique_edge_pair_count
+           << " width_pairs=" << attempt.width_pair_count
+           << " space_pairs=" << attempt.space_pair_count
+           << " width_hits=" << attempt.width_hit_count
+           << " space_hits=" << attempt.space_hit_count
+           << " uncertain="
+           << (attempt.width_uncertain_count +
+               attempt.space_uncertain_count)
+           << " total_ms=" << (double (attempt.total_ns) / 1.0e6)
+           << " fallback_flags=" << attempt.fallback_flags
+           << " device_flags=" << attempt.device_flags
+           << (attempt.message.empty () ? "" : " message=")
+           << attempt.message;
 }
 
 void log_via1_stack_attempt (const CudaVia1StackAttempt &attempt)
@@ -1000,6 +1105,180 @@ bool cuda_spatial_active3_requested ()
 {
   CudaSpatialModule &module = cuda_spatial_module ();
   return module.enabled () && module.active3_ready ();
+}
+
+CudaM1WidthSpaceAttempt cuda_spatial_try_m1_width_space_empty (
+  const klayout_cuda_spatial_m1_width_space_request_v1 &request)
+{
+  CudaM1WidthSpaceAttempt attempt;
+  CudaSpatialModule &module = cuda_spatial_module ();
+  if (! module.m1_width_space_enabled ()) {
+    return attempt;
+  }
+  if (! module.enabled ()) {
+    attempt.disposition = CudaM1WidthSpaceAttempt::BackendError;
+    attempt.message = module.error ().empty ()
+      ? "CUDA spatial backend is unavailable"
+      : module.error ();
+    log_m1_width_space_attempt (attempt);
+    return attempt;
+  }
+  if (! module.m1_width_space_ready ()) {
+    attempt.disposition = CudaM1WidthSpaceAttempt::BackendFallback;
+    attempt.fallback_flags =
+      KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+    attempt.message =
+      "CUDA spatial backend has no M1 width/space empty-certificate entry point";
+    log_m1_width_space_attempt (attempt);
+    return attempt;
+  }
+
+  klayout_cuda_spatial_m1_width_space_result_v1 result;
+  std::memset (&result, 0, sizeof (result));
+  result.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  result.struct_size = sizeof (result);
+  result.status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  result.disposition = KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN;
+
+  int status = KLAYOUT_CUDA_SPATIAL_ERROR;
+  try {
+    status = module.run_m1_width_space () (&request, &result);
+  } catch (const std::exception &ex) {
+    attempt.disposition = CudaM1WidthSpaceAttempt::BackendError;
+    attempt.message = ex.what ();
+    log_m1_width_space_attempt (attempt);
+    return attempt;
+  } catch (...) {
+    attempt.disposition = CudaM1WidthSpaceAttempt::BackendError;
+    attempt.message =
+      "unknown exception while calling CUDA M1 width/space backend";
+    log_m1_width_space_attempt (attempt);
+    return attempt;
+  }
+
+  attempt.fallback_flags = result.fallback_flags;
+  attempt.device_flags = result.device_flags;
+  attempt.context_count = result.context_count;
+  attempt.metal_context_count = result.metal_context_count;
+  attempt.cell_count = result.cell_count;
+  attempt.polygon_count = result.polygon_count;
+  attempt.edge_count = result.edge_count;
+  attempt.flat_polygon_count = result.flat_polygon_count;
+  attempt.flat_edge_count = result.flat_edge_count;
+  attempt.grid_cell_count = result.grid_cell_count;
+  attempt.membership_count = result.membership_count;
+  attempt.pair_work_count = result.pair_work_count;
+  attempt.unique_edge_pair_count = result.unique_edge_pair_count;
+  attempt.width_pair_count = result.width_pair_count;
+  attempt.space_pair_count = result.space_pair_count;
+  attempt.width_hit_count = result.width_hit_count;
+  attempt.space_hit_count = result.space_hit_count;
+  attempt.width_uncertain_count = result.width_uncertain_count;
+  attempt.space_uncertain_count = result.space_uncertain_count;
+  attempt.total_ns = result.total_ns;
+  attempt.message.assign (
+    result.message,
+    std::find (result.message, result.message + sizeof (result.message), '\0'));
+
+  if (result.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      result.struct_size < sizeof (result) || result.reserved0 != 0) {
+    attempt.disposition = CudaM1WidthSpaceAttempt::InvalidResult;
+    attempt.message =
+      "CUDA M1 width/space backend returned an incompatible result";
+    log_m1_width_space_attempt (attempt);
+    return attempt;
+  }
+
+  if (status == KLAYOUT_CUDA_SPATIAL_OK &&
+      result.status == KLAYOUT_CUDA_SPATIAL_OK) {
+    const bool echo_matches =
+      result.opcode == request.opcode &&
+      result.option_flags == request.option_flags &&
+      result.format_version == request.format_version &&
+      result.dbu_per_micron == request.dbu_per_micron &&
+      result.root_cell == request.root_cell &&
+      result.width_distance == request.width_distance &&
+      result.spacing_distance == request.spacing_distance &&
+      result.grid_cell_size == request.grid_cell_size &&
+      result.scene_left == request.scene_left &&
+      result.scene_bottom == request.scene_bottom &&
+      result.scene_right == request.scene_right &&
+      result.scene_top == request.scene_top &&
+      std::equal (
+        result.scene_digest, result.scene_digest + 32,
+        request.scene_digest) &&
+      result.context_count == request.context_count &&
+      result.metal_context_count == request.metal_context_count &&
+      result.cell_count == request.cell_count &&
+      result.polygon_count == request.polygon_count &&
+      result.edge_count == request.edge_count &&
+      result.flat_polygon_count == request.flat_polygon_count &&
+      result.flat_edge_count == request.flat_edge_count;
+    if (! echo_matches ||
+        result.fallback_flags != KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE ||
+        result.device_flags != 0) {
+      attempt.disposition = CudaM1WidthSpaceAttempt::InvalidResult;
+      attempt.message =
+        "CUDA M1 width/space backend returned a mismatched proof echo";
+    } else if (
+      result.grid_cell_count > request.max_grid_cells ||
+      result.membership_count > request.max_memberships ||
+      result.pair_work_count > request.max_pair_work ||
+      result.unique_edge_pair_count > result.pair_work_count ||
+      result.width_pair_count > result.unique_edge_pair_count ||
+      result.space_pair_count != result.unique_edge_pair_count ||
+      result.width_hit_count > result.width_pair_count ||
+      result.space_hit_count > result.space_pair_count ||
+      result.width_uncertain_count > result.width_pair_count ||
+      result.space_uncertain_count > result.space_pair_count ||
+      result.width_hit_count >
+        result.width_pair_count - result.width_uncertain_count ||
+      result.space_hit_count >
+        result.space_pair_count - result.space_uncertain_count) {
+      attempt.disposition = CudaM1WidthSpaceAttempt::InvalidResult;
+      attempt.message =
+        "CUDA M1 width/space backend returned impossible proof counters";
+    } else if (
+      result.disposition ==
+        KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_COMPLETE &&
+      result.width_hit_count == 0 && result.space_hit_count == 0 &&
+      result.width_uncertain_count == 0 &&
+      result.space_uncertain_count == 0) {
+      attempt.disposition = CudaM1WidthSpaceAttempt::CertifiedEmpty;
+    } else if (
+      result.disposition ==
+        KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_RAW_HITS &&
+      (result.width_hit_count != 0 || result.space_hit_count != 0) &&
+      result.width_uncertain_count == 0 &&
+      result.space_uncertain_count == 0) {
+      attempt.disposition = CudaM1WidthSpaceAttempt::RawHits;
+    } else if (
+      result.disposition ==
+        KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN &&
+      (result.width_uncertain_count != 0 ||
+       result.space_uncertain_count != 0)) {
+      attempt.disposition = CudaM1WidthSpaceAttempt::BackendFallback;
+    } else {
+      attempt.disposition = CudaM1WidthSpaceAttempt::InvalidResult;
+      attempt.message =
+        "CUDA M1 width/space backend returned an inconsistent disposition";
+    }
+  } else if (
+    status == KLAYOUT_CUDA_SPATIAL_FALLBACK ||
+    result.status == KLAYOUT_CUDA_SPATIAL_FALLBACK) {
+    attempt.disposition = CudaM1WidthSpaceAttempt::BackendFallback;
+  } else {
+    attempt.disposition = CudaM1WidthSpaceAttempt::BackendError;
+  }
+
+  log_m1_width_space_attempt (attempt);
+  return attempt;
+}
+
+bool cuda_spatial_m1_width_space_requested ()
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  return module.enabled () && module.m1_width_space_ready ();
 }
 
 CudaVia1StackAttempt cuda_spatial_try_via1_stack_empty (

@@ -15,13 +15,19 @@
 #include "dbArray.h"
 #include "dbCell.h"
 #include "dbCudaActive3Digest.h"
+#include "dbCudaSpatialBackend.h"
 #include "dbDeepShapeStore.h"
 #include "dbLayout.h"
 #include "dbPolygon.h"
 #include "dbShape.h"
 #include "dbShapes.h"
+#include "tlLog.h"
 
 #include <algorithm>
+#include <cerrno>
+#include <chrono>
+#include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -50,6 +56,12 @@ const uint64_t default_max_stored_polygons = UINT64_C (20000000);
 const uint64_t default_max_stored_edges = UINT64_C (100000000);
 const uint64_t default_max_flat_polygons = UINT64_C (200000000);
 const uint64_t default_max_flat_edges = UINT64_C (800000000);
+const uint64_t default_max_grid_cells = UINT64_C (16000000);
+const uint64_t default_max_memberships = UINT64_C (120000000);
+const uint64_t default_max_pair_work = UINT64_C (2000000000);
+const uint64_t backend_max_flat_polygons = UINT64_C (50000000);
+const uint64_t backend_max_flat_edges = UINT64_C (100000000);
+const int64_t qualified_grid_cell = 512;
 
 class M1WidthSpaceDecline
   : public std::runtime_error
@@ -61,6 +73,30 @@ public:
     //  nothing yet
   }
 };
+
+uint64_t env_u64 (const char *name, uint64_t default_value)
+{
+  const char *value = std::getenv (name);
+  if (! value || ! *value) {
+    return default_value;
+  }
+
+  errno = 0;
+  char *end = 0;
+  const unsigned long long parsed = std::strtoull (value, &end, 0);
+  if (errno != 0 || ! end || *end != 0) {
+    return default_value;
+  }
+  return static_cast<uint64_t> (parsed);
+}
+
+bool env_enabled (const char *name)
+{
+  const char *value = std::getenv (name);
+  return value && *value && std::strcmp (value, "0") != 0 &&
+         std::strcmp (value, "false") != 0 &&
+         std::strcmp (value, "off") != 0;
+}
 
 bool checked_add_u64 (uint64_t a, uint64_t b, uint64_t &result)
 {
@@ -1135,6 +1171,246 @@ bool cuda_m1_width_space_build_scene (
     set_reason (decline_reason, ex.what ());
   } catch (...) {
     set_reason (decline_reason, "unknown exception");
+  }
+  return false;
+}
+
+bool cuda_m1_width_space_try_empty (
+  const db::DeepLayer &merged_metal1,
+  const CudaM1WidthSpaceBuildSpec &spec)
+{
+  const bool telemetry =
+    env_enabled ("KLAYOUT_CUDA_M1_WIDTH_SPACE_TELEMETRY");
+  const std::chrono::steady_clock::time_point begin =
+    std::chrono::steady_clock::now ();
+  try {
+    if (! db::cuda_spatial_m1_width_space_requested ()) {
+      return false;
+    }
+
+    static_assert (
+      std::is_trivially_copyable<CudaM1WidthSpaceContext>::value,
+      "M1 context records must be trivially copyable");
+    static_assert (
+      std::is_trivially_copyable<CudaM1WidthSpaceCell>::value,
+      "M1 cell records must be trivially copyable");
+    static_assert (
+      std::is_trivially_copyable<CudaM1WidthSpacePolygon>::value,
+      "M1 polygon records must be trivially copyable");
+    static_assert (
+      std::is_trivially_copyable<CudaM1WidthSpaceEdge>::value,
+      "M1 edge records must be trivially copyable");
+    static_assert (
+      sizeof (CudaM1WidthSpaceContext) ==
+        sizeof (klayout_cuda_spatial_m1_width_space_context_v1) &&
+      offsetof (CudaM1WidthSpaceContext, tx) ==
+        offsetof (klayout_cuda_spatial_m1_width_space_context_v1, tx) &&
+      offsetof (CudaM1WidthSpaceContext, ty) ==
+        offsetof (klayout_cuda_spatial_m1_width_space_context_v1, ty) &&
+      offsetof (CudaM1WidthSpaceContext, cell_id) ==
+        offsetof (
+          klayout_cuda_spatial_m1_width_space_context_v1, cell_id) &&
+      offsetof (CudaM1WidthSpaceContext, transform_code) ==
+        offsetof (
+          klayout_cuda_spatial_m1_width_space_context_v1, transform_code),
+      "M1 context ABI layout mismatch");
+    static_assert (
+      sizeof (CudaM1WidthSpaceCell) ==
+        sizeof (klayout_cuda_spatial_m1_width_space_cell_v1) &&
+      offsetof (CudaM1WidthSpaceCell, source_cell_index) ==
+        offsetof (
+          klayout_cuda_spatial_m1_width_space_cell_v1,
+          source_cell_index) &&
+      offsetof (CudaM1WidthSpaceCell, polygon_begin) ==
+        offsetof (
+          klayout_cuda_spatial_m1_width_space_cell_v1, polygon_begin) &&
+      offsetof (CudaM1WidthSpaceCell, edge_begin) ==
+        offsetof (
+          klayout_cuda_spatial_m1_width_space_cell_v1, edge_begin) &&
+      offsetof (CudaM1WidthSpaceCell, polygon_count) ==
+        offsetof (
+          klayout_cuda_spatial_m1_width_space_cell_v1, polygon_count) &&
+      offsetof (CudaM1WidthSpaceCell, edge_count) ==
+        offsetof (
+          klayout_cuda_spatial_m1_width_space_cell_v1, edge_count),
+      "M1 cell ABI layout mismatch");
+    static_assert (
+      sizeof (CudaM1WidthSpacePolygon) ==
+        sizeof (klayout_cuda_spatial_m1_width_space_polygon_v1) &&
+      offsetof (CudaM1WidthSpacePolygon, edge_begin) ==
+        offsetof (
+          klayout_cuda_spatial_m1_width_space_polygon_v1, edge_begin) &&
+      offsetof (CudaM1WidthSpacePolygon, left) ==
+        offsetof (
+          klayout_cuda_spatial_m1_width_space_polygon_v1, left) &&
+      offsetof (CudaM1WidthSpacePolygon, bottom) ==
+        offsetof (
+          klayout_cuda_spatial_m1_width_space_polygon_v1, bottom) &&
+      offsetof (CudaM1WidthSpacePolygon, right) ==
+        offsetof (
+          klayout_cuda_spatial_m1_width_space_polygon_v1, right) &&
+      offsetof (CudaM1WidthSpacePolygon, top) ==
+        offsetof (
+          klayout_cuda_spatial_m1_width_space_polygon_v1, top) &&
+      offsetof (CudaM1WidthSpacePolygon, polygon_id) ==
+        offsetof (
+          klayout_cuda_spatial_m1_width_space_polygon_v1, polygon_id) &&
+      offsetof (CudaM1WidthSpacePolygon, edge_count) ==
+        offsetof (
+          klayout_cuda_spatial_m1_width_space_polygon_v1, edge_count),
+      "M1 polygon ABI layout mismatch");
+    static_assert (
+      sizeof (CudaM1WidthSpaceEdge) ==
+        sizeof (klayout_cuda_spatial_m1_width_space_edge_v1) &&
+      offsetof (CudaM1WidthSpaceEdge, x1) ==
+        offsetof (klayout_cuda_spatial_m1_width_space_edge_v1, x1) &&
+      offsetof (CudaM1WidthSpaceEdge, y1) ==
+        offsetof (klayout_cuda_spatial_m1_width_space_edge_v1, y1) &&
+      offsetof (CudaM1WidthSpaceEdge, x2) ==
+        offsetof (klayout_cuda_spatial_m1_width_space_edge_v1, x2) &&
+      offsetof (CudaM1WidthSpaceEdge, y2) ==
+        offsetof (klayout_cuda_spatial_m1_width_space_edge_v1, y2),
+      "M1 edge ABI layout mismatch");
+
+    CudaM1WidthSpaceSceneLimits limits;
+    limits.max_cells = env_u64 (
+      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_CELLS", limits.max_cells);
+    limits.max_contexts = env_u64 (
+      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_CONTEXTS", limits.max_contexts);
+    limits.max_stored_polygons = env_u64 (
+      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_STORED_POLYGONS",
+      limits.max_stored_polygons);
+    limits.max_stored_edges = env_u64 (
+      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_STORED_EDGES",
+      limits.max_stored_edges);
+    limits.max_flat_polygons = env_u64 (
+      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_FLAT_POLYGONS",
+      backend_max_flat_polygons);
+    limits.max_flat_edges = env_u64 (
+      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_FLAT_EDGES",
+      backend_max_flat_edges);
+
+    const uint64_t max_grid_cells = env_u64 (
+      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_GRID_CELLS",
+      default_max_grid_cells);
+    const uint64_t max_memberships = env_u64 (
+      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_MEMBERSHIPS",
+      default_max_memberships);
+    const uint64_t max_pair_work = env_u64 (
+      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_PAIR_WORK",
+      default_max_pair_work);
+    const uint64_t device = env_u64 ("KLAYOUT_CUDA_SPATIAL_DEVICE", 0);
+    if (! max_grid_cells || ! max_memberships || ! max_pair_work ||
+        device > uint64_t (std::numeric_limits<int32_t>::max ())) {
+      throw M1WidthSpaceDecline (
+        "an M1 backend capacity or device is invalid");
+    }
+
+    CudaM1WidthSpaceScene scene;
+    std::string reason;
+    if (! cuda_m1_width_space_build_scene (
+          merged_metal1, merged_metal1, spec, limits, scene, &reason)) {
+      throw M1WidthSpaceDecline (
+        reason.empty () ? "unable to build the live M1 scene" : reason);
+    }
+
+    klayout_cuda_spatial_m1_width_space_request_v1 request;
+    std::memset (&request, 0, sizeof (request));
+    request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+    request.struct_size = sizeof (request);
+    request.opcode =
+      KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_MERGED_EMPTY;
+    request.option_flags =
+      KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_QUALIFIED_OPTIONS;
+    request.format_version = scene.format_version;
+    request.dbu_per_micron = scene.dbu_per_micron;
+    request.root_cell = scene.root_cell;
+    request.scene_reserved = scene.reserved;
+    request.device = int32_t (device);
+    request.width_distance = scene.width_distance;
+    request.spacing_distance = scene.spacing_distance;
+    request.grid_cell_size = qualified_grid_cell;
+    request.contexts = scene.contexts.data ();
+    request.context_count = scene.contexts.size ();
+    request.context_record_bytes = sizeof (CudaM1WidthSpaceContext);
+    request.metal_contexts = scene.metal_contexts.data ();
+    request.metal_context_count = scene.metal_contexts.size ();
+    request.context_polygon_offsets =
+      scene.context_polygon_offsets.data ();
+    request.context_polygon_offset_count =
+      scene.context_polygon_offsets.size ();
+    request.context_edge_offsets = scene.context_edge_offsets.data ();
+    request.context_edge_offset_count = scene.context_edge_offsets.size ();
+    request.cells = scene.cells.data ();
+    request.cell_count = scene.cells.size ();
+    request.cell_record_bytes = sizeof (CudaM1WidthSpaceCell);
+    request.polygons = scene.polygons.data ();
+    request.polygon_count = scene.polygons.size ();
+    request.polygon_record_bytes = sizeof (CudaM1WidthSpacePolygon);
+    request.edges = scene.edges.data ();
+    request.edge_count = scene.edges.size ();
+    request.edge_record_bytes = sizeof (CudaM1WidthSpaceEdge);
+    request.flat_polygon_count = scene.flat_polygon_count;
+    request.flat_edge_count = scene.flat_edge_count;
+    request.scene_left = scene.scene_left;
+    request.scene_bottom = scene.scene_bottom;
+    request.scene_right = scene.scene_right;
+    request.scene_top = scene.scene_top;
+    request.max_contexts = limits.max_contexts;
+    request.max_grid_cells = max_grid_cells;
+    request.max_memberships = max_memberships;
+    request.max_pair_work = max_pair_work;
+    request.max_flat_edges = limits.max_flat_edges;
+    request.max_flat_polygons = limits.max_flat_polygons;
+    std::copy (
+      scene.digest.begin (), scene.digest.end (), request.scene_digest);
+
+    const std::chrono::steady_clock::time_point call_begin =
+      std::chrono::steady_clock::now ();
+    const double lower_ms =
+      std::chrono::duration<double, std::milli> (
+        call_begin - begin).count ();
+    const db::CudaM1WidthSpaceAttempt attempt =
+      db::cuda_spatial_try_m1_width_space_empty (request);
+    const std::chrono::steady_clock::time_point end =
+      std::chrono::steady_clock::now ();
+    if (telemetry) {
+      tl::info << "CUDA M1 width/space live lowering:"
+               << " contexts=" << request.context_count
+               << " metal_contexts=" << request.metal_context_count
+               << " cells=" << request.cell_count
+               << " stored_polygons=" << request.polygon_count
+               << " stored_edges=" << request.edge_count
+               << " flat_polygons=" << request.flat_polygon_count
+               << " flat_edges=" << request.flat_edge_count
+               << " lower_ms=" << lower_ms
+               << " call_ms="
+               << std::chrono::duration<double, std::milli> (
+                    end - call_begin).count ()
+               << " live_total_ms="
+               << std::chrono::duration<double, std::milli> (
+                    end - begin).count ();
+    }
+    return
+      attempt.disposition == db::CudaM1WidthSpaceAttempt::CertifiedEmpty;
+  } catch (const std::exception &ex) {
+    if (telemetry) {
+      try {
+        tl::info << "CUDA M1 width/space live lowering:"
+                 << " outcome=cpu-fallback message=" << ex.what ();
+      } catch (...) {
+        //  Telemetry must never turn a speculative decline into an error.
+      }
+    }
+  } catch (...) {
+    if (telemetry) {
+      try {
+        tl::info << "CUDA M1 width/space live lowering:"
+                 << " outcome=cpu-fallback message=unknown exception";
+      } catch (...) {
+        //  Telemetry must never turn a speculative decline into an error.
+      }
+    }
   }
   return false;
 }

@@ -178,6 +178,17 @@ DB_PUBLIC bool cuda_m1_width_space_build_scene (
   CudaM1WidthSpaceScene &scene,
   std::string *decline_reason = 0);
 
+/**
+ * Try the live atomic M1 width/spacing empty certificate.
+ *
+ * The build specification is validated again before any backend call.  True
+ * means both complete rule universes are certified empty.  False is a normal
+ * decline and requires the caller to execute both pristine CPU operations.
+ */
+DB_PUBLIC bool cuda_m1_width_space_try_empty (
+  const db::DeepLayer &merged_metal1,
+  const CudaM1WidthSpaceBuildSpec &spec);
+
 } // namespace db
 
 #endif

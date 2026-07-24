@@ -601,9 +601,14 @@ private:
   db::Coord m_d;
   db::RegionCheckOptions m_options;
   db::MagnificationReducer m_vars;
+
+  bool matches (
+    db::edge_relation_type relation, db::Coord distance,
+    const db::RegionCheckOptions &options) const;
+
+  friend class CompoundRegionToEdgePairProcessingOperationNode;
 };
 
 } // namespace db
 
 #endif
-

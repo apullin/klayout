@@ -241,6 +241,8 @@ set +e
       "KLAYOUT_CUDA_SPATIAL_BACKEND=${backend}" \
       KLAYOUT_CUDA_ACTIVE3=1 \
       KLAYOUT_CUDA_ACTIVE3_TELEMETRY=1 \
+      KLAYOUT_CUDA_M1_WIDTH_SPACE=1 \
+      KLAYOUT_CUDA_M1_WIDTH_SPACE_TELEMETRY=1 \
       KLAYOUT_CUDA_VIA1_STACK=1 \
       KLAYOUT_CUDA_VIA1_STACK_TELEMETRY=1 \
       KLAYOUT_CUDA_DISCONNECTED_MERGE=1 \
@@ -302,6 +304,9 @@ require_telemetry \
   "CUDA ACTIVE.3 empty certificate: outcome=certified-empty" \
   "ACTIVE.3 certified-empty"
 require_telemetry \
+  "CUDA M1 width/space empty certificate: outcome=certified-empty" \
+  "M1 width/space certified-empty"
+require_telemetry \
   "CUDA VIA1 stack empty certificate: outcome=certified-empty" \
   "VIA1-stack certified-empty"
 require_telemetry \
@@ -323,7 +328,7 @@ if ! cmp -s -- "${reference_canonical}" "${report_canonical}"; then
 fi
 
 grep -R -nE --include='*.log' -- \
-  'CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_EDGE_CERT ' \
+  'CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_EDGE_CERT ' \
   "${shard_dir}" >"${work}/cuda-telemetry.txt"
 
 grep -E \

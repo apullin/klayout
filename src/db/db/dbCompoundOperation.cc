@@ -24,8 +24,33 @@
 #include "dbRegion.h"
 #include "dbRegionUtils.h"
 
+#include <typeinfo>
+
 namespace db
 {
+
+namespace
+{
+
+bool
+same_region_check_options (
+  const db::RegionCheckOptions &a, const db::RegionCheckOptions &b)
+{
+  return
+    a.whole_edges == b.whole_edges &&
+    a.metrics == b.metrics &&
+    a.ignore_angle == b.ignore_angle &&
+    a.min_projection == b.min_projection &&
+    a.max_projection == b.max_projection &&
+    a.zd_mode == b.zd_mode &&
+    a.shielded == b.shielded &&
+    a.opposite_filter == b.opposite_filter &&
+    a.rect_filter == b.rect_filter &&
+    a.negative == b.negative &&
+    a.prop_constraint == b.prop_constraint;
+}
+
+}
 
 // ---------------------------------------------------------------------------------------------
 
@@ -459,6 +484,43 @@ CompoundRegionMultiOutputOperationNode::CompoundRegionMultiOutputOperationNode (
   }
 
   init ();
+}
+
+bool
+CompoundRegionMultiOutputOperationNode::matches_m1_width_space_checks (
+  db::Coord width_distance,
+  const db::RegionCheckOptions &width_options,
+  db::Coord spacing_distance,
+  const db::RegionCheckOptions &spacing_options,
+  db::PropertyConstraint property_constraint) const
+{
+  if (property_constraint != db::IgnoreProperties ||
+      typeid (*this) != typeid (db::CompoundRegionMultiOutputOperationNode) ||
+      children () != 2 || result_type () != EdgePairs) {
+    return false;
+  }
+
+  const db::CompoundRegionOperationNode *width_node = child (0);
+  const db::CompoundRegionOperationNode *spacing_node = child (1);
+  if (! width_node || ! spacing_node ||
+      typeid (*width_node) !=
+        typeid (db::CompoundRegionToEdgePairProcessingOperationNode) ||
+      typeid (*spacing_node) !=
+        typeid (db::CompoundRegionCheckOperationNode)) {
+    return false;
+  }
+
+  const db::CompoundRegionToEdgePairProcessingOperationNode *width =
+    static_cast<const db::CompoundRegionToEdgePairProcessingOperationNode *> (
+      width_node);
+  const db::CompoundRegionCheckOperationNode *spacing =
+    static_cast<const db::CompoundRegionCheckOperationNode *> (spacing_node);
+
+  return
+    width->matches_single_polygon_primary_check (
+      db::WidthRelation, width_distance, width_options) &&
+    spacing->matches_foreign_check (
+      db::SpaceRelation, false, spacing_distance, spacing_options);
 }
 
 OnEmptyIntruderHint
@@ -1601,6 +1663,28 @@ CompoundRegionToEdgePairProcessingOperationNode::~CompoundRegionToEdgePairProces
   }
 }
 
+bool
+CompoundRegionToEdgePairProcessingOperationNode::
+matches_single_polygon_primary_check (
+  db::edge_relation_type relation, db::Coord distance,
+  const db::RegionCheckOptions &options) const
+{
+  if (! m_owns_proc || ! mp_proc || children () != 1 ||
+      typeid (*mp_proc) != typeid (db::SinglePolygonCheck)) {
+    return false;
+  }
+
+  const db::CompoundRegionOperationNode *input = child (0);
+  if (! input ||
+      typeid (*input) != typeid (db::CompoundRegionOperationPrimaryNode)) {
+    return false;
+  }
+
+  const db::SinglePolygonCheck *check =
+    static_cast<const db::SinglePolygonCheck *> (mp_proc);
+  return check->matches (relation, distance, options);
+}
+
 void
 CompoundRegionToEdgePairProcessingOperationNode::do_compute_local (CompoundRegionOperationCache *cache, db::Layout *layout, db::Cell *cell, const shape_interactions<db::PolygonWithProperties, db::PolygonWithProperties> &interactions, std::vector<std::unordered_set<db::EdgePairWithProperties> > &results, const db::LocalProcessorBase *proc) const
 {
@@ -1755,6 +1839,33 @@ CompoundRegionCheckOperationNode::CompoundRegionCheckOperationNode (CompoundRegi
   m_is_other_merged = other->is_merged ();
 
   set_description ("check");
+}
+
+bool
+CompoundRegionCheckOperationNode::matches_foreign_check (
+  db::edge_relation_type relation, bool different_polygons,
+  db::Coord distance, const db::RegionCheckOptions &options) const
+{
+  if (distance < 0 || children () != 1 ||
+      m_check.relation () != relation ||
+      m_check.distance () !=
+        db::EdgeRelationFilter::distance_type (distance) ||
+      m_different_polygons != different_polygons ||
+      m_has_other || ! m_is_other_merged ||
+      ! same_region_check_options (m_options, options)) {
+    return false;
+  }
+
+  const db::CompoundRegionOperationNode *input = child (0);
+  return
+    input &&
+    typeid (*input) == typeid (db::CompoundRegionOperationForeignNode) &&
+    m_check.whole_edges () == options.whole_edges &&
+    m_check.metrics () == options.metrics &&
+    m_check.ignore_angle () == options.ignore_angle &&
+    m_check.min_projection () == options.min_projection &&
+    m_check.max_projection () == options.max_projection &&
+    m_check.get_zero_distance_mode () == options.zd_mode;
 }
 
 db::OnEmptyIntruderHint

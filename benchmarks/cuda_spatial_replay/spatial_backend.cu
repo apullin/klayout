@@ -8,6 +8,7 @@
 #include "dbCudaSpatialApi.h"
 #include "dbCudaActive3Digest.h"
 #include "active3_exact_predicate.cuh"
+#include "m1_width_space_exact_predicate.h"
 
 #include <cuda_runtime.h>
 
@@ -28,6 +29,7 @@
 #include <limits>
 #include <mutex>
 #include <new>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -72,6 +74,40 @@ static_assert(sizeof(klayout_cuda_spatial_active3_edge_v1) == 32,
               "unexpected ACTIVE.3 edge ABI padding");
 static_assert(sizeof(klayout_cuda_spatial_active3_request_v1) == 256,
               "unexpected ACTIVE.3 request ABI padding");
+static_assert(
+    std::is_trivially_copyable<
+        klayout_cuda_spatial_m1_width_space_context_v1>::value,
+    "M1 width/space contexts must remain POD across the DSO boundary");
+static_assert(
+    std::is_trivially_copyable<
+        klayout_cuda_spatial_m1_width_space_cell_v1>::value,
+    "M1 width/space cells must remain POD across the DSO boundary");
+static_assert(
+    std::is_trivially_copyable<
+        klayout_cuda_spatial_m1_width_space_polygon_v1>::value,
+    "M1 width/space polygons must remain POD across the DSO boundary");
+static_assert(
+    std::is_trivially_copyable<
+        klayout_cuda_spatial_m1_width_space_edge_v1>::value,
+    "M1 width/space edges must remain POD across the DSO boundary");
+static_assert(
+    sizeof(klayout_cuda_spatial_m1_width_space_context_v1) == 24,
+    "unexpected M1 width/space context ABI padding");
+static_assert(
+    sizeof(klayout_cuda_spatial_m1_width_space_cell_v1) == 32,
+    "unexpected M1 width/space cell ABI padding");
+static_assert(
+    sizeof(klayout_cuda_spatial_m1_width_space_polygon_v1) == 48,
+    "unexpected M1 width/space polygon ABI padding");
+static_assert(
+    sizeof(klayout_cuda_spatial_m1_width_space_edge_v1) == 32,
+    "unexpected M1 width/space edge ABI padding");
+static_assert(
+    sizeof(klayout_cuda_spatial_m1_width_space_request_v1) == 352,
+    "unexpected M1 width/space request ABI padding");
+static_assert(
+    sizeof(klayout_cuda_spatial_m1_width_space_result_v1) == 536,
+    "unexpected M1 width/space result ABI padding");
 
 struct alignas(16) PackedAabb {
   std::int64_t left;
@@ -973,6 +1009,650 @@ __global__ void active3_query_kernel(
   }
 }
 
+namespace m1ws = klayout_cuda::m1_width_space;
+
+constexpr std::int64_t kM1WsCoordinateLimit = INT64_C(1000000000000);
+constexpr std::int64_t kM1WsDistance = INT64_C(130);
+constexpr std::int64_t kM1WsGridCellSize = INT64_C(512);
+
+enum M1WsDeviceFlag : std::uint32_t {
+  kM1WsTransformOverflow = 1u << 0,
+  kM1WsInvalidRecord = 1u << 1,
+  kM1WsGridCounterOverflow = 1u << 2,
+  kM1WsGridCapacityExceeded = 1u << 3,
+  kM1WsPairCounterOverflow = 1u << 4,
+  kM1WsPairCapacityExceeded = 1u << 5,
+  kM1WsConservationFailure = 1u << 6,
+};
+
+struct M1WsEdgeMetadata {
+  std::uint32_t polygon_local;
+  std::uint32_t edge_local;
+};
+
+struct M1WsExpandedEdge {
+  m1ws::DirectedEdge edge;
+  std::uint64_t polygon_id;
+  std::uint32_t context_id;
+  std::uint32_t edge_local;
+};
+
+struct M1WsGrid {
+  std::int64_t base_x;
+  std::int64_t base_y;
+  std::int64_t cell_size;
+  std::int64_t distance;
+  std::uint32_t width;
+  std::uint32_t height;
+};
+
+struct M1WsDeviceCounters {
+  unsigned long long template_edges;
+  unsigned long long expanded_edges;
+  unsigned long long unique_edge_pairs;
+  unsigned long long width_pairs;
+  unsigned long long space_pairs;
+  unsigned long long width_hits;
+  unsigned long long space_hits;
+  unsigned long long width_uncertain;
+  unsigned long long space_uncertain;
+};
+
+struct M1WsPipelineResult {
+  std::uint32_t fallback_flags = 0;
+  std::uint32_t device_flags = 0;
+  std::uint64_t grid_cells = 0;
+  std::uint64_t memberships = 0;
+  std::uint64_t pair_work = 0;
+  M1WsDeviceCounters counters{};
+  std::uint64_t setup_ns = 0;
+  std::uint64_t h2d_ns = 0;
+  std::uint64_t edge_expand_ns = 0;
+  std::uint64_t grid_count_ns = 0;
+  std::uint64_t grid_build_ns = 0;
+  std::uint64_t pair_count_ns = 0;
+  std::uint64_t query_ns = 0;
+  std::uint64_t d2h_ns = 0;
+};
+
+template <class Record>
+Record m1ws_load_record(const void *records, std::uint64_t index,
+                        std::uint32_t stride) {
+  Record result{};
+  const auto *bytes = static_cast<const std::uint8_t *>(records);
+  std::memcpy(
+      &result, bytes + static_cast<std::size_t>(index) * stride,
+      sizeof(result));
+  return result;
+}
+
+bool m1ws_checked_add_u64(std::uint64_t a, std::uint64_t b,
+                          std::uint64_t *result) {
+  if (b > UINT64_MAX - a) return false;
+  *result = a + b;
+  return true;
+}
+
+bool m1ws_checked_range(std::uint64_t begin, std::uint64_t count,
+                        std::uint64_t size) {
+  std::uint64_t end = 0;
+  return m1ws_checked_add_u64(begin, count, &end) && end <= size;
+}
+
+bool m1ws_array_bytes_fit(std::uint64_t count, std::uint32_t stride) {
+  return stride && count <=
+      std::numeric_limits<std::size_t>::max() / stride;
+}
+
+bool m1ws_coordinate_qualified(std::int64_t value) {
+  return value >= -kM1WsCoordinateLimit &&
+         value <= kM1WsCoordinateLimit;
+}
+
+class M1WsCanonicalDigest {
+ public:
+  void bytes(const void *data, std::size_t size) {
+    sha_.update(data, size);
+  }
+
+  void u32(std::uint32_t value) {
+    std::uint8_t encoded[4];
+    for (unsigned int i = 0; i < 4; ++i) {
+      encoded[i] = static_cast<std::uint8_t>(value >> (i * 8));
+    }
+    bytes(encoded, sizeof(encoded));
+  }
+
+  void u64(std::uint64_t value) {
+    std::uint8_t encoded[8];
+    for (unsigned int i = 0; i < 8; ++i) {
+      encoded[i] = static_cast<std::uint8_t>(value >> (i * 8));
+    }
+    bytes(encoded, sizeof(encoded));
+  }
+
+  void i64(std::int64_t value) {
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    u64(bits);
+  }
+
+  std::array<std::uint8_t, 32> finish() {
+    return sha_.finish();
+  }
+
+ private:
+  db::cuda_active3_digest::Sha256 sha_;
+};
+
+bool m1ws_request_digest(
+    const klayout_cuda_spatial_m1_width_space_request_v1 &request,
+    std::array<std::uint8_t, 32> *digest) {
+  if (!digest || !request.contexts || !request.metal_contexts ||
+      !request.context_polygon_offsets || !request.context_edge_offsets ||
+      !request.cells || !request.polygons || !request.edges) {
+    return false;
+  }
+  static const char magic[8] =
+      {'K', 'M', '1', 'W', 'S', '0', '0', '1'};
+  M1WsCanonicalDigest sha;
+  sha.bytes(magic, sizeof(magic));
+  sha.u32(request.format_version);
+  sha.u32(request.dbu_per_micron);
+  sha.u32(request.root_cell);
+  sha.u32(request.scene_reserved);
+  sha.i64(request.width_distance);
+  sha.i64(request.spacing_distance);
+  sha.u64(request.context_count);
+  sha.u64(request.metal_context_count);
+  sha.u64(request.cell_count);
+  sha.u64(request.polygon_count);
+  sha.u64(request.edge_count);
+  sha.u64(request.flat_polygon_count);
+  sha.u64(request.flat_edge_count);
+  sha.i64(request.scene_left);
+  sha.i64(request.scene_bottom);
+  sha.i64(request.scene_right);
+  sha.i64(request.scene_top);
+
+  for (std::uint64_t id = 0; id < request.context_count; ++id) {
+    const auto context =
+        m1ws_load_record<klayout_cuda_spatial_m1_width_space_context_v1>(
+            request.contexts, id, request.context_record_bytes);
+    sha.i64(context.tx);
+    sha.i64(context.ty);
+    sha.u32(context.cell_id);
+    sha.u32(context.transform_code);
+  }
+  for (std::uint64_t id = 0; id < request.metal_context_count; ++id) {
+    sha.u32(request.metal_contexts[id]);
+    sha.u64(request.context_polygon_offsets[id]);
+    sha.u64(request.context_edge_offsets[id]);
+  }
+  for (std::uint64_t id = 0; id < request.cell_count; ++id) {
+    const auto cell =
+        m1ws_load_record<klayout_cuda_spatial_m1_width_space_cell_v1>(
+            request.cells, id, request.cell_record_bytes);
+    sha.u64(cell.source_cell_index);
+    sha.u64(cell.polygon_begin);
+    sha.u64(cell.edge_begin);
+    sha.u32(cell.polygon_count);
+    sha.u32(cell.edge_count);
+  }
+  for (std::uint64_t id = 0; id < request.polygon_count; ++id) {
+    const auto polygon =
+        m1ws_load_record<klayout_cuda_spatial_m1_width_space_polygon_v1>(
+            request.polygons, id, request.polygon_record_bytes);
+    sha.u64(polygon.edge_begin);
+    sha.i64(polygon.left);
+    sha.i64(polygon.bottom);
+    sha.i64(polygon.right);
+    sha.i64(polygon.top);
+    sha.u32(polygon.polygon_id);
+    sha.u32(polygon.edge_count);
+  }
+  for (std::uint64_t id = 0; id < request.edge_count; ++id) {
+    const auto edge =
+        m1ws_load_record<klayout_cuda_spatial_m1_width_space_edge_v1>(
+            request.edges, id, request.edge_record_bytes);
+    sha.i64(edge.x1);
+    sha.i64(edge.y1);
+    sha.i64(edge.x2);
+    sha.i64(edge.y2);
+  }
+  *digest = sha.finish();
+  return true;
+}
+
+bool m1ws_ranges_overlap(std::int64_t a0, std::int64_t a1,
+                         std::int64_t b0, std::int64_t b1) {
+  return std::max(std::min(a0, a1), std::min(b0, b1)) <=
+         std::min(std::max(a0, a1), std::max(b0, b1));
+}
+
+bool m1ws_segments_intersect(
+    const klayout_cuda_spatial_m1_width_space_edge_v1 &a,
+    const klayout_cuda_spatial_m1_width_space_edge_v1 &b) {
+  const bool ah = a.y1 == a.y2;
+  const bool bh = b.y1 == b.y2;
+  if (ah && bh) {
+    return a.y1 == b.y1 &&
+           m1ws_ranges_overlap(a.x1, a.x2, b.x1, b.x2);
+  }
+  if (!ah && !bh) {
+    return a.x1 == b.x1 &&
+           m1ws_ranges_overlap(a.y1, a.y2, b.y1, b.y2);
+  }
+  const auto &horizontal = ah ? a : b;
+  const auto &vertical = ah ? b : a;
+  return std::min(horizontal.x1, horizontal.x2) <= vertical.x1 &&
+         vertical.x1 <= std::max(horizontal.x1, horizontal.x2) &&
+         std::min(vertical.y1, vertical.y2) <= horizontal.y1 &&
+         horizontal.y1 <= std::max(vertical.y1, vertical.y2);
+}
+
+bool m1ws_transform_point_host(
+    const klayout_cuda_spatial_m1_width_space_context_v1 &context,
+    std::int64_t x, std::int64_t y, std::int64_t *output_x,
+    std::int64_t *output_y) {
+  __int128 transformed_x = 0;
+  __int128 transformed_y = 0;
+  switch (context.transform_code) {
+    case 0: transformed_x = x; transformed_y = y; break;
+    case 1: transformed_x = -__int128(y); transformed_y = x; break;
+    case 2: transformed_x = -__int128(x); transformed_y = -__int128(y); break;
+    case 3: transformed_x = y; transformed_y = -__int128(x); break;
+    case 4: transformed_x = x; transformed_y = -__int128(y); break;
+    case 5: transformed_x = y; transformed_y = x; break;
+    case 6: transformed_x = -__int128(x); transformed_y = y; break;
+    case 7: transformed_x = -__int128(y); transformed_y = -__int128(x); break;
+    default: return false;
+  }
+  transformed_x += context.tx;
+  transformed_y += context.ty;
+  if (transformed_x < INT64_MIN || transformed_x > INT64_MAX ||
+      transformed_y < INT64_MIN || transformed_y > INT64_MAX) {
+    return false;
+  }
+  *output_x = static_cast<std::int64_t>(transformed_x);
+  *output_y = static_cast<std::int64_t>(transformed_y);
+  return m1ws_coordinate_qualified(*output_x) &&
+         m1ws_coordinate_qualified(*output_y);
+}
+
+__device__ bool m1ws_negate_checked(std::int64_t value,
+                                    std::int64_t *result) {
+  if (value == INT64_MIN) return false;
+  *result = -value;
+  return true;
+}
+
+__device__ bool m1ws_add_checked(std::int64_t a, std::int64_t b,
+                                 std::int64_t *result) {
+  if ((b > 0 && a > INT64_MAX - b) ||
+      (b < 0 && a < INT64_MIN - b)) {
+    return false;
+  }
+  *result = a + b;
+  return true;
+}
+
+__device__ bool m1ws_transform_point_checked(
+    const klayout_cuda_spatial_m1_width_space_context_v1 &context,
+    std::int64_t x, std::int64_t y, std::int64_t *output_x,
+    std::int64_t *output_y) {
+  std::int64_t transformed_x = 0;
+  std::int64_t transformed_y = 0;
+  switch (context.transform_code) {
+    case 0: transformed_x = x; transformed_y = y; break;
+    case 1:
+      if (!m1ws_negate_checked(y, &transformed_x)) return false;
+      transformed_y = x;
+      break;
+    case 2:
+      if (!m1ws_negate_checked(x, &transformed_x) ||
+          !m1ws_negate_checked(y, &transformed_y)) return false;
+      break;
+    case 3:
+      transformed_x = y;
+      if (!m1ws_negate_checked(x, &transformed_y)) return false;
+      break;
+    case 4:
+      transformed_x = x;
+      if (!m1ws_negate_checked(y, &transformed_y)) return false;
+      break;
+    case 5: transformed_x = y; transformed_y = x; break;
+    case 6:
+      if (!m1ws_negate_checked(x, &transformed_x)) return false;
+      transformed_y = y;
+      break;
+    case 7:
+      if (!m1ws_negate_checked(y, &transformed_x) ||
+          !m1ws_negate_checked(x, &transformed_y)) return false;
+      break;
+    default: return false;
+  }
+  return m1ws_add_checked(transformed_x, context.tx, output_x) &&
+         m1ws_add_checked(transformed_y, context.ty, output_y);
+}
+
+__device__ bool m1ws_transform_edge_checked(
+    const klayout_cuda_spatial_m1_width_space_context_v1 &context,
+    const klayout_cuda_spatial_m1_width_space_edge_v1 &source,
+    m1ws::DirectedEdge *destination) {
+  m1ws::DirectedEdge transformed{};
+  if (!m1ws_transform_point_checked(
+          context, source.x1, source.y1,
+          &transformed.x1, &transformed.y1) ||
+      !m1ws_transform_point_checked(
+          context, source.x2, source.y2,
+          &transformed.x2, &transformed.y2)) {
+    return false;
+  }
+  if (context.transform_code >= 4) {
+    destination->x1 = transformed.x2;
+    destination->y1 = transformed.y2;
+    destination->x2 = transformed.x1;
+    destination->y2 = transformed.y1;
+  } else {
+    *destination = transformed;
+  }
+  return true;
+}
+
+__device__ std::int64_t m1ws_floor_div(
+    std::int64_t value, std::int64_t divisor) {
+  std::int64_t quotient = value / divisor;
+  if (value % divisor < 0) --quotient;
+  return quotient;
+}
+
+__device__ bool m1ws_edge_span(
+    const M1WsExpandedEdge &record, const M1WsGrid &grid,
+    std::int64_t *x0, std::int64_t *y0, std::int64_t *x1,
+    std::int64_t *y1) {
+  std::int64_t left = min(record.edge.x1, record.edge.x2);
+  std::int64_t bottom = min(record.edge.y1, record.edge.y2);
+  std::int64_t right = max(record.edge.x1, record.edge.x2);
+  std::int64_t top = max(record.edge.y1, record.edge.y2);
+  if (!m1ws_add_checked(left, -grid.distance, &left) ||
+      !m1ws_add_checked(bottom, -grid.distance, &bottom) ||
+      !m1ws_add_checked(right, grid.distance, &right) ||
+      !m1ws_add_checked(top, grid.distance, &top)) {
+    return false;
+  }
+  *x0 = m1ws_floor_div(left, grid.cell_size);
+  *y0 = m1ws_floor_div(bottom, grid.cell_size);
+  *x1 = m1ws_floor_div(right, grid.cell_size);
+  *y1 = m1ws_floor_div(top, grid.cell_size);
+  const std::int64_t maximum_x =
+      grid.base_x + static_cast<std::int64_t>(grid.width) - 1;
+  const std::int64_t maximum_y =
+      grid.base_y + static_cast<std::int64_t>(grid.height) - 1;
+  return *x0 >= grid.base_x && *y0 >= grid.base_y &&
+         *x1 <= maximum_x && *y1 <= maximum_y;
+}
+
+__device__ std::uint64_t m1ws_grid_index(
+    const M1WsGrid &grid, std::int64_t x, std::int64_t y) {
+  return static_cast<std::uint64_t>(y - grid.base_y) * grid.width +
+         static_cast<std::uint64_t>(x - grid.base_x);
+}
+
+__global__ void m1ws_build_edge_metadata_kernel(
+    const klayout_cuda_spatial_m1_width_space_polygon_v1 *polygons,
+    std::uint32_t polygon_count, M1WsEdgeMetadata *metadata,
+    M1WsDeviceCounters *counters, std::uint32_t *status) {
+  const std::uint32_t polygon_id = blockIdx.x;
+  if (polygon_id >= polygon_count) return;
+  const auto polygon = polygons[polygon_id];
+  unsigned long long local_count = 0;
+  for (std::uint32_t local = threadIdx.x; local < polygon.edge_count;
+       local += blockDim.x) {
+    metadata[polygon.edge_begin + local] =
+        M1WsEdgeMetadata{polygon.polygon_id, local};
+    ++local_count;
+  }
+  if (polygon.edge_count < 4) {
+    atomicOr(status, std::uint32_t(kM1WsInvalidRecord));
+  }
+  if (local_count) {
+    atomicAdd(&counters->template_edges, local_count);
+  }
+}
+
+__global__ void m1ws_expand_edges_kernel(
+    const klayout_cuda_spatial_m1_width_space_context_v1 *contexts,
+    const std::uint32_t *metal_contexts,
+    const std::uint64_t *edge_offsets,
+    const std::uint64_t *polygon_offsets,
+    const klayout_cuda_spatial_m1_width_space_cell_v1 *cells,
+    const klayout_cuda_spatial_m1_width_space_edge_v1 *templates,
+    const M1WsEdgeMetadata *metadata, std::uint32_t context_count,
+    M1WsExpandedEdge *expanded, M1WsDeviceCounters *counters,
+    std::uint32_t *status) {
+  const std::uint32_t list_index = blockIdx.x;
+  if (list_index >= context_count) return;
+  const std::uint32_t source_context_id = metal_contexts[list_index];
+  const auto context = contexts[source_context_id];
+  const auto cell = cells[context.cell_id];
+  unsigned long long local_expanded = 0;
+  for (std::uint32_t local = threadIdx.x; local < cell.edge_count;
+       local += blockDim.x) {
+    const std::uint64_t template_id = cell.edge_begin + local;
+    const auto source = templates[template_id];
+    const auto topology = metadata[template_id];
+    if (topology.polygon_local >= cell.polygon_count) {
+      atomicOr(status, std::uint32_t(kM1WsInvalidRecord));
+      continue;
+    }
+    m1ws::DirectedEdge edge{};
+    if (!m1ws_transform_edge_checked(context, source, &edge)) {
+      atomicOr(status, std::uint32_t(kM1WsTransformOverflow));
+      continue;
+    }
+    expanded[edge_offsets[list_index] + local] = M1WsExpandedEdge{
+        edge, polygon_offsets[list_index] + topology.polygon_local,
+        source_context_id, topology.edge_local};
+    ++local_expanded;
+  }
+  if (local_expanded) {
+    atomicAdd(&counters->expanded_edges, local_expanded);
+  }
+}
+
+__global__ void m1ws_count_grid_kernel(
+    const M1WsExpandedEdge *edges, std::uint32_t edge_count,
+    M1WsGrid grid, std::uint32_t *counts,
+    unsigned long long *membership_total, std::uint32_t *status) {
+  for (std::uint32_t edge_id = blockIdx.x * blockDim.x + threadIdx.x;
+       edge_id < edge_count; edge_id += blockDim.x * gridDim.x) {
+    std::int64_t x0 = 0;
+    std::int64_t y0 = 0;
+    std::int64_t x1 = 0;
+    std::int64_t y1 = 0;
+    if (!m1ws_edge_span(edges[edge_id], grid, &x0, &y0, &x1, &y1)) {
+      atomicOr(status, std::uint32_t(kM1WsInvalidRecord));
+      continue;
+    }
+    for (std::int64_t y = y0; y <= y1; ++y) {
+      for (std::int64_t x = x0; x <= x1; ++x) {
+        const std::uint64_t cell = m1ws_grid_index(grid, x, y);
+        const std::uint32_t previous = atomicAdd(counts + cell, 1u);
+        if (previous == UINT32_MAX) {
+          atomicOr(status, std::uint32_t(kM1WsGridCounterOverflow));
+        }
+        atomicAdd(membership_total, 1ull);
+      }
+    }
+  }
+}
+
+__global__ void m1ws_fill_grid_kernel(
+    const M1WsExpandedEdge *edges, std::uint32_t edge_count,
+    M1WsGrid grid, std::uint32_t *cursors, std::uint32_t *members,
+    std::uint64_t member_capacity, std::uint32_t *status) {
+  for (std::uint32_t edge_id = blockIdx.x * blockDim.x + threadIdx.x;
+       edge_id < edge_count; edge_id += blockDim.x * gridDim.x) {
+    std::int64_t x0 = 0;
+    std::int64_t y0 = 0;
+    std::int64_t x1 = 0;
+    std::int64_t y1 = 0;
+    if (!m1ws_edge_span(edges[edge_id], grid, &x0, &y0, &x1, &y1)) {
+      atomicOr(status, std::uint32_t(kM1WsInvalidRecord));
+      continue;
+    }
+    for (std::int64_t y = y0; y <= y1; ++y) {
+      for (std::int64_t x = x0; x <= x1; ++x) {
+        const std::uint64_t cell = m1ws_grid_index(grid, x, y);
+        const std::uint32_t position = atomicAdd(cursors + cell, 1u);
+        if (position >= member_capacity) {
+          atomicOr(status, std::uint32_t(kM1WsGridCapacityExceeded));
+        } else {
+          members[position] = edge_id;
+        }
+      }
+    }
+  }
+}
+
+__global__ void m1ws_validate_grid_kernel(
+    const std::uint32_t *counts, const std::uint32_t *offsets,
+    const std::uint32_t *cursors, std::uint64_t cell_count,
+    std::uint32_t *status) {
+  for (std::uint64_t cell =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       cell < cell_count;
+       cell += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const std::uint64_t expected =
+        static_cast<std::uint64_t>(offsets[cell]) + counts[cell];
+    if (expected > UINT32_MAX || cursors[cell] != expected) {
+      atomicOr(status, std::uint32_t(kM1WsGridCounterOverflow));
+    }
+  }
+}
+
+__global__ void m1ws_count_pair_work_kernel(
+    const std::uint32_t *counts, std::uint64_t cell_count,
+    unsigned long long *pair_work, std::uint32_t *status) {
+  for (std::uint64_t cell =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       cell < cell_count;
+       cell += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const unsigned long long count = counts[cell];
+    const unsigned long long pairs = count * (count - (count != 0)) / 2;
+    const unsigned long long previous = atomicAdd(pair_work, pairs);
+    if (previous > ULLONG_MAX - pairs) {
+      atomicOr(status, std::uint32_t(kM1WsPairCounterOverflow));
+    }
+  }
+}
+
+__global__ void m1ws_query_pairs_kernel(
+    const M1WsExpandedEdge *edges, M1WsGrid grid,
+    const std::uint32_t *counts, const std::uint32_t *offsets,
+    const std::uint32_t *members, std::uint64_t cell_count,
+    M1WsDeviceCounters *counters, std::uint32_t *status) {
+  const std::uint64_t cell_id = blockIdx.x;
+  if (cell_id >= cell_count) return;
+  const std::uint32_t count = counts[cell_id];
+  const std::uint32_t begin = offsets[cell_id];
+  const std::int64_t cell_x =
+      grid.base_x + static_cast<std::int64_t>(cell_id % grid.width);
+  const std::int64_t cell_y =
+      grid.base_y + static_cast<std::int64_t>(cell_id / grid.width);
+
+  unsigned long long local_unique = 0;
+  unsigned long long local_width_pairs = 0;
+  unsigned long long local_space_pairs = 0;
+  unsigned long long local_width_hits = 0;
+  unsigned long long local_space_hits = 0;
+  unsigned long long local_width_uncertain = 0;
+  unsigned long long local_space_uncertain = 0;
+  for (std::uint32_t first_local = threadIdx.x; first_local < count;
+       first_local += blockDim.x) {
+    const std::uint32_t first_id = members[begin + first_local];
+    const M1WsExpandedEdge first = edges[first_id];
+    std::int64_t first_x0 = 0;
+    std::int64_t first_y0 = 0;
+    std::int64_t first_x1 = 0;
+    std::int64_t first_y1 = 0;
+    if (!m1ws_edge_span(
+            first, grid, &first_x0, &first_y0, &first_x1, &first_y1)) {
+      atomicOr(status, std::uint32_t(kM1WsInvalidRecord));
+      continue;
+    }
+    for (std::uint32_t second_local = first_local + 1;
+         second_local < count; ++second_local) {
+      const std::uint32_t second_id = members[begin + second_local];
+      if (first_id == second_id) continue;
+      const M1WsExpandedEdge second = edges[second_id];
+      std::int64_t second_x0 = 0;
+      std::int64_t second_y0 = 0;
+      std::int64_t second_x1 = 0;
+      std::int64_t second_y1 = 0;
+      if (!m1ws_edge_span(
+              second, grid, &second_x0, &second_y0,
+              &second_x1, &second_y1)) {
+        atomicOr(status, std::uint32_t(kM1WsInvalidRecord));
+        continue;
+      }
+      if (cell_x != max(first_x0, second_x0) ||
+          cell_y != max(first_y0, second_y0)) {
+        continue;
+      }
+      ++local_unique;
+
+      if (first.polygon_id == second.polygon_id) {
+        ++local_width_pairs;
+        const m1ws::CandidatePair pair = {
+            first.edge, second.edge, first.polygon_id,
+            second.polygon_id, m1ws::Rule::kWidth};
+        const auto verdict =
+            m1ws::classify_pair_bounded(pair, grid.distance);
+        if (verdict == m1ws::Verdict::kViolation) {
+          ++local_width_hits;
+        } else if (verdict == m1ws::Verdict::kUncertain) {
+          ++local_width_uncertain;
+        }
+      }
+
+      ++local_space_pairs;
+      const m1ws::CandidatePair pair = {
+          first.edge, second.edge, first.polygon_id,
+          second.polygon_id, m1ws::Rule::kSpace};
+      const auto verdict =
+          m1ws::classify_pair_bounded(pair, grid.distance);
+      if (verdict == m1ws::Verdict::kViolation) {
+        ++local_space_hits;
+      } else if (verdict == m1ws::Verdict::kUncertain) {
+        ++local_space_uncertain;
+      }
+    }
+  }
+  if (local_unique) atomicAdd(&counters->unique_edge_pairs, local_unique);
+  if (local_width_pairs) {
+    atomicAdd(&counters->width_pairs, local_width_pairs);
+  }
+  if (local_space_pairs) {
+    atomicAdd(&counters->space_pairs, local_space_pairs);
+  }
+  if (local_width_hits) {
+    atomicAdd(&counters->width_hits, local_width_hits);
+  }
+  if (local_space_hits) {
+    atomicAdd(&counters->space_hits, local_space_hits);
+  }
+  if (local_width_uncertain) {
+    atomicAdd(&counters->width_uncertain, local_width_uncertain);
+  }
+  if (local_space_uncertain) {
+    atomicAdd(&counters->space_uncertain, local_space_uncertain);
+  }
+}
+
 void set_message(klayout_cuda_spatial_result_v1 *result,
                  const char *message) {
   std::snprintf(
@@ -989,6 +1669,14 @@ void set_message(klayout_cuda_spatial_m1_result_v1 *result,
 
 void set_message(klayout_cuda_spatial_active3_result_v1 *result,
                  const char *message) {
+  std::snprintf(
+      result->message, sizeof(result->message), "%s",
+      message ? message : "");
+}
+
+void set_message(
+    klayout_cuda_spatial_m1_width_space_result_v1 *result,
+    const char *message) {
   std::snprintf(
       result->message, sizeof(result->message), "%s",
       message ? message : "");
@@ -2294,6 +2982,817 @@ int run_active3_request(
   return KLAYOUT_CUDA_SPATIAL_ERROR;
 }
 
+bool m1ws_positive_collinear_overlap(
+    const klayout_cuda_spatial_m1_width_space_edge_v1 &a,
+    const klayout_cuda_spatial_m1_width_space_edge_v1 &b) {
+  if (a.y1 == a.y2 && b.y1 == b.y2 && a.y1 == b.y1) {
+    return std::min(std::max(a.x1, a.x2), std::max(b.x1, b.x2)) >
+           std::max(std::min(a.x1, a.x2), std::min(b.x1, b.x2));
+  }
+  if (a.x1 == a.x2 && b.x1 == b.x2 && a.x1 == b.x1) {
+    return std::min(std::max(a.y1, a.y2), std::max(b.y1, b.y2)) >
+           std::max(std::min(a.y1, a.y2), std::min(b.y1, b.y2));
+  }
+  return false;
+}
+
+bool m1ws_basic_request_valid(
+    const klayout_cuda_spatial_m1_width_space_request_v1 &request) {
+  return
+      request.abi_version == KLAYOUT_CUDA_SPATIAL_ABI_VERSION &&
+      request.struct_size >= sizeof(request) &&
+      request.opcode ==
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_MERGED_EMPTY &&
+      request.option_flags ==
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_QUALIFIED_OPTIONS &&
+      request.format_version == 1 && request.dbu_per_micron == 2000 &&
+      request.scene_reserved == 0 && request.device >= 0 &&
+      request.reserved0 == 0 && request.reserved1[0] == 0 &&
+      request.reserved1[1] == 0 &&
+      request.width_distance == kM1WsDistance &&
+      request.spacing_distance == kM1WsDistance &&
+      request.grid_cell_size == kM1WsGridCellSize &&
+      request.context_record_bytes ==
+          sizeof(klayout_cuda_spatial_m1_width_space_context_v1) &&
+      request.context_reserved == 0 &&
+      request.cell_record_bytes ==
+          sizeof(klayout_cuda_spatial_m1_width_space_cell_v1) &&
+      request.cell_reserved == 0 &&
+      request.polygon_record_bytes ==
+          sizeof(klayout_cuda_spatial_m1_width_space_polygon_v1) &&
+      request.polygon_reserved == 0 &&
+      request.edge_record_bytes ==
+          sizeof(klayout_cuda_spatial_m1_width_space_edge_v1) &&
+      request.edge_reserved == 0 &&
+      request.context_count && request.contexts &&
+      request.metal_context_count && request.metal_contexts &&
+      request.context_polygon_offset_count ==
+          request.metal_context_count &&
+      request.context_polygon_offsets &&
+      request.context_edge_offset_count ==
+          request.metal_context_count &&
+      request.context_edge_offsets && request.cell_count && request.cells &&
+      request.polygon_count && request.polygons &&
+      request.edge_count && request.edges &&
+      request.flat_polygon_count && request.flat_edge_count &&
+      request.root_cell < request.cell_count &&
+      request.context_count <= UINT32_MAX &&
+      request.metal_context_count <= UINT32_MAX &&
+      request.cell_count <= UINT32_MAX &&
+      request.polygon_count <= UINT32_MAX &&
+      request.edge_count <= UINT32_MAX &&
+      request.flat_polygon_count <= UINT32_MAX &&
+      request.flat_edge_count <= UINT32_MAX &&
+      request.scene_left < request.scene_right &&
+      request.scene_bottom < request.scene_top &&
+      m1ws_coordinate_qualified(request.scene_left) &&
+      m1ws_coordinate_qualified(request.scene_bottom) &&
+      m1ws_coordinate_qualified(request.scene_right) &&
+      m1ws_coordinate_qualified(request.scene_top) &&
+      request.max_contexts && request.max_grid_cells &&
+      request.max_memberships && request.max_pair_work &&
+      request.max_flat_edges && request.max_flat_polygons &&
+      m1ws_array_bytes_fit(
+          request.context_count, request.context_record_bytes) &&
+      m1ws_array_bytes_fit(
+          request.cell_count, request.cell_record_bytes) &&
+      m1ws_array_bytes_fit(
+          request.polygon_count, request.polygon_record_bytes) &&
+      m1ws_array_bytes_fit(
+          request.edge_count, request.edge_record_bytes) &&
+      request.metal_context_count <=
+          std::numeric_limits<std::size_t>::max() / sizeof(std::uint32_t) &&
+      request.context_polygon_offset_count <=
+          std::numeric_limits<std::size_t>::max() / sizeof(std::uint64_t) &&
+      request.context_edge_offset_count <=
+          std::numeric_limits<std::size_t>::max() / sizeof(std::uint64_t);
+}
+
+bool m1ws_structurally_valid(
+    const klayout_cuda_spatial_m1_width_space_request_v1 &request) {
+  if (!m1ws_basic_request_valid(request)) return false;
+
+  std::array<std::uint8_t, 32> digest{};
+  if (!m1ws_request_digest(request, &digest) ||
+      !std::equal(
+          digest.begin(), digest.end(), request.scene_digest)) {
+    return false;
+  }
+
+  const auto root =
+      m1ws_load_record<klayout_cuda_spatial_m1_width_space_context_v1>(
+          request.contexts, 0, request.context_record_bytes);
+  if (root.tx != 0 || root.ty != 0 ||
+      root.cell_id != request.root_cell || root.transform_code != 0) {
+    return false;
+  }
+
+  std::vector<std::array<std::int64_t, 4>> cell_bounds(
+      static_cast<std::size_t>(request.cell_count));
+  std::vector<std::uint8_t> cell_has_geometry(
+      static_cast<std::size_t>(request.cell_count), 0);
+  std::set<std::uint64_t> source_cells;
+  std::uint64_t next_polygon = 0;
+  std::uint64_t next_edge = 0;
+  for (std::uint64_t cell_id = 0; cell_id < request.cell_count; ++cell_id) {
+    const auto cell =
+        m1ws_load_record<klayout_cuda_spatial_m1_width_space_cell_v1>(
+            request.cells, cell_id, request.cell_record_bytes);
+    if (!source_cells.insert(cell.source_cell_index).second ||
+        cell.polygon_begin != next_polygon ||
+        cell.edge_begin != next_edge ||
+        !m1ws_checked_range(
+            cell.polygon_begin, cell.polygon_count,
+            request.polygon_count) ||
+        !m1ws_checked_range(
+            cell.edge_begin, cell.edge_count, request.edge_count) ||
+        ((!cell.polygon_count) != (!cell.edge_count))) {
+      return false;
+    }
+
+    std::uint64_t cell_edge_cursor = cell.edge_begin;
+    std::array<std::int64_t, 4> bounds = {
+        INT64_MAX, INT64_MAX, INT64_MIN, INT64_MIN};
+    for (std::uint32_t polygon_local = 0;
+         polygon_local < cell.polygon_count; ++polygon_local) {
+      const auto polygon =
+          m1ws_load_record<klayout_cuda_spatial_m1_width_space_polygon_v1>(
+              request.polygons, cell.polygon_begin + polygon_local,
+              request.polygon_record_bytes);
+      if (polygon.polygon_id != polygon_local ||
+          polygon.edge_begin != cell_edge_cursor ||
+          polygon.edge_count < 4 ||
+          !m1ws_checked_range(
+              polygon.edge_begin, polygon.edge_count,
+              cell.edge_begin + cell.edge_count) ||
+          polygon.left >= polygon.right ||
+          polygon.bottom >= polygon.top ||
+          !m1ws_coordinate_qualified(polygon.left) ||
+          !m1ws_coordinate_qualified(polygon.bottom) ||
+          !m1ws_coordinate_qualified(polygon.right) ||
+          !m1ws_coordinate_qualified(polygon.top)) {
+        return false;
+      }
+
+      std::vector<klayout_cuda_spatial_m1_width_space_edge_v1>
+          contour;
+      contour.reserve(polygon.edge_count);
+      std::set<std::pair<std::int64_t, std::int64_t>> vertices;
+      std::int64_t left = INT64_MAX;
+      std::int64_t bottom = INT64_MAX;
+      std::int64_t right = INT64_MIN;
+      std::int64_t top = INT64_MIN;
+      __int128 twice_area = 0;
+      for (std::uint32_t edge_local = 0;
+           edge_local < polygon.edge_count; ++edge_local) {
+        const auto edge =
+            m1ws_load_record<klayout_cuda_spatial_m1_width_space_edge_v1>(
+                request.edges, polygon.edge_begin + edge_local,
+                request.edge_record_bytes);
+        const bool horizontal =
+            edge.y1 == edge.y2 && edge.x1 != edge.x2;
+        const bool vertical =
+            edge.x1 == edge.x2 && edge.y1 != edge.y2;
+        if (!(horizontal || vertical) ||
+            !m1ws_coordinate_qualified(edge.x1) ||
+            !m1ws_coordinate_qualified(edge.y1) ||
+            !m1ws_coordinate_qualified(edge.x2) ||
+            !m1ws_coordinate_qualified(edge.y2) ||
+            !vertices.insert(std::make_pair(edge.x1, edge.y1)).second) {
+          return false;
+        }
+        contour.push_back(edge);
+        left = std::min(left, std::min(edge.x1, edge.x2));
+        bottom = std::min(bottom, std::min(edge.y1, edge.y2));
+        right = std::max(right, std::max(edge.x1, edge.x2));
+        top = std::max(top, std::max(edge.y1, edge.y2));
+        twice_area += static_cast<__int128>(edge.x1) * edge.y2 -
+                      static_cast<__int128>(edge.x2) * edge.y1;
+      }
+      if (twice_area >= 0 || left != polygon.left ||
+          bottom != polygon.bottom || right != polygon.right ||
+          top != polygon.top) {
+        return false;
+      }
+      for (std::size_t first = 0; first < contour.size(); ++first) {
+        const std::size_t following = (first + 1) % contour.size();
+        if (contour[first].x2 != contour[following].x1 ||
+            contour[first].y2 != contour[following].y1) {
+          return false;
+        }
+        for (std::size_t second = first + 1;
+             second < contour.size(); ++second) {
+          if (!m1ws_segments_intersect(
+                  contour[first], contour[second])) {
+            continue;
+          }
+          const bool adjacent =
+              second == first + 1 ||
+              (first == 0 && second + 1 == contour.size());
+          if (!adjacent ||
+              m1ws_positive_collinear_overlap(
+                  contour[first], contour[second])) {
+            return false;
+          }
+        }
+      }
+      bounds[0] = std::min(bounds[0], polygon.left);
+      bounds[1] = std::min(bounds[1], polygon.bottom);
+      bounds[2] = std::max(bounds[2], polygon.right);
+      bounds[3] = std::max(bounds[3], polygon.top);
+      cell_edge_cursor += polygon.edge_count;
+    }
+    if (cell_edge_cursor != cell.edge_begin + cell.edge_count) {
+      return false;
+    }
+    if (cell.polygon_count) {
+      cell_has_geometry[cell_id] = 1;
+      cell_bounds[cell_id] = bounds;
+    }
+    next_polygon += cell.polygon_count;
+    next_edge += cell.edge_count;
+  }
+  if (next_polygon != request.polygon_count ||
+      next_edge != request.edge_count) {
+    return false;
+  }
+
+  std::uint64_t metal_index = 0;
+  std::uint64_t flat_polygons = 0;
+  std::uint64_t flat_edges = 0;
+  bool have_scene_box = false;
+  std::array<std::int64_t, 4> scene_box{};
+  for (std::uint64_t context_id = 0;
+       context_id < request.context_count; ++context_id) {
+    const auto context =
+        m1ws_load_record<klayout_cuda_spatial_m1_width_space_context_v1>(
+            request.contexts, context_id, request.context_record_bytes);
+    if (context.cell_id >= request.cell_count ||
+        context.transform_code >= 8 ||
+        !m1ws_coordinate_qualified(context.tx) ||
+        !m1ws_coordinate_qualified(context.ty)) {
+      return false;
+    }
+    const auto cell =
+        m1ws_load_record<klayout_cuda_spatial_m1_width_space_cell_v1>(
+            request.cells, context.cell_id, request.cell_record_bytes);
+    if (!cell_has_geometry[context.cell_id]) continue;
+    if (metal_index >= request.metal_context_count ||
+        request.metal_contexts[metal_index] != context_id ||
+        request.context_polygon_offsets[metal_index] != flat_polygons ||
+        request.context_edge_offsets[metal_index] != flat_edges ||
+        !m1ws_checked_add_u64(
+            flat_polygons, cell.polygon_count, &flat_polygons) ||
+        !m1ws_checked_add_u64(
+            flat_edges, cell.edge_count, &flat_edges)) {
+      return false;
+    }
+
+    const auto &local = cell_bounds[context.cell_id];
+    const std::int64_t xs[4] =
+        {local[0], local[0], local[2], local[2]};
+    const std::int64_t ys[4] =
+        {local[1], local[3], local[1], local[3]};
+    std::array<std::int64_t, 4> world = {
+        INT64_MAX, INT64_MAX, INT64_MIN, INT64_MIN};
+    for (int corner = 0; corner < 4; ++corner) {
+      std::int64_t x = 0;
+      std::int64_t y = 0;
+      if (!m1ws_transform_point_host(
+              context, xs[corner], ys[corner], &x, &y)) {
+        return false;
+      }
+      world[0] = std::min(world[0], x);
+      world[1] = std::min(world[1], y);
+      world[2] = std::max(world[2], x);
+      world[3] = std::max(world[3], y);
+    }
+    if (!have_scene_box) {
+      scene_box = world;
+      have_scene_box = true;
+    } else {
+      scene_box[0] = std::min(scene_box[0], world[0]);
+      scene_box[1] = std::min(scene_box[1], world[1]);
+      scene_box[2] = std::max(scene_box[2], world[2]);
+      scene_box[3] = std::max(scene_box[3], world[3]);
+    }
+    ++metal_index;
+  }
+  return metal_index == request.metal_context_count &&
+         flat_polygons == request.flat_polygon_count &&
+         flat_edges == request.flat_edge_count && have_scene_box &&
+         scene_box[0] == request.scene_left &&
+         scene_box[1] == request.scene_bottom &&
+         scene_box[2] == request.scene_right &&
+         scene_box[3] == request.scene_top;
+}
+
+std::uint32_t m1ws_fallback_from_device_flags(std::uint32_t flags) {
+  if (flags & kM1WsTransformOverflow) {
+    return KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW;
+  }
+  if (flags &
+      (kM1WsGridCounterOverflow | kM1WsGridCapacityExceeded)) {
+    return KLAYOUT_CUDA_SPATIAL_FALLBACK_MEMBERSHIP_CAPACITY;
+  }
+  if (flags &
+      (kM1WsPairCounterOverflow | kM1WsPairCapacityExceeded)) {
+    return KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY;
+  }
+  return flags ? KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT : 0;
+}
+
+M1WsPipelineResult m1ws_run_pipeline(
+    const klayout_cuda_spatial_m1_width_space_request_v1 &request) {
+  M1WsPipelineResult result;
+  if (request.context_count > request.max_contexts ||
+      request.metal_context_count > request.max_contexts ||
+      request.cell_count > request.max_contexts ||
+      request.edge_count > request.max_flat_edges ||
+      request.flat_edge_count > request.max_flat_edges ||
+      request.polygon_count > request.max_flat_polygons ||
+      request.flat_polygon_count > request.max_flat_polygons) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_CAPACITY;
+    return result;
+  }
+
+  const __int128 expanded_left =
+      static_cast<__int128>(request.scene_left) - request.width_distance;
+  const __int128 expanded_bottom =
+      static_cast<__int128>(request.scene_bottom) - request.width_distance;
+  const __int128 expanded_right =
+      static_cast<__int128>(request.scene_right) + request.width_distance;
+  const __int128 expanded_top =
+      static_cast<__int128>(request.scene_top) + request.width_distance;
+  if (expanded_left < INT64_MIN || expanded_left > INT64_MAX ||
+      expanded_bottom < INT64_MIN || expanded_bottom > INT64_MAX ||
+      expanded_right < INT64_MIN || expanded_right > INT64_MAX ||
+      expanded_top < INT64_MIN || expanded_top > INT64_MAX) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW;
+    return result;
+  }
+  const std::int64_t base_x = floor_div(
+      static_cast<std::int64_t>(expanded_left),
+      request.grid_cell_size);
+  const std::int64_t base_y = floor_div(
+      static_cast<std::int64_t>(expanded_bottom),
+      request.grid_cell_size);
+  const std::int64_t maximum_x = floor_div(
+      static_cast<std::int64_t>(expanded_right),
+      request.grid_cell_size);
+  const std::int64_t maximum_y = floor_div(
+      static_cast<std::int64_t>(expanded_top),
+      request.grid_cell_size);
+  const __int128 width = static_cast<__int128>(maximum_x) - base_x + 1;
+  const __int128 height = static_cast<__int128>(maximum_y) - base_y + 1;
+  const __int128 grid_cells = width * height;
+  if (width <= 0 || height <= 0 || width > UINT32_MAX ||
+      height > UINT32_MAX || grid_cells <= 0 ||
+      grid_cells > UINT32_MAX ||
+      grid_cells > request.max_grid_cells) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_MEMBERSHIP_CAPACITY;
+    return result;
+  }
+  result.grid_cells = static_cast<std::uint64_t>(grid_cells);
+  const M1WsGrid grid = {
+      base_x, base_y, request.grid_cell_size, request.width_distance,
+      static_cast<std::uint32_t>(width),
+      static_cast<std::uint32_t>(height)};
+
+  constexpr std::uint32_t expand_threads = 128;
+  const auto setup_begin = Clock::now();
+  cuda_check(cudaSetDevice(request.device), "M1 width/space cudaSetDevice");
+  cuda_check(cudaFree(nullptr), "M1 width/space CUDA context initialization");
+  cudaDeviceProp properties{};
+  cuda_check(
+      cudaGetDeviceProperties(&properties, request.device),
+      "M1 width/space cudaGetDeviceProperties");
+  if (request.polygon_count >
+          static_cast<std::uint64_t>(properties.maxGridSize[0]) ||
+      request.metal_context_count >
+          static_cast<std::uint64_t>(properties.maxGridSize[0]) ||
+      result.grid_cells >
+          static_cast<std::uint64_t>(properties.maxGridSize[0])) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+    return result;
+  }
+
+  thrust::device_vector<
+      klayout_cuda_spatial_m1_width_space_context_v1>
+      contexts(request.context_count);
+  thrust::device_vector<std::uint32_t>
+      metal_contexts(request.metal_context_count);
+  thrust::device_vector<std::uint64_t>
+      polygon_offsets(request.context_polygon_offset_count);
+  thrust::device_vector<std::uint64_t>
+      edge_offsets(request.context_edge_offset_count);
+  thrust::device_vector<klayout_cuda_spatial_m1_width_space_cell_v1>
+      cells(request.cell_count);
+  thrust::device_vector<klayout_cuda_spatial_m1_width_space_polygon_v1>
+      polygons(request.polygon_count);
+  thrust::device_vector<klayout_cuda_spatial_m1_width_space_edge_v1>
+      edge_templates(request.edge_count);
+  thrust::device_vector<M1WsEdgeMetadata> metadata(request.edge_count);
+  thrust::device_vector<M1WsExpandedEdge>
+      expanded_edges(request.flat_edge_count);
+  thrust::device_vector<std::uint32_t> counts(result.grid_cells, 0);
+  thrust::device_vector<std::uint32_t> offsets(result.grid_cells + 1);
+  thrust::device_vector<std::uint32_t> cursors(result.grid_cells);
+  thrust::device_vector<unsigned long long> membership_total(1, 0);
+  thrust::device_vector<unsigned long long> pair_work(1, 0);
+  thrust::device_vector<M1WsDeviceCounters> counters(1);
+  thrust::device_vector<std::uint32_t> status(1, 0);
+  cuda_check(
+      cudaMemset(
+          thrust::raw_pointer_cast(counters.data()), 0,
+          sizeof(M1WsDeviceCounters)),
+      "M1 width/space counter clear");
+  result.setup_ns = elapsed_ns(setup_begin, Clock::now());
+
+  const auto h2d_begin = Clock::now();
+#define M1WS_COPY_TO_DEVICE(destination, source, count, type, label) \
+  cuda_check( \
+      cudaMemcpy( \
+          thrust::raw_pointer_cast(destination.data()), source, \
+          static_cast<std::size_t>(count) * sizeof(type), \
+          cudaMemcpyHostToDevice), \
+      label)
+  M1WS_COPY_TO_DEVICE(
+      contexts, request.contexts, request.context_count,
+      klayout_cuda_spatial_m1_width_space_context_v1,
+      "M1 width/space context H2D");
+  M1WS_COPY_TO_DEVICE(
+      metal_contexts, request.metal_contexts,
+      request.metal_context_count, std::uint32_t,
+      "M1 width/space metal-context H2D");
+  M1WS_COPY_TO_DEVICE(
+      polygon_offsets, request.context_polygon_offsets,
+      request.context_polygon_offset_count, std::uint64_t,
+      "M1 width/space polygon-offset H2D");
+  M1WS_COPY_TO_DEVICE(
+      edge_offsets, request.context_edge_offsets,
+      request.context_edge_offset_count, std::uint64_t,
+      "M1 width/space edge-offset H2D");
+  M1WS_COPY_TO_DEVICE(
+      cells, request.cells, request.cell_count,
+      klayout_cuda_spatial_m1_width_space_cell_v1,
+      "M1 width/space cell H2D");
+  M1WS_COPY_TO_DEVICE(
+      polygons, request.polygons, request.polygon_count,
+      klayout_cuda_spatial_m1_width_space_polygon_v1,
+      "M1 width/space polygon H2D");
+  M1WS_COPY_TO_DEVICE(
+      edge_templates, request.edges, request.edge_count,
+      klayout_cuda_spatial_m1_width_space_edge_v1,
+      "M1 width/space edge H2D");
+#undef M1WS_COPY_TO_DEVICE
+  cuda_check(
+      cudaDeviceSynchronize(), "M1 width/space H2D synchronize");
+  result.h2d_ns = elapsed_ns(h2d_begin, Clock::now());
+
+  const auto expand_begin = Clock::now();
+  m1ws_build_edge_metadata_kernel<<<
+      static_cast<unsigned int>(request.polygon_count),
+      expand_threads>>>(
+      thrust::raw_pointer_cast(polygons.data()),
+      static_cast<std::uint32_t>(request.polygon_count),
+      thrust::raw_pointer_cast(metadata.data()),
+      thrust::raw_pointer_cast(counters.data()),
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(
+      cudaGetLastError(), "M1 width/space metadata launch");
+  m1ws_expand_edges_kernel<<<
+      static_cast<unsigned int>(request.metal_context_count),
+      expand_threads>>>(
+      thrust::raw_pointer_cast(contexts.data()),
+      thrust::raw_pointer_cast(metal_contexts.data()),
+      thrust::raw_pointer_cast(edge_offsets.data()),
+      thrust::raw_pointer_cast(polygon_offsets.data()),
+      thrust::raw_pointer_cast(cells.data()),
+      thrust::raw_pointer_cast(edge_templates.data()),
+      thrust::raw_pointer_cast(metadata.data()),
+      static_cast<std::uint32_t>(request.metal_context_count),
+      thrust::raw_pointer_cast(expanded_edges.data()),
+      thrust::raw_pointer_cast(counters.data()),
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(
+      cudaGetLastError(), "M1 width/space edge expansion launch");
+  cuda_check(
+      cudaDeviceSynchronize(),
+      "M1 width/space edge expansion synchronize");
+  cuda_check(
+      cudaMemcpy(
+          &result.device_flags, thrust::raw_pointer_cast(status.data()),
+          sizeof(result.device_flags), cudaMemcpyDeviceToHost),
+      "M1 width/space expansion status D2H");
+  result.edge_expand_ns = elapsed_ns(expand_begin, Clock::now());
+  if (result.device_flags) {
+    result.fallback_flags =
+        m1ws_fallback_from_device_flags(result.device_flags);
+    return result;
+  }
+
+  const unsigned int edge_blocks = static_cast<unsigned int>(
+      std::min<std::uint64_t>(
+          65535, (request.flat_edge_count + 255) / 256));
+  const auto count_begin = Clock::now();
+  m1ws_count_grid_kernel<<<edge_blocks, 256>>>(
+      thrust::raw_pointer_cast(expanded_edges.data()),
+      static_cast<std::uint32_t>(request.flat_edge_count), grid,
+      thrust::raw_pointer_cast(counts.data()),
+      thrust::raw_pointer_cast(membership_total.data()),
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(
+      cudaGetLastError(), "M1 width/space grid-count launch");
+  cuda_check(
+      cudaDeviceSynchronize(),
+      "M1 width/space grid-count synchronize");
+  unsigned long long memberships = 0;
+  cuda_check(
+      cudaMemcpy(
+          &memberships,
+          thrust::raw_pointer_cast(membership_total.data()),
+          sizeof(memberships), cudaMemcpyDeviceToHost),
+      "M1 width/space membership count D2H");
+  cuda_check(
+      cudaMemcpy(
+          &result.device_flags, thrust::raw_pointer_cast(status.data()),
+          sizeof(result.device_flags), cudaMemcpyDeviceToHost),
+      "M1 width/space grid-count status D2H");
+  result.memberships = memberships;
+  result.grid_count_ns = elapsed_ns(count_begin, Clock::now());
+  if (result.device_flags) {
+    result.fallback_flags =
+        m1ws_fallback_from_device_flags(result.device_flags);
+    return result;
+  }
+  if (result.memberships < request.flat_edge_count ||
+      result.memberships > request.max_memberships ||
+      result.memberships > UINT32_MAX) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_MEMBERSHIP_CAPACITY;
+    return result;
+  }
+
+  const auto grid_begin = Clock::now();
+  thrust::exclusive_scan(
+      thrust::device, counts.begin(), counts.end(), offsets.begin());
+  const std::uint32_t terminal =
+      static_cast<std::uint32_t>(result.memberships);
+  cuda_check(
+      cudaMemcpy(
+          thrust::raw_pointer_cast(offsets.data()) + result.grid_cells,
+          &terminal, sizeof(terminal), cudaMemcpyHostToDevice),
+      "M1 width/space terminal offset H2D");
+  cuda_check(
+      cudaMemcpy(
+          thrust::raw_pointer_cast(cursors.data()),
+          thrust::raw_pointer_cast(offsets.data()),
+          result.grid_cells * sizeof(std::uint32_t),
+          cudaMemcpyDeviceToDevice),
+      "M1 width/space offsets-to-cursors D2D");
+  thrust::device_vector<std::uint32_t> members(result.memberships);
+  m1ws_fill_grid_kernel<<<edge_blocks, 256>>>(
+      thrust::raw_pointer_cast(expanded_edges.data()),
+      static_cast<std::uint32_t>(request.flat_edge_count), grid,
+      thrust::raw_pointer_cast(cursors.data()),
+      thrust::raw_pointer_cast(members.data()), result.memberships,
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(
+      cudaGetLastError(), "M1 width/space grid-fill launch");
+  const unsigned int grid_blocks = static_cast<unsigned int>(
+      std::min<std::uint64_t>(
+          65535, (result.grid_cells + 255) / 256));
+  m1ws_validate_grid_kernel<<<grid_blocks, 256>>>(
+      thrust::raw_pointer_cast(counts.data()),
+      thrust::raw_pointer_cast(offsets.data()),
+      thrust::raw_pointer_cast(cursors.data()), result.grid_cells,
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(
+      cudaGetLastError(), "M1 width/space grid-validation launch");
+  cuda_check(
+      cudaDeviceSynchronize(),
+      "M1 width/space grid-build synchronize");
+  cuda_check(
+      cudaMemcpy(
+          &result.device_flags, thrust::raw_pointer_cast(status.data()),
+          sizeof(result.device_flags), cudaMemcpyDeviceToHost),
+      "M1 width/space grid-build status D2H");
+  result.grid_build_ns = elapsed_ns(grid_begin, Clock::now());
+  if (result.device_flags) {
+    result.fallback_flags =
+        m1ws_fallback_from_device_flags(result.device_flags);
+    return result;
+  }
+
+  const auto pair_count_begin = Clock::now();
+  m1ws_count_pair_work_kernel<<<grid_blocks, 256>>>(
+      thrust::raw_pointer_cast(counts.data()), result.grid_cells,
+      thrust::raw_pointer_cast(pair_work.data()),
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(
+      cudaGetLastError(), "M1 width/space pair-count launch");
+  cuda_check(
+      cudaDeviceSynchronize(),
+      "M1 width/space pair-count synchronize");
+  unsigned long long host_pair_work = 0;
+  cuda_check(
+      cudaMemcpy(
+          &host_pair_work, thrust::raw_pointer_cast(pair_work.data()),
+          sizeof(host_pair_work), cudaMemcpyDeviceToHost),
+      "M1 width/space pair-work D2H");
+  cuda_check(
+      cudaMemcpy(
+          &result.device_flags, thrust::raw_pointer_cast(status.data()),
+          sizeof(result.device_flags), cudaMemcpyDeviceToHost),
+      "M1 width/space pair-count status D2H");
+  result.pair_work = host_pair_work;
+  result.pair_count_ns =
+      elapsed_ns(pair_count_begin, Clock::now());
+  if (result.device_flags) {
+    result.fallback_flags =
+        m1ws_fallback_from_device_flags(result.device_flags);
+    return result;
+  }
+  if (result.pair_work > request.max_pair_work) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY;
+    return result;
+  }
+
+  const auto query_begin = Clock::now();
+  m1ws_query_pairs_kernel<<<
+      static_cast<unsigned int>(result.grid_cells), 128>>>(
+      thrust::raw_pointer_cast(expanded_edges.data()), grid,
+      thrust::raw_pointer_cast(counts.data()),
+      thrust::raw_pointer_cast(offsets.data()),
+      thrust::raw_pointer_cast(members.data()), result.grid_cells,
+      thrust::raw_pointer_cast(counters.data()),
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(
+      cudaGetLastError(), "M1 width/space query launch");
+  cuda_check(
+      cudaDeviceSynchronize(), "M1 width/space query synchronize");
+  result.query_ns = elapsed_ns(query_begin, Clock::now());
+
+  const auto d2h_begin = Clock::now();
+  cuda_check(
+      cudaMemcpy(
+          &result.counters, thrust::raw_pointer_cast(counters.data()),
+          sizeof(result.counters), cudaMemcpyDeviceToHost),
+      "M1 width/space counters D2H");
+  cuda_check(
+      cudaMemcpy(
+          &result.device_flags, thrust::raw_pointer_cast(status.data()),
+          sizeof(result.device_flags), cudaMemcpyDeviceToHost),
+      "M1 width/space final status D2H");
+  result.d2h_ns = elapsed_ns(d2h_begin, Clock::now());
+  if (result.counters.template_edges != request.edge_count ||
+      result.counters.expanded_edges != request.flat_edge_count ||
+      result.counters.width_hits +
+              result.counters.width_uncertain >
+          result.counters.width_pairs ||
+      result.counters.space_hits +
+              result.counters.space_uncertain >
+          result.counters.space_pairs ||
+      result.counters.space_pairs !=
+          result.counters.unique_edge_pairs) {
+    result.device_flags |= kM1WsConservationFailure;
+  }
+  result.fallback_flags =
+      m1ws_fallback_from_device_flags(result.device_flags);
+  return result;
+}
+
+void m1ws_echo_request(
+    const klayout_cuda_spatial_m1_width_space_request_v1 &request,
+    klayout_cuda_spatial_m1_width_space_result_v1 *result) {
+  result->opcode = request.opcode;
+  result->option_flags = request.option_flags;
+  result->format_version = request.format_version;
+  result->dbu_per_micron = request.dbu_per_micron;
+  result->root_cell = request.root_cell;
+  result->width_distance = request.width_distance;
+  result->spacing_distance = request.spacing_distance;
+  result->grid_cell_size = request.grid_cell_size;
+  result->scene_left = request.scene_left;
+  result->scene_bottom = request.scene_bottom;
+  result->scene_right = request.scene_right;
+  result->scene_top = request.scene_top;
+  std::copy(
+      request.scene_digest, request.scene_digest + 32,
+      result->scene_digest);
+  result->context_count = request.context_count;
+  result->metal_context_count = request.metal_context_count;
+  result->cell_count = request.cell_count;
+  result->polygon_count = request.polygon_count;
+  result->edge_count = request.edge_count;
+  result->flat_polygon_count = request.flat_polygon_count;
+  result->flat_edge_count = request.flat_edge_count;
+}
+
+int run_m1ws_request(
+    const klayout_cuda_spatial_m1_width_space_request_v1 *request,
+    klayout_cuda_spatial_m1_width_space_result_v1 *result) {
+  if (!result) return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  std::memset(result, 0, sizeof(*result));
+  result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  result->struct_size = sizeof(*result);
+  result->status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  result->disposition =
+      KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN;
+  if (!request || !m1ws_structurally_valid(*request)) {
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+    set_message(
+        result, "unsupported, malformed, or digest-mismatched "
+                "M1 width/space request");
+    return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  }
+  m1ws_echo_request(*request, result);
+
+  const auto total_begin = Clock::now();
+  try {
+    std::lock_guard<std::mutex> pipeline_lock(pipeline_mutex());
+    const M1WsPipelineResult pipeline = m1ws_run_pipeline(*request);
+    result->fallback_flags = pipeline.fallback_flags;
+    result->device_flags = pipeline.device_flags;
+    result->grid_cell_count = pipeline.grid_cells;
+    result->membership_count = pipeline.memberships;
+    result->pair_work_count = pipeline.pair_work;
+    result->unique_edge_pair_count =
+        pipeline.counters.unique_edge_pairs;
+    result->width_pair_count = pipeline.counters.width_pairs;
+    result->space_pair_count = pipeline.counters.space_pairs;
+    result->width_hit_count = pipeline.counters.width_hits;
+    result->space_hit_count = pipeline.counters.space_hits;
+    result->width_uncertain_count =
+        pipeline.counters.width_uncertain;
+    result->space_uncertain_count =
+        pipeline.counters.space_uncertain;
+    result->setup_ns = pipeline.setup_ns;
+    result->h2d_ns = pipeline.h2d_ns;
+    result->edge_expand_ns = pipeline.edge_expand_ns;
+    result->grid_count_ns = pipeline.grid_count_ns;
+    result->grid_build_ns = pipeline.grid_build_ns;
+    result->pair_count_ns = pipeline.pair_count_ns;
+    result->query_ns = pipeline.query_ns;
+    result->d2h_ns = pipeline.d2h_ns;
+
+    const bool uncertain =
+        pipeline.fallback_flags || pipeline.device_flags ||
+        pipeline.counters.width_uncertain ||
+        pipeline.counters.space_uncertain;
+    const bool raw_hits =
+        pipeline.counters.width_hits ||
+        pipeline.counters.space_hits;
+    if (uncertain) {
+      result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      result->disposition =
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN;
+      set_message(
+          result, "M1 width/space device, predicate, or capacity gate "
+                  "declined the atomic certificate");
+      result->total_ns = elapsed_ns(total_begin, Clock::now());
+      return KLAYOUT_CUDA_SPATIAL_FALLBACK;
+    }
+    if (raw_hits) {
+      result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      result->disposition =
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_RAW_HITS;
+      set_message(
+          result, "M1 width/space raw hits require both pristine CPU "
+                  "rules");
+      result->total_ns = elapsed_ns(total_begin, Clock::now());
+      return KLAYOUT_CUDA_SPATIAL_FALLBACK;
+    }
+    result->status = KLAYOUT_CUDA_SPATIAL_OK;
+    result->disposition =
+        KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_COMPLETE;
+    set_message(
+        result, "complete atomic METAL1.1/METAL1.2 empty certificate");
+    result->total_ns = elapsed_ns(total_begin, Clock::now());
+    return KLAYOUT_CUDA_SPATIAL_OK;
+  } catch (const std::exception &ex) {
+    result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    set_message(result, ex.what());
+  } catch (...) {
+    result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    set_message(
+        result, "unknown CUDA M1 width/space backend exception");
+  }
+  result->total_ns = elapsed_ns(total_begin, Clock::now());
+  return KLAYOUT_CUDA_SPATIAL_ERROR;
+}
+
 }  // namespace
 
 extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT std::uint32_t
@@ -2356,6 +3855,30 @@ klayout_cuda_spatial_run_active3_empty_v1(
           KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
       set_message(
           result, "exception escaped the ACTIVE.3 request boundary");
+    }
+    return KLAYOUT_CUDA_SPATIAL_ERROR;
+  }
+}
+
+extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_m1_width_space_empty_v1(
+    const klayout_cuda_spatial_m1_width_space_request_v1 *request,
+    klayout_cuda_spatial_m1_width_space_result_v1 *result) {
+  try {
+    return run_m1ws_request(request, result);
+  } catch (...) {
+    if (result) {
+      std::memset(result, 0, sizeof(*result));
+      result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+      result->struct_size = sizeof(*result);
+      result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+      result->disposition =
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN;
+      result->fallback_flags =
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+      set_message(
+          result,
+          "exception escaped the M1 width/space request boundary");
     }
     return KLAYOUT_CUDA_SPATIAL_ERROR;
   }

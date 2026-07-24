@@ -1,0 +1,50 @@
+# Focused live METAL1.1/METAL1.2 integration gate.
+
+raise("missing -rd input=PATH") unless $input
+raise("missing -rd topcell=NAME") unless $topcell
+raise("missing -rd output=PATH") unless $output
+
+variant = ($variant || "qualified").to_s
+unless %w[qualified raw changed_option wrong_order].include?(variant)
+  raise("unsupported variant #{variant}")
+end
+
+source($input, $topcell)
+report("M1 width/space live CUDA gate", $output)
+deep
+
+metal1 = input(11, 0)
+metal1 = metal1.raw if variant == "raw"
+
+if variant == "wrong_order"
+  results = metal1.drc_batch([
+    space(euclidian) < 65.nm,
+    width(euclidian) < 65.nm
+  ])
+  metal1_space = results[0]
+  metal1_width = results[1]
+elsif variant == "changed_option"
+  metal1_width, metal1_space = metal1.drc_batch([
+    width(projection) < 65.nm,
+    space(euclidian) < 65.nm
+  ])
+else
+  metal1_width, metal1_space = metal1.drc_batch([
+    width(euclidian) < 65.nm,
+    space(euclidian) < 65.nm
+  ])
+end
+
+raise("width result is not an edge-pair layer") unless metal1_width.edge_pairs?
+raise("spacing result is not an edge-pair layer") unless metal1_space.edge_pairs?
+
+metal1_width.output("METAL1.1", "METAL1.1 : Minimum width of metal1 : 65nm")
+metal1_space.output("METAL1.2", "METAL1.2 : Minimum spacing of metal1 : 65nm")
+
+puts(
+  "M1_WIDTH_SPACE_LIVE_DECK ok" \
+  " variant=#{variant}" \
+  " top=#{$topcell}" \
+  " width_empty=#{metal1_width.is_empty? ? 1 : 0}" \
+  " spacing_empty=#{metal1_space.is_empty? ? 1 : 0}"
+)

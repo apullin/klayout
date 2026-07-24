@@ -85,6 +85,44 @@ struct DB_PUBLIC CudaActive3Attempt
   std::string message;
 };
 
+struct DB_PUBLIC CudaM1WidthSpaceAttempt
+{
+  enum Disposition
+  {
+    Disabled,
+    CertifiedEmpty,
+    RawHits,
+    BackendFallback,
+    BackendError,
+    InvalidResult
+  };
+
+  CudaM1WidthSpaceAttempt ();
+
+  Disposition disposition;
+  uint32_t fallback_flags;
+  uint32_t device_flags;
+  uint64_t context_count;
+  uint64_t metal_context_count;
+  uint64_t cell_count;
+  uint64_t polygon_count;
+  uint64_t edge_count;
+  uint64_t flat_polygon_count;
+  uint64_t flat_edge_count;
+  uint64_t grid_cell_count;
+  uint64_t membership_count;
+  uint64_t pair_work_count;
+  uint64_t unique_edge_pair_count;
+  uint64_t width_pair_count;
+  uint64_t space_pair_count;
+  uint64_t width_hit_count;
+  uint64_t space_hit_count;
+  uint64_t width_uncertain_count;
+  uint64_t space_uncertain_count;
+  uint64_t total_ns;
+  std::string message;
+};
+
 struct DB_PUBLIC CudaVia1StackAttempt
 {
   enum Disposition
@@ -189,6 +227,19 @@ DB_PUBLIC CudaActive3Attempt cuda_spatial_try_active3_empty (
 
 /** Return true only when the independent ACTIVE.3 opt-in and symbol exist. */
 DB_PUBLIC bool cuda_spatial_active3_requested ();
+
+/**
+ * Invoke the optional atomic METAL1.1/METAL1.2 empty certificate.
+ *
+ * Only CertifiedEmpty is consumable.  Raw hits and every uncertain, malformed,
+ * over-capacity, loader, or CUDA outcome request the unchanged two-rule CPU
+ * batch.
+ */
+DB_PUBLIC CudaM1WidthSpaceAttempt cuda_spatial_try_m1_width_space_empty (
+  const klayout_cuda_spatial_m1_width_space_request_v1 &request);
+
+/** Return true only when the M1 width/space opt-in and symbol exist. */
+DB_PUBLIC bool cuda_spatial_m1_width_space_requested ();
 
 /**
  * Invoke the optional atomic M1/VIA1/M2 six-rule empty certificate.

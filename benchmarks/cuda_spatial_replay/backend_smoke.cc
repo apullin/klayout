@@ -1021,6 +1021,404 @@ bool run_active3_abi_smoke() {
   return good;
 }
 
+class M1WsSmokeDigest {
+ public:
+  void bytes(const void *data, std::size_t size) {
+    sha_.update(data, size);
+  }
+
+  void u32(std::uint32_t value) {
+    std::uint8_t encoded[4];
+    for (unsigned int i = 0; i < 4; ++i) {
+      encoded[i] = static_cast<std::uint8_t>(value >> (i * 8));
+    }
+    bytes(encoded, sizeof(encoded));
+  }
+
+  void u64(std::uint64_t value) {
+    std::uint8_t encoded[8];
+    for (unsigned int i = 0; i < 8; ++i) {
+      encoded[i] = static_cast<std::uint8_t>(value >> (i * 8));
+    }
+    bytes(encoded, sizeof(encoded));
+  }
+
+  void i64(std::int64_t value) {
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    u64(bits);
+  }
+
+  std::array<std::uint8_t, 32> finish() {
+    return sha_.finish();
+  }
+
+ private:
+  db::cuda_active3_digest::Sha256 sha_;
+};
+
+struct M1WsSmokePoint {
+  std::int64_t x;
+  std::int64_t y;
+};
+
+struct M1WsSmokeScene {
+  std::vector<klayout_cuda_spatial_m1_width_space_context_v1> contexts;
+  std::vector<std::uint32_t> metal_contexts;
+  std::vector<std::uint64_t> polygon_offsets;
+  std::vector<std::uint64_t> edge_offsets;
+  std::vector<klayout_cuda_spatial_m1_width_space_cell_v1> cells;
+  std::vector<klayout_cuda_spatial_m1_width_space_polygon_v1> polygons;
+  std::vector<klayout_cuda_spatial_m1_width_space_edge_v1> edges;
+  klayout_cuda_spatial_m1_width_space_request_v1 request{};
+};
+
+M1WsSmokeScene make_m1ws_scene(
+    const std::vector<std::vector<M1WsSmokePoint>> &shapes) {
+  M1WsSmokeScene scene;
+  scene.contexts.push_back({0, 0, 0, 0});
+  scene.metal_contexts.push_back(0);
+  scene.polygon_offsets.push_back(0);
+  scene.edge_offsets.push_back(0);
+  std::int64_t scene_left = INT64_MAX;
+  std::int64_t scene_bottom = INT64_MAX;
+  std::int64_t scene_right = INT64_MIN;
+  std::int64_t scene_top = INT64_MIN;
+  for (std::size_t polygon_id = 0; polygon_id < shapes.size();
+       ++polygon_id) {
+    const auto &points = shapes[polygon_id];
+    klayout_cuda_spatial_m1_width_space_polygon_v1 polygon{};
+    polygon.edge_begin = scene.edges.size();
+    polygon.polygon_id = static_cast<std::uint32_t>(polygon_id);
+    polygon.edge_count = static_cast<std::uint32_t>(points.size());
+    polygon.left = INT64_MAX;
+    polygon.bottom = INT64_MAX;
+    polygon.right = INT64_MIN;
+    polygon.top = INT64_MIN;
+    for (std::size_t edge_id = 0; edge_id < points.size(); ++edge_id) {
+      const auto first = points[edge_id];
+      const auto second = points[(edge_id + 1) % points.size()];
+      scene.edges.push_back(
+          {first.x, first.y, second.x, second.y});
+      polygon.left = std::min(polygon.left, first.x);
+      polygon.bottom = std::min(polygon.bottom, first.y);
+      polygon.right = std::max(polygon.right, first.x);
+      polygon.top = std::max(polygon.top, first.y);
+    }
+    scene_left = std::min(scene_left, polygon.left);
+    scene_bottom = std::min(scene_bottom, polygon.bottom);
+    scene_right = std::max(scene_right, polygon.right);
+    scene_top = std::max(scene_top, polygon.top);
+    scene.polygons.push_back(polygon);
+  }
+  scene.cells.push_back({
+      0, 0, 0, static_cast<std::uint32_t>(scene.polygons.size()),
+      static_cast<std::uint32_t>(scene.edges.size())});
+
+  auto &request = scene.request;
+  request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  request.struct_size = sizeof(request);
+  request.opcode =
+      KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_MERGED_EMPTY;
+  request.option_flags =
+      KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_QUALIFIED_OPTIONS;
+  request.format_version = 1;
+  request.dbu_per_micron = 2000;
+  request.root_cell = 0;
+  request.device = 0;
+  request.width_distance = 130;
+  request.spacing_distance = 130;
+  request.grid_cell_size = 512;
+  request.flat_polygon_count = scene.polygons.size();
+  request.flat_edge_count = scene.edges.size();
+  request.scene_left = scene_left;
+  request.scene_bottom = scene_bottom;
+  request.scene_right = scene_right;
+  request.scene_top = scene_top;
+  request.max_contexts = 1024;
+  request.max_grid_cells = 1000000;
+  request.max_memberships = 10000000;
+  request.max_pair_work = 100000000;
+  request.max_flat_edges = 1000000;
+  request.max_flat_polygons = 1000000;
+  return scene;
+}
+
+void bind_m1ws_scene(M1WsSmokeScene &scene) {
+  auto &request = scene.request;
+  request.contexts = scene.contexts.data();
+  request.context_count = scene.contexts.size();
+  request.context_record_bytes =
+      sizeof(klayout_cuda_spatial_m1_width_space_context_v1);
+  request.metal_contexts = scene.metal_contexts.data();
+  request.metal_context_count = scene.metal_contexts.size();
+  request.context_polygon_offsets = scene.polygon_offsets.data();
+  request.context_polygon_offset_count = scene.polygon_offsets.size();
+  request.context_edge_offsets = scene.edge_offsets.data();
+  request.context_edge_offset_count = scene.edge_offsets.size();
+  request.cells = scene.cells.data();
+  request.cell_count = scene.cells.size();
+  request.cell_record_bytes =
+      sizeof(klayout_cuda_spatial_m1_width_space_cell_v1);
+  request.polygons = scene.polygons.data();
+  request.polygon_count = scene.polygons.size();
+  request.polygon_record_bytes =
+      sizeof(klayout_cuda_spatial_m1_width_space_polygon_v1);
+  request.edges = scene.edges.data();
+  request.edge_count = scene.edges.size();
+  request.edge_record_bytes =
+      sizeof(klayout_cuda_spatial_m1_width_space_edge_v1);
+}
+
+bool set_m1ws_digest(M1WsSmokeScene &scene) {
+  bind_m1ws_scene(scene);
+  const auto &request = scene.request;
+  M1WsSmokeDigest sha;
+  const char magic[8] = {'K', 'M', '1', 'W', 'S', '0', '0', '1'};
+  sha.bytes(magic, sizeof(magic));
+  sha.u32(request.format_version);
+  sha.u32(request.dbu_per_micron);
+  sha.u32(request.root_cell);
+  sha.u32(request.scene_reserved);
+  sha.i64(request.width_distance);
+  sha.i64(request.spacing_distance);
+  sha.u64(request.context_count);
+  sha.u64(request.metal_context_count);
+  sha.u64(request.cell_count);
+  sha.u64(request.polygon_count);
+  sha.u64(request.edge_count);
+  sha.u64(request.flat_polygon_count);
+  sha.u64(request.flat_edge_count);
+  sha.i64(request.scene_left);
+  sha.i64(request.scene_bottom);
+  sha.i64(request.scene_right);
+  sha.i64(request.scene_top);
+  for (const auto &context : scene.contexts) {
+    sha.i64(context.tx);
+    sha.i64(context.ty);
+    sha.u32(context.cell_id);
+    sha.u32(context.transform_code);
+  }
+  for (std::size_t id = 0; id < scene.metal_contexts.size(); ++id) {
+    sha.u32(scene.metal_contexts[id]);
+    sha.u64(scene.polygon_offsets[id]);
+    sha.u64(scene.edge_offsets[id]);
+  }
+  for (const auto &cell : scene.cells) {
+    sha.u64(cell.source_cell_index);
+    sha.u64(cell.polygon_begin);
+    sha.u64(cell.edge_begin);
+    sha.u32(cell.polygon_count);
+    sha.u32(cell.edge_count);
+  }
+  for (const auto &polygon : scene.polygons) {
+    sha.u64(polygon.edge_begin);
+    sha.i64(polygon.left);
+    sha.i64(polygon.bottom);
+    sha.i64(polygon.right);
+    sha.i64(polygon.top);
+    sha.u32(polygon.polygon_id);
+    sha.u32(polygon.edge_count);
+  }
+  for (const auto &edge : scene.edges) {
+    sha.i64(edge.x1);
+    sha.i64(edge.y1);
+    sha.i64(edge.x2);
+    sha.i64(edge.y2);
+  }
+  const auto digest = sha.finish();
+  std::copy(
+      digest.begin(), digest.end(), scene.request.scene_digest);
+  return true;
+}
+
+void report_m1ws_failure(
+    const char *name, int status,
+    const klayout_cuda_spatial_m1_width_space_result_v1 &result) {
+  std::cerr << name << " failed: call_status=" << status
+            << " result_status=" << result.status
+            << " disposition=" << result.disposition
+            << " fallback_flags=" << result.fallback_flags
+            << " device_flags=" << result.device_flags
+            << " width_hits=" << result.width_hit_count
+            << " space_hits=" << result.space_hit_count
+            << " width_uncertain=" << result.width_uncertain_count
+            << " space_uncertain=" << result.space_uncertain_count
+            << " message=" << result.message << '\n';
+}
+
+bool valid_m1ws_counters(
+    const klayout_cuda_spatial_m1_width_space_result_v1 &result) {
+  return result.width_pair_count <= result.unique_edge_pair_count &&
+         result.space_pair_count == result.unique_edge_pair_count &&
+         result.width_hit_count + result.width_uncertain_count <=
+             result.width_pair_count &&
+         result.space_hit_count + result.space_uncertain_count <=
+             result.space_pair_count;
+}
+
+bool run_m1ws_abi_smoke() {
+  const auto rectangle = [](std::int64_t left, std::int64_t bottom,
+                            std::int64_t right, std::int64_t top) {
+    return std::vector<M1WsSmokePoint>{
+        {left, bottom}, {left, top}, {right, top}, {right, bottom}};
+  };
+  bool good = true;
+
+  M1WsSmokeScene clean =
+      make_m1ws_scene({rectangle(0, 0, 300, 130)});
+  set_m1ws_digest(clean);
+  klayout_cuda_spatial_m1_width_space_result_v1 clean_result{};
+  const int clean_status =
+      klayout_cuda_spatial_run_m1_width_space_empty_v1(
+          &clean.request, &clean_result);
+  const bool clean_good =
+      clean_status == KLAYOUT_CUDA_SPATIAL_OK &&
+      clean_result.status == KLAYOUT_CUDA_SPATIAL_OK &&
+      clean_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_COMPLETE &&
+      clean_result.fallback_flags == 0 &&
+      clean_result.device_flags == 0 &&
+      clean_result.width_hit_count == 0 &&
+      clean_result.space_hit_count == 0 &&
+      clean_result.width_uncertain_count == 0 &&
+      clean_result.space_uncertain_count == 0 &&
+      clean_result.context_count == 1 &&
+      clean_result.flat_edge_count == 4 &&
+      clean_result.grid_cell_size == clean.request.grid_cell_size &&
+      clean_result.scene_left == clean.request.scene_left &&
+      clean_result.scene_bottom == clean.request.scene_bottom &&
+      clean_result.scene_right == clean.request.scene_right &&
+      clean_result.scene_top == clean.request.scene_top &&
+      std::equal(
+          clean.request.scene_digest,
+          clean.request.scene_digest + 32,
+          clean_result.scene_digest) &&
+      valid_m1ws_counters(clean_result);
+  if (!clean_good) {
+    report_m1ws_failure(
+        "CUDA M1 width/space clean certificate", clean_status,
+        clean_result);
+  }
+  good = clean_good && good;
+
+  M1WsSmokeScene width_hit =
+      make_m1ws_scene({rectangle(0, 0, 300, 129)});
+  set_m1ws_digest(width_hit);
+  klayout_cuda_spatial_m1_width_space_result_v1 width_result{};
+  const int width_status =
+      klayout_cuda_spatial_run_m1_width_space_empty_v1(
+          &width_hit.request, &width_result);
+  const bool width_good =
+      width_status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      width_result.status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      width_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_RAW_HITS &&
+      width_result.device_flags == 0 &&
+      width_result.width_hit_count != 0 &&
+      width_result.width_uncertain_count == 0 &&
+      width_result.space_uncertain_count == 0 &&
+      valid_m1ws_counters(width_result);
+  if (!width_good) {
+    report_m1ws_failure(
+        "CUDA M1 width raw-hit fallback", width_status, width_result);
+  }
+  good = width_good && good;
+
+  M1WsSmokeScene space_hit = make_m1ws_scene({
+      rectangle(0, 0, 200, 300),
+      rectangle(329, 0, 529, 300)});
+  set_m1ws_digest(space_hit);
+  klayout_cuda_spatial_m1_width_space_result_v1 space_result{};
+  const int space_status =
+      klayout_cuda_spatial_run_m1_width_space_empty_v1(
+          &space_hit.request, &space_result);
+  const bool space_good =
+      space_status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      space_result.status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      space_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_RAW_HITS &&
+      space_result.device_flags == 0 &&
+      space_result.space_hit_count != 0 &&
+      space_result.width_hit_count == 0 &&
+      space_result.width_uncertain_count == 0 &&
+      space_result.space_uncertain_count == 0 &&
+      valid_m1ws_counters(space_result);
+  if (!space_good) {
+    report_m1ws_failure(
+        "CUDA M1 spacing raw-hit fallback", space_status, space_result);
+  }
+  good = space_good && good;
+
+  clean.request.scene_digest[0] ^= 0x80u;
+  klayout_cuda_spatial_m1_width_space_result_v1 tampered{};
+  const int tampered_status =
+      klayout_cuda_spatial_run_m1_width_space_empty_v1(
+          &clean.request, &tampered);
+  const bool tampered_good =
+      tampered_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      tampered.status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      tampered.disposition ==
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN &&
+      tampered.fallback_flags ==
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST &&
+      tampered.width_hit_count == 0 &&
+      tampered.space_hit_count == 0;
+  if (!tampered_good) {
+    report_m1ws_failure(
+        "CUDA M1 width/space digest gate", tampered_status, tampered);
+  }
+  good = tampered_good && good;
+  clean.request.scene_digest[0] ^= 0x80u;
+
+  const std::uint32_t saved_stride = clean.request.edge_record_bytes;
+  clean.request.edge_record_bytes = saved_stride + 8;
+  klayout_cuda_spatial_m1_width_space_result_v1 stride{};
+  const int stride_status =
+      klayout_cuda_spatial_run_m1_width_space_empty_v1(
+          &clean.request, &stride);
+  const bool stride_good =
+      stride_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      stride.status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      stride.disposition ==
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN &&
+      stride.fallback_flags ==
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+  if (!stride_good) {
+    report_m1ws_failure(
+        "CUDA M1 width/space stride gate", stride_status, stride);
+  }
+  good = stride_good && good;
+  clean.request.edge_record_bytes = saved_stride;
+
+  clean.request.max_memberships = 1;
+  klayout_cuda_spatial_m1_width_space_result_v1 capacity{};
+  const int capacity_status =
+      klayout_cuda_spatial_run_m1_width_space_empty_v1(
+          &clean.request, &capacity);
+  const bool capacity_good =
+      capacity_status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      capacity.status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      capacity.disposition ==
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN &&
+      (capacity.fallback_flags &
+       KLAYOUT_CUDA_SPATIAL_FALLBACK_MEMBERSHIP_CAPACITY) != 0 &&
+      capacity.width_hit_count == 0 &&
+      capacity.space_hit_count == 0;
+  if (!capacity_good) {
+    report_m1ws_failure(
+        "CUDA M1 width/space capacity gate", capacity_status, capacity);
+  }
+  good = capacity_good && good;
+
+  if (good) {
+    std::cout << "CUDA M1 width/space additive ABI smoke passed: "
+                 "atomic clean, width/space raw-hit fallback, digest/"
+                 "stride/capacity rejection\n";
+  }
+  return good;
+}
+
 }  // namespace
 
 int main() {
@@ -1041,5 +1439,6 @@ int main() {
   good = run_m1_boundary_context_uncertainty_gate() && good;
   good = run_m1_extrema_and_fail_closed_gate() && good;
   good = run_active3_abi_smoke() && good;
+  good = run_m1ws_abi_smoke() && good;
   return good ? 0 : 1;
 }

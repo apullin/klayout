@@ -1072,3 +1072,180 @@ TEST(18_MultiOutputRootCacheAndValidation)
   }
   EXPECT_EQ (caught, true);
 }
+
+static db::CompoundRegionOperationNode *
+make_m1_width_match_node (
+  db::Coord distance, const db::RegionCheckOptions &options,
+  db::edge_relation_type relation = db::WidthRelation)
+{
+  return new db::CompoundRegionToEdgePairProcessingOperationNode (
+    new db::SinglePolygonCheck (relation, distance, options),
+    new db::CompoundRegionOperationPrimaryNode (), true);
+}
+
+static db::CompoundRegionOperationNode *
+make_m1_spacing_match_node (
+  db::Coord distance, const db::RegionCheckOptions &options,
+  bool different_polygons = false)
+{
+  return new db::CompoundRegionCheckOperationNode (
+    0, new db::CompoundRegionOperationForeignNode (),
+    db::SpaceRelation, different_polygons, distance, options);
+}
+
+static bool
+matches_m1_width_space_test_nodes (
+  const db::RegionCheckOptions &node_width_options,
+  const db::RegionCheckOptions &node_spacing_options,
+  const db::RegionCheckOptions &qualified_width_options,
+  const db::RegionCheckOptions &qualified_spacing_options,
+  db::PropertyConstraint property_constraint = db::IgnoreProperties,
+  db::Coord node_width_distance = 130,
+  db::Coord node_spacing_distance = 130)
+{
+  std::vector<db::CompoundRegionOperationNode *> nodes;
+  nodes.push_back (
+    make_m1_width_match_node (node_width_distance, node_width_options));
+  nodes.push_back (
+    make_m1_spacing_match_node (node_spacing_distance, node_spacing_options));
+  db::CompoundRegionMultiOutputOperationNode multi (nodes);
+  return multi.matches_m1_width_space_checks (
+    130, qualified_width_options, 130, qualified_spacing_options,
+    property_constraint);
+}
+
+TEST(19_M1WidthSpaceMatcher)
+{
+  const db::RegionCheckOptions qualified_width_options;
+  const db::RegionCheckOptions qualified_spacing_options;
+
+  EXPECT_EQ (
+    matches_m1_width_space_test_nodes (
+      qualified_width_options, qualified_spacing_options,
+      qualified_width_options, qualified_spacing_options),
+    true);
+
+  EXPECT_EQ (
+    matches_m1_width_space_test_nodes (
+      qualified_width_options, qualified_spacing_options,
+      qualified_width_options, qualified_spacing_options,
+      db::SamePropertiesConstraint),
+    false);
+  EXPECT_EQ (
+    matches_m1_width_space_test_nodes (
+      qualified_width_options, qualified_spacing_options,
+      qualified_width_options, qualified_spacing_options,
+      db::IgnoreProperties, 131, 130),
+    false);
+  EXPECT_EQ (
+    matches_m1_width_space_test_nodes (
+      qualified_width_options, qualified_spacing_options,
+      qualified_width_options, qualified_spacing_options,
+      db::IgnoreProperties, 130, 131),
+    false);
+
+  db::RegionCheckOptions changed (qualified_width_options);
+  changed.whole_edges = true;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (changed, qualified_spacing_options, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_width_options;
+  changed.metrics = db::Square;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (changed, qualified_spacing_options, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_width_options;
+  changed.ignore_angle = 89.0;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (changed, qualified_spacing_options, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_width_options;
+  changed.min_projection = 1;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (changed, qualified_spacing_options, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_width_options;
+  changed.max_projection = 1000;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (changed, qualified_spacing_options, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_width_options;
+  changed.zd_mode = db::NeverIncludeZeroDistance;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (changed, qualified_spacing_options, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_width_options;
+  changed.shielded = false;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (changed, qualified_spacing_options, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_width_options;
+  changed.opposite_filter = db::OnlyOpposite;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (changed, qualified_spacing_options, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_width_options;
+  changed.rect_filter = db::OneSideAllowed;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (changed, qualified_spacing_options, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_width_options;
+  changed.negative = true;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (changed, qualified_spacing_options, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_width_options;
+  changed.prop_constraint = db::NoPropertyConstraint;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (changed, qualified_spacing_options, qualified_width_options, qualified_spacing_options), false);
+
+  changed = qualified_spacing_options;
+  changed.whole_edges = true;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (qualified_width_options, changed, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_spacing_options;
+  changed.metrics = db::Square;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (qualified_width_options, changed, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_spacing_options;
+  changed.ignore_angle = 89.0;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (qualified_width_options, changed, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_spacing_options;
+  changed.min_projection = 1;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (qualified_width_options, changed, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_spacing_options;
+  changed.max_projection = 1000;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (qualified_width_options, changed, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_spacing_options;
+  changed.zd_mode = db::NeverIncludeZeroDistance;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (qualified_width_options, changed, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_spacing_options;
+  changed.shielded = false;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (qualified_width_options, changed, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_spacing_options;
+  changed.opposite_filter = db::OnlyOpposite;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (qualified_width_options, changed, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_spacing_options;
+  changed.rect_filter = db::OneSideAllowed;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (qualified_width_options, changed, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_spacing_options;
+  changed.negative = true;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (qualified_width_options, changed, qualified_width_options, qualified_spacing_options), false);
+  changed = qualified_spacing_options;
+  changed.prop_constraint = db::NoPropertyConstraint;
+  EXPECT_EQ (matches_m1_width_space_test_nodes (qualified_width_options, changed, qualified_width_options, qualified_spacing_options), false);
+
+  std::vector<db::CompoundRegionOperationNode *> wrong_order;
+  wrong_order.push_back (
+    make_m1_spacing_match_node (130, qualified_spacing_options));
+  wrong_order.push_back (
+    make_m1_width_match_node (130, qualified_width_options));
+  db::CompoundRegionMultiOutputOperationNode reversed (wrong_order);
+  EXPECT_EQ (
+    reversed.matches_m1_width_space_checks (
+      130, qualified_width_options, 130, qualified_spacing_options,
+      db::IgnoreProperties),
+    false);
+
+  std::vector<db::CompoundRegionOperationNode *> isolated_nodes;
+  isolated_nodes.push_back (
+    make_m1_width_match_node (130, qualified_width_options));
+  isolated_nodes.push_back (
+    make_m1_spacing_match_node (130, qualified_spacing_options, true));
+  db::CompoundRegionMultiOutputOperationNode isolated (isolated_nodes);
+  EXPECT_EQ (
+    isolated.matches_m1_width_space_checks (
+      130, qualified_width_options, 130, qualified_spacing_options,
+      db::IgnoreProperties),
+    false);
+
+  std::vector<db::CompoundRegionOperationNode *> notch_nodes;
+  notch_nodes.push_back (
+    make_m1_width_match_node (
+      130, qualified_width_options, db::SpaceRelation));
+  notch_nodes.push_back (
+    make_m1_spacing_match_node (130, qualified_spacing_options));
+  db::CompoundRegionMultiOutputOperationNode notch (notch_nodes);
+  EXPECT_EQ (
+    notch.matches_m1_width_space_checks (
+      130, qualified_width_options, 130, qualified_spacing_options,
+      db::IgnoreProperties),
+    false);
+}

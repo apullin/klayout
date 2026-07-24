@@ -445,6 +445,216 @@ KLAYOUT_CUDA_SPATIAL_EXPORT int klayout_cuda_spatial_run_active3_empty_v1 (
   struct klayout_cuda_spatial_active3_result_v1 *result);
 
 /*
+ * Optional atomic METAL1.1/METAL1.2 empty certificate.
+ *
+ * The caller passes the pointer-free arrays published by
+ * CudaM1WidthSpaceScene.  Array records below deliberately match those
+ * records field-for-field, while the request carries the canonical scene
+ * header, digest, complete hierarchy-context census, and bounded device
+ * capacities.  No KLayout object or file-format record crosses this ABI.
+ *
+ * The backend evaluates an unshielded exact edge-pair superset.  Shielding can
+ * remove complete pairs but cannot create one, so COMPLETE with zero raw hits
+ * certifies both rules empty.  A hit is diagnostic only and, like uncertainty,
+ * capacity exhaustion, a malformed request, or a CUDA error, requires the
+ * caller to execute both pristine CPU rules.
+ */
+enum klayout_cuda_spatial_m1_width_space_opcode
+{
+  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_MERGED_EMPTY = 1
+};
+
+enum klayout_cuda_spatial_m1_width_space_option_flag
+{
+  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_EXACT_MERGED_M1 = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_IDENTICAL_INPUT = 1u << 1,
+  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_SAME_STORE_LAYOUT_TOP_LAYER = 1u << 2,
+  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_NO_BREAKOUT = 1u << 3,
+  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_EUCLIDIAN = 1u << 4,
+  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_IGNORE_ANGLE_90 = 1u << 5,
+  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_WHOLE_EDGES_FALSE = 1u << 6,
+  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_PROJECTION_DEFAULTS = 1u << 7,
+  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_SHIELDED = 1u << 8,
+  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_NO_FILTERS_OR_NEGATIVE = 1u << 9,
+  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_IGNORE_PROPERTIES = 1u << 10,
+  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_INCLUDE_TOUCHING = 1u << 11
+};
+
+#define KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_QUALIFIED_OPTIONS \
+  ((1u << 12) - 1u)
+
+enum klayout_cuda_spatial_m1_width_space_disposition
+{
+  /* Both complete qualified rule universes have zero raw hits. */
+  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_COMPLETE = 0,
+  /* At least one raw width/space hit blocks the atomic certificate. */
+  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_RAW_HITS = 1,
+  /* The bounded backend could not establish a complete exact result. */
+  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN = 2
+};
+
+struct klayout_cuda_spatial_m1_width_space_context_v1
+{
+  int64_t tx;
+  int64_t ty;
+  uint32_t cell_id;
+  uint32_t transform_code;
+};
+
+struct klayout_cuda_spatial_m1_width_space_cell_v1
+{
+  uint64_t source_cell_index;
+  uint64_t polygon_begin;
+  uint64_t edge_begin;
+  uint32_t polygon_count;
+  uint32_t edge_count;
+};
+
+struct klayout_cuda_spatial_m1_width_space_polygon_v1
+{
+  uint64_t edge_begin;
+  int64_t left;
+  int64_t bottom;
+  int64_t right;
+  int64_t top;
+  uint32_t polygon_id;
+  uint32_t edge_count;
+};
+
+struct klayout_cuda_spatial_m1_width_space_edge_v1
+{
+  int64_t x1;
+  int64_t y1;
+  int64_t x2;
+  int64_t y2;
+};
+
+/*
+ * Record-array pointers are byte-addressed deliberately.  A C++ caller may
+ * pass the existing CudaM1WidthSpaceScene vector storage directly after
+ * proving sizeof/offsetof compatibility with the ABI records above; the
+ * backend validates every stride and reads host records through byte copies,
+ * avoiding both a multi-million-record repack and cross-type aliasing.
+ */
+struct klayout_cuda_spatial_m1_width_space_request_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  uint32_t root_cell;
+  uint32_t scene_reserved;
+  int32_t device;
+  uint32_t reserved0;
+  int64_t width_distance;
+  int64_t spacing_distance;
+  int64_t grid_cell_size;
+
+  const void *contexts;
+  uint64_t context_count;
+  uint32_t context_record_bytes;
+  uint32_t context_reserved;
+  const uint32_t *metal_contexts;
+  uint64_t metal_context_count;
+  const uint64_t *context_polygon_offsets;
+  uint64_t context_polygon_offset_count;
+  const uint64_t *context_edge_offsets;
+  uint64_t context_edge_offset_count;
+  const void *cells;
+  uint64_t cell_count;
+  uint32_t cell_record_bytes;
+  uint32_t cell_reserved;
+  const void *polygons;
+  uint64_t polygon_count;
+  uint32_t polygon_record_bytes;
+  uint32_t polygon_reserved;
+  const void *edges;
+  uint64_t edge_count;
+  uint32_t edge_record_bytes;
+  uint32_t edge_reserved;
+
+  uint64_t flat_polygon_count;
+  uint64_t flat_edge_count;
+  int64_t scene_left;
+  int64_t scene_bottom;
+  int64_t scene_right;
+  int64_t scene_top;
+
+  uint64_t max_contexts;
+  uint64_t max_grid_cells;
+  uint64_t max_memberships;
+  uint64_t max_pair_work;
+  uint64_t max_flat_edges;
+  uint64_t max_flat_polygons;
+  uint8_t scene_digest[32];
+  uint64_t reserved1[2];
+};
+
+struct klayout_cuda_spatial_m1_width_space_result_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t status;
+  uint32_t fallback_flags;
+  uint32_t disposition;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  uint32_t root_cell;
+  uint32_t device_flags;
+  uint32_t reserved0;
+  int64_t width_distance;
+  int64_t spacing_distance;
+  int64_t grid_cell_size;
+  int64_t scene_left;
+  int64_t scene_bottom;
+  int64_t scene_right;
+  int64_t scene_top;
+  uint8_t scene_digest[32];
+
+  uint64_t context_count;
+  uint64_t metal_context_count;
+  uint64_t cell_count;
+  uint64_t polygon_count;
+  uint64_t edge_count;
+  uint64_t flat_polygon_count;
+  uint64_t flat_edge_count;
+  uint64_t grid_cell_count;
+  uint64_t membership_count;
+  uint64_t pair_work_count;
+  uint64_t unique_edge_pair_count;
+  uint64_t width_pair_count;
+  uint64_t space_pair_count;
+  uint64_t width_hit_count;
+  uint64_t space_hit_count;
+  uint64_t width_uncertain_count;
+  uint64_t space_uncertain_count;
+
+  uint64_t setup_ns;
+  uint64_t h2d_ns;
+  uint64_t edge_expand_ns;
+  uint64_t grid_count_ns;
+  uint64_t grid_build_ns;
+  uint64_t pair_count_ns;
+  uint64_t query_ns;
+  uint64_t d2h_ns;
+  uint64_t total_ns;
+  char message[192];
+};
+
+typedef int (*klayout_cuda_spatial_run_m1_width_space_empty_v1_func) (
+  const struct klayout_cuda_spatial_m1_width_space_request_v1 *,
+  struct klayout_cuda_spatial_m1_width_space_result_v1 *);
+
+KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_m1_width_space_empty_v1 (
+  const struct klayout_cuda_spatial_m1_width_space_request_v1 *request,
+  struct klayout_cuda_spatial_m1_width_space_result_v1 *result);
+
+/*
  * Optional atomic VIA1-stack empty certificate.
  *
  * The caller supplies one qualified hierarchy containing raw M1, VIA1 and M2

@@ -42,6 +42,7 @@
 #include "dbLocalOperationUtils.h"
 #include "dbCompoundOperation.h"
 #include "dbCudaActive3.h"
+#include "dbCudaM1WidthSpace.h"
 #include "dbLayoutToNetlist.h"
 #include "tlTimer.h"
 
@@ -2462,6 +2463,36 @@ Output *region_cop_with_properties_impl (DeepRegion *region, db::CompoundRegionO
   return res.release ();
 }
 
+static bool
+try_cuda_m1_width_space_batch (
+  const db::DeepLayer &polygons,
+  const db::CompoundRegionMultiOutputOperationNode &node,
+  db::PropertyConstraint prop_constraint, bool merged_semantics,
+  const db::EdgePair *)
+{
+  if (! merged_semantics) {
+    return false;
+  }
+  db::CudaM1WidthSpaceBuildSpec spec;
+  spec.inputs_are_merged = true;
+  return
+    node.matches_m1_width_space_checks (
+      spec.width_distance, spec.width_options,
+      spec.spacing_distance, spec.spacing_options,
+      prop_constraint) &&
+    db::cuda_m1_width_space_try_empty (polygons, spec);
+}
+
+template <class TR>
+static bool
+try_cuda_m1_width_space_batch (
+  const db::DeepLayer &,
+  const db::CompoundRegionMultiOutputOperationNode &,
+  db::PropertyConstraint, bool, const TR *)
+{
+  return false;
+}
+
 template <class TR, class Output>
 static
 std::vector<Output *> region_cop_multi_with_properties_impl (DeepRegion *region, db::CompoundRegionMultiOutputOperationNode &node, db::PropertyConstraint prop_constraint)
@@ -2487,6 +2518,19 @@ std::vector<Output *> region_cop_multi_with_properties_impl (DeepRegion *region,
 
   if (owned_outputs.empty ()) {
     return std::vector<Output *> ();
+  }
+
+  if (try_cuda_m1_width_space_batch (
+        polygons, node, prop_constraint, region->merged_semantics (),
+        static_cast<const TR *> (0))) {
+    std::vector<Output *> outputs;
+    outputs.reserve (owned_outputs.size ());
+    for (typename std::vector<std::unique_ptr<Output> >::iterator o =
+           owned_outputs.begin ();
+         o != owned_outputs.end (); ++o) {
+      outputs.push_back (o->release ());
+    }
+    return outputs;
   }
 
   db::local_processor<db::PolygonRefWithProperties, db::PolygonRefWithProperties, db::object_with_properties<TR> > proc (&owned_outputs.front ()->deep_layer ().layout (), &owned_outputs.front ()->deep_layer ().initial_cell (), region->deep_layer ().breakout_cells ());
