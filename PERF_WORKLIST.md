@@ -1810,9 +1810,26 @@ not just wall time.
             only after zero-area terminal culling and 13,946 genuinely nonempty
             profiles.  The CUDA classifier reported `gpu_mismatches=0` and
             `false_clean=0`; commits `9ba8862` and `9493e42` are pushed.
-          - [ ] Measure production candidate volume and atomic-certificate
-            coverage before adding the POLY.3/.4 host ABI or claiming live wall
-            time.
+          - [x] **Measure production candidate volume and atomic-certificate
+            coverage:** all 3,401,254 production gates certify atomically.
+            POLY.3 produces 4,462,594 candidate windows with maximum two per
+            gate; POLY.4 produces 3,403,326 with maximum four; neither profile
+            has a capacity, fallback, or unsupported gate.  The exact KLayout
+            terminal oracle produced 6,802,508 raw edge pairs per rule, all
+            zero-area, with zero retained after `without_area(0)`.  The
+            materialized device-payload lower bound is 451,288,546 bytes
+            (430.4 MiB).  The charged 242.06-second/7.92-GiB dry run is not a
+            production-time model: 156.56 s was one-time exhaustive flat
+            census construction, while the complete candidate scans took
+            4.84 + 3.98 s and classification 0.044 s.  Commit `5ffa042`;
+            evidence `cuda-runs/poly34-production-dry-run.ktYpv1`.
+          - [ ] **Integrate the atomic POLY.3/.4 clean-only transaction:**
+            reuse and pack the already-derived hierarchical POLY/ACTIVE/GATE
+            regions, generate the bounded windows on device, and return one
+            digest-bound result.  Do not put the expensive flat census path in
+            production.  Require clean, nonempty-hit, capacity, malformed,
+            missing-backend, CPU-fallback, and exact live-report differentials
+            before booking wall time.
         - [ ] **Reuse the cumulative M3 prefix for the M4 antenna check:** the
           current owner spends roughly 78.33 aggregate CPU-seconds extracting
           and evaluating M3, then rebuilding almost the entire graph for M4
