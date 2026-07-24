@@ -1740,9 +1740,29 @@ not just wall time.
             4,380,228 stored edges, and 4,385,384 flat edges over 39,573
             contexts; host scene construction took 9.459 s and is comfortably
             below the existing 100-million-edge capacity.
-          - [ ] Run the real GPU replay, focused clean/hit/fail-closed gate,
-            and same-build production owner A/B before enabling M2 in the full
-            launcher.
+          - [x] **Run the first real GPU replay and same-build production-owner
+            A/B:** the CUDA certificate is exact but the first live integration
+            is a performance NO-GO.  Control and candidate reports are byte
+            identical, and their generator-stripped report plus the trusted
+            full-gate shard all retain canonical SHA-256
+            `b817dc5b2158a5a04316daae8e27ec7fbf7e82341f961a3464c17937c8d9d77e`.
+            The backend certified zero hits/uncertainty over 4,385,384 flat
+            edges in 0.392 s.  However, 9.869 s of host lowering plus 19.516 s
+            inside the backend call increased the isolated owner from
+            **92.25 to 118.66 s**.  The corresponding `drc_batch` moved from
+            57.46 to 76.78 s.  Evidence:
+            `cuda-runs/m2-width-space-sniff.ld2a7u`.
+          - [ ] **Remove duplicate quadratic contour validation before the
+            second M2 production A/B:** both the KLayout serializer and the
+            backend independently perform an all-pairs self-intersection check
+            for every merged Manhattan contour.  Preserve fail-closed exactness
+            with one shared near-linear validator, retain adversarial
+            malformed-contour gates, then repeat the focused clean/hit/fallback
+            and production timing gates.  The 57.46-second CPU batch contains
+            roughly 47.4 s of common merged-geometry preparation, so the
+            bounded M2 prize is approximately 10 real owner seconds, or
+            9--10 real seconds off the current full-wall plateau once M2 falls
+            behind the 91.6-second neighboring owner.
         - [ ] **Fuse POLY.3 and POLY.4 into one exact terminal-empty CUDA
           transaction:** upload the shared derived gate once and evaluate the
           110/140-DBU projection-enclosure profiles atomically.  The certificate
@@ -1751,6 +1771,18 @@ not just wall time.
           expected and cannot be treated as hits.  Eleven preserved runs model
           a 51.81-second gross owner ceiling before a roughly 2--5-second
           transaction, subject to differential proof and a production census.
+
+          - [x] **Qualify the conservative dual-profile predicate island:** the
+            production census contains 3,401,254 merged gate polygons, all
+            3,401,254 boxes and all exactly 100 DBU wide.  Fifteen directed plus
+            20,000 seeded randomized KLayout differential cases covered
+            133,116 raw edge pairs, including 17,887 profiles that become empty
+            only after zero-area terminal culling and 13,946 genuinely nonempty
+            profiles.  The CUDA classifier reported `gpu_mismatches=0` and
+            `false_clean=0`; commits `9ba8862` and `9493e42` are pushed.
+          - [ ] Measure production candidate volume and atomic-certificate
+            coverage before adding the POLY.3/.4 host ABI or claiming live wall
+            time.
         - [ ] **Reuse the cumulative M3 prefix for the M4 antenna check:** the
           current owner spends roughly 78.33 aggregate CPU-seconds extracting
           and evaluating M3, then rebuilding almost the entire graph for M4
