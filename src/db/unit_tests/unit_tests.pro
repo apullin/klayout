@@ -9,6 +9,7 @@ include($$PWD/../../lib_ut.pri)
 SOURCES = \
   dbCellInstanceSetHasherTests.cc \
   dbCompoundOperationTests.cc \
+  dbCudaM1WidthSpaceTests.cc \
   dbEdgeNeighborhoodTests.cc \
   dbFillToolTests.cc \
   dbLibraryTests.cc \
@@ -103,4 +104,3 @@ INCLUDEPATH += $$TL_INC $$DB_INC $$GSI_INC
 DEPENDPATH += $$TL_INC $$DB_INC $$GSI_INC
 
 LIBS += -L$$DESTDIR_UT -lklayout_db -lklayout_tl -lklayout_gsi
-

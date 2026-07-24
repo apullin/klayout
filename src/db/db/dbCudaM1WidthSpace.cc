@@ -1,0 +1,1142 @@
+/*
+
+  KLayout Layout Viewer
+  Copyright (C) 2006-2026 Matthias Koefferlein
+
+  This program is free software; you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation; either version 2 of the License, or
+  (at your option) any later version.
+
+*/
+
+#include "dbCudaM1WidthSpace.h"
+
+#include "dbArray.h"
+#include "dbCell.h"
+#include "dbCudaActive3Digest.h"
+#include "dbDeepShapeStore.h"
+#include "dbLayout.h"
+#include "dbPolygon.h"
+#include "dbShape.h"
+#include "dbShapes.h"
+
+#include <algorithm>
+#include <cstring>
+#include <limits>
+#include <map>
+#include <set>
+#include <stdexcept>
+#include <type_traits>
+#include <typeinfo>
+#include <utility>
+#include <vector>
+
+namespace db
+{
+
+namespace
+{
+
+const uint32_t scene_format_version = 1;
+const uint32_t qualified_dbu_per_micron = 2000;
+const int64_t qualified_distance = 130;
+const unsigned maximum_hierarchy_depth = 1024;
+const int64_t accepted_coordinate_magnitude = INT64_C (1000000000000);
+
+const uint64_t default_max_cells = UINT64_C (4000000);
+const uint64_t default_max_contexts = UINT64_C (4000000);
+const uint64_t default_max_stored_polygons = UINT64_C (20000000);
+const uint64_t default_max_stored_edges = UINT64_C (100000000);
+const uint64_t default_max_flat_polygons = UINT64_C (200000000);
+const uint64_t default_max_flat_edges = UINT64_C (800000000);
+
+class M1WidthSpaceDecline
+  : public std::runtime_error
+{
+public:
+  explicit M1WidthSpaceDecline (const std::string &message)
+    : std::runtime_error (message)
+  {
+    //  nothing yet
+  }
+};
+
+bool checked_add_u64 (uint64_t a, uint64_t b, uint64_t &result)
+{
+  if (b > std::numeric_limits<uint64_t>::max () - a) {
+    return false;
+  }
+  result = a + b;
+  return true;
+}
+
+bool checked_multiply_u64 (uint64_t a, uint64_t b, uint64_t &result)
+{
+  if (a && b > std::numeric_limits<uint64_t>::max () / a) {
+    return false;
+  }
+  result = a * b;
+  return true;
+}
+
+int64_t narrow_i64 (__int128 value, const char *what)
+{
+  if (value < std::numeric_limits<int64_t>::min () ||
+      value > std::numeric_limits<int64_t>::max ()) {
+    throw M1WidthSpaceDecline (
+      std::string (what) + " overflows signed int64");
+  }
+  const int64_t result = int64_t (value);
+  if (result < -accepted_coordinate_magnitude ||
+      result > accepted_coordinate_magnitude) {
+    throw M1WidthSpaceDecline (
+      std::string (what) + " exceeds the qualified coordinate domain");
+  }
+  return result;
+}
+
+uint64_t vector_size_u64 (size_t size, const char *what)
+{
+  if (size > std::numeric_limits<uint64_t>::max ()) {
+    throw M1WidthSpaceDecline (
+      std::string (what) + " cannot be represented by uint64");
+  }
+  return uint64_t (size);
+}
+
+void require_room (
+  uint64_t current, uint64_t additional, uint64_t maximum,
+  const char *what)
+{
+  uint64_t total = 0;
+  if (! checked_add_u64 (current, additional, total) || total > maximum) {
+    throw M1WidthSpaceDecline (
+      std::string (what) + " exceeds the configured capacity");
+  }
+}
+
+struct Matrix
+{
+  int xx, xy, yx, yy;
+};
+
+const Matrix transforms [8] = {
+  { 1, 0, 0, 1 }, { 0, -1, 1, 0 }, { -1, 0, 0, -1 },
+  { 0, 1, -1, 0 }, { 1, 0, 0, -1 }, { 0, 1, 1, 0 },
+  { -1, 0, 0, 1 }, { 0, -1, -1, 0 }
+};
+
+std::pair<__int128, __int128>
+transform_128 (uint32_t code, __int128 x, __int128 y)
+{
+  if (code >= 8) {
+    throw M1WidthSpaceDecline ("invalid orthogonal transform code");
+  }
+  const Matrix &matrix = transforms [code];
+  return std::make_pair (
+    __int128 (matrix.xx) * x + __int128 (matrix.xy) * y,
+    __int128 (matrix.yx) * x + __int128 (matrix.yy) * y);
+}
+
+uint32_t compose_transform (uint32_t outer, uint32_t inner)
+{
+  if (outer >= 8 || inner >= 8) {
+    throw M1WidthSpaceDecline (
+      "invalid transform during hierarchy expansion");
+  }
+  const Matrix &a = transforms [outer];
+  const Matrix &b = transforms [inner];
+  const Matrix product = {
+    a.xx * b.xx + a.xy * b.yx,
+    a.xx * b.xy + a.xy * b.yy,
+    a.yx * b.xx + a.yy * b.yx,
+    a.yx * b.xy + a.yy * b.yy
+  };
+  for (uint32_t code = 0; code < 8; ++code) {
+    const Matrix &candidate = transforms [code];
+    if (candidate.xx == product.xx && candidate.xy == product.xy &&
+        candidate.yx == product.yx && candidate.yy == product.yy) {
+      return code;
+    }
+  }
+  throw M1WidthSpaceDecline (
+    "orthogonal transform composition escaped its group");
+}
+
+struct InstanceTemplate
+{
+  uint32_t child_cell;
+  uint32_t columns;
+  uint32_t rows;
+  uint32_t transform_code;
+  int64_t dx, dy, ax, ay, bx, by;
+  uint64_t occurrences;
+};
+
+struct CellTemplate
+{
+  std::vector<InstanceTemplate> instances;
+};
+
+bool positive_collinear_overlap (
+  const CudaM1WidthSpaceEdge &a, const CudaM1WidthSpaceEdge &b)
+{
+  if (a.y1 == a.y2 && b.y1 == b.y2 && a.y1 == b.y1) {
+    return std::min (std::max (a.x1, a.x2), std::max (b.x1, b.x2)) >
+           std::max (std::min (a.x1, a.x2), std::min (b.x1, b.x2));
+  }
+  if (a.x1 == a.x2 && b.x1 == b.x2 && a.x1 == b.x1) {
+    return std::min (std::max (a.y1, a.y2), std::max (b.y1, b.y2)) >
+           std::max (std::min (a.y1, a.y2), std::min (b.y1, b.y2));
+  }
+  return false;
+}
+
+bool manhattan_segments_intersect (
+  const CudaM1WidthSpaceEdge &a, const CudaM1WidthSpaceEdge &b)
+{
+  if (a.y1 == a.y2 && b.y1 == b.y2) {
+    return a.y1 == b.y1 &&
+           std::max (std::min (a.x1, a.x2), std::min (b.x1, b.x2)) <=
+           std::min (std::max (a.x1, a.x2), std::max (b.x1, b.x2));
+  }
+  if (a.x1 == a.x2 && b.x1 == b.x2) {
+    return a.x1 == b.x1 &&
+           std::max (std::min (a.y1, a.y2), std::min (b.y1, b.y2)) <=
+           std::min (std::max (a.y1, a.y2), std::max (b.y1, b.y2));
+  }
+  const CudaM1WidthSpaceEdge &horizontal = a.y1 == a.y2 ? a : b;
+  const CudaM1WidthSpaceEdge &vertical = a.y1 == a.y2 ? b : a;
+  return
+    std::min (horizontal.x1, horizontal.x2) <= vertical.x1 &&
+    vertical.x1 <= std::max (horizontal.x1, horizontal.x2) &&
+    std::min (vertical.y1, vertical.y2) <= horizontal.y1 &&
+    horizontal.y1 <= std::max (vertical.y1, vertical.y2);
+}
+
+void append_polygon (
+  const db::Shape &shape, uint32_t polygon_id,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaM1WidthSpaceScene &scene)
+{
+  if (shape.prop_id () != 0) {
+    throw M1WidthSpaceDecline ("M1 polygon has properties");
+  }
+  if (! shape.is_box () && ! shape.is_polygon ()) {
+    throw M1WidthSpaceDecline ("M1 layer contains a non-polygon shape");
+  }
+
+  db::Polygon polygon;
+  if (! shape.polygon (polygon)) {
+    throw M1WidthSpaceDecline ("M1 polygon is malformed");
+  }
+  if (polygon.holes () != 0) {
+    throw M1WidthSpaceDecline (
+      "M1 polygon has holes, which are outside the first scene format");
+  }
+
+  std::vector<CudaM1WidthSpaceEdge> contour;
+  std::set<std::pair<int64_t, int64_t> > vertices;
+  __int128 twice_area = 0;
+  bool have_bounds = false;
+  int64_t left = 0, bottom = 0, right = 0, top = 0;
+  for (db::Polygon::polygon_edge_iterator edge = polygon.begin_edge ();
+       ! edge.at_end (); ++edge) {
+    const int64_t x1 = narrow_i64 ((*edge).p1 ().x (), "polygon x1");
+    const int64_t y1 = narrow_i64 ((*edge).p1 ().y (), "polygon y1");
+    const int64_t x2 = narrow_i64 ((*edge).p2 ().x (), "polygon x2");
+    const int64_t y2 = narrow_i64 ((*edge).p2 ().y (), "polygon y2");
+    if ((x1 == x2 && y1 == y2) || ! (x1 == x2 || y1 == y2)) {
+      throw M1WidthSpaceDecline (
+        "M1 polygon has a degenerate or non-Manhattan edge");
+    }
+    if (! vertices.insert (std::make_pair (x1, y1)).second) {
+      throw M1WidthSpaceDecline ("M1 polygon repeats a contour vertex");
+    }
+    contour.push_back (CudaM1WidthSpaceEdge { x1, y1, x2, y2 });
+    twice_area += __int128 (x1) * y2 - __int128 (x2) * y1;
+    if (! have_bounds) {
+      left = std::min (x1, x2);
+      bottom = std::min (y1, y2);
+      right = std::max (x1, x2);
+      top = std::max (y1, y2);
+      have_bounds = true;
+    } else {
+      left = std::min (left, std::min (x1, x2));
+      bottom = std::min (bottom, std::min (y1, y2));
+      right = std::max (right, std::max (x1, x2));
+      top = std::max (top, std::max (y1, y2));
+    }
+  }
+  if (contour.size () < 4 || twice_area >= 0 || ! have_bounds ||
+      left >= right || bottom >= top) {
+    throw M1WidthSpaceDecline (
+      "M1 polygon is too small, empty, or not clockwise");
+  }
+  for (size_t i = 0; i < contour.size (); ++i) {
+    const size_t following = (i + 1) % contour.size ();
+    if (contour [i].x2 != contour [following].x1 ||
+        contour [i].y2 != contour [following].y1) {
+      throw M1WidthSpaceDecline ("M1 polygon contour is open");
+    }
+    for (size_t j = i + 1; j < contour.size (); ++j) {
+      if (! manhattan_segments_intersect (contour [i], contour [j])) {
+        continue;
+      }
+      const bool adjacent =
+        j == i + 1 || (i == 0 && j + 1 == contour.size ());
+      if (! adjacent ||
+          positive_collinear_overlap (contour [i], contour [j])) {
+        throw M1WidthSpaceDecline (
+          "M1 polygon contour self-intersects");
+      }
+    }
+  }
+  if (contour.size () > std::numeric_limits<uint32_t>::max ()) {
+    throw M1WidthSpaceDecline (
+      "one M1 polygon has more than uint32 contour edges");
+  }
+
+  const uint64_t stored_polygons =
+    vector_size_u64 (scene.polygons.size (), "stored polygon count");
+  const uint64_t stored_edges =
+    vector_size_u64 (scene.edges.size (), "stored edge count");
+  require_room (
+    stored_polygons, 1, limits.max_stored_polygons, "stored polygon count");
+  require_room (
+    stored_edges, uint64_t (contour.size ()), limits.max_stored_edges,
+    "stored edge count");
+  if (scene.polygons.size () == scene.polygons.max_size () ||
+      contour.size () > scene.edges.max_size () - scene.edges.size ()) {
+    throw M1WidthSpaceDecline (
+      "host vector capacity cannot represent the M1 scene");
+  }
+
+  CudaM1WidthSpacePolygon record;
+  record.edge_begin = stored_edges;
+  record.left = left;
+  record.bottom = bottom;
+  record.right = right;
+  record.top = top;
+  record.polygon_id = polygon_id;
+  record.edge_count = uint32_t (contour.size ());
+  scene.polygons.push_back (record);
+  scene.edges.insert (scene.edges.end (), contour.begin (), contour.end ());
+}
+
+void append_cell_layer (
+  const db::Cell &cell, unsigned int layer, uint64_t source_cell_index,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaM1WidthSpaceScene &scene, CudaM1WidthSpaceCell &record)
+{
+  record.source_cell_index = source_cell_index;
+  record.polygon_begin =
+    vector_size_u64 (scene.polygons.size (), "cell polygon begin");
+  record.edge_begin =
+    vector_size_u64 (scene.edges.size (), "cell edge begin");
+
+  uint32_t polygon_id = 0;
+  const db::Shapes &shapes = cell.shapes (layer);
+  for (db::Shapes::shape_iterator shape =
+         shapes.begin (db::ShapeIterator::All);
+       ! shape.at_end (); ++shape) {
+    if (polygon_id == std::numeric_limits<uint32_t>::max ()) {
+      throw M1WidthSpaceDecline (
+        "per-cell M1 polygon count exceeds uint32");
+    }
+    append_polygon (*shape, polygon_id, limits, scene);
+    ++polygon_id;
+  }
+
+  const uint64_t polygon_count =
+    vector_size_u64 (scene.polygons.size (), "stored polygon count") -
+    record.polygon_begin;
+  const uint64_t edge_count =
+    vector_size_u64 (scene.edges.size (), "stored edge count") -
+    record.edge_begin;
+  if (polygon_count > std::numeric_limits<uint32_t>::max () ||
+      edge_count > std::numeric_limits<uint32_t>::max ()) {
+    throw M1WidthSpaceDecline (
+      "per-cell M1 polygon or edge count exceeds uint32");
+  }
+  record.polygon_count = uint32_t (polygon_count);
+  record.edge_count = uint32_t (edge_count);
+}
+
+InstanceTemplate make_instance (
+  const db::Instance &instance,
+  const std::map<db::cell_index_type, uint32_t> &dense_cells)
+{
+  if (instance.prop_id () != 0 || instance.is_complex ()) {
+    throw M1WidthSpaceDecline (
+      "hierarchy has an instance property or complex transform");
+  }
+
+  const std::map<db::cell_index_type, uint32_t>::const_iterator child =
+    dense_cells.find (instance.cell_index ());
+  if (child == dense_cells.end ()) {
+    throw M1WidthSpaceDecline (
+      "hierarchy instance targets an unreachable cell");
+  }
+
+  const db::CellInstArray &array = instance.cell_inst ();
+  const db::ArrayBase *delegate = array.delegate ();
+  db::Vector a, b;
+  unsigned long na = 1, nb = 1;
+  const bool regular_delegate =
+    delegate != 0 &&
+    (typeid (*delegate) == typeid (db::regular_array<db::Coord>) ||
+     typeid (*delegate) == typeid (db::regular_complex_array<db::Coord>));
+  if (delegate != 0 &&
+      (! regular_delegate || ! array.is_regular_array (a, b, na, nb))) {
+    throw M1WidthSpaceDecline (
+      "hierarchy has an irregular instance array");
+  }
+  if (delegate == 0) {
+    a = db::Vector ();
+    b = db::Vector ();
+    na = nb = 1;
+  }
+  if (na == 0 || nb == 0 ||
+      na > std::numeric_limits<uint32_t>::max () ||
+      nb > std::numeric_limits<uint32_t>::max ()) {
+    throw M1WidthSpaceDecline (
+      "hierarchy has an invalid array dimension");
+  }
+
+  const db::Trans &trans = instance.front ();
+  const int transform_code = trans.rot ();
+  if (transform_code < 0 || transform_code >= 8) {
+    throw M1WidthSpaceDecline (
+      "hierarchy has an invalid orthogonal transform");
+  }
+
+  InstanceTemplate result;
+  result.child_cell = child->second;
+  result.columns = uint32_t (na);
+  result.rows = uint32_t (nb);
+  result.transform_code = uint32_t (transform_code);
+  result.dx = narrow_i64 (trans.disp ().x (), "instance dx");
+  result.dy = narrow_i64 (trans.disp ().y (), "instance dy");
+  result.ax = result.columns == 1 ? 0 : narrow_i64 (a.x (), "array ax");
+  result.ay = result.columns == 1 ? 0 : narrow_i64 (a.y (), "array ay");
+  result.bx = result.rows == 1 ? 0 : narrow_i64 (b.x (), "array bx");
+  result.by = result.rows == 1 ? 0 : narrow_i64 (b.y (), "array by");
+  if ((result.columns > 1 && result.ax == 0 && result.ay == 0) ||
+      (result.rows > 1 && result.bx == 0 && result.by == 0) ||
+      ! checked_multiply_u64 (
+          result.columns, result.rows, result.occurrences)) {
+    throw M1WidthSpaceDecline (
+      "hierarchy has a malformed regular array");
+  }
+
+  const __int128 ax = __int128 (result.columns - 1) * result.ax;
+  const __int128 ay = __int128 (result.columns - 1) * result.ay;
+  const __int128 bx = __int128 (result.rows - 1) * result.bx;
+  const __int128 by = __int128 (result.rows - 1) * result.by;
+  narrow_i64 (__int128 (result.dx) + ax + bx, "last array origin x");
+  narrow_i64 (__int128 (result.dy) + ay + by, "last array origin y");
+  return result;
+}
+
+uint64_t subtree_context_count (
+  uint32_t cell, const std::vector<CellTemplate> &cells,
+  std::vector<uint8_t> &state, std::vector<uint64_t> &memo,
+  uint64_t maximum, unsigned depth)
+{
+  if (depth > maximum_hierarchy_depth) {
+    throw M1WidthSpaceDecline (
+      "hierarchy exceeds the qualified recursion depth");
+  }
+  if (cell >= cells.size ()) {
+    throw M1WidthSpaceDecline (
+      "hierarchy references an invalid dense cell");
+  }
+  if (state [cell] == 1) {
+    throw M1WidthSpaceDecline ("hierarchy contains a cycle");
+  }
+  if (state [cell] == 2) {
+    return memo [cell];
+  }
+
+  state [cell] = 1;
+  uint64_t total = 1;
+  for (std::vector<InstanceTemplate>::const_iterator instance =
+         cells [cell].instances.begin ();
+       instance != cells [cell].instances.end (); ++instance) {
+    const uint64_t child = subtree_context_count (
+      instance->child_cell, cells, state, memo, maximum, depth + 1);
+    uint64_t contribution = 0;
+    if (! checked_multiply_u64 (
+          instance->occurrences, child, contribution) ||
+        ! checked_add_u64 (total, contribution, total) ||
+        total > maximum) {
+      throw M1WidthSpaceDecline (
+        "expanded hierarchy exceeds the configured context capacity");
+    }
+  }
+  state [cell] = 2;
+  memo [cell] = total;
+  return total;
+}
+
+void expand_contexts (
+  uint32_t root, const std::vector<CellTemplate> &templates,
+  uint64_t max_contexts,
+  std::vector<CudaM1WidthSpaceContext> &contexts)
+{
+  std::vector<uint8_t> state (templates.size (), 0);
+  std::vector<uint64_t> memo (templates.size (), 0);
+  const uint64_t expected = subtree_context_count (
+    root, templates, state, memo, max_contexts, 0);
+  if (expected > std::numeric_limits<uint32_t>::max () ||
+      expected > contexts.max_size ()) {
+    throw M1WidthSpaceDecline (
+      "expanded hierarchy cannot be represented by context IDs");
+  }
+
+  contexts.reserve (size_t (expected));
+  contexts.push_back (CudaM1WidthSpaceContext { 0, 0, root, 0 });
+  for (size_t parent_id = 0; parent_id < contexts.size (); ++parent_id) {
+    const CudaM1WidthSpaceContext parent = contexts [parent_id];
+    if (parent.cell_id >= templates.size ()) {
+      throw M1WidthSpaceDecline (
+        "expanded context references an invalid cell");
+    }
+    const std::vector<InstanceTemplate> &instances =
+      templates [parent.cell_id].instances;
+    for (std::vector<InstanceTemplate>::const_iterator instance =
+           instances.begin (); instance != instances.end (); ++instance) {
+      const uint32_t transform = compose_transform (
+        parent.transform_code, instance->transform_code);
+      for (uint32_t column = 0; column < instance->columns; ++column) {
+        for (uint32_t row = 0; row < instance->rows; ++row) {
+          const __int128 local_x =
+            __int128 (instance->dx) + __int128 (column) * instance->ax +
+            __int128 (row) * instance->bx;
+          const __int128 local_y =
+            __int128 (instance->dy) + __int128 (column) * instance->ay +
+            __int128 (row) * instance->by;
+          const std::pair<__int128, __int128> shifted =
+            transform_128 (parent.transform_code, local_x, local_y);
+          contexts.push_back (
+            CudaM1WidthSpaceContext {
+              narrow_i64 (
+                shifted.first + parent.tx, "world context translation x"),
+              narrow_i64 (
+                shifted.second + parent.ty, "world context translation y"),
+              instance->child_cell, transform
+            });
+        }
+      }
+    }
+  }
+  if (contexts.size () != expected) {
+    throw M1WidthSpaceDecline (
+      "expanded hierarchy disagrees with the checked context census");
+  }
+}
+
+std::pair<int64_t, int64_t> transform_point (
+  const CudaM1WidthSpaceContext &context, int64_t x, int64_t y)
+{
+  const std::pair<__int128, __int128> point =
+    transform_128 (context.transform_code, x, y);
+  return std::make_pair (
+    narrow_i64 (point.first + context.tx, "world polygon x"),
+    narrow_i64 (point.second + context.ty, "world polygon y"));
+}
+
+void add_world_point (
+  int64_t x, int64_t y, bool &have_bounds,
+  int64_t &left, int64_t &bottom, int64_t &right, int64_t &top)
+{
+  if (! have_bounds) {
+    left = right = x;
+    bottom = top = y;
+    have_bounds = true;
+  } else {
+    left = std::min (left, x);
+    bottom = std::min (bottom, y);
+    right = std::max (right, x);
+    top = std::max (top, y);
+  }
+}
+
+void add_world_polygon_bounds (
+  const CudaM1WidthSpaceContext &context,
+  const CudaM1WidthSpacePolygon &polygon, bool &have_bounds,
+  int64_t &left, int64_t &bottom, int64_t &right, int64_t &top)
+{
+  const int64_t xs [2] = { polygon.left, polygon.right };
+  const int64_t ys [2] = { polygon.bottom, polygon.top };
+  for (int xi = 0; xi < 2; ++xi) {
+    for (int yi = 0; yi < 2; ++yi) {
+      const std::pair<int64_t, int64_t> point =
+        transform_point (context, xs [xi], ys [yi]);
+      add_world_point (
+        point.first, point.second, have_bounds,
+        left, bottom, right, top);
+    }
+  }
+}
+
+void derive_context_lists_and_bounds (
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaM1WidthSpaceScene &scene)
+{
+  bool have_bounds = false;
+  for (size_t context_id = 0;
+       context_id < scene.contexts.size (); ++context_id) {
+    const CudaM1WidthSpaceContext &context = scene.contexts [context_id];
+    if (context.cell_id >= scene.cells.size ()) {
+      throw M1WidthSpaceDecline (
+        "context references an invalid dense cell");
+    }
+    const CudaM1WidthSpaceCell &cell = scene.cells [context.cell_id];
+    if (! cell.polygon_count) {
+      continue;
+    }
+    if (context_id > std::numeric_limits<uint32_t>::max ()) {
+      throw M1WidthSpaceDecline (
+        "nonempty context ID exceeds uint32");
+    }
+
+    scene.metal_contexts.push_back (uint32_t (context_id));
+    scene.context_polygon_offsets.push_back (scene.flat_polygon_count);
+    scene.context_edge_offsets.push_back (scene.flat_edge_count);
+    if (! checked_add_u64 (
+          scene.flat_polygon_count, cell.polygon_count,
+          scene.flat_polygon_count) ||
+        scene.flat_polygon_count > limits.max_flat_polygons) {
+      throw M1WidthSpaceDecline (
+        "flattened M1 polygon count exceeds the configured capacity");
+    }
+    if (! checked_add_u64 (
+          scene.flat_edge_count, cell.edge_count,
+          scene.flat_edge_count) ||
+        scene.flat_edge_count > limits.max_flat_edges) {
+      throw M1WidthSpaceDecline (
+        "flattened M1 edge count exceeds the configured capacity");
+    }
+
+    const uint64_t polygon_end =
+      cell.polygon_begin + uint64_t (cell.polygon_count);
+    if (polygon_end > scene.polygons.size ()) {
+      throw M1WidthSpaceDecline (
+        "cell polygon range escapes the serialized array");
+    }
+    for (uint64_t polygon_id = cell.polygon_begin;
+         polygon_id < polygon_end; ++polygon_id) {
+      add_world_polygon_bounds (
+        context, scene.polygons [size_t (polygon_id)], have_bounds,
+        scene.scene_left, scene.scene_bottom,
+        scene.scene_right, scene.scene_top);
+    }
+  }
+  if (! have_bounds || ! scene.flat_polygon_count ||
+      ! scene.flat_edge_count) {
+    throw M1WidthSpaceDecline ("qualified M1 scene is empty");
+  }
+}
+
+bool options_are_qualified (const db::RegionCheckOptions &options)
+{
+  return
+    options.metrics == db::Euclidian &&
+    options.ignore_angle == 90.0 &&
+    ! options.whole_edges &&
+    options.min_projection == 0 &&
+    options.max_projection ==
+      std::numeric_limits<db::RegionCheckOptions::distance_type>::max () &&
+    options.shielded &&
+    options.opposite_filter == db::NoOppositeFilter &&
+    options.rect_filter == db::NoRectFilter &&
+    ! options.negative &&
+    options.prop_constraint == db::IgnoreProperties &&
+    options.zd_mode == db::IncludeZeroDistanceWhenTouching;
+}
+
+void validate_inputs (
+  const db::DeepLayer &width_metal1,
+  const db::DeepLayer &spacing_metal1,
+  const CudaM1WidthSpaceBuildSpec &spec,
+  const CudaM1WidthSpaceSceneLimits &limits)
+{
+  if (! spec.inputs_are_merged) {
+    throw M1WidthSpaceDecline (
+      "future integration did not assert merged M1 semantics");
+  }
+  if (spec.width_distance != qualified_distance ||
+      spec.spacing_distance != qualified_distance ||
+      ! options_are_qualified (spec.width_options) ||
+      ! options_are_qualified (spec.spacing_options)) {
+    throw M1WidthSpaceDecline (
+      "M1 width/spacing distances or options are outside the qualified form");
+  }
+  if (! limits.max_cells || ! limits.max_contexts ||
+      ! limits.max_stored_polygons || ! limits.max_stored_edges ||
+      ! limits.max_flat_polygons || ! limits.max_flat_edges) {
+    throw M1WidthSpaceDecline ("an M1 scene capacity is zero");
+  }
+  if (width_metal1.store () != spacing_metal1.store () ||
+      &width_metal1.layout () != &spacing_metal1.layout () ||
+      width_metal1.layout_index () != spacing_metal1.layout_index () ||
+      width_metal1.initial_cell ().cell_index () !=
+        spacing_metal1.initial_cell ().cell_index () ||
+      width_metal1.layer () != spacing_metal1.layer ()) {
+    throw M1WidthSpaceDecline (
+      "width and spacing do not use the identical DeepLayer");
+  }
+  if (width_metal1.breakout_cells () != 0 ||
+      spacing_metal1.breakout_cells () != 0) {
+    throw M1WidthSpaceDecline (
+      "M1 scene has hierarchy breakout cells");
+  }
+  if (width_metal1.layout ().dbu () != 0.0005) {
+    throw M1WidthSpaceDecline (
+      "M1 scene DBU is not the qualified 0.5 nm");
+  }
+}
+
+CudaM1WidthSpaceScene serialize_scene (
+  const db::DeepLayer &metal1,
+  const CudaM1WidthSpaceBuildSpec &spec,
+  const CudaM1WidthSpaceSceneLimits &limits)
+{
+  const db::Layout &layout = metal1.layout ();
+  const db::cell_index_type top = metal1.initial_cell ().cell_index ();
+  std::set<db::cell_index_type> reachable;
+  reachable.insert (top);
+  metal1.initial_cell ().collect_called_cells (reachable);
+  if (reachable.empty () ||
+      reachable.size () > std::numeric_limits<uint32_t>::max () ||
+      reachable.size () > limits.max_cells) {
+    throw M1WidthSpaceDecline (
+      "reachable hierarchy has an invalid or over-capacity cell count");
+  }
+
+  std::map<db::cell_index_type, uint32_t> dense_cells;
+  uint32_t dense = 0;
+  for (std::set<db::cell_index_type>::const_iterator cell =
+         reachable.begin (); cell != reachable.end (); ++cell, ++dense) {
+    dense_cells.insert (std::make_pair (*cell, dense));
+  }
+  const std::map<db::cell_index_type, uint32_t>::const_iterator root =
+    dense_cells.find (top);
+  if (root == dense_cells.end ()) {
+    throw M1WidthSpaceDecline (
+      "initial cell is absent from the hierarchy census");
+  }
+
+  CudaM1WidthSpaceScene scene;
+  scene.width_distance = spec.width_distance;
+  scene.spacing_distance = spec.spacing_distance;
+  scene.root_cell = root->second;
+  scene.cells.resize (reachable.size ());
+  std::vector<CellTemplate> templates (reachable.size ());
+
+  for (std::set<db::cell_index_type>::const_iterator source =
+         reachable.begin (); source != reachable.end (); ++source) {
+    const uint32_t cell_id = dense_cells.find (*source)->second;
+    const db::Cell &cell = layout.cell (*source);
+    for (db::Cell::const_iterator instance = cell.begin ();
+         ! instance.at_end (); ++instance) {
+      templates [cell_id].instances.push_back (
+        make_instance (*instance, dense_cells));
+    }
+
+    CudaM1WidthSpaceCell record;
+    std::memset (&record, 0, sizeof (record));
+    append_cell_layer (
+      cell, metal1.layer (), uint64_t (*source),
+      limits, scene, record);
+    scene.cells [cell_id] = record;
+  }
+
+  expand_contexts (
+    root->second, templates, limits.max_contexts, scene.contexts);
+  derive_context_lists_and_bounds (limits, scene);
+  return scene;
+}
+
+bool checked_range (uint64_t begin, uint64_t count, uint64_t size)
+{
+  uint64_t end = 0;
+  return checked_add_u64 (begin, count, end) && end <= size;
+}
+
+bool structurally_valid (const CudaM1WidthSpaceScene &scene)
+{
+  if (scene.format_version != scene_format_version ||
+      scene.dbu_per_micron != qualified_dbu_per_micron ||
+      scene.reserved != 0 ||
+      scene.width_distance != qualified_distance ||
+      scene.spacing_distance != qualified_distance ||
+      scene.cells.empty () || scene.contexts.empty () ||
+      scene.polygons.empty () || scene.edges.empty () ||
+      scene.root_cell >= scene.cells.size () ||
+      scene.metal_contexts.size () !=
+        scene.context_polygon_offsets.size () ||
+      scene.metal_contexts.size () != scene.context_edge_offsets.size () ||
+      scene.scene_left >= scene.scene_right ||
+      scene.scene_bottom >= scene.scene_top) {
+    return false;
+  }
+  const CudaM1WidthSpaceContext &root = scene.contexts.front ();
+  if (root.tx != 0 || root.ty != 0 || root.cell_id != scene.root_cell ||
+      root.transform_code != 0) {
+    return false;
+  }
+
+  uint64_t next_polygon = 0;
+  uint64_t next_edge = 0;
+  std::set<uint64_t> source_cells;
+  for (size_t cell_id = 0; cell_id < scene.cells.size (); ++cell_id) {
+    const CudaM1WidthSpaceCell &cell = scene.cells [cell_id];
+    if (! source_cells.insert (cell.source_cell_index).second ||
+        cell.polygon_begin != next_polygon ||
+        cell.edge_begin != next_edge ||
+        ! checked_range (
+          cell.polygon_begin, cell.polygon_count, scene.polygons.size ()) ||
+        ! checked_range (
+          cell.edge_begin, cell.edge_count, scene.edges.size ())) {
+      return false;
+    }
+
+    uint64_t cell_edge = cell.edge_begin;
+    for (uint32_t local = 0; local < cell.polygon_count; ++local) {
+      const CudaM1WidthSpacePolygon &polygon =
+        scene.polygons [size_t (cell.polygon_begin + local)];
+      if (polygon.polygon_id != local ||
+          polygon.edge_begin != cell_edge || polygon.edge_count < 4 ||
+          polygon.left >= polygon.right || polygon.bottom >= polygon.top ||
+          ! checked_range (
+            polygon.edge_begin, polygon.edge_count, scene.edges.size ())) {
+        return false;
+      }
+      uint64_t polygon_end = 0;
+      if (! checked_add_u64 (
+            polygon.edge_begin, polygon.edge_count, polygon_end)) {
+        return false;
+      }
+      for (uint64_t edge_id = polygon.edge_begin;
+           edge_id < polygon_end; ++edge_id) {
+        const CudaM1WidthSpaceEdge &edge = scene.edges [size_t (edge_id)];
+        if ((edge.x1 == edge.x2 && edge.y1 == edge.y2) ||
+            ! (edge.x1 == edge.x2 || edge.y1 == edge.y2)) {
+          return false;
+        }
+        const uint64_t following =
+          edge_id + 1 == polygon_end ? polygon.edge_begin : edge_id + 1;
+        const CudaM1WidthSpaceEdge &next =
+          scene.edges [size_t (following)];
+        if (edge.x2 != next.x1 || edge.y2 != next.y1) {
+          return false;
+        }
+      }
+      cell_edge = polygon_end;
+    }
+    uint64_t cell_edge_end = 0;
+    if (! checked_add_u64 (
+          cell.edge_begin, cell.edge_count, cell_edge_end) ||
+        cell_edge != cell_edge_end) {
+      return false;
+    }
+    next_polygon += cell.polygon_count;
+    next_edge += cell.edge_count;
+  }
+  if (next_polygon != scene.polygons.size () ||
+      next_edge != scene.edges.size ()) {
+    return false;
+  }
+
+  for (size_t context_id = 0;
+       context_id < scene.contexts.size (); ++context_id) {
+    const CudaM1WidthSpaceContext &context = scene.contexts [context_id];
+    if (context.cell_id >= scene.cells.size () ||
+        context.transform_code >= 8) {
+      return false;
+    }
+  }
+
+  uint64_t flat_polygons = 0;
+  uint64_t flat_edges = 0;
+  uint32_t previous_context = 0;
+  bool have_previous_context = false;
+  for (size_t i = 0; i < scene.metal_contexts.size (); ++i) {
+    const uint32_t context_id = scene.metal_contexts [i];
+    if (context_id >= scene.contexts.size () ||
+        (have_previous_context && context_id <= previous_context) ||
+        scene.context_polygon_offsets [i] != flat_polygons ||
+        scene.context_edge_offsets [i] != flat_edges) {
+      return false;
+    }
+    const CudaM1WidthSpaceCell &cell =
+      scene.cells [scene.contexts [context_id].cell_id];
+    if (! cell.polygon_count ||
+        ! checked_add_u64 (
+          flat_polygons, cell.polygon_count, flat_polygons) ||
+        ! checked_add_u64 (flat_edges, cell.edge_count, flat_edges)) {
+      return false;
+    }
+    previous_context = context_id;
+    have_previous_context = true;
+  }
+  return
+    flat_polygons == scene.flat_polygon_count &&
+    flat_edges == scene.flat_edge_count &&
+    flat_polygons != 0 && flat_edges != 0;
+}
+
+class CanonicalDigest
+{
+public:
+  void bytes (const void *data, size_t size)
+  {
+    m_sha.update (data, size);
+  }
+
+  void u32 (uint32_t value)
+  {
+    uint8_t encoded [4];
+    for (unsigned i = 0; i < 4; ++i) {
+      encoded [i] = uint8_t (value >> (i * 8));
+    }
+    bytes (encoded, sizeof (encoded));
+  }
+
+  void u64 (uint64_t value)
+  {
+    uint8_t encoded [8];
+    for (unsigned i = 0; i < 8; ++i) {
+      encoded [i] = uint8_t (value >> (i * 8));
+    }
+    bytes (encoded, sizeof (encoded));
+  }
+
+  void i64 (int64_t value)
+  {
+    u64 (static_cast<uint64_t> (value));
+  }
+
+  std::array<uint8_t, 32> finish ()
+  {
+    return m_sha.finish ();
+  }
+
+private:
+  db::cuda_active3_digest::Sha256 m_sha;
+};
+
+void set_reason (std::string *reason, const char *message)
+{
+  if (! reason) {
+    return;
+  }
+  try {
+    *reason = message ? message : "unknown exception";
+  } catch (...) {
+    //  Diagnostics cannot turn a fail-closed decline into an exception.
+  }
+}
+
+static_assert (
+  std::is_standard_layout<CudaM1WidthSpaceContext>::value &&
+  std::is_trivially_copyable<CudaM1WidthSpaceContext>::value,
+  "M1 context records must remain pointer-free POD");
+static_assert (
+  std::is_standard_layout<CudaM1WidthSpaceCell>::value &&
+  std::is_trivially_copyable<CudaM1WidthSpaceCell>::value,
+  "M1 cell records must remain pointer-free POD");
+static_assert (
+  std::is_standard_layout<CudaM1WidthSpacePolygon>::value &&
+  std::is_trivially_copyable<CudaM1WidthSpacePolygon>::value,
+  "M1 polygon records must remain pointer-free POD");
+static_assert (
+  std::is_standard_layout<CudaM1WidthSpaceEdge>::value &&
+  std::is_trivially_copyable<CudaM1WidthSpaceEdge>::value,
+  "M1 edge records must remain pointer-free POD");
+
+} // anonymous namespace
+
+CudaM1WidthSpaceSceneLimits::CudaM1WidthSpaceSceneLimits ()
+  : max_cells (default_max_cells),
+    max_contexts (default_max_contexts),
+    max_stored_polygons (default_max_stored_polygons),
+    max_stored_edges (default_max_stored_edges),
+    max_flat_polygons (default_max_flat_polygons),
+    max_flat_edges (default_max_flat_edges)
+{
+  //  nothing yet
+}
+
+CudaM1WidthSpaceBuildSpec::CudaM1WidthSpaceBuildSpec ()
+  : width_distance (qualified_distance),
+    spacing_distance (qualified_distance),
+    width_options (),
+    spacing_options (),
+    inputs_are_merged (false)
+{
+  //  nothing yet
+}
+
+CudaM1WidthSpaceScene::CudaM1WidthSpaceScene ()
+  : format_version (scene_format_version),
+    dbu_per_micron (qualified_dbu_per_micron),
+    root_cell (0),
+    reserved (0),
+    width_distance (qualified_distance),
+    spacing_distance (qualified_distance),
+    flat_polygon_count (0),
+    flat_edge_count (0),
+    scene_left (0),
+    scene_bottom (0),
+    scene_right (0),
+    scene_top (0),
+    contexts (),
+    metal_contexts (),
+    context_polygon_offsets (),
+    context_edge_offsets (),
+    cells (),
+    polygons (),
+    edges (),
+    digest ()
+{
+  //  nothing yet
+}
+
+void CudaM1WidthSpaceScene::swap (
+  CudaM1WidthSpaceScene &other) noexcept
+{
+  using std::swap;
+  swap (format_version, other.format_version);
+  swap (dbu_per_micron, other.dbu_per_micron);
+  swap (root_cell, other.root_cell);
+  swap (reserved, other.reserved);
+  swap (width_distance, other.width_distance);
+  swap (spacing_distance, other.spacing_distance);
+  swap (flat_polygon_count, other.flat_polygon_count);
+  swap (flat_edge_count, other.flat_edge_count);
+  swap (scene_left, other.scene_left);
+  swap (scene_bottom, other.scene_bottom);
+  swap (scene_right, other.scene_right);
+  swap (scene_top, other.scene_top);
+  contexts.swap (other.contexts);
+  metal_contexts.swap (other.metal_contexts);
+  context_polygon_offsets.swap (other.context_polygon_offsets);
+  context_edge_offsets.swap (other.context_edge_offsets);
+  cells.swap (other.cells);
+  polygons.swap (other.polygons);
+  edges.swap (other.edges);
+  digest.swap (other.digest);
+}
+
+bool cuda_m1_width_space_scene_digest (
+  const CudaM1WidthSpaceScene &scene, std::array<uint8_t, 32> &digest)
+{
+  try {
+    if (! structurally_valid (scene)) {
+      return false;
+    }
+
+    static const char magic [8] =
+      { 'K', 'M', '1', 'W', 'S', '0', '0', '1' };
+    CanonicalDigest sha;
+    sha.bytes (magic, sizeof (magic));
+    sha.u32 (scene.format_version);
+    sha.u32 (scene.dbu_per_micron);
+    sha.u32 (scene.root_cell);
+    sha.u32 (scene.reserved);
+    sha.i64 (scene.width_distance);
+    sha.i64 (scene.spacing_distance);
+    sha.u64 (scene.contexts.size ());
+    sha.u64 (scene.metal_contexts.size ());
+    sha.u64 (scene.cells.size ());
+    sha.u64 (scene.polygons.size ());
+    sha.u64 (scene.edges.size ());
+    sha.u64 (scene.flat_polygon_count);
+    sha.u64 (scene.flat_edge_count);
+    sha.i64 (scene.scene_left);
+    sha.i64 (scene.scene_bottom);
+    sha.i64 (scene.scene_right);
+    sha.i64 (scene.scene_top);
+
+    for (std::vector<CudaM1WidthSpaceContext>::const_iterator context =
+           scene.contexts.begin (); context != scene.contexts.end ();
+         ++context) {
+      sha.i64 (context->tx);
+      sha.i64 (context->ty);
+      sha.u32 (context->cell_id);
+      sha.u32 (context->transform_code);
+    }
+    for (size_t i = 0; i < scene.metal_contexts.size (); ++i) {
+      sha.u32 (scene.metal_contexts [i]);
+      sha.u64 (scene.context_polygon_offsets [i]);
+      sha.u64 (scene.context_edge_offsets [i]);
+    }
+    for (std::vector<CudaM1WidthSpaceCell>::const_iterator cell =
+           scene.cells.begin (); cell != scene.cells.end (); ++cell) {
+      sha.u64 (cell->source_cell_index);
+      sha.u64 (cell->polygon_begin);
+      sha.u64 (cell->edge_begin);
+      sha.u32 (cell->polygon_count);
+      sha.u32 (cell->edge_count);
+    }
+    for (std::vector<CudaM1WidthSpacePolygon>::const_iterator polygon =
+           scene.polygons.begin (); polygon != scene.polygons.end ();
+         ++polygon) {
+      sha.u64 (polygon->edge_begin);
+      sha.i64 (polygon->left);
+      sha.i64 (polygon->bottom);
+      sha.i64 (polygon->right);
+      sha.i64 (polygon->top);
+      sha.u32 (polygon->polygon_id);
+      sha.u32 (polygon->edge_count);
+    }
+    for (std::vector<CudaM1WidthSpaceEdge>::const_iterator edge =
+           scene.edges.begin (); edge != scene.edges.end (); ++edge) {
+      sha.i64 (edge->x1);
+      sha.i64 (edge->y1);
+      sha.i64 (edge->x2);
+      sha.i64 (edge->y2);
+    }
+    digest = sha.finish ();
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool cuda_m1_width_space_build_scene (
+  const db::DeepLayer &width_metal1,
+  const db::DeepLayer &spacing_metal1,
+  const CudaM1WidthSpaceBuildSpec &spec,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaM1WidthSpaceScene &scene,
+  std::string *decline_reason)
+{
+  try {
+    validate_inputs (
+      width_metal1, spacing_metal1, spec, limits);
+    CudaM1WidthSpaceScene candidate =
+      serialize_scene (width_metal1, spec, limits);
+    std::array<uint8_t, 32> digest;
+    if (! cuda_m1_width_space_scene_digest (candidate, digest)) {
+      throw M1WidthSpaceDecline (
+        "serialized M1 scene failed structural digest validation");
+    }
+    candidate.digest = digest;
+    scene.swap (candidate);
+    set_reason (decline_reason, "");
+    return true;
+  } catch (const std::exception &ex) {
+    set_reason (decline_reason, ex.what ());
+  } catch (...) {
+    set_reason (decline_reason, "unknown exception");
+  }
+  return false;
+}
+
+} // namespace db
