@@ -276,6 +276,69 @@ The parallel launcher changed only 278.20 to 275.97 s (**0.80% less**) because
 the unchanged `m1_enclosure` owner remained critical; the lane savings are not
 misreported as a whole-run win.
 
+The projection passes also accept an exact union of Manhattan metal rectangles
+as their witness. A single rectangle remains the fast path. Only misses enter
+an integer-DBU strip proof, which greedily covers every row or column of the
+required projection cross. Touching seams are accepted; a one-DBU gap or hole
+remains a miss and forces fallback.
+
+### Live CONTACT/METAL1.3 certificate
+
+`KLAYOUT_CUDA_M1_CONTACT=1` enables a separate fail-closed use of the VIA1
+stack ABI for the FreePDK45 CONTACT/METAL1.3 rule. The receiver must be raw
+CONTACT 10/0, the witness must be raw M1 11/0, and the shared layout must use
+0.5 nm DBU. Every cut must be a 65 nm rectangle, satisfy 75 nm spacing, be
+contained by the M1 union, and have at least 35 nm projection enclosure on two
+opposite sides. The host currently serializes `(M1, CONTACT, M1)` into one
+request; this is not a persistent or fused ACTIVE.3-through-METAL1.3
+transaction.
+
+Only a complete empty certificate emits an empty METAL1.3 category. Properties,
+unsupported geometry or transforms, malformed or partial backend results,
+capacity limits, cut size/spacing failures, missing M1 containment, or an
+enclosure miss run the complete historical CPU expression. Telemetry is
+enabled with `KLAYOUT_CUDA_M1_CONTACT_TELEMETRY=1`. The fail-closed capacity
+variables and defaults are:
+
+- `KLAYOUT_CUDA_M1_CONTACT_MAX_CONTEXTS=4000000`;
+- `KLAYOUT_CUDA_M1_CONTACT_MAX_GRID_CELLS=16000000`;
+- `KLAYOUT_CUDA_M1_CONTACT_MAX_METAL_MEMBERSHIPS=300000000`;
+- `KLAYOUT_CUDA_M1_CONTACT_MAX_CUT_MEMBERSHIPS=100000000`;
+- `KLAYOUT_CUDA_M1_CONTACT_MAX_PAIR_WORK=2000000000000`.
+
+Generate and qualify the live deck with:
+
+```sh
+python3 benchmarks/cuda_spatial_replay/make_via1_stack_live_deck.py \
+  --input freepdk45-eight-way-dual-repack.lydrc \
+  --output freepdk45-m1-contact-live.lydrc \
+  --m1-contact
+
+benchmarks/cuda_spatial_replay/run_m1_contact_live_gate.sh \
+  --stock-klayout /path/to/stock/klayout \
+  --live-klayout /path/to/live/klayout \
+  --backend /path/to/libklayout_cuda_spatial_backend.so \
+  --deck freepdk45-eight-way-dual-repack.lydrc
+```
+
+The live gate covers 15 deterministic layouts across source-off,
+generated-off, stock-requested fallback, live-requested fallback, and CUDA
+lanes. It checks equality and deficient-side combinations, exact cut spacing,
+overlap/touch/duplicates, outside-M1 and malformed domains, hierarchy
+transforms, and a split-M1 union witness. Backend smokes additionally cover
+negative coordinates, a grid-boundary seam, and horizontal and vertical
+one-DBU gaps.
+
+On the downstream-composed FreePDK45 x2 `m1_enclosure` shard, a same-binary
+external-wall A/B changed 202.73 to 88.06 s: 114.67 s, or **56.56%**, less
+lane time. The complete host-to-host transaction took 3,063.94 ms, including
+1,823.34 ms of hierarchy lowering and a 1,240.59 ms validated backend call;
+the backend's complete CUDA pipeline reported 235.58 ms. Canonical reports
+were identical with SHA-256
+`d056b808e6f2134e60286e35247a92e3a2f6d2eaa26b463fd572aa7e0652146d`.
+These are critical-lane and transaction measurements, not a claim that the
+parallel full launcher fell by 114.67 s.
+
 ### Opt-in `DeepEdges` merge certificate
 
 `KLAYOUT_CUDA_DISCONNECTED_MERGE=1` enables a separate, fail-closed

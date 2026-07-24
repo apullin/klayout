@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create the atomic live-CUDA VIA1-stack variant of the FreePDK45 deck."""
+"""Create qualified live-CUDA variants of the FreePDK45 shard deck."""
 
 from __future__ import annotations
 
@@ -143,14 +143,58 @@ via2_edges_with_less_enclosure""",
     return text
 
 
+def add_m1_contact(text: str) -> str:
+    text = replace_once(
+        text,
+        """if run_m1_enclosure
+
+# The inside/enclosing relation""",
+        """if run_m1_enclosure
+
+m1_contact_request = ENV["KLAYOUT_CUDA_M1_CONTACT"].to_s
+m1_contact_requested = !m1_contact_request.empty? &amp;&amp; m1_contact_request != "0" &amp;&amp; m1_contact_request != "false" &amp;&amp; m1_contact_request != "off"
+m1_contact_clean = m1_contact_requested &amp;&amp; cont.respond_to?(:cuda_m1_contact_clean?) &amp;&amp; cont.cuda_m1_contact_clean?(metal1)
+info("CUDA M1 contact transaction: #{m1_contact_clean ? 'certified-empty' : 'full-cpu-fallback'}") if m1_contact_requested
+
+if m1_contact_clean
+  polygon_layer.output("METAL1.3", "METAL1.3 : Minimum enclosure around contact on two opposite sides : 35nm")
+else
+
+# The inside/enclosing relation""",
+        "METAL1.3 transaction entry",
+    )
+    text = replace_once(
+        text,
+        """end
+
+
+if run_m1_via_class""",
+        """end
+
+end
+
+
+if run_m1_via_class""",
+        "METAL1.3 transaction exit",
+    )
+    return text
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--m1-contact",
+        action="store_true",
+        help="also add the fail-closed CONTACT/METAL1.3 certificate",
+    )
     args = parser.parse_args()
 
     source = args.input.read_text(encoding="utf-8")
     output = transform(source)
+    if args.m1_contact:
+        output = add_m1_contact(output)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(output, encoding="utf-8")
     print(f"VIA1_STACK_LIVE_DECK input={args.input} output={args.output}")
