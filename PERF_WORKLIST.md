@@ -1162,7 +1162,7 @@ not just wall time.
         commits `2385939`, `5b9fd3c`, `8e47aa0`, `5906b80`, and `6df69d6` are
         pushed to `fork/cuda`.
 
-      - [ ] **Integrate the six-rule VIA1 sandwich as one atomic live plan:**
+      - [x] **Integrate the six-rule VIA1 sandwich as one atomic live plan:**
         serialize raw M1/VIA1/M2 from their shared DeepShapeStore without
         mutating or merging the CPU layers, invoke one optional DSO symbol,
         retain VIA boxes and their CSR grid while reusing one metal scratch
@@ -1174,6 +1174,27 @@ not just wall time.
         Qualify six deliberately nonempty sentinels, backend-missing/error
         fallback, nested hierarchy, exact report equality, and a full x2
         same-binary A/B before claiming any whole-run saving.
+        **Delivered:** the opt-in path preserves the original shard ownership
+        when disabled and moves all six rules into one existing owner only when
+        requested; every noncertificate runs the complete local CPU stack.
+        On x2, the fused backend handled 849,265 contexts, 41,109,338 M1
+        rectangles, 20,178,022 VIA occurrences, 22,947,380 M2 rectangles, and
+        672,673,286 VIA candidate pairs in 537.582 ms of device work after
+        1.172 seconds of live host lowering.  Against the original eight-shard
+        deck, `m1_via_class` fell 259.526 -> 59.832 seconds (**76.95% less**),
+        `m2_rules` 230.567 -> 100.867 seconds (**56.25% less**), and
+        `via1_upper_active12` 187.276 -> 59.982 seconds (**67.97% less**).
+        Co-locating the same six CPU rules for the isolated owner comparison
+        took 570.79 seconds versus 58.74 seconds with CUDA (**89.71% less**,
+        512.05 seconds saved).  The honest full-launch comparison was only
+        278.20 -> 275.97 seconds (**0.80% less**, not treated as a whole-run
+        win) because the unchanged `m1_enclosure` lane remained critical.
+        Canonical reports were byte-identical with SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+        Seventeen live geometry/fallback cases, 49 adversarial host-ABI cases,
+        both device smokes, independent host/device audits, and CUDA memcheck
+        all pass.  Implementation and gate commits `8e911a4` and `eff6057` are
+        pushed to `fork/cuda`.
 
       - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
         WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
