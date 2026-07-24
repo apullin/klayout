@@ -7,7 +7,9 @@
 
 #include "dbCudaSpatialApi.h"
 #include "dbCudaActive3Digest.h"
+#include "dbCudaImplant12Digest.h"
 #include "active3_exact_predicate.cuh"
+#include "implant12_exact_predicate.cuh"
 #include "m1_width_space_exact_predicate.h"
 
 #include <cuda_runtime.h>
@@ -108,6 +110,37 @@ static_assert(
 static_assert(
     sizeof(klayout_cuda_spatial_m1_width_space_result_v1) == 536,
     "unexpected M1 width/space result ABI padding");
+static_assert(
+    std::is_trivially_copyable<
+        klayout_cuda_spatial_implant12_context_v1>::value,
+    "IMPLANT contexts must remain POD across the DSO boundary");
+static_assert(
+    std::is_trivially_copyable<
+        klayout_cuda_spatial_implant12_cell_v1>::value,
+    "IMPLANT cells must remain POD across the DSO boundary");
+static_assert(
+    std::is_trivially_copyable<
+        klayout_cuda_spatial_implant12_contour_v1>::value,
+    "IMPLANT contours must remain POD across the DSO boundary");
+static_assert(
+    std::is_trivially_copyable<
+        klayout_cuda_spatial_implant12_edge_v1>::value,
+    "IMPLANT edges must remain POD across the DSO boundary");
+static_assert(sizeof(klayout_cuda_spatial_implant12_context_v1) == 24,
+              "unexpected IMPLANT context ABI padding");
+static_assert(
+    sizeof(klayout_cuda_spatial_implant12_domain_span_v1) == 32,
+    "unexpected IMPLANT domain-span ABI padding");
+static_assert(sizeof(klayout_cuda_spatial_implant12_cell_v1) == 104,
+              "unexpected IMPLANT cell ABI padding");
+static_assert(sizeof(klayout_cuda_spatial_implant12_contour_v1) == 24,
+              "unexpected IMPLANT contour ABI padding");
+static_assert(sizeof(klayout_cuda_spatial_implant12_edge_v1) == 32,
+              "unexpected IMPLANT edge ABI padding");
+static_assert(sizeof(klayout_cuda_spatial_implant12_request_v1) == 456,
+              "unexpected IMPLANT request ABI padding");
+static_assert(sizeof(klayout_cuda_spatial_implant12_result_v1) == 648,
+              "unexpected IMPLANT result ABI padding");
 
 struct alignas(16) PackedAabb {
   std::int64_t left;
@@ -1699,6 +1732,14 @@ void set_message(
       message ? message : "");
 }
 
+void set_message(
+    klayout_cuda_spatial_implant12_result_v1 *result,
+    const char *message) {
+  std::snprintf(
+      result->message, sizeof(result->message), "%s",
+      message ? message : "");
+}
+
 PipelineResult run_pipeline(const std::vector<PackedAabb> &records,
                             const klayout_cuda_spatial_config_v1 &options,
                             std::uint64_t enlargement,
@@ -3030,6 +3071,474 @@ int run_active3_request(
   return KLAYOUT_CUDA_SPATIAL_ERROR;
 }
 
+namespace implant12 = klayout_cuda::implant12;
+
+constexpr std::int64_t kImplant12CoordinateLimit =
+    INT64_C(1000000000000);
+
+enum Implant12DeviceFlag : std::uint32_t {
+  kImplant12TransformOverflow = 1u << 0,
+  kImplant12InvalidRecord = 1u << 1,
+  kImplant12GridCounterOverflow = 1u << 2,
+  kImplant12GridCapacityExceeded = 1u << 3,
+  kImplant12WorkCounterOverflow = 1u << 4,
+  kImplant12WorkCapacityExceeded = 1u << 5,
+};
+
+struct Implant12Grid {
+  std::int64_t base_x;
+  std::int64_t base_y;
+  std::int64_t cell_size;
+  std::uint32_t width;
+  std::uint32_t height;
+};
+
+struct Implant12Counters {
+  unsigned long long processed_edges;
+  unsigned long long query_visits;
+  unsigned long long candidates;
+  unsigned long long raw_hits;
+  unsigned long long uncertain;
+};
+
+__device__ bool implant12_negate_checked(std::int64_t value,
+                                         std::int64_t *result) {
+  if (value == INT64_MIN) return false;
+  *result = -value;
+  return true;
+}
+
+__device__ bool implant12_add_checked(std::int64_t a, std::int64_t b,
+                                      std::int64_t *result) {
+  if ((b > 0 && a > INT64_MAX - b) ||
+      (b < 0 && a < INT64_MIN - b)) {
+    return false;
+  }
+  *result = a + b;
+  return true;
+}
+
+__device__ bool implant12_transform_point_checked(
+    const klayout_cuda_spatial_implant12_context_v1 &context,
+    std::int64_t x, std::int64_t y,
+    std::int64_t *output_x, std::int64_t *output_y) {
+  std::int64_t tx = 0;
+  std::int64_t ty = 0;
+  switch (context.transform_code) {
+    case 0: tx = x; ty = y; break;
+    case 1:
+      if (!implant12_negate_checked(y, &tx)) return false;
+      ty = x;
+      break;
+    case 2:
+      if (!implant12_negate_checked(x, &tx) ||
+          !implant12_negate_checked(y, &ty)) return false;
+      break;
+    case 3:
+      tx = y;
+      if (!implant12_negate_checked(x, &ty)) return false;
+      break;
+    case 4:
+      tx = x;
+      if (!implant12_negate_checked(y, &ty)) return false;
+      break;
+    case 5: tx = y; ty = x; break;
+    case 6:
+      if (!implant12_negate_checked(x, &tx)) return false;
+      ty = y;
+      break;
+    case 7:
+      if (!implant12_negate_checked(y, &tx) ||
+          !implant12_negate_checked(x, &ty)) return false;
+      break;
+    default: return false;
+  }
+  if (!implant12_add_checked(tx, context.tx, output_x) ||
+      !implant12_add_checked(ty, context.ty, output_y)) {
+    return false;
+  }
+  return *output_x >= -kImplant12CoordinateLimit &&
+         *output_x <= kImplant12CoordinateLimit &&
+         *output_y >= -kImplant12CoordinateLimit &&
+         *output_y <= kImplant12CoordinateLimit;
+}
+
+__device__ bool implant12_transform_edge_checked(
+    const klayout_cuda_spatial_implant12_context_v1 &context,
+    const klayout_cuda_spatial_implant12_edge_v1 &source,
+    implant12::DirectedEdge *destination) {
+  implant12::DirectedEdge transformed{};
+  if (!implant12_transform_point_checked(
+          context, source.x1, source.y1,
+          &transformed.x1, &transformed.y1) ||
+      !implant12_transform_point_checked(
+          context, source.x2, source.y2,
+          &transformed.x2, &transformed.y2)) {
+    return false;
+  }
+  // Every accepted local contour keeps polygon material on its right.  A
+  // reflection changes handedness, so reverse each transformed edge exactly
+  // as KLayout's normalized hull representation does.
+  if (context.transform_code >= 4) {
+    destination->x1 = transformed.x2;
+    destination->y1 = transformed.y2;
+    destination->x2 = transformed.x1;
+    destination->y2 = transformed.y1;
+  } else {
+    *destination = transformed;
+  }
+  return true;
+}
+
+__device__ std::int64_t implant12_floor_div(std::int64_t value,
+                                            std::int64_t divisor) {
+  std::int64_t quotient = value / divisor;
+  if (value % divisor < 0) --quotient;
+  return quotient;
+}
+
+__device__ bool implant12_edge_span(
+    const implant12::DirectedEdge &edge, const Implant12Grid &grid,
+    std::int64_t expansion, std::int64_t *x0, std::int64_t *y0,
+    std::int64_t *x1, std::int64_t *y1) {
+  std::int64_t low_x = min(edge.x1, edge.x2);
+  std::int64_t high_x = max(edge.x1, edge.x2);
+  std::int64_t low_y = min(edge.y1, edge.y2);
+  std::int64_t high_y = max(edge.y1, edge.y2);
+  if (expansion &&
+      (!implant12_add_checked(low_x, -expansion, &low_x) ||
+       !implant12_add_checked(high_x, expansion, &high_x) ||
+       !implant12_add_checked(low_y, -expansion, &low_y) ||
+       !implant12_add_checked(high_y, expansion, &high_y))) {
+    return false;
+  }
+  *x0 = implant12_floor_div(low_x, grid.cell_size);
+  *x1 = implant12_floor_div(high_x, grid.cell_size);
+  *y0 = implant12_floor_div(low_y, grid.cell_size);
+  *y1 = implant12_floor_div(high_y, grid.cell_size);
+  return true;
+}
+
+__device__ bool implant12_span_inside(
+    const Implant12Grid &grid, std::int64_t x0, std::int64_t y0,
+    std::int64_t x1, std::int64_t y1) {
+  const std::int64_t maximum_x =
+      grid.base_x + std::int64_t(grid.width) - 1;
+  const std::int64_t maximum_y =
+      grid.base_y + std::int64_t(grid.height) - 1;
+  return x0 >= grid.base_x && x1 <= maximum_x &&
+         y0 >= grid.base_y && y1 <= maximum_y;
+}
+
+__device__ bool implant12_clip_span(
+    const Implant12Grid &grid, std::int64_t *x0, std::int64_t *y0,
+    std::int64_t *x1, std::int64_t *y1) {
+  const std::int64_t maximum_x =
+      grid.base_x + std::int64_t(grid.width) - 1;
+  const std::int64_t maximum_y =
+      grid.base_y + std::int64_t(grid.height) - 1;
+  if (*x1 < grid.base_x || *x0 > maximum_x ||
+      *y1 < grid.base_y || *y0 > maximum_y) {
+    return false;
+  }
+  *x0 = max(*x0, grid.base_x);
+  *x1 = min(*x1, maximum_x);
+  *y0 = max(*y0, grid.base_y);
+  *y1 = min(*y1, maximum_y);
+  return true;
+}
+
+__device__ std::uint64_t implant12_grid_index(
+    const Implant12Grid &grid, std::int64_t x, std::int64_t y) {
+  return std::uint64_t(y - grid.base_y) * grid.width +
+         std::uint64_t(x - grid.base_x);
+}
+
+__device__ void implant12_atomic_add_checked(
+    unsigned long long *destination, unsigned long long value,
+    std::uint32_t *status) {
+  if (!value) return;
+  const unsigned long long prior = atomicAdd(destination, value);
+  if (prior > ~0ULL - value) {
+    atomicOr(status, std::uint32_t(kImplant12WorkCounterOverflow));
+  }
+}
+
+__device__ bool implant12_flush_budget(
+    unsigned long long *destination, unsigned long long *local,
+    unsigned long long maximum, std::uint32_t *status) {
+  if (!*local) return true;
+  const unsigned long long value = *local;
+  *local = 0;
+  const unsigned long long prior = atomicAdd(destination, value);
+  if (prior > ~0ULL - value) {
+    atomicOr(status, std::uint32_t(kImplant12WorkCounterOverflow));
+    return false;
+  }
+  if (prior > maximum || value > maximum - prior) {
+    atomicOr(status, std::uint32_t(kImplant12WorkCapacityExceeded));
+    return false;
+  }
+  return true;
+}
+
+__global__ void implant12_expand_kernel(
+    const klayout_cuda_spatial_implant12_context_v1 *contexts,
+    const std::uint32_t *implant_contexts,
+    const std::uint64_t *implant_offsets,
+    const klayout_cuda_spatial_implant12_cell_v1 *cells,
+    const klayout_cuda_spatial_implant12_edge_v1 *templates,
+    std::uint32_t context_count, implant12::DirectedEdge *expanded,
+    std::uint32_t *status) {
+  const std::uint32_t list_id = blockIdx.x;
+  if (list_id >= context_count) return;
+  const klayout_cuda_spatial_implant12_context_v1 context =
+      contexts[implant_contexts[list_id]];
+  const auto span =
+      cells[context.cell_id]
+          .domains[KLAYOUT_CUDA_SPATIAL_IMPLANT12_IMPLANT_DOMAIN];
+  for (std::uint64_t local = threadIdx.x; local < span.edge_count;
+       local += std::uint64_t(blockDim.x)) {
+    implant12::DirectedEdge edge{};
+    if (!implant12_transform_edge_checked(
+            context, templates[span.edge_begin + local], &edge)) {
+      atomicOr(status, std::uint32_t(kImplant12TransformOverflow));
+      continue;
+    }
+    expanded[implant_offsets[list_id] + local] = edge;
+  }
+}
+
+__global__ void implant12_count_grid_kernel(
+    const implant12::DirectedEdge *edges, std::uint32_t edge_count,
+    Implant12Grid grid, std::uint32_t *counts,
+    unsigned long long *membership_total, std::uint32_t *status) {
+  for (std::uint64_t id =
+           std::uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+       id < edge_count;
+       id += std::uint64_t(blockDim.x) * gridDim.x) {
+    std::int64_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    if (!implant12_edge_span(
+            edges[id], grid, 0, &x0, &y0, &x1, &y1) ||
+        !implant12_span_inside(grid, x0, y0, x1, y1)) {
+      atomicOr(status, std::uint32_t(kImplant12InvalidRecord));
+      continue;
+    }
+    unsigned long long local = 0;
+    for (std::int64_t y = y0; y <= y1; ++y) {
+      for (std::int64_t x = x0; x <= x1; ++x) {
+        const std::uint64_t index = implant12_grid_index(grid, x, y);
+        const std::uint32_t prior = atomicAdd(counts + index, 1u);
+        if (prior == UINT32_MAX) {
+          atomicOr(status,
+                   std::uint32_t(kImplant12GridCounterOverflow));
+        }
+        ++local;
+      }
+    }
+    implant12_atomic_add_checked(membership_total, local, status);
+  }
+}
+
+__global__ void implant12_fill_grid_kernel(
+    const implant12::DirectedEdge *edges, std::uint32_t edge_count,
+    Implant12Grid grid, std::uint32_t *cursors,
+    std::uint32_t *members, std::uint64_t member_capacity,
+    std::uint32_t *status) {
+  for (std::uint64_t id =
+           std::uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+       id < edge_count;
+       id += std::uint64_t(blockDim.x) * gridDim.x) {
+    std::int64_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    if (!implant12_edge_span(
+            edges[id], grid, 0, &x0, &y0, &x1, &y1) ||
+        !implant12_span_inside(grid, x0, y0, x1, y1)) {
+      atomicOr(status, std::uint32_t(kImplant12InvalidRecord));
+      continue;
+    }
+    for (std::int64_t y = y0; y <= y1; ++y) {
+      for (std::int64_t x = x0; x <= x1; ++x) {
+        const std::uint64_t index = implant12_grid_index(grid, x, y);
+        const std::uint32_t position = atomicAdd(cursors + index, 1u);
+        if (position >= member_capacity) {
+          atomicOr(status,
+                   std::uint32_t(kImplant12GridCapacityExceeded));
+        } else {
+          members[position] = static_cast<std::uint32_t>(id);
+        }
+      }
+    }
+  }
+}
+
+__global__ void implant12_validate_grid_kernel(
+    const std::uint32_t *counts, const std::uint32_t *offsets,
+    const std::uint32_t *cursors, std::uint64_t cell_count,
+    std::uint32_t *status) {
+  for (std::uint64_t cell =
+           std::uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+       cell < cell_count;
+       cell += std::uint64_t(blockDim.x) * gridDim.x) {
+    const std::uint64_t expected =
+        std::uint64_t(offsets[cell]) + counts[cell];
+    if (expected > UINT32_MAX || cursors[cell] != expected) {
+      atomicOr(status,
+               std::uint32_t(kImplant12GridCounterOverflow));
+    }
+  }
+}
+
+__global__ void implant12_query_kernel(
+    const klayout_cuda_spatial_implant12_context_v1 *contexts,
+    const std::uint32_t *query_contexts,
+    std::uint32_t query_context_count, std::uint32_t domain,
+    const klayout_cuda_spatial_implant12_cell_v1 *cells,
+    const klayout_cuda_spatial_implant12_edge_v1 *templates,
+    const implant12::DirectedEdge *implant_edges,
+    std::uint32_t implant_edge_count, Implant12Grid grid,
+    const std::uint32_t *counts, const std::uint32_t *offsets,
+    const std::uint32_t *members, std::int64_t distance,
+    unsigned long long max_query_visits,
+    unsigned long long max_candidates,
+    Implant12Counters *counters, std::uint32_t *status) {
+  const std::uint32_t list_id = blockIdx.x;
+  if (list_id >= query_context_count ||
+      domain >= KLAYOUT_CUDA_SPATIAL_IMPLANT12_DOMAIN_COUNT) {
+    return;
+  }
+  const klayout_cuda_spatial_implant12_context_v1 context =
+      contexts[query_contexts[list_id]];
+  const auto span = cells[context.cell_id].domains[domain];
+  unsigned long long local_processed = 0;
+  unsigned long long local_visits = 0;
+  unsigned long long local_candidates = 0;
+  unsigned long long local_hits = 0;
+  unsigned long long local_uncertain = 0;
+
+  for (std::uint64_t local = threadIdx.x; local < span.edge_count;
+       local += std::uint64_t(blockDim.x)) {
+    implant12::DirectedEdge query{};
+    if (!implant12_transform_edge_checked(
+            context, templates[span.edge_begin + local], &query)) {
+      atomicOr(status, std::uint32_t(kImplant12TransformOverflow));
+      continue;
+    }
+    ++local_processed;
+    std::int64_t query_x0 = 0, query_y0 = 0;
+    std::int64_t query_x1 = 0, query_y1 = 0;
+    if (!implant12_edge_span(
+            query, grid, distance, &query_x0, &query_y0,
+            &query_x1, &query_y1)) {
+      atomicOr(status, std::uint32_t(kImplant12TransformOverflow));
+      continue;
+    }
+    if (!implant12_clip_span(
+            grid, &query_x0, &query_y0, &query_x1, &query_y1)) {
+      continue;
+    }
+
+    std::int64_t expanded_left = min(query.x1, query.x2);
+    std::int64_t expanded_right = max(query.x1, query.x2);
+    std::int64_t expanded_bottom = min(query.y1, query.y2);
+    std::int64_t expanded_top = max(query.y1, query.y2);
+    if (!implant12_add_checked(
+            expanded_left, -distance, &expanded_left) ||
+        !implant12_add_checked(
+            expanded_right, distance, &expanded_right) ||
+        !implant12_add_checked(
+            expanded_bottom, -distance, &expanded_bottom) ||
+        !implant12_add_checked(
+            expanded_top, distance, &expanded_top)) {
+      atomicOr(status, std::uint32_t(kImplant12TransformOverflow));
+      continue;
+    }
+
+    for (std::int64_t y = query_y0; y <= query_y1; ++y) {
+      for (std::int64_t x = query_x0; x <= query_x1; ++x) {
+        ++local_visits;
+        if (local_visits >= 4096 &&
+            !implant12_flush_budget(
+                &counters->query_visits, &local_visits,
+                max_query_visits, status)) {
+          return;
+        }
+        const std::uint64_t cell_id =
+            implant12_grid_index(grid, x, y);
+        const std::uint32_t begin = offsets[cell_id];
+        const std::uint32_t end = begin + counts[cell_id];
+        for (std::uint32_t position = begin; position < end; ++position) {
+          const std::uint32_t implant_id = members[position];
+          if (implant_id >= implant_edge_count) {
+            atomicOr(status, std::uint32_t(kImplant12InvalidRecord));
+            continue;
+          }
+          const implant12::DirectedEdge implant =
+              implant_edges[implant_id];
+          std::int64_t implant_x0 = 0, implant_y0 = 0;
+          std::int64_t implant_x1 = 0, implant_y1 = 0;
+          if (!implant12_edge_span(
+                  implant, grid, 0, &implant_x0, &implant_y0,
+                  &implant_x1, &implant_y1)) {
+            atomicOr(status, std::uint32_t(kImplant12InvalidRecord));
+            continue;
+          }
+          // A pair whose AABBs cover multiple grid cells is classified only
+          // at the lexicographically first cell of their span intersection.
+          if (x != max(query_x0, implant_x0) ||
+              y != max(query_y0, implant_y0)) {
+            continue;
+          }
+          const std::int64_t implant_left =
+              min(implant.x1, implant.x2);
+          const std::int64_t implant_right =
+              max(implant.x1, implant.x2);
+          const std::int64_t implant_bottom =
+              min(implant.y1, implant.y2);
+          const std::int64_t implant_top =
+              max(implant.y1, implant.y2);
+          if (implant_right < expanded_left ||
+              implant_left > expanded_right ||
+              implant_top < expanded_bottom ||
+              implant_bottom > expanded_top) {
+            continue;
+          }
+
+          ++local_candidates;
+          if (local_candidates >= 4096 &&
+              !implant12_flush_budget(
+                  &counters->candidates, &local_candidates,
+                  max_candidates, status)) {
+            return;
+          }
+          const implant12::Verdict verdict =
+              implant12::classify_pair_bounded(
+                  implant12::EdgePair{implant, query}, distance);
+          if (verdict == implant12::Verdict::kViolation) {
+            ++local_hits;
+          } else if (verdict == implant12::Verdict::kUncertain) {
+            ++local_uncertain;
+          } else if (verdict != implant12::Verdict::kNoViolation) {
+            atomicOr(status, std::uint32_t(kImplant12InvalidRecord));
+          }
+        }
+      }
+    }
+  }
+
+  // One global reduction per participating thread and counter.  There is no
+  // global atomic/CAS in the per-candidate inner loop.
+  implant12_atomic_add_checked(
+      &counters->processed_edges, local_processed, status);
+  implant12_flush_budget(
+      &counters->query_visits, &local_visits, max_query_visits, status);
+  implant12_flush_budget(
+      &counters->candidates, &local_candidates, max_candidates, status);
+  implant12_atomic_add_checked(
+      &counters->raw_hits, local_hits, status);
+  implant12_atomic_add_checked(
+      &counters->uncertain, local_uncertain, status);
+}
+
 bool m1ws_positive_collinear_overlap(
     const klayout_cuda_spatial_m1_width_space_edge_v1 &a,
     const klayout_cuda_spatial_m1_width_space_edge_v1 &b) {
@@ -3841,6 +4350,844 @@ int run_m1ws_request(
   return KLAYOUT_CUDA_SPATIAL_ERROR;
 }
 
+bool implant12_coordinate_qualified(std::int64_t value) {
+  return value >= -kImplant12CoordinateLimit &&
+         value <= kImplant12CoordinateLimit;
+}
+
+bool implant12_checked_add(std::uint64_t a, std::uint64_t b,
+                           std::uint64_t *result) {
+  if (b > UINT64_MAX - a) return false;
+  *result = a + b;
+  return true;
+}
+
+bool implant12_segment_intersection(
+    const klayout_cuda_spatial_implant12_edge_v1 &a,
+    const klayout_cuda_spatial_implant12_edge_v1 &b) {
+  const bool ah = a.y1 == a.y2;
+  const bool bh = b.y1 == b.y2;
+  if (ah && bh) {
+    return a.y1 == b.y1 &&
+           std::max(std::min(a.x1, a.x2), std::min(b.x1, b.x2)) <=
+               std::min(std::max(a.x1, a.x2), std::max(b.x1, b.x2));
+  }
+  if (!ah && !bh) {
+    return a.x1 == b.x1 &&
+           std::max(std::min(a.y1, a.y2), std::min(b.y1, b.y2)) <=
+               std::min(std::max(a.y1, a.y2), std::max(b.y1, b.y2));
+  }
+  const auto &horizontal = ah ? a : b;
+  const auto &vertical = ah ? b : a;
+  return std::min(horizontal.x1, horizontal.x2) <= vertical.x1 &&
+         vertical.x1 <= std::max(horizontal.x1, horizontal.x2) &&
+         std::min(vertical.y1, vertical.y2) <= horizontal.y1 &&
+         horizontal.y1 <= std::max(vertical.y1, vertical.y2);
+}
+
+bool implant12_positive_collinear_overlap(
+    const klayout_cuda_spatial_implant12_edge_v1 &a,
+    const klayout_cuda_spatial_implant12_edge_v1 &b) {
+  if (a.y1 == a.y2 && b.y1 == b.y2 && a.y1 == b.y1) {
+    return std::max(std::min(a.x1, a.x2), std::min(b.x1, b.x2)) <
+           std::min(std::max(a.x1, a.x2), std::max(b.x1, b.x2));
+  }
+  if (a.x1 == a.x2 && b.x1 == b.x2 && a.x1 == b.x1) {
+    return std::max(std::min(a.y1, a.y2), std::min(b.y1, b.y2)) <
+           std::min(std::max(a.y1, a.y2), std::max(b.y1, b.y2));
+  }
+  return false;
+}
+
+bool implant12_valid_contour(
+    const klayout_cuda_spatial_implant12_request_v1 &request,
+    const klayout_cuda_spatial_implant12_contour_v1 &contour) {
+  if (contour.edge_count < 4 ||
+      contour.edge_count > 4096 ||
+      !m1ws_checked_range(
+          contour.edge_begin, contour.edge_count, request.edge_count)) {
+    return false;
+  }
+
+  __int128 twice_area = 0;
+  for (std::uint32_t local = 0; local < contour.edge_count; ++local) {
+    const auto edge =
+        m1ws_load_record<klayout_cuda_spatial_implant12_edge_v1>(
+            request.edges, contour.edge_begin + local,
+            request.edge_record_bytes);
+    const auto next =
+        m1ws_load_record<klayout_cuda_spatial_implant12_edge_v1>(
+            request.edges,
+            contour.edge_begin + (local + 1) % contour.edge_count,
+            request.edge_record_bytes);
+    if (!implant12_coordinate_qualified(edge.x1) ||
+        !implant12_coordinate_qualified(edge.y1) ||
+        !implant12_coordinate_qualified(edge.x2) ||
+        !implant12_coordinate_qualified(edge.y2) ||
+        (edge.x1 == edge.x2 && edge.y1 == edge.y2) ||
+        !(edge.x1 == edge.x2 || edge.y1 == edge.y2) ||
+        edge.x2 != next.x1 || edge.y2 != next.y1) {
+      return false;
+    }
+    twice_area +=
+        __int128(edge.x1) * edge.y2 - __int128(edge.x2) * edge.y1;
+  }
+  if (twice_area >= 0) return false;
+
+  // The overwhelmingly common four-edge box path is allocation-free.  More
+  // complex qualified contours retain a bounded exact simplicity check.
+  if (contour.edge_count == 4) {
+    for (std::uint32_t local = 0; local < 4; ++local) {
+      const auto edge =
+          m1ws_load_record<klayout_cuda_spatial_implant12_edge_v1>(
+              request.edges, contour.edge_begin + local,
+              request.edge_record_bytes);
+      const auto next =
+          m1ws_load_record<klayout_cuda_spatial_implant12_edge_v1>(
+              request.edges, contour.edge_begin + (local + 1) % 4,
+              request.edge_record_bytes);
+      if ((edge.y1 == edge.y2) == (next.y1 == next.y2)) return false;
+    }
+    return true;
+  }
+
+  std::set<std::pair<std::int64_t, std::int64_t>> vertices;
+  for (std::uint32_t local = 0; local < contour.edge_count; ++local) {
+    const auto edge =
+        m1ws_load_record<klayout_cuda_spatial_implant12_edge_v1>(
+            request.edges, contour.edge_begin + local,
+            request.edge_record_bytes);
+    if (!vertices.insert({edge.x1, edge.y1}).second) return false;
+  }
+  for (std::uint32_t first = 0; first < contour.edge_count; ++first) {
+    const auto a =
+        m1ws_load_record<klayout_cuda_spatial_implant12_edge_v1>(
+            request.edges, contour.edge_begin + first,
+            request.edge_record_bytes);
+    for (std::uint32_t second = first + 1;
+         second < contour.edge_count; ++second) {
+      const auto b =
+          m1ws_load_record<klayout_cuda_spatial_implant12_edge_v1>(
+              request.edges, contour.edge_begin + second,
+              request.edge_record_bytes);
+      if (!implant12_segment_intersection(a, b)) continue;
+      const bool adjacent =
+          second == first + 1 ||
+          (first == 0 && second + 1 == contour.edge_count);
+      if (!adjacent || implant12_positive_collinear_overlap(a, b)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool implant12_valid_request(
+    const klayout_cuda_spatial_implant12_request_v1 &request) {
+  if (request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      request.struct_size < sizeof(request) ||
+      request.opcode !=
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_RAW_SUPERSET_EMPTY ||
+      request.option_flags !=
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_QUALIFIED_OPTIONS ||
+      request.format_version != 1 || request.dbu_per_micron != 2000 ||
+      request.requested_mask != KLAYOUT_CUDA_SPATIAL_IMPLANT12_ALL_RULES ||
+      request.device < 0 || request.reserved0 != 0 ||
+      request.implant1_distance != implant12::kImplant1Distance ||
+      request.implant2_distance != implant12::kImplant2Distance ||
+      request.grid_cell_size != 2000 ||
+      request.context_record_bytes !=
+          sizeof(klayout_cuda_spatial_implant12_context_v1) ||
+      request.cell_record_bytes !=
+          sizeof(klayout_cuda_spatial_implant12_cell_v1) ||
+      request.contour_record_bytes !=
+          sizeof(klayout_cuda_spatial_implant12_contour_v1) ||
+      request.edge_record_bytes !=
+          sizeof(klayout_cuda_spatial_implant12_edge_v1) ||
+      request.context_reserved || request.cell_reserved ||
+      request.contour_reserved || request.edge_reserved ||
+      request.reserved1[0] || request.reserved1[1] ||
+      !request.context_count || !request.contexts ||
+      !request.implant_context_count || !request.implant_contexts ||
+      request.implant_edge_offset_count !=
+          request.implant_context_count + 1 ||
+      !request.implant_edge_offsets ||
+      !request.gate_context_count || !request.gate_contexts ||
+      !request.contact_context_count || !request.contact_contexts ||
+      !request.cell_count || !request.cells ||
+      !request.contour_count || !request.contours ||
+      !request.edge_count || !request.edges ||
+      request.root_cell >= request.cell_count ||
+      request.context_count > request.max_contexts ||
+      request.context_count > UINT32_MAX ||
+      request.implant_context_count > UINT32_MAX ||
+      request.gate_context_count > UINT32_MAX ||
+      request.contact_context_count > UINT32_MAX ||
+      request.cell_count > UINT32_MAX ||
+      request.contour_count > UINT32_MAX ||
+      request.edge_count > UINT32_MAX ||
+      !request.max_contexts || !request.max_grid_cells ||
+      !request.max_implant_memberships ||
+      !request.max_gate_query_visits ||
+      !request.max_gate_candidate_work ||
+      !request.max_contact_query_visits ||
+      !request.max_contact_candidate_work ||
+      !request.max_flat_polygons || !request.max_flat_contours ||
+      !request.max_flat_edges ||
+      request.implant_left >= request.implant_right ||
+      request.implant_bottom >= request.implant_top ||
+      !implant12_coordinate_qualified(request.implant_left) ||
+      !implant12_coordinate_qualified(request.implant_bottom) ||
+      !implant12_coordinate_qualified(request.implant_right) ||
+      !implant12_coordinate_qualified(request.implant_top)) {
+    return false;
+  }
+
+  const auto root =
+      m1ws_load_record<klayout_cuda_spatial_implant12_context_v1>(
+          request.contexts, 0, request.context_record_bytes);
+  if (root.cell_id != request.root_cell || root.tx != 0 || root.ty != 0 ||
+      root.transform_code != 0) {
+    return false;
+  }
+
+  std::set<std::uint64_t> source_cells;
+  std::uint64_t next_contour = 0;
+  std::uint64_t next_edge = 0;
+  for (std::uint64_t cell_id = 0; cell_id < request.cell_count; ++cell_id) {
+    const auto cell =
+        m1ws_load_record<klayout_cuda_spatial_implant12_cell_v1>(
+            request.cells, cell_id, request.cell_record_bytes);
+    if (!source_cells.insert(cell.source_cell_index).second) return false;
+    for (std::uint32_t domain = 0;
+         domain < KLAYOUT_CUDA_SPATIAL_IMPLANT12_DOMAIN_COUNT; ++domain) {
+      const auto span = cell.domains[domain];
+      if (span.reserved0 || span.contour_begin != next_contour ||
+          span.edge_begin != next_edge ||
+          span.polygon_count != span.contour_count ||
+          !m1ws_checked_range(
+              span.contour_begin, span.contour_count,
+              request.contour_count) ||
+          !m1ws_checked_range(
+              span.edge_begin, span.edge_count, request.edge_count) ||
+          ((span.polygon_count == 0) !=
+           (span.contour_count == 0 || span.edge_count == 0))) {
+        return false;
+      }
+      std::uint64_t span_edge = span.edge_begin;
+      for (std::uint32_t local = 0; local < span.contour_count; ++local) {
+        const auto contour =
+            m1ws_load_record<klayout_cuda_spatial_implant12_contour_v1>(
+                request.contours, span.contour_begin + local,
+                request.contour_record_bytes);
+        if (contour.edge_begin != span_edge ||
+            contour.polygon_id != local || contour.contour_id != 0 ||
+            contour.flags != KLAYOUT_CUDA_SPATIAL_IMPLANT12_HULL ||
+            !implant12_valid_contour(request, contour) ||
+            !implant12_checked_add(
+                span_edge, contour.edge_count, &span_edge)) {
+          return false;
+        }
+      }
+      if (span_edge != span.edge_begin + span.edge_count ||
+          !implant12_checked_add(
+              next_contour, span.contour_count, &next_contour) ||
+          !implant12_checked_add(
+              next_edge, span.edge_count, &next_edge)) {
+        return false;
+      }
+    }
+  }
+  if (next_contour != request.contour_count ||
+      next_edge != request.edge_count) {
+    return false;
+  }
+
+  const std::uint64_t flat_polygon_expected[3] = {
+      request.flat_implant_polygon_count,
+      request.flat_gate_polygon_count,
+      request.flat_contact_polygon_count};
+  const std::uint64_t flat_contour_expected[3] = {
+      request.flat_implant_contour_count,
+      request.flat_gate_contour_count,
+      request.flat_contact_contour_count};
+  const std::uint64_t flat_edge_expected[3] = {
+      request.flat_implant_edge_count,
+      request.flat_gate_edge_count,
+      request.flat_contact_edge_count};
+  std::uint64_t flat_polygons[3] = {};
+  std::uint64_t flat_contours[3] = {};
+  std::uint64_t flat_edges[3] = {};
+  std::uint64_t list_position[3] = {};
+  if (request.implant_edge_offsets[0] != 0) return false;
+  for (std::uint64_t context_id = 0;
+       context_id < request.context_count; ++context_id) {
+    const auto context =
+        m1ws_load_record<klayout_cuda_spatial_implant12_context_v1>(
+            request.contexts, context_id, request.context_record_bytes);
+    if (context.cell_id >= request.cell_count ||
+        context.transform_code >= 8 ||
+        !implant12_coordinate_qualified(context.tx) ||
+        !implant12_coordinate_qualified(context.ty)) {
+      return false;
+    }
+    const auto cell =
+        m1ws_load_record<klayout_cuda_spatial_implant12_cell_v1>(
+            request.cells, context.cell_id, request.cell_record_bytes);
+    for (std::uint32_t domain = 0;
+         domain < KLAYOUT_CUDA_SPATIAL_IMPLANT12_DOMAIN_COUNT; ++domain) {
+      const auto span = cell.domains[domain];
+      if (!span.edge_count) continue;
+      const std::uint32_t *list =
+          domain == KLAYOUT_CUDA_SPATIAL_IMPLANT12_IMPLANT_DOMAIN
+              ? request.implant_contexts
+              : domain == KLAYOUT_CUDA_SPATIAL_IMPLANT12_GATE_DOMAIN
+                    ? request.gate_contexts
+                    : request.contact_contexts;
+      const std::uint64_t list_count =
+          domain == KLAYOUT_CUDA_SPATIAL_IMPLANT12_IMPLANT_DOMAIN
+              ? request.implant_context_count
+              : domain == KLAYOUT_CUDA_SPATIAL_IMPLANT12_GATE_DOMAIN
+                    ? request.gate_context_count
+                    : request.contact_context_count;
+      if (list_position[domain] >= list_count ||
+          list[list_position[domain]] != context_id ||
+          !implant12_checked_add(
+              flat_polygons[domain], span.polygon_count,
+              &flat_polygons[domain]) ||
+          !implant12_checked_add(
+              flat_contours[domain], span.contour_count,
+              &flat_contours[domain]) ||
+          !implant12_checked_add(
+              flat_edges[domain], span.edge_count,
+              &flat_edges[domain])) {
+        return false;
+      }
+      if (domain == KLAYOUT_CUDA_SPATIAL_IMPLANT12_IMPLANT_DOMAIN &&
+          (request.implant_edge_offsets[list_position[domain]] !=
+               flat_edges[domain] - span.edge_count ||
+           request.implant_edge_offsets[list_position[domain] + 1] !=
+               flat_edges[domain])) {
+        return false;
+      }
+      ++list_position[domain];
+    }
+  }
+  const std::uint64_t list_expected[3] = {
+      request.implant_context_count, request.gate_context_count,
+      request.contact_context_count};
+  std::uint64_t total_polygons = 0, total_contours = 0, total_edges = 0;
+  for (std::uint32_t domain = 0; domain < 3; ++domain) {
+    if (list_position[domain] != list_expected[domain] ||
+        flat_polygons[domain] != flat_polygon_expected[domain] ||
+        flat_contours[domain] != flat_contour_expected[domain] ||
+        flat_edges[domain] != flat_edge_expected[domain] ||
+        !flat_edges[domain] ||
+        !implant12_checked_add(
+            total_polygons, flat_polygons[domain], &total_polygons) ||
+        !implant12_checked_add(
+            total_contours, flat_contours[domain], &total_contours) ||
+        !implant12_checked_add(
+            total_edges, flat_edges[domain], &total_edges)) {
+      return false;
+    }
+  }
+  if (request.implant_edge_offsets[request.implant_context_count] !=
+          request.flat_implant_edge_count ||
+      request.flat_implant_edge_count > UINT32_MAX ||
+      total_polygons > request.max_flat_polygons ||
+      total_contours > request.max_flat_contours ||
+      total_edges > request.max_flat_edges) {
+    return false;
+  }
+
+  std::array<std::uint8_t, 32> digest;
+  return db::cuda_implant12_digest::request_digest(request, digest) &&
+         std::equal(
+             digest.begin(), digest.end(), request.scene_digest);
+}
+
+struct Implant12PipelineResult {
+  std::uint32_t fallback_flags = 0;
+  std::uint32_t device_flags = 0;
+  std::uint64_t grid_cells = 0;
+  std::uint64_t memberships = 0;
+  Implant12Counters gate{};
+  Implant12Counters contact{};
+  std::uint64_t setup_ns = 0;
+  std::uint64_t h2d_ns = 0;
+  std::uint64_t implant_expand_ns = 0;
+  std::uint64_t grid_count_ns = 0;
+  std::uint64_t grid_build_ns = 0;
+  std::uint64_t gate_query_ns = 0;
+  std::uint64_t contact_query_ns = 0;
+  std::uint64_t d2h_ns = 0;
+};
+
+Implant12PipelineResult implant12_run_pipeline(
+    const klayout_cuda_spatial_implant12_request_v1 &request) {
+  Implant12PipelineResult result;
+  const std::int64_t base_x =
+      floor_div(request.implant_left, request.grid_cell_size);
+  const std::int64_t base_y =
+      floor_div(request.implant_bottom, request.grid_cell_size);
+  const std::int64_t maximum_x =
+      floor_div(request.implant_right, request.grid_cell_size);
+  const std::int64_t maximum_y =
+      floor_div(request.implant_top, request.grid_cell_size);
+  const std::uint64_t width =
+      std::uint64_t(maximum_x - base_x) + 1;
+  const std::uint64_t height =
+      std::uint64_t(maximum_y - base_y) + 1;
+  if (!width || !height || width > UINT32_MAX || height > UINT32_MAX ||
+      height > UINT64_MAX / width) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW;
+    return result;
+  }
+  result.grid_cells = width * height;
+  if (!result.grid_cells ||
+      result.grid_cells > request.max_grid_cells ||
+      result.grid_cells > UINT32_MAX) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_MEMBERSHIP_CAPACITY;
+    return result;
+  }
+  const Implant12Grid grid = {
+      base_x, base_y, request.grid_cell_size,
+      static_cast<std::uint32_t>(width),
+      static_cast<std::uint32_t>(height)};
+
+  constexpr std::uint32_t threads = 128;
+  const auto setup_begin = Clock::now();
+  cuda_check(cudaSetDevice(request.device), "IMPLANT cudaSetDevice");
+  cuda_check(cudaFree(nullptr), "IMPLANT CUDA context initialization");
+  cudaDeviceProp properties{};
+  cuda_check(
+      cudaGetDeviceProperties(&properties, request.device),
+      "IMPLANT cudaGetDeviceProperties");
+  if (request.implant_context_count >
+          static_cast<std::uint64_t>(properties.maxGridSize[0]) ||
+      request.gate_context_count >
+          static_cast<std::uint64_t>(properties.maxGridSize[0]) ||
+      request.contact_context_count >
+          static_cast<std::uint64_t>(properties.maxGridSize[0])) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+    return result;
+  }
+
+  thrust::device_vector<klayout_cuda_spatial_implant12_context_v1>
+      contexts(request.context_count);
+  thrust::device_vector<std::uint32_t>
+      implant_contexts(request.implant_context_count);
+  thrust::device_vector<std::uint64_t>
+      implant_offsets(request.implant_edge_offset_count);
+  thrust::device_vector<std::uint32_t>
+      gate_contexts(request.gate_context_count);
+  thrust::device_vector<std::uint32_t>
+      contact_contexts(request.contact_context_count);
+  thrust::device_vector<klayout_cuda_spatial_implant12_cell_v1>
+      cells(request.cell_count);
+  thrust::device_vector<klayout_cuda_spatial_implant12_edge_v1>
+      templates(request.edge_count);
+  thrust::device_vector<implant12::DirectedEdge>
+      implant_edges(request.flat_implant_edge_count);
+  thrust::device_vector<std::uint32_t> counts(result.grid_cells, 0);
+  thrust::device_vector<std::uint32_t> offsets(result.grid_cells + 1);
+  thrust::device_vector<std::uint32_t> cursors(result.grid_cells);
+  thrust::device_vector<unsigned long long> membership_total(1, 0);
+  thrust::device_vector<std::uint32_t> status(1, 0);
+  thrust::device_vector<Implant12Counters> gate_counters(1);
+  thrust::device_vector<Implant12Counters> contact_counters(1);
+  cuda_check(
+      cudaMemset(
+          thrust::raw_pointer_cast(gate_counters.data()), 0,
+          sizeof(Implant12Counters)),
+      "IMPLANT gate counter clear");
+  cuda_check(
+      cudaMemset(
+          thrust::raw_pointer_cast(contact_counters.data()), 0,
+          sizeof(Implant12Counters)),
+      "IMPLANT contact counter clear");
+  result.setup_ns = elapsed_ns(setup_begin, Clock::now());
+
+  const auto h2d_begin = Clock::now();
+#define IMPLANT12_COPY(destination, source, count, type, label) \
+  cuda_check( \
+      cudaMemcpy( \
+          thrust::raw_pointer_cast(destination.data()), source, \
+          std::size_t(count) * sizeof(type), cudaMemcpyHostToDevice), \
+      label)
+  IMPLANT12_COPY(
+      contexts, request.contexts, request.context_count,
+      klayout_cuda_spatial_implant12_context_v1,
+      "IMPLANT context H2D");
+  IMPLANT12_COPY(
+      implant_contexts, request.implant_contexts,
+      request.implant_context_count, std::uint32_t,
+      "IMPLANT context-list H2D");
+  IMPLANT12_COPY(
+      implant_offsets, request.implant_edge_offsets,
+      request.implant_edge_offset_count, std::uint64_t,
+      "IMPLANT edge-offset H2D");
+  IMPLANT12_COPY(
+      gate_contexts, request.gate_contexts,
+      request.gate_context_count, std::uint32_t,
+      "IMPLANT gate-context H2D");
+  IMPLANT12_COPY(
+      contact_contexts, request.contact_contexts,
+      request.contact_context_count, std::uint32_t,
+      "IMPLANT contact-context H2D");
+  IMPLANT12_COPY(
+      cells, request.cells, request.cell_count,
+      klayout_cuda_spatial_implant12_cell_v1,
+      "IMPLANT cell H2D");
+  IMPLANT12_COPY(
+      templates, request.edges, request.edge_count,
+      klayout_cuda_spatial_implant12_edge_v1,
+      "IMPLANT edge-template H2D");
+#undef IMPLANT12_COPY
+  cuda_check(cudaDeviceSynchronize(), "IMPLANT H2D synchronize");
+  result.h2d_ns = elapsed_ns(h2d_begin, Clock::now());
+
+  const auto expand_begin = Clock::now();
+  implant12_expand_kernel<<<
+      static_cast<unsigned int>(request.implant_context_count), threads>>>(
+      thrust::raw_pointer_cast(contexts.data()),
+      thrust::raw_pointer_cast(implant_contexts.data()),
+      thrust::raw_pointer_cast(implant_offsets.data()),
+      thrust::raw_pointer_cast(cells.data()),
+      thrust::raw_pointer_cast(templates.data()),
+      static_cast<std::uint32_t>(request.implant_context_count),
+      thrust::raw_pointer_cast(implant_edges.data()),
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(cudaGetLastError(), "IMPLANT expansion launch");
+  cuda_check(cudaDeviceSynchronize(), "IMPLANT expansion synchronize");
+  cuda_check(
+      cudaMemcpy(
+          &result.device_flags, thrust::raw_pointer_cast(status.data()),
+          sizeof(result.device_flags), cudaMemcpyDeviceToHost),
+      "IMPLANT expansion status D2H");
+  result.implant_expand_ns = elapsed_ns(expand_begin, Clock::now());
+  if (result.device_flags) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW;
+    return result;
+  }
+
+  const unsigned int implant_blocks = static_cast<unsigned int>(
+      std::min<std::uint64_t>(
+          65535, (request.flat_implant_edge_count + 255) / 256));
+  const auto count_begin = Clock::now();
+  implant12_count_grid_kernel<<<implant_blocks, 256>>>(
+      thrust::raw_pointer_cast(implant_edges.data()),
+      static_cast<std::uint32_t>(request.flat_implant_edge_count), grid,
+      thrust::raw_pointer_cast(counts.data()),
+      thrust::raw_pointer_cast(membership_total.data()),
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(cudaGetLastError(), "IMPLANT grid-count launch");
+  cuda_check(cudaDeviceSynchronize(), "IMPLANT grid-count synchronize");
+  unsigned long long memberships = 0;
+  cuda_check(
+      cudaMemcpy(
+          &memberships, thrust::raw_pointer_cast(membership_total.data()),
+          sizeof(memberships), cudaMemcpyDeviceToHost),
+      "IMPLANT membership count D2H");
+  cuda_check(
+      cudaMemcpy(
+          &result.device_flags, thrust::raw_pointer_cast(status.data()),
+          sizeof(result.device_flags), cudaMemcpyDeviceToHost),
+      "IMPLANT grid-count status D2H");
+  result.memberships = memberships;
+  result.grid_count_ns = elapsed_ns(count_begin, Clock::now());
+  if (result.device_flags) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    return result;
+  }
+  if (result.memberships < request.flat_implant_edge_count ||
+      result.memberships > request.max_implant_memberships ||
+      result.memberships > UINT32_MAX) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_MEMBERSHIP_CAPACITY;
+    return result;
+  }
+
+  const auto build_begin = Clock::now();
+  thrust::exclusive_scan(
+      thrust::device, counts.begin(), counts.end(), offsets.begin());
+  const std::uint32_t terminal =
+      static_cast<std::uint32_t>(result.memberships);
+  cuda_check(
+      cudaMemcpy(
+          thrust::raw_pointer_cast(offsets.data()) + result.grid_cells,
+          &terminal, sizeof(terminal), cudaMemcpyHostToDevice),
+      "IMPLANT terminal offset H2D");
+  cuda_check(
+      cudaMemcpy(
+          thrust::raw_pointer_cast(cursors.data()),
+          thrust::raw_pointer_cast(offsets.data()),
+          result.grid_cells * sizeof(std::uint32_t),
+          cudaMemcpyDeviceToDevice),
+      "IMPLANT offsets-to-cursors D2D");
+  thrust::device_vector<std::uint32_t> members(result.memberships);
+  implant12_fill_grid_kernel<<<implant_blocks, 256>>>(
+      thrust::raw_pointer_cast(implant_edges.data()),
+      static_cast<std::uint32_t>(request.flat_implant_edge_count), grid,
+      thrust::raw_pointer_cast(cursors.data()),
+      thrust::raw_pointer_cast(members.data()), result.memberships,
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(cudaGetLastError(), "IMPLANT grid-fill launch");
+  const unsigned int grid_blocks = static_cast<unsigned int>(
+      std::min<std::uint64_t>(
+          65535, (result.grid_cells + 255) / 256));
+  implant12_validate_grid_kernel<<<grid_blocks, 256>>>(
+      thrust::raw_pointer_cast(counts.data()),
+      thrust::raw_pointer_cast(offsets.data()),
+      thrust::raw_pointer_cast(cursors.data()), result.grid_cells,
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(cudaGetLastError(), "IMPLANT grid validation launch");
+  cuda_check(cudaDeviceSynchronize(), "IMPLANT grid-build synchronize");
+  cuda_check(
+      cudaMemcpy(
+          &result.device_flags, thrust::raw_pointer_cast(status.data()),
+          sizeof(result.device_flags), cudaMemcpyDeviceToHost),
+      "IMPLANT grid-build status D2H");
+  result.grid_build_ns = elapsed_ns(build_begin, Clock::now());
+  if (result.device_flags) {
+    result.fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    return result;
+  }
+
+  const auto gate_begin = Clock::now();
+  implant12_query_kernel<<<
+      static_cast<unsigned int>(request.gate_context_count), threads>>>(
+      thrust::raw_pointer_cast(contexts.data()),
+      thrust::raw_pointer_cast(gate_contexts.data()),
+      static_cast<std::uint32_t>(request.gate_context_count),
+      KLAYOUT_CUDA_SPATIAL_IMPLANT12_GATE_DOMAIN,
+      thrust::raw_pointer_cast(cells.data()),
+      thrust::raw_pointer_cast(templates.data()),
+      thrust::raw_pointer_cast(implant_edges.data()),
+      static_cast<std::uint32_t>(request.flat_implant_edge_count), grid,
+      thrust::raw_pointer_cast(counts.data()),
+      thrust::raw_pointer_cast(offsets.data()),
+      thrust::raw_pointer_cast(members.data()),
+      request.implant1_distance, request.max_gate_query_visits,
+      request.max_gate_candidate_work,
+      thrust::raw_pointer_cast(gate_counters.data()),
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(cudaGetLastError(), "IMPLANT.1 query launch");
+  cuda_check(cudaDeviceSynchronize(), "IMPLANT.1 query synchronize");
+  result.gate_query_ns = elapsed_ns(gate_begin, Clock::now());
+  cuda_check(
+      cudaMemcpy(
+          &result.gate, thrust::raw_pointer_cast(gate_counters.data()),
+          sizeof(result.gate), cudaMemcpyDeviceToHost),
+      "IMPLANT.1 counters D2H");
+  cuda_check(
+      cudaMemcpy(
+          &result.device_flags, thrust::raw_pointer_cast(status.data()),
+          sizeof(result.device_flags), cudaMemcpyDeviceToHost),
+      "IMPLANT.1 status D2H");
+  if (result.device_flags) {
+    result.fallback_flags =
+        (result.device_flags &
+         (kImplant12WorkCapacityExceeded |
+          kImplant12WorkCounterOverflow))
+            ? KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY
+            : KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    return result;
+  }
+
+  const auto contact_begin = Clock::now();
+  implant12_query_kernel<<<
+      static_cast<unsigned int>(request.contact_context_count), threads>>>(
+      thrust::raw_pointer_cast(contexts.data()),
+      thrust::raw_pointer_cast(contact_contexts.data()),
+      static_cast<std::uint32_t>(request.contact_context_count),
+      KLAYOUT_CUDA_SPATIAL_IMPLANT12_CONTACT_DOMAIN,
+      thrust::raw_pointer_cast(cells.data()),
+      thrust::raw_pointer_cast(templates.data()),
+      thrust::raw_pointer_cast(implant_edges.data()),
+      static_cast<std::uint32_t>(request.flat_implant_edge_count), grid,
+      thrust::raw_pointer_cast(counts.data()),
+      thrust::raw_pointer_cast(offsets.data()),
+      thrust::raw_pointer_cast(members.data()),
+      request.implant2_distance, request.max_contact_query_visits,
+      request.max_contact_candidate_work,
+      thrust::raw_pointer_cast(contact_counters.data()),
+      thrust::raw_pointer_cast(status.data()));
+  cuda_check(cudaGetLastError(), "IMPLANT.2 query launch");
+  cuda_check(cudaDeviceSynchronize(), "IMPLANT.2 query synchronize");
+  result.contact_query_ns = elapsed_ns(contact_begin, Clock::now());
+
+  const auto d2h_begin = Clock::now();
+  cuda_check(
+      cudaMemcpy(
+          &result.contact,
+          thrust::raw_pointer_cast(contact_counters.data()),
+          sizeof(result.contact), cudaMemcpyDeviceToHost),
+      "IMPLANT.2 counters D2H");
+  cuda_check(
+      cudaMemcpy(
+          &result.device_flags, thrust::raw_pointer_cast(status.data()),
+          sizeof(result.device_flags), cudaMemcpyDeviceToHost),
+      "IMPLANT.2 status D2H");
+  result.d2h_ns = elapsed_ns(d2h_begin, Clock::now());
+  if (result.device_flags) {
+    result.fallback_flags =
+        (result.device_flags &
+         (kImplant12WorkCapacityExceeded |
+          kImplant12WorkCounterOverflow))
+            ? KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY
+            : KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+  }
+  return result;
+}
+
+void implant12_echo_request(
+    const klayout_cuda_spatial_implant12_request_v1 &request,
+    klayout_cuda_spatial_implant12_result_v1 *result) {
+  result->opcode = request.opcode;
+  result->option_flags = request.option_flags;
+  result->format_version = request.format_version;
+  result->requested_mask = request.requested_mask;
+  result->dbu_per_micron = request.dbu_per_micron;
+  result->root_cell = request.root_cell;
+  result->implant1_distance = request.implant1_distance;
+  result->implant2_distance = request.implant2_distance;
+  result->grid_cell_size = request.grid_cell_size;
+  result->implant_left = request.implant_left;
+  result->implant_bottom = request.implant_bottom;
+  result->implant_right = request.implant_right;
+  result->implant_top = request.implant_top;
+  std::copy(
+      request.scene_digest, request.scene_digest + 32,
+      result->scene_digest);
+  result->context_count = request.context_count;
+  result->implant_context_count = request.implant_context_count;
+  result->gate_context_count = request.gate_context_count;
+  result->contact_context_count = request.contact_context_count;
+  result->cell_count = request.cell_count;
+  result->contour_count = request.contour_count;
+  result->edge_count = request.edge_count;
+  result->flat_implant_polygon_count =
+      request.flat_implant_polygon_count;
+  result->flat_gate_polygon_count = request.flat_gate_polygon_count;
+  result->flat_contact_polygon_count =
+      request.flat_contact_polygon_count;
+  result->flat_implant_contour_count =
+      request.flat_implant_contour_count;
+  result->flat_gate_contour_count = request.flat_gate_contour_count;
+  result->flat_contact_contour_count =
+      request.flat_contact_contour_count;
+  result->flat_implant_edge_count = request.flat_implant_edge_count;
+  result->flat_gate_edge_count = request.flat_gate_edge_count;
+  result->flat_contact_edge_count = request.flat_contact_edge_count;
+}
+
+int run_implant12_request(
+    const klayout_cuda_spatial_implant12_request_v1 *request,
+    klayout_cuda_spatial_implant12_result_v1 *result) {
+  if (!result) return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  std::memset(result, 0, sizeof(*result));
+  result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  result->struct_size = sizeof(*result);
+  result->status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  result->disposition = KLAYOUT_CUDA_SPATIAL_IMPLANT12_UNCERTAIN;
+  if (!request || !implant12_valid_request(*request)) {
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+    set_message(
+        result, "unsupported, malformed, or digest-mismatched "
+                "IMPLANT.1/.2 request");
+    return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  }
+  implant12_echo_request(*request, result);
+
+  const auto total_begin = Clock::now();
+  try {
+    std::lock_guard<std::mutex> pipeline_lock(pipeline_mutex());
+    const Implant12PipelineResult pipeline =
+        implant12_run_pipeline(*request);
+    result->fallback_flags = pipeline.fallback_flags;
+    result->device_flags = pipeline.device_flags;
+    result->implant_expanded_edge_count =
+        pipeline.fallback_flags ? 0 : request->flat_implant_edge_count;
+    result->gate_processed_edge_count = pipeline.gate.processed_edges;
+    result->contact_processed_edge_count =
+        pipeline.contact.processed_edges;
+    result->grid_cell_count = pipeline.grid_cells;
+    result->implant_membership_count = pipeline.memberships;
+    result->gate_query_visit_count = pipeline.gate.query_visits;
+    result->gate_candidate_count = pipeline.gate.candidates;
+    result->gate_raw_hit_count = pipeline.gate.raw_hits;
+    result->gate_uncertain_count = pipeline.gate.uncertain;
+    result->contact_query_visit_count =
+        pipeline.contact.query_visits;
+    result->contact_candidate_count = pipeline.contact.candidates;
+    result->contact_raw_hit_count = pipeline.contact.raw_hits;
+    result->contact_uncertain_count = pipeline.contact.uncertain;
+    result->setup_ns = pipeline.setup_ns;
+    result->h2d_ns = pipeline.h2d_ns;
+    result->implant_expand_ns = pipeline.implant_expand_ns;
+    result->grid_count_ns = pipeline.grid_count_ns;
+    result->grid_build_ns = pipeline.grid_build_ns;
+    result->gate_query_ns = pipeline.gate_query_ns;
+    result->contact_query_ns = pipeline.contact_query_ns;
+    result->d2h_ns = pipeline.d2h_ns;
+    if (pipeline.fallback_flags || pipeline.device_flags) {
+      result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      set_message(
+          result, "IMPLANT.1/.2 device or capacity gate declined");
+      result->total_ns = elapsed_ns(total_begin, Clock::now());
+      return KLAYOUT_CUDA_SPATIAL_FALLBACK;
+    }
+
+    if (!pipeline.gate.raw_hits && !pipeline.gate.uncertain) {
+      result->clean_mask |= KLAYOUT_CUDA_SPATIAL_IMPLANT1_RULE;
+    }
+    if (!pipeline.contact.raw_hits && !pipeline.contact.uncertain) {
+      result->clean_mask |= KLAYOUT_CUDA_SPATIAL_IMPLANT2_RULE;
+    }
+    result->status = KLAYOUT_CUDA_SPATIAL_OK;
+    if (pipeline.gate.uncertain || pipeline.contact.uncertain) {
+      result->disposition = KLAYOUT_CUDA_SPATIAL_IMPLANT12_UNCERTAIN;
+      set_message(
+          result, "IMPLANT exact predicate reported uncertainty");
+    } else if (pipeline.gate.raw_hits || pipeline.contact.raw_hits) {
+      result->disposition = KLAYOUT_CUDA_SPATIAL_IMPLANT12_RAW_HITS;
+      set_message(
+          result, "IMPLANT raw hits require both pristine CPU rules");
+    } else {
+      result->disposition = KLAYOUT_CUDA_SPATIAL_IMPLANT12_COMPLETE;
+      result->certified_empty_mask =
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_ALL_RULES;
+      result->clean_mask = KLAYOUT_CUDA_SPATIAL_IMPLANT12_ALL_RULES;
+      set_message(
+          result, "complete atomic IMPLANT.1/IMPLANT.2 empty certificate");
+    }
+    result->total_ns = elapsed_ns(total_begin, Clock::now());
+    return KLAYOUT_CUDA_SPATIAL_OK;
+  } catch (const std::exception &ex) {
+    result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    set_message(result, ex.what());
+  } catch (...) {
+    result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    set_message(
+        result, "unknown CUDA IMPLANT.1/.2 backend exception");
+  }
+  result->total_ns = elapsed_ns(total_begin, Clock::now());
+  return KLAYOUT_CUDA_SPATIAL_ERROR;
+}
+
 }  // namespace
 
 extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT std::uint32_t
@@ -3903,6 +5250,28 @@ klayout_cuda_spatial_run_active3_empty_v1(
           KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
       set_message(
           result, "exception escaped the ACTIVE.3 request boundary");
+    }
+    return KLAYOUT_CUDA_SPATIAL_ERROR;
+  }
+}
+
+extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_implant12_empty_v1(
+    const klayout_cuda_spatial_implant12_request_v1 *request,
+    klayout_cuda_spatial_implant12_result_v1 *result) {
+  try {
+    return run_implant12_request(request, result);
+  } catch (...) {
+    if (result) {
+      std::memset(result, 0, sizeof(*result));
+      result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+      result->struct_size = sizeof(*result);
+      result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+      result->disposition = KLAYOUT_CUDA_SPATIAL_IMPLANT12_UNCERTAIN;
+      result->fallback_flags =
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+      set_message(
+          result, "exception escaped the IMPLANT.1/.2 request boundary");
     }
     return KLAYOUT_CUDA_SPATIAL_ERROR;
   }

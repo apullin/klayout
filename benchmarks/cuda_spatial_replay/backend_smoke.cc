@@ -1,5 +1,6 @@
 #include "dbCudaSpatialApi.h"
 #include "dbCudaActive3Digest.h"
+#include "dbCudaImplant12Digest.h"
 
 #include <algorithm>
 #include <array>
@@ -1609,6 +1610,561 @@ bool run_m1ws_abi_smoke() {
   return good;
 }
 
+struct Implant12Fixture {
+  std::vector<klayout_cuda_spatial_implant12_context_v1> contexts;
+  std::vector<std::uint32_t> implant_contexts;
+  std::vector<std::uint64_t> implant_offsets;
+  std::vector<std::uint32_t> gate_contexts;
+  std::vector<std::uint32_t> contact_contexts;
+  std::vector<klayout_cuda_spatial_implant12_cell_v1> cells;
+  std::vector<klayout_cuda_spatial_implant12_contour_v1> contours;
+  std::vector<klayout_cuda_spatial_implant12_edge_v1> edges;
+  klayout_cuda_spatial_implant12_request_v1 request{};
+
+  static void append_box(
+      std::vector<klayout_cuda_spatial_implant12_edge_v1> *destination,
+      std::int64_t left, std::int64_t bottom,
+      std::int64_t right, std::int64_t top) {
+    destination->push_back({left, bottom, left, top});
+    destination->push_back({left, top, right, top});
+    destination->push_back({right, top, right, bottom});
+    destination->push_back({right, bottom, left, bottom});
+  }
+
+  Implant12Fixture(std::int64_t gate_left, std::int64_t gate_bottom,
+                   std::int64_t contact_left,
+                   std::int64_t contact_bottom) {
+    contexts = {
+        {0, 0, 0, 0},
+        {5000, 0, 0, 4},
+    };
+    implant_contexts = {0, 1};
+    implant_offsets = {0, 4, 8};
+    gate_contexts = {0, 1};
+    contact_contexts = {0, 1};
+    cells.resize(1);
+    cells[0].source_cell_index = 17;
+
+    const std::int64_t lefts[3] = {0, gate_left, contact_left};
+    const std::int64_t bottoms[3] = {0, gate_bottom, contact_bottom};
+    const std::int64_t rights[3] = {
+        100, gate_left + 100, contact_left + 100};
+    const std::int64_t tops[3] = {
+        100, gate_bottom + 20, contact_bottom + 20};
+    for (std::uint32_t domain = 0; domain < 3; ++domain) {
+      auto &span = cells[0].domains[domain];
+      span.contour_begin = contours.size();
+      span.edge_begin = edges.size();
+      span.polygon_count = 1;
+      span.contour_count = 1;
+      span.edge_count = 4;
+      contours.push_back({
+          static_cast<std::uint64_t>(edges.size()), 0, 0, 4,
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_HULL});
+      append_box(
+          &edges, lefts[domain], bottoms[domain],
+          rights[domain], tops[domain]);
+    }
+
+    request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+    request.struct_size = sizeof(request);
+    request.opcode =
+        KLAYOUT_CUDA_SPATIAL_IMPLANT12_RAW_SUPERSET_EMPTY;
+    request.option_flags =
+        KLAYOUT_CUDA_SPATIAL_IMPLANT12_QUALIFIED_OPTIONS;
+    request.format_version = 1;
+    request.dbu_per_micron = 2000;
+    request.root_cell = 0;
+    request.requested_mask =
+        KLAYOUT_CUDA_SPATIAL_IMPLANT12_ALL_RULES;
+    request.device = 0;
+    request.implant1_distance = 140;
+    request.implant2_distance = 50;
+    request.grid_cell_size = 2000;
+    request.contexts = contexts.data();
+    request.context_count = contexts.size();
+    request.context_record_bytes =
+        sizeof(klayout_cuda_spatial_implant12_context_v1);
+    request.implant_contexts = implant_contexts.data();
+    request.implant_context_count = implant_contexts.size();
+    request.implant_edge_offsets = implant_offsets.data();
+    request.implant_edge_offset_count = implant_offsets.size();
+    request.gate_contexts = gate_contexts.data();
+    request.gate_context_count = gate_contexts.size();
+    request.contact_contexts = contact_contexts.data();
+    request.contact_context_count = contact_contexts.size();
+    request.cells = cells.data();
+    request.cell_count = cells.size();
+    request.cell_record_bytes =
+        sizeof(klayout_cuda_spatial_implant12_cell_v1);
+    request.contours = contours.data();
+    request.contour_count = contours.size();
+    request.contour_record_bytes =
+        sizeof(klayout_cuda_spatial_implant12_contour_v1);
+    request.edges = edges.data();
+    request.edge_count = edges.size();
+    request.edge_record_bytes =
+        sizeof(klayout_cuda_spatial_implant12_edge_v1);
+    request.flat_implant_polygon_count = 2;
+    request.flat_gate_polygon_count = 2;
+    request.flat_contact_polygon_count = 2;
+    request.flat_implant_contour_count = 2;
+    request.flat_gate_contour_count = 2;
+    request.flat_contact_contour_count = 2;
+    request.flat_implant_edge_count = 8;
+    request.flat_gate_edge_count = 8;
+    request.flat_contact_edge_count = 8;
+    request.implant_left = 0;
+    request.implant_bottom = -100;
+    request.implant_right = 5100;
+    request.implant_top = 100;
+    request.max_contexts = 100;
+    request.max_grid_cells = 100;
+    request.max_implant_memberships = 1000;
+    request.max_gate_query_visits = 10000;
+    request.max_gate_candidate_work = 10000;
+    request.max_contact_query_visits = 10000;
+    request.max_contact_candidate_work = 10000;
+    request.max_flat_polygons = 1000;
+    request.max_flat_contours = 1000;
+    request.max_flat_edges = 10000;
+    refresh_digest();
+  }
+
+  bool refresh_digest() {
+    request.contexts = contexts.data();
+    request.implant_contexts = implant_contexts.data();
+    request.implant_edge_offsets = implant_offsets.data();
+    request.gate_contexts = gate_contexts.data();
+    request.contact_contexts = contact_contexts.data();
+    request.cells = cells.data();
+    request.contours = contours.data();
+    request.edges = edges.data();
+    std::array<std::uint8_t, 32> digest{};
+    if (!db::cuda_implant12_digest::request_digest(request, digest)) {
+      return false;
+    }
+    std::copy(digest.begin(), digest.end(), request.scene_digest);
+    return true;
+  }
+};
+
+void report_implant12_failure(
+    const char *name, int status,
+    const klayout_cuda_spatial_implant12_result_v1 &result) {
+  std::cerr << name << " failed: call_status=" << status
+            << " result_status=" << result.status
+            << " disposition=" << result.disposition
+            << " clean_mask=" << result.clean_mask
+            << " certified_mask=" << result.certified_empty_mask
+            << " gate_candidates=" << result.gate_candidate_count
+            << " gate_hits=" << result.gate_raw_hit_count
+            << " contact_candidates=" << result.contact_candidate_count
+            << " contact_hits=" << result.contact_raw_hit_count
+            << " device_flags=" << result.device_flags
+            << " fallback_flags=" << result.fallback_flags
+            << " message=" << result.message << '\n';
+}
+
+bool run_implant12_abi_smoke() {
+  bool good = true;
+
+  // Both secondaries are exactly on the strict d boundary.  The second
+  // context is mirrored and translated, exercising endpoint reversal while
+  // remaining geometrically equivalent and cross-context disjoint.
+  Implant12Fixture clean(0, 240, 0, 150);
+  klayout_cuda_spatial_implant12_result_v1 clean_result{};
+  const int clean_status =
+      klayout_cuda_spatial_run_implant12_empty_v1(
+          &clean.request, &clean_result);
+  const bool clean_good =
+      clean_status == KLAYOUT_CUDA_SPATIAL_OK &&
+      clean_result.status == KLAYOUT_CUDA_SPATIAL_OK &&
+      clean_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_COMPLETE &&
+      clean_result.clean_mask ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_ALL_RULES &&
+      clean_result.certified_empty_mask ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_ALL_RULES &&
+      clean_result.gate_raw_hit_count == 0 &&
+      clean_result.contact_raw_hit_count == 0 &&
+      clean_result.gate_processed_edge_count == 8 &&
+      clean_result.contact_processed_edge_count == 8 &&
+      clean_result.implant_expanded_edge_count == 8 &&
+      clean_result.grid_cell_count <= clean.request.max_grid_cells &&
+      clean_result.implant_membership_count <=
+          clean.request.max_implant_memberships &&
+      std::equal(
+          clean_result.scene_digest,
+          clean_result.scene_digest + 32,
+          clean.request.scene_digest);
+  if (!clean_good) {
+    report_implant12_failure(
+        "CUDA IMPLANT boundary/mirror clean", clean_status, clean_result);
+  }
+  good = clean_good && good;
+
+  Implant12Fixture gate_hit(0, 239, 0, 150);
+  klayout_cuda_spatial_implant12_result_v1 gate_result{};
+  const int gate_status =
+      klayout_cuda_spatial_run_implant12_empty_v1(
+          &gate_hit.request, &gate_result);
+  const bool gate_good =
+      gate_status == KLAYOUT_CUDA_SPATIAL_OK &&
+      gate_result.status == KLAYOUT_CUDA_SPATIAL_OK &&
+      gate_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_RAW_HITS &&
+      gate_result.gate_raw_hit_count == 2 &&
+      gate_result.contact_raw_hit_count == 0 &&
+      gate_result.clean_mask == KLAYOUT_CUDA_SPATIAL_IMPLANT2_RULE &&
+      gate_result.certified_empty_mask == 0;
+  if (!gate_good) {
+    report_implant12_failure(
+        "CUDA IMPLANT.1 strict d-1 hit", gate_status, gate_result);
+  }
+  good = gate_good && good;
+
+  Implant12Fixture contact_hit(0, 240, 0, 149);
+  klayout_cuda_spatial_implant12_result_v1 contact_result{};
+  const int contact_status =
+      klayout_cuda_spatial_run_implant12_empty_v1(
+          &contact_hit.request, &contact_result);
+  const bool contact_good =
+      contact_status == KLAYOUT_CUDA_SPATIAL_OK &&
+      contact_result.status == KLAYOUT_CUDA_SPATIAL_OK &&
+      contact_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_RAW_HITS &&
+      contact_result.gate_raw_hit_count == 0 &&
+      contact_result.contact_raw_hit_count == 2 &&
+      contact_result.clean_mask == KLAYOUT_CUDA_SPATIAL_IMPLANT1_RULE &&
+      contact_result.certified_empty_mask == 0;
+  if (!contact_good) {
+    report_implant12_failure(
+        "CUDA IMPLANT.2 strict d-1 hit",
+        contact_status, contact_result);
+  }
+  good = contact_good && good;
+
+  Implant12Fixture both_hit(0, 100, 0, 100);
+  klayout_cuda_spatial_implant12_result_v1 both_result{};
+  const int both_status =
+      klayout_cuda_spatial_run_implant12_empty_v1(
+          &both_hit.request, &both_result);
+  const bool both_good =
+      both_status == KLAYOUT_CUDA_SPATIAL_OK &&
+      both_result.status == KLAYOUT_CUDA_SPATIAL_OK &&
+      both_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_RAW_HITS &&
+      both_result.gate_raw_hit_count != 0 &&
+      both_result.contact_raw_hit_count != 0 &&
+      both_result.clean_mask == 0 &&
+      both_result.certified_empty_mask == 0;
+  if (!both_good) {
+    report_implant12_failure(
+        "CUDA IMPLANT collinear/mirrored both-hit",
+        both_status, both_result);
+  }
+  good = both_good && good;
+
+  Implant12Fixture endpoint_clean(100, 101, 100, 101);
+  klayout_cuda_spatial_implant12_result_v1 endpoint_result{};
+  const int endpoint_status =
+      klayout_cuda_spatial_run_implant12_empty_v1(
+          &endpoint_clean.request, &endpoint_result);
+  const bool endpoint_good =
+      endpoint_status == KLAYOUT_CUDA_SPATIAL_OK &&
+      endpoint_result.status == KLAYOUT_CUDA_SPATIAL_OK &&
+      endpoint_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_COMPLETE &&
+      endpoint_result.clean_mask ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_ALL_RULES &&
+      endpoint_result.certified_empty_mask ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_ALL_RULES &&
+      endpoint_result.gate_raw_hit_count == 0 &&
+      endpoint_result.contact_raw_hit_count == 0;
+  if (!endpoint_good) {
+    report_implant12_failure(
+        "CUDA IMPLANT endpoint-only projection",
+        endpoint_status, endpoint_result);
+  }
+  good = endpoint_good && good;
+
+  // One long negative-coordinate polygon spans six X cells.  Its one
+  // IMPLANT.1 facing pair must be classified exactly once despite sharing
+  // multiple grid cells; IMPLANT.2 remains on its strict boundary.
+  Implant12Fixture long_negative(0, 240, 0, 150);
+  long_negative.contexts.resize(1);
+  long_negative.implant_contexts = {0};
+  long_negative.implant_offsets = {0, 4};
+  long_negative.gate_contexts = {0};
+  long_negative.contact_contexts = {0};
+  long_negative.edges.clear();
+  Implant12Fixture::append_box(
+      &long_negative.edges, -4100, -100, 4100, 0);
+  Implant12Fixture::append_box(
+      &long_negative.edges, -4100, 139, 4100, 159);
+  Implant12Fixture::append_box(
+      &long_negative.edges, -4100, 50, 4100, 70);
+  long_negative.request.context_count = 1;
+  long_negative.request.implant_context_count = 1;
+  long_negative.request.implant_edge_offset_count = 2;
+  long_negative.request.gate_context_count = 1;
+  long_negative.request.contact_context_count = 1;
+  long_negative.request.flat_implant_polygon_count = 1;
+  long_negative.request.flat_gate_polygon_count = 1;
+  long_negative.request.flat_contact_polygon_count = 1;
+  long_negative.request.flat_implant_contour_count = 1;
+  long_negative.request.flat_gate_contour_count = 1;
+  long_negative.request.flat_contact_contour_count = 1;
+  long_negative.request.flat_implant_edge_count = 4;
+  long_negative.request.flat_gate_edge_count = 4;
+  long_negative.request.flat_contact_edge_count = 4;
+  long_negative.request.implant_left = -4100;
+  long_negative.request.implant_bottom = -100;
+  long_negative.request.implant_right = 4100;
+  long_negative.request.implant_top = 0;
+  long_negative.refresh_digest();
+  klayout_cuda_spatial_implant12_result_v1 long_result{};
+  const int long_status =
+      klayout_cuda_spatial_run_implant12_empty_v1(
+          &long_negative.request, &long_result);
+  const bool long_good =
+      long_status == KLAYOUT_CUDA_SPATIAL_OK &&
+      long_result.status == KLAYOUT_CUDA_SPATIAL_OK &&
+      long_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_RAW_HITS &&
+      long_result.gate_raw_hit_count == 1 &&
+      long_result.contact_raw_hit_count == 0 &&
+      long_result.clean_mask == KLAYOUT_CUDA_SPATIAL_IMPLANT2_RULE &&
+      long_result.grid_cell_count > 4 &&
+      long_result.implant_membership_count >
+          long_result.implant_expanded_edge_count;
+  if (!long_good) {
+    report_implant12_failure(
+        "CUDA IMPLANT negative long-edge canonicalization",
+        long_status, long_result);
+  }
+  good = long_good && good;
+
+  Implant12Fixture digest_bad(0, 240, 0, 150);
+  digest_bad.request.scene_digest[0] ^= 1;
+  klayout_cuda_spatial_implant12_result_v1 digest_result{};
+  const int digest_status =
+      klayout_cuda_spatial_run_implant12_empty_v1(
+          &digest_bad.request, &digest_result);
+  const bool digest_good =
+      digest_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      digest_result.status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      digest_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_UNCERTAIN &&
+      digest_result.certified_empty_mask == 0;
+  if (!digest_good) {
+    report_implant12_failure(
+        "CUDA IMPLANT digest rejection", digest_status, digest_result);
+  }
+  good = digest_good && good;
+
+  Implant12Fixture order_bad(0, 240, 0, 150);
+  std::swap(
+      order_bad.request.implant1_distance,
+      order_bad.request.implant2_distance);
+  order_bad.refresh_digest();
+  klayout_cuda_spatial_implant12_result_v1 order_result{};
+  const int order_status =
+      klayout_cuda_spatial_run_implant12_empty_v1(
+          &order_bad.request, &order_result);
+  const bool order_good =
+      order_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      order_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_UNCERTAIN;
+  if (!order_good) {
+    report_implant12_failure(
+        "CUDA IMPLANT ordered-distance rejection",
+        order_status, order_result);
+  }
+  good = order_good && good;
+
+  Implant12Fixture span_bad(0, 240, 0, 150);
+  ++span_bad.cells[0]
+        .domains[KLAYOUT_CUDA_SPATIAL_IMPLANT12_GATE_DOMAIN]
+        .edge_begin;
+  span_bad.refresh_digest();
+  klayout_cuda_spatial_implant12_result_v1 span_result{};
+  const int span_status =
+      klayout_cuda_spatial_run_implant12_empty_v1(
+          &span_bad.request, &span_result);
+  const bool span_good =
+      span_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      span_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_UNCERTAIN;
+  if (!span_good) {
+    report_implant12_failure(
+        "CUDA IMPLANT span rejection", span_status, span_result);
+  }
+  good = span_good && good;
+
+  Implant12Fixture list_bad(0, 240, 0, 150);
+  std::swap(list_bad.gate_contexts[0], list_bad.gate_contexts[1]);
+  list_bad.refresh_digest();
+  klayout_cuda_spatial_implant12_result_v1 list_result{};
+  const int list_status =
+      klayout_cuda_spatial_run_implant12_empty_v1(
+          &list_bad.request, &list_result);
+  const bool list_good =
+      list_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      list_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_UNCERTAIN;
+  if (!list_good) {
+    report_implant12_failure(
+        "CUDA IMPLANT context-list rejection", list_status, list_result);
+  }
+  good = list_good && good;
+
+  Implant12Fixture offset_bad(0, 240, 0, 150);
+  ++offset_bad.implant_offsets[1];
+  offset_bad.refresh_digest();
+  klayout_cuda_spatial_implant12_result_v1 offset_result{};
+  const int offset_status =
+      klayout_cuda_spatial_run_implant12_empty_v1(
+          &offset_bad.request, &offset_result);
+  const bool offset_good =
+      offset_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      offset_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_UNCERTAIN;
+  if (!offset_good) {
+    report_implant12_failure(
+        "CUDA IMPLANT offset rejection", offset_status, offset_result);
+  }
+  good = offset_good && good;
+
+  Implant12Fixture orientation_bad(0, 240, 0, 150);
+  orientation_bad.edges[0] = {0, 0, 100, 0};
+  orientation_bad.edges[1] = {100, 0, 100, 100};
+  orientation_bad.edges[2] = {100, 100, 0, 100};
+  orientation_bad.edges[3] = {0, 100, 0, 0};
+  orientation_bad.refresh_digest();
+  klayout_cuda_spatial_implant12_result_v1 orientation_result{};
+  const int orientation_status =
+      klayout_cuda_spatial_run_implant12_empty_v1(
+          &orientation_bad.request, &orientation_result);
+  const bool orientation_good =
+      orientation_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      orientation_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_UNCERTAIN;
+  if (!orientation_good) {
+    report_implant12_failure(
+        "CUDA IMPLANT contour-orientation rejection",
+        orientation_status, orientation_result);
+  }
+  good = orientation_good && good;
+
+  Implant12Fixture census_bad(0, 240, 0, 150);
+  ++census_bad.request.flat_gate_edge_count;
+  census_bad.refresh_digest();
+  klayout_cuda_spatial_implant12_result_v1 census_result{};
+  const int census_status =
+      klayout_cuda_spatial_run_implant12_empty_v1(
+          &census_bad.request, &census_result);
+  const bool census_good =
+      census_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      census_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_UNCERTAIN;
+  if (!census_good) {
+    report_implant12_failure(
+        "CUDA IMPLANT flat-census rejection",
+        census_status, census_result);
+  }
+  good = census_good && good;
+
+  Implant12Fixture capacity(0, 239, 0, 149);
+  capacity.request.max_gate_candidate_work = 1;
+  capacity.refresh_digest();
+  klayout_cuda_spatial_implant12_result_v1 capacity_result{};
+  const int capacity_status =
+      klayout_cuda_spatial_run_implant12_empty_v1(
+          &capacity.request, &capacity_result);
+  const bool capacity_good =
+      capacity_status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      capacity_result.status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      capacity_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_IMPLANT12_UNCERTAIN &&
+      (capacity_result.fallback_flags &
+       KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY) != 0 &&
+      capacity_result.certified_empty_mask == 0;
+  if (!capacity_good) {
+    report_implant12_failure(
+        "CUDA IMPLANT actual-work capacity",
+        capacity_status, capacity_result);
+  }
+  good = capacity_good && good;
+
+  Implant12Fixture visit_capacity(0, 240, 0, 150);
+  visit_capacity.request.max_gate_query_visits = 1;
+  visit_capacity.refresh_digest();
+  klayout_cuda_spatial_implant12_result_v1 visit_result{};
+  const int visit_status =
+      klayout_cuda_spatial_run_implant12_empty_v1(
+          &visit_capacity.request, &visit_result);
+  const bool visit_good =
+      visit_status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      visit_result.status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      (visit_result.fallback_flags &
+       KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY) != 0 &&
+      visit_result.certified_empty_mask == 0;
+  if (!visit_good) {
+    report_implant12_failure(
+        "CUDA IMPLANT query-visit capacity", visit_status, visit_result);
+  }
+  good = visit_good && good;
+
+  Implant12Fixture grid_capacity(0, 240, 0, 150);
+  grid_capacity.request.max_grid_cells = 1;
+  grid_capacity.refresh_digest();
+  klayout_cuda_spatial_implant12_result_v1 grid_result{};
+  const int grid_status =
+      klayout_cuda_spatial_run_implant12_empty_v1(
+          &grid_capacity.request, &grid_result);
+  const bool grid_good =
+      grid_status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      grid_result.status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      (grid_result.fallback_flags &
+       KLAYOUT_CUDA_SPATIAL_FALLBACK_MEMBERSHIP_CAPACITY) != 0 &&
+      grid_result.certified_empty_mask == 0;
+  if (!grid_good) {
+    report_implant12_failure(
+        "CUDA IMPLANT grid capacity", grid_status, grid_result);
+  }
+  good = grid_good && good;
+
+  Implant12Fixture membership_capacity(0, 240, 0, 150);
+  membership_capacity.request.max_implant_memberships = 1;
+  membership_capacity.refresh_digest();
+  klayout_cuda_spatial_implant12_result_v1 membership_result{};
+  const int membership_status =
+      klayout_cuda_spatial_run_implant12_empty_v1(
+          &membership_capacity.request, &membership_result);
+  const bool membership_good =
+      membership_status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      membership_result.status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      (membership_result.fallback_flags &
+       KLAYOUT_CUDA_SPATIAL_FALLBACK_MEMBERSHIP_CAPACITY) != 0 &&
+      membership_result.certified_empty_mask == 0;
+  if (!membership_good) {
+    report_implant12_failure(
+        "CUDA IMPLANT membership capacity",
+        membership_status, membership_result);
+  }
+  good = membership_good && good;
+
+  if (good) {
+    std::cout
+        << "CUDA IMPLANT.1/.2 additive ABI smoke passed: atomic clean, "
+           "strict per-lane/mirrored/collinear hits, endpoint exclusion, "
+           "digest/order/span/capacity rejection\n";
+  }
+  return good;
+}
+
 }  // namespace
 
 int main() {
@@ -1631,5 +2187,6 @@ int main() {
   good = run_active3_abi_smoke() && good;
   good = run_contact4_abi_smoke() && good;
   good = run_m1ws_abi_smoke() && good;
+  good = run_implant12_abi_smoke() && good;
   return good ? 0 : 1;
 }
