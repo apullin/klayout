@@ -35,6 +35,15 @@ inline constexpr std::int64_t kQualifiedSceneCoordinateDistance =
 static_assert(kQualifiedSceneCoordinateDistance == 110,
               "0.055 um / 0.0005 um must be 110 DBU");
 
+// CONTACT.4 is a 5 nm enclosure rule in the same 0.5 nm/DBU technology.
+// The shared exact predicate accepts only these two explicitly qualified
+// profiles; arbitrary distances continue to fail closed.
+inline constexpr std::int64_t kContact4RuleDistancePicometers = 5000;
+inline constexpr std::int64_t kContact4QualifiedSceneCoordinateDistance =
+    kContact4RuleDistancePicometers / kQualifiedSceneDbuPicometers;
+static_assert(kContact4QualifiedSceneCoordinateDistance == 10,
+              "0.005 um / 0.0005 um must be 10 DBU");
+
 // A directed edge in the already-resolved hierarchy/context coordinate system.
 struct alignas(16) DirectedEdge {
   std::int64_t x1;
@@ -54,9 +63,10 @@ struct alignas(16) EdgePair {
 //                  whole_edges=false,
 //                  IncludeZeroDistanceWhenTouching)
 //
-// The first accepted configuration is deliberately d=110 DBU, obtained
-// exactly from the qualified scene's 0.0005-um DBU.  Any other distance is
-// kUncertain, not an attempted generalization.
+// The accepted configurations are deliberately d=110 DBU for ACTIVE.3 and
+// d=10 DBU for CONTACT.4, obtained exactly from the qualified scene's
+// 0.0005-um DBU.  Any other distance is kUncertain, not an attempted
+// generalization.
 //
 // kNoViolation and kViolation are exact.  kUncertain means that this bounded
 // implementation deliberately declined the pair; callers must retain it for

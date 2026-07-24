@@ -285,21 +285,29 @@ KLAYOUT_CUDA_SPATIAL_EXPORT void klayout_cuda_spatial_release_m1_result_v1 (
   struct klayout_cuda_spatial_m1_result_v1 *result);
 
 /*
- * Optional ACTIVE.3 empty certificate over a caller-qualified live hierarchy.
+ * Optional qualified enclosure empty certificate over a live hierarchy.
  *
  * This is another additive v1 entry point.  The caller expands the regular
- * hierarchy into compact contexts, but retains per-cell edge templates:
- * ACTIVE edges are streamed from templates on the device and are never
- * materialized as one flat array.
+ * hierarchy into compact contexts, but retains per-cell edge templates.  The
+ * operand in the historical ACTIVE fields is streamed from templates on the
+ * device and is never materialized as one flat array.
  *
- * The ACTIVE operand is intentionally the raw (unmerged) DeepLayer.  A raw
- * hit is not an exact KLayout marker and must only request pristine CPU
- * fallback.  COMPLETE is the sole consumable outcome and means that the
- * complete raw-ACTIVE superset had zero hits and zero uncertainty.
+ * ACTIVE.3 indexes merged WELL and streams raw ACTIVE.  CONTACT.4 indexes raw
+ * CONTACT (its secondary operand) and streams merged ACTIVE (its primary).
+ * In either profile, a raw hit is not an exact publishable KLayout marker and
+ * must only request pristine CPU fallback.  COMPLETE is the sole consumable
+ * outcome and means that the complete qualified raw superset had zero hits
+ * and zero uncertainty.
  */
 enum klayout_cuda_spatial_active3_opcode
 {
-  KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_SUPERSET_EMPTY = 1
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_SUPERSET_EMPTY = 1,
+  /*
+   * CONTACT.4 reuses this scene ABI with the historical WELL fields holding
+   * the indexed raw-CONTACT secondary operand and the ACTIVE fields holding
+   * the streamed merged-ACTIVE primary operand.
+   */
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_SUPERSET_EMPTY = 2
 };
 
 enum klayout_cuda_spatial_active3_option_flag
@@ -317,11 +325,19 @@ enum klayout_cuda_spatial_active3_option_flag
   KLAYOUT_CUDA_SPATIAL_ACTIVE3_SAME_STORE_AND_TOP = 1u << 10,
   KLAYOUT_CUDA_SPATIAL_ACTIVE3_NO_BREAKOUT = 1u << 11,
   KLAYOUT_CUDA_SPATIAL_ACTIVE3_QUALIFIED_GEOMETRY = 1u << 12,
-  KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_ACTIVE_SUPERSET = 1u << 13
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_ACTIVE_SUPERSET = 1u << 13,
+  /*
+   * The indexed (historical WELL) operand is the relation's secondary
+   * operand.  This bit is deliberately absent from the ACTIVE.3 profile.
+   */
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_INDEXED_SECONDARY = 1u << 14
 };
 
 #define KLAYOUT_CUDA_SPATIAL_ACTIVE3_QUALIFIED_OPTIONS \
   ((1u << 14) - 1u)
+
+#define KLAYOUT_CUDA_SPATIAL_CONTACT4_QUALIFIED_OPTIONS \
+  (((1u << 13) - 1u) | KLAYOUT_CUDA_SPATIAL_ACTIVE3_INDEXED_SECONDARY)
 
 enum klayout_cuda_spatial_active3_disposition
 {

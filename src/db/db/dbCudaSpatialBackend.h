@@ -229,6 +229,20 @@ DB_PUBLIC CudaActive3Attempt cuda_spatial_try_active3_empty (
 DB_PUBLIC bool cuda_spatial_active3_requested ();
 
 /**
+ * Invoke the optional CONTACT.4 raw-CONTACT-superset empty certificate.
+ *
+ * The request reuses the ACTIVE.3 scene ABI: the historical WELL fields hold
+ * indexed raw CONTACT (the secondary relation operand), while ACTIVE fields
+ * hold streamed merged ACTIVE (the primary operand).  Only CertifiedEmpty is
+ * consumable; raw hits and every bounded decline retain the CPU rule.
+ */
+DB_PUBLIC CudaActive3Attempt cuda_spatial_try_contact4_empty (
+  const klayout_cuda_spatial_active3_request_v1 &request);
+
+/** Return true only when the independent CONTACT.4 opt-in and symbol exist. */
+DB_PUBLIC bool cuda_spatial_contact4_requested ();
+
+/**
  * Invoke the optional atomic METAL1.1/METAL1.2 empty certificate.
  *
  * Only CertifiedEmpty is consumable.  Raw hits and every uncertain, malformed,

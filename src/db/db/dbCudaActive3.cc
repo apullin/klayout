@@ -53,6 +53,10 @@ const int64_t accepted_coordinate_magnitude = INT64_C (1000000000000);
 const int64_t qualified_distance = 110;
 const int64_t qualified_grid_cell = 2000;
 const uint32_t qualified_dbu_per_micron = 2000;
+const int64_t qualified_contact4_distance = 10;
+const int qualified_contact4_active_layer = 1;
+const int qualified_contact4_contact_layer = 10;
+const int qualified_contact4_datatype = 0;
 
 class Active3Decline
   : public std::runtime_error
@@ -640,6 +644,58 @@ bool eligible (
     well.layout ().dbu () == 0.0005;
 }
 
+bool eligible_contact4 (
+  db::edge_relation_type relation, bool different_polygons,
+  db::Coord distance, const db::RegionCheckOptions &options,
+  const db::DeepLayer &active, const db::DeepLayer &raw_active,
+  const db::DeepLayer &contact)
+{
+  if (raw_active.layer () >= raw_active.layout ().layers () ||
+      contact.layer () >= contact.layout ().layers ()) {
+    return false;
+  }
+  const db::LayerProperties &active_properties =
+    raw_active.layout ().get_properties (raw_active.layer ());
+  const db::LayerProperties &contact_properties =
+    contact.layout ().get_properties (contact.layer ());
+  return
+    relation == db::OverlapRelation &&
+    different_polygons &&
+    distance == qualified_contact4_distance &&
+    options.metrics == db::Euclidian &&
+    options.ignore_angle == 90.0 &&
+    ! options.whole_edges &&
+    options.min_projection == 0 &&
+    options.max_projection ==
+      std::numeric_limits<db::RegionCheckOptions::distance_type>::max () &&
+    options.shielded &&
+    options.opposite_filter == db::NoOppositeFilter &&
+    options.rect_filter == db::NoRectFilter &&
+    ! options.negative &&
+    options.prop_constraint == db::IgnoreProperties &&
+    options.zd_mode == db::IncludeZeroDistanceWhenTouching &&
+    active.store () == contact.store () &&
+    active.store () == raw_active.store () &&
+    &active.layout () == &contact.layout () &&
+    &active.layout () == &raw_active.layout () &&
+    active.layout_index () == contact.layout_index () &&
+    active.layout_index () == raw_active.layout_index () &&
+    active.initial_cell ().cell_index () ==
+      contact.initial_cell ().cell_index () &&
+    active.initial_cell ().cell_index () ==
+      raw_active.initial_cell ().cell_index () &&
+    active.breakout_cells () == 0 &&
+    raw_active.breakout_cells () == 0 &&
+    contact.breakout_cells () == 0 &&
+    active.layer () != contact.layer () &&
+    raw_active.layer () != contact.layer () &&
+    active_properties.layer == qualified_contact4_active_layer &&
+    active_properties.datatype == qualified_contact4_datatype &&
+    contact_properties.layer == qualified_contact4_contact_layer &&
+    contact_properties.datatype == qualified_contact4_datatype &&
+    active.layout ().dbu () == 0.0005;
+}
+
 } // anonymous namespace
 
 bool cuda_active3_try_empty (
@@ -748,6 +804,118 @@ bool cuda_active3_try_empty (
     if (telemetry) {
       try {
         tl::info << "CUDA ACTIVE.3 live lowering:"
+                 << " outcome=cpu-fallback message=unknown exception";
+      } catch (...) {
+        //  Telemetry must never turn a speculative decline into an error.
+      }
+    }
+  }
+  return false;
+}
+
+bool cuda_contact4_try_empty (
+  db::edge_relation_type relation, bool different_polygons,
+  db::Coord distance, const db::RegionCheckOptions &options,
+  const db::DeepLayer &merged_active, const db::DeepLayer &raw_active,
+  const db::DeepLayer &raw_contact)
+{
+  const bool telemetry = env_enabled ("KLAYOUT_CUDA_CONTACT4_TELEMETRY");
+  const std::chrono::steady_clock::time_point begin =
+    std::chrono::steady_clock::now ();
+  try {
+    if (! db::cuda_spatial_contact4_requested () ||
+        ! eligible_contact4 (
+          relation, different_polygons, distance, options,
+          merged_active, raw_active, raw_contact)) {
+      return false;
+    }
+
+    const uint64_t max_contexts = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_MAX_CONTEXTS", default_max_contexts);
+    const uint64_t max_grid_cells = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_MAX_GRID_CELLS", default_max_grid_cells);
+    const uint64_t max_memberships = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_MAX_MEMBERSHIPS", default_max_memberships);
+    const uint64_t max_pair_work = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_MAX_PAIR_WORK", default_max_pair_work);
+    if (! max_contexts || ! max_grid_cells || ! max_memberships ||
+        ! max_pair_work) {
+      throw Active3Decline ("a CONTACT.4 capacity is zero");
+    }
+
+    //  Reuse the proven hierarchical transport in its indexed/streamed
+    //  order: historical "well" records carry the raw CONTACT secondary,
+    //  while historical "active" records carry the merged ACTIVE primary.
+    LiveScene scene = serialize_live_scene (
+      raw_contact, merged_active, max_contexts);
+
+    klayout_cuda_spatial_active3_request_v1 request;
+    std::memset (&request, 0, sizeof (request));
+    request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+    request.struct_size = sizeof (request);
+    request.opcode = KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_SUPERSET_EMPTY;
+    request.option_flags = KLAYOUT_CUDA_SPATIAL_CONTACT4_QUALIFIED_OPTIONS;
+    request.dbu_per_micron = qualified_dbu_per_micron;
+    request.distance = qualified_contact4_distance;
+    request.grid_cell_size = qualified_grid_cell;
+    request.contexts = scene.contexts.data ();
+    request.context_count = scene.contexts.size ();
+    request.well_contexts = scene.well_contexts.data ();
+    request.well_context_count = scene.well_contexts.size ();
+    request.well_offsets = scene.well_offsets.data ();
+    request.well_offset_count = scene.well_offsets.size ();
+    request.active_contexts = scene.active_contexts.data ();
+    request.active_context_count = scene.active_contexts.size ();
+    request.cells = scene.cells.data ();
+    request.cell_count = scene.cells.size ();
+    request.edges = scene.edges.data ();
+    request.edge_count = scene.edges.size ();
+    request.flat_well_edge_count = scene.flat_well_edges;
+    request.flat_active_edge_count = scene.flat_active_edges;
+    request.well_left = scene.well_left;
+    request.well_bottom = scene.well_bottom;
+    request.well_right = scene.well_right;
+    request.well_top = scene.well_top;
+    request.max_contexts = max_contexts;
+    request.max_grid_cells = max_grid_cells;
+    request.max_memberships = max_memberships;
+    request.max_pair_work = max_pair_work;
+    std::array<uint8_t, 32> digest;
+    if (! db::cuda_active3_digest::request_digest (request, digest)) {
+      throw Active3Decline ("unable to digest the CONTACT.4 live request");
+    }
+    std::copy (digest.begin (), digest.end (), request.scene_digest);
+
+    const double lower_ms =
+      std::chrono::duration<double, std::milli> (
+        std::chrono::steady_clock::now () - begin).count ();
+    const db::CudaActive3Attempt attempt =
+      db::cuda_spatial_try_contact4_empty (request);
+    if (telemetry) {
+      tl::info << "CUDA CONTACT.4 live lowering:"
+               << " contexts=" << request.context_count
+               << " indexed_contact_contexts=" << request.well_context_count
+               << " streamed_active_contexts=" << request.active_context_count
+               << " cells=" << request.cell_count
+               << " stored_edges=" << request.edge_count
+               << " indexed_contact_edges=" << request.flat_well_edge_count
+               << " streamed_active_edges=" << request.flat_active_edge_count
+               << " lower_ms=" << lower_ms;
+    }
+    return attempt.disposition == db::CudaActive3Attempt::CertifiedEmpty;
+  } catch (const std::exception &ex) {
+    if (telemetry) {
+      try {
+        tl::info << "CUDA CONTACT.4 live lowering:"
+                 << " outcome=cpu-fallback message=" << ex.what ();
+      } catch (...) {
+        //  Telemetry must never turn a speculative decline into an error.
+      }
+    }
+  } catch (...) {
+    if (telemetry) {
+      try {
+        tl::info << "CUDA CONTACT.4 live lowering:"
                  << " outcome=cpu-fallback message=unknown exception";
       } catch (...) {
         //  Telemetry must never turn a speculative decline into an error.

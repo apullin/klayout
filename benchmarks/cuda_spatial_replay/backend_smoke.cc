@@ -1021,6 +1021,196 @@ bool run_active3_abi_smoke() {
   return good;
 }
 
+bool run_contact4_abi_smoke() {
+  const klayout_cuda_spatial_active3_context_v1 contexts[] = {
+      {0, 0, 0, 0},
+  };
+  const std::uint32_t indexed_contact_contexts[] = {0};
+  const std::uint64_t indexed_contact_offsets[] = {0};
+  const std::uint32_t streamed_active_contexts[] = {0};
+  const klayout_cuda_spatial_active3_cell_v1 cells[] = {
+      {0, 4, 4, 4},
+  };
+  klayout_cuda_spatial_active3_edge_v1 edges[] = {
+      // Historical WELL slots: clockwise raw CONTACT, initially 200 DBU
+      // inside ACTIVE and therefore clean for the 10-DBU CONTACT.4 rule.
+      {200, 200, 200, 800},
+      {200, 800, 800, 800},
+      {800, 800, 800, 200},
+      {800, 200, 200, 200},
+      // Historical ACTIVE slots: clockwise merged ACTIVE primary.
+      {0, 0, 0, 1000},
+      {0, 1000, 1000, 1000},
+      {1000, 1000, 1000, 0},
+      {1000, 0, 0, 0},
+  };
+
+  klayout_cuda_spatial_active3_request_v1 request{};
+  request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  request.struct_size = sizeof(request);
+  request.opcode =
+      KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_SUPERSET_EMPTY;
+  request.option_flags =
+      KLAYOUT_CUDA_SPATIAL_CONTACT4_QUALIFIED_OPTIONS;
+  request.dbu_per_micron = 2000;
+  request.distance = 10;
+  request.grid_cell_size = 2000;
+  request.contexts = contexts;
+  request.context_count = 1;
+  request.well_contexts = indexed_contact_contexts;
+  request.well_context_count = 1;
+  request.well_offsets = indexed_contact_offsets;
+  request.well_offset_count = 1;
+  request.active_contexts = streamed_active_contexts;
+  request.active_context_count = 1;
+  request.cells = cells;
+  request.cell_count = 1;
+  request.edges = edges;
+  request.edge_count = sizeof(edges) / sizeof(edges[0]);
+  request.flat_well_edge_count = 4;
+  request.flat_active_edge_count = 4;
+  request.well_left = 200;
+  request.well_bottom = 200;
+  request.well_right = 800;
+  request.well_top = 800;
+  request.max_contexts = 16;
+  request.max_grid_cells = 1024;
+  request.max_memberships = 1024;
+  // Deliberately smaller than the 4x4 Cartesian product.  CONTACT.4 must
+  // qualify bounded spatial candidates rather than reject this request.
+  request.max_pair_work = 15;
+
+  bool good = set_active3_digest(request);
+  klayout_cuda_spatial_active3_result_v1 clean{};
+  const int clean_status =
+      good ? klayout_cuda_spatial_run_active3_empty_v1(&request, &clean)
+           : KLAYOUT_CUDA_SPATIAL_ERROR;
+  const bool clean_good =
+      good && clean_status == KLAYOUT_CUDA_SPATIAL_OK &&
+      clean.status == KLAYOUT_CUDA_SPATIAL_OK &&
+      clean.disposition == KLAYOUT_CUDA_SPATIAL_ACTIVE3_COMPLETE &&
+      clean.opcode == KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_SUPERSET_EMPTY &&
+      clean.option_flags ==
+          KLAYOUT_CUDA_SPATIAL_CONTACT4_QUALIFIED_OPTIONS &&
+      clean.distance == 10 && clean.fallback_flags == 0 &&
+      clean.device_flags == 0 && clean.raw_hit_count == 0 &&
+      clean.uncertain_count == 0 &&
+      clean.candidate_pair_count <= request.max_pair_work;
+  if (!clean_good) {
+    report_active3_failure(
+        "CUDA CONTACT.4 clean-certificate smoke", clean_status, clean);
+  }
+  good = clean_good;
+
+  // Bring raw CONTACT to 5 DBU inside the merged ACTIVE boundary.  Correct
+  // primary/secondary ordering reports raw hits; reversing the predicate
+  // arguments would incorrectly call this scene clean.
+  edges[0] = {5, 5, 5, 995};
+  edges[1] = {5, 995, 995, 995};
+  edges[2] = {995, 995, 995, 5};
+  edges[3] = {995, 5, 5, 5};
+  request.well_left = 5;
+  request.well_bottom = 5;
+  request.well_right = 995;
+  request.well_top = 995;
+  const bool hit_digest_good = set_active3_digest(request);
+  klayout_cuda_spatial_active3_result_v1 raw_hit{};
+  const int hit_status =
+      hit_digest_good
+          ? klayout_cuda_spatial_run_active3_empty_v1(&request, &raw_hit)
+          : KLAYOUT_CUDA_SPATIAL_ERROR;
+  const bool hit_good =
+      hit_digest_good && hit_status == KLAYOUT_CUDA_SPATIAL_OK &&
+      raw_hit.status == KLAYOUT_CUDA_SPATIAL_OK &&
+      raw_hit.disposition == KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_HITS &&
+      raw_hit.fallback_flags == 0 && raw_hit.device_flags == 0 &&
+      raw_hit.raw_hit_count != 0 && raw_hit.uncertain_count == 0 &&
+      raw_hit.candidate_pair_count <= request.max_pair_work;
+  if (!hit_good) {
+    report_active3_failure(
+        "CUDA CONTACT.4 reversed-operand raw-hit smoke",
+        hit_status, raw_hit);
+  }
+  good = hit_good && good;
+
+  // The actual candidate limiter must fail closed after the Cartesian
+  // preflight has intentionally been bypassed.
+  request.max_pair_work = 1;
+  const bool capacity_digest_good = set_active3_digest(request);
+  klayout_cuda_spatial_active3_result_v1 capacity{};
+  const int capacity_status =
+      capacity_digest_good
+          ? klayout_cuda_spatial_run_active3_empty_v1(&request, &capacity)
+          : KLAYOUT_CUDA_SPATIAL_ERROR;
+  const bool capacity_good =
+      capacity_digest_good &&
+      capacity_status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      capacity.status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      capacity.disposition == KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN &&
+      (capacity.fallback_flags &
+       KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY) != 0 &&
+      capacity.device_flags != 0 &&
+      capacity.candidate_pair_count > request.max_pair_work;
+  if (!capacity_good) {
+    report_active3_failure(
+        "CUDA CONTACT.4 actual-candidate capacity gate",
+        capacity_status, capacity);
+  }
+  good = capacity_good && good;
+
+  // Profile fields are inseparable: CONTACT.4 opcode with ACTIVE.3 options,
+  // or CONTACT.4 options with the ACTIVE.3 distance, must be rejected.
+  request.max_pair_work = 15;
+  request.option_flags = KLAYOUT_CUDA_SPATIAL_ACTIVE3_QUALIFIED_OPTIONS;
+  const bool wrong_options_digest_good = set_active3_digest(request);
+  klayout_cuda_spatial_active3_result_v1 wrong_options{};
+  const int wrong_options_status =
+      wrong_options_digest_good
+          ? klayout_cuda_spatial_run_active3_empty_v1(
+                &request, &wrong_options)
+          : KLAYOUT_CUDA_SPATIAL_ERROR;
+  const bool wrong_options_good =
+      wrong_options_digest_good &&
+      wrong_options_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      wrong_options.status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      wrong_options.disposition == KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN;
+  if (!wrong_options_good) {
+    report_active3_failure(
+        "CUDA CONTACT.4 strict-option gate",
+        wrong_options_status, wrong_options);
+  }
+  good = wrong_options_good && good;
+
+  request.option_flags =
+      KLAYOUT_CUDA_SPATIAL_CONTACT4_QUALIFIED_OPTIONS;
+  request.distance = 110;
+  const bool wrong_distance_digest_good = set_active3_digest(request);
+  klayout_cuda_spatial_active3_result_v1 wrong_distance{};
+  const int wrong_distance_status =
+      wrong_distance_digest_good
+          ? klayout_cuda_spatial_run_active3_empty_v1(
+                &request, &wrong_distance)
+          : KLAYOUT_CUDA_SPATIAL_ERROR;
+  const bool wrong_distance_good =
+      wrong_distance_digest_good &&
+      wrong_distance_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      wrong_distance.status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      wrong_distance.disposition == KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN;
+  if (!wrong_distance_good) {
+    report_active3_failure(
+        "CUDA CONTACT.4 strict-distance gate",
+        wrong_distance_status, wrong_distance);
+  }
+  good = wrong_distance_good && good;
+
+  if (good) {
+    std::cout << "CUDA CONTACT.4 additive profile smoke passed: "
+                 "clean, reversed-operand raw hit, actual-candidate cap, "
+                 "strict options/distance\n";
+  }
+  return good;
+}
+
 class M1WsSmokeDigest {
  public:
   void bytes(const void *data, std::size_t size) {
@@ -1439,6 +1629,7 @@ int main() {
   good = run_m1_boundary_context_uncertainty_gate() && good;
   good = run_m1_extrema_and_fail_closed_gate() && good;
   good = run_active3_abi_smoke() && good;
+  good = run_contact4_abi_smoke() && good;
   good = run_m1ws_abi_smoke() && good;
   return good ? 0 : 1;
 }

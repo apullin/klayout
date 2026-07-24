@@ -598,6 +598,7 @@ enum Active3DeviceFlag : std::uint32_t {
   kActive3GridCounterOverflow = 1u << 1,
   kActive3GridCapacityExceeded = 1u << 2,
   kActive3InvalidDeviceRecord = 1u << 3,
+  kActive3PairCapacityExceeded = 1u << 4,
 };
 
 struct Active3DirectedEdge {
@@ -898,7 +899,7 @@ __global__ void active3_query_kernel(
     const Active3DirectedEdge *well_edges, std::uint32_t well_edge_count,
     Active3Grid grid, const std::uint32_t *counts,
     const std::uint32_t *offsets, const std::uint32_t *members,
-    std::int64_t distance, Active3Counters *counters,
+    std::int64_t distance, bool indexed_secondary, Active3Counters *counters,
     std::uint32_t *status) {
   const std::uint32_t active_list_id = blockIdx.x;
   if (active_list_id >= active_context_count) return;
@@ -983,10 +984,18 @@ __global__ void active3_query_kernel(
               well.x1, well.y1, well.x2, well.y2};
           const klayout_cuda::active3::DirectedEdge exact_active = {
               active.x1, active.y1, active.x2, active.y2};
+          // ACTIVE.3 indexes its primary WELL operand.  CONTACT.4 indexes the
+          // raw CONTACT secondary operand, so restore the semantic
+          // primary/secondary order before invoking the exact predicate.
+          const klayout_cuda::active3::EdgePair exact_pair =
+              indexed_secondary
+                  ? klayout_cuda::active3::EdgePair{
+                        exact_active, exact_well}
+                  : klayout_cuda::active3::EdgePair{
+                        exact_well, exact_active};
           const klayout_cuda::active3::Verdict verdict =
               klayout_cuda::active3::classify_pair_bounded(
-                  klayout_cuda::active3::EdgePair{
-                      exact_well, exact_active}, distance);
+                  exact_pair, distance);
           if (verdict == klayout_cuda::active3::Verdict::kViolation) {
             ++local_hits;
           } else if (
@@ -1001,7 +1010,15 @@ __global__ void active3_query_kernel(
     }
   }
   if (local_candidates) {
-    atomicAdd(&counters->candidate_pairs, local_candidates);
+    // Aggregate once per participating thread.  A single global CAS for every
+    // spatial candidate serialized CONTACT.4's otherwise parallel query.  An
+    // unsigned wrap is still fail-closed, and the exact total is compared
+    // against max_pair_work after the kernel completes.
+    const unsigned long long prior =
+        atomicAdd(&counters->candidate_pairs, local_candidates);
+    if (prior > ~0ULL - local_candidates) {
+      atomicOr(status, std::uint32_t(kActive3PairCapacityExceeded));
+    }
   }
   if (local_hits) atomicAdd(&counters->raw_hits, local_hits);
   if (local_uncertain) {
@@ -2489,16 +2506,33 @@ bool active3_array_sizes_fit(
              sizeof(klayout_cuda_spatial_active3_edge_v1));
 }
 
+bool active3_profile_qualified(
+    const klayout_cuda_spatial_active3_request_v1 &request) {
+  if (request.opcode ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_SUPERSET_EMPTY) {
+    return request.option_flags ==
+               KLAYOUT_CUDA_SPATIAL_ACTIVE3_QUALIFIED_OPTIONS &&
+           request.distance ==
+               klayout_cuda::active3::kQualifiedSceneCoordinateDistance;
+  }
+  if (request.opcode ==
+          KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_SUPERSET_EMPTY) {
+    return request.option_flags ==
+               KLAYOUT_CUDA_SPATIAL_CONTACT4_QUALIFIED_OPTIONS &&
+           request.distance ==
+               klayout_cuda::active3::
+                   kContact4QualifiedSceneCoordinateDistance;
+  }
+  return false;
+}
+
 bool valid_active3_request(
     const klayout_cuda_spatial_active3_request_v1 &request) {
   if (request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
       request.struct_size < sizeof(request) ||
-      request.opcode !=
-          KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_SUPERSET_EMPTY ||
-      request.option_flags !=
-          KLAYOUT_CUDA_SPATIAL_ACTIVE3_QUALIFIED_OPTIONS ||
+      !active3_profile_qualified(request) ||
       request.dbu_per_micron != 2000 || request.reserved0 != 0 ||
-      request.reserved1 != 0 || request.distance != 110 ||
+      request.reserved1 != 0 ||
       request.grid_cell_size != 2000 ||
       !request.context_count || !request.contexts ||
       !request.well_context_count || !request.well_contexts ||
@@ -2526,15 +2560,22 @@ bool valid_active3_request(
     return false;
   }
 
-  std::uint64_t pair_work = 0;
-  if (request.flat_active_edge_count >
-          std::numeric_limits<std::uint64_t>::max() /
-              request.flat_well_edge_count) {
-    return false;
+  // Preserve the original conservative ACTIVE.3 gate.  Its production scene
+  // fits the Cartesian bound.  CONTACT.4 deliberately indexes tens of
+  // millions of raw CONTACT edges, making the Cartesian product unusable;
+  // that profile is bounded against actual spatial candidates in the query
+  // kernel instead.
+  if (request.opcode ==
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_SUPERSET_EMPTY) {
+    if (request.flat_active_edge_count >
+        std::numeric_limits<std::uint64_t>::max() /
+            request.flat_well_edge_count) {
+      return false;
+    }
+    const std::uint64_t pair_work =
+        request.flat_active_edge_count * request.flat_well_edge_count;
+    if (pair_work > request.max_pair_work) return false;
   }
-  pair_work =
-      request.flat_active_edge_count * request.flat_well_edge_count;
-  if (pair_work > request.max_pair_work) return false;
 
   std::uint64_t next_edge = 0;
   for (std::uint64_t id = 0; id < request.cell_count; ++id) {
@@ -2866,6 +2907,8 @@ Active3PipelineResult run_active3_pipeline(
       thrust::raw_pointer_cast(counts.data()),
       thrust::raw_pointer_cast(offsets.data()),
       thrust::raw_pointer_cast(members.data()), request.distance,
+      request.opcode ==
+          KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_SUPERSET_EMPTY,
       thrust::raw_pointer_cast(counters.data()),
       thrust::raw_pointer_cast(status.data()));
   cuda_check(cudaGetLastError(), "ACTIVE.3 query launch");
@@ -2888,10 +2931,15 @@ Active3PipelineResult run_active3_pipeline(
   result.raw_hits = host_counters.raw_hits;
   result.uncertain = host_counters.uncertain;
   result.d2h_ns = elapsed_ns(d2h_begin, Clock::now());
+  if (result.candidates > request.max_pair_work) {
+    result.device_flags |= kActive3PairCapacityExceeded;
+  }
   if (result.device_flags) {
     result.fallback_flags =
         (result.device_flags & kActive3TransformOverflow)
             ? KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW
+            : (result.device_flags & kActive3PairCapacityExceeded)
+                ? KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY
             : KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
   }
   return result;

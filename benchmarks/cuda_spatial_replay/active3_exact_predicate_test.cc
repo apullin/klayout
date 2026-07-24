@@ -12,6 +12,8 @@
 
 #include "active3_exact_predicate.h"
 
+#include "dbEdgePairRelations.h"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -32,6 +34,8 @@ using klayout_cuda::active3::Verdict;
 
 constexpr std::int64_t kActive3Distance =
     klayout_cuda::active3::kQualifiedSceneCoordinateDistance;
+constexpr std::int64_t kContact4Distance =
+    klayout_cuda::active3::kContact4QualifiedSceneCoordinateDistance;
 constexpr std::uint64_t kSignBit = UINT64_C(1) << 63;
 
 std::uint64_t ordered_key(std::int64_t value) {
@@ -94,7 +98,7 @@ bool squared_distance_less(std::uint64_t dx, std::uint64_t dy,
 // perpendicular-gap/projection-gap identity, this projects each of the four
 // endpoints onto the opposite finite segment and tests their distances.  All
 // coordinate differences are order-key differences, so INT64_MIN..INT64_MAX
-// cannot overflow; the fixed 110-DBU distance makes the squared sums exact.
+// cannot overflow; both fixed profile distances make the squared sums exact.
 bool point_segment_distance_less_than(std::int64_t x, std::int64_t y,
                                       const DirectedEdge &segment,
                                       std::uint64_t distance) {
@@ -121,7 +125,7 @@ Verdict oracle(const EdgePair &pair, std::int64_t distance) {
     return Verdict::kUncertain;
   }
   if (!source_coordinate_differences_are_safe(pair) ||
-      distance != kActive3Distance) {
+      (distance != kActive3Distance && distance != kContact4Distance)) {
     return Verdict::kUncertain;
   }
 
@@ -166,6 +170,27 @@ Verdict oracle(const EdgePair &pair, std::int64_t distance) {
   return close ? Verdict::kViolation : Verdict::kNoViolation;
 }
 
+Verdict klayout_oracle(const EdgePair &pair, std::int64_t distance) {
+  db::EdgeRelationFilter filter(
+      db::OverlapRelation,
+      static_cast<db::EdgeRelationFilter::distance_type>(distance),
+      db::Euclidian, 90.0, 0,
+      std::numeric_limits<db::EdgeRelationFilter::distance_type>::max(),
+      db::IncludeZeroDistanceWhenTouching);
+  const db::Edge first(
+      static_cast<db::Coord>(pair.well.x1),
+      static_cast<db::Coord>(pair.well.y1),
+      static_cast<db::Coord>(pair.well.x2),
+      static_cast<db::Coord>(pair.well.y2));
+  const db::Edge second(
+      static_cast<db::Coord>(pair.active.x1),
+      static_cast<db::Coord>(pair.active.y1),
+      static_cast<db::Coord>(pair.active.x2),
+      static_cast<db::Coord>(pair.active.y2));
+  return filter.check(first, second, nullptr) ? Verdict::kViolation
+                                              : Verdict::kNoViolation;
+}
+
 struct NamedCase {
   std::string name;
   EdgePair pair;
@@ -199,6 +224,18 @@ void run_batch_and_compare(const std::vector<EdgePair> &pairs,
           ", d=" + std::to_string(distance) + ": GPU=" +
           klayout_cuda::active3::verdict_name(device[i]) + ", oracle=" +
           klayout_cuda::active3::verdict_name(expected));
+    }
+    if (expected != Verdict::kUncertain) {
+      const Verdict klayout = klayout_oracle(pairs[i], distance);
+      if (device[i] != klayout) {
+        throw std::runtime_error(
+            "KLayout EdgeRelationFilter mismatch at batch index " +
+            std::to_string(i) + ", d=" + std::to_string(distance) +
+            ": GPU=" +
+            klayout_cuda::active3::verdict_name(device[i]) +
+            ", KLayout=" +
+            klayout_cuda::active3::verdict_name(klayout));
+      }
     }
   }
   *checked_count += pairs.size();
@@ -300,6 +337,27 @@ void test_named_cases(std::uint64_t *checked_count) {
        pair(edge(0, 0, 100, 100), edge(0, -1, 100, 99)),
        kActive3Distance,
        Verdict::kUncertain},
+      {"CONTACT.4 parallel gap d-1",
+       pair(east, edge(0, -9, 100, -9)), kContact4Distance,
+       Verdict::kViolation},
+      {"CONTACT.4 parallel gap d",
+       pair(east, edge(0, -10, 100, -10)), kContact4Distance,
+       Verdict::kNoViolation},
+      {"CONTACT.4 endpoint 6/7 inside",
+       pair(east, edge(106, -7, 200, -7)), kContact4Distance,
+       Verdict::kViolation},
+      {"CONTACT.4 endpoint 6/8 boundary",
+       pair(east, edge(106, -8, 200, -8)), kContact4Distance,
+       Verdict::kNoViolation},
+      {"CONTACT.4 reversed relation order is distinct",
+       pair(edge(0, -9, 100, -9), east), kContact4Distance,
+       Verdict::kNoViolation},
+      {"CONTACT.4 collinear touch",
+       pair(east, edge(100, 0, 200, 0)), kContact4Distance,
+       Verdict::kViolation},
+      {"CONTACT.4 collinear separated",
+       pair(east, edge(101, 0, 200, 0)), kContact4Distance,
+       Verdict::kNoViolation},
       {"non-ACTIVE.3 distance is fail-closed",
        pair(east, edge(0, -1, 100, -1)), 111,
        Verdict::kUncertain},
@@ -380,6 +438,7 @@ void test_exhaustive_lattice(std::uint64_t *checked_count) {
     }
   }
   run_batch_and_compare(pairs, kActive3Distance, checked_count);
+  run_batch_and_compare(pairs, kContact4Distance, checked_count);
 }
 
 std::int64_t random_coordinate(std::mt19937_64 *random) {
@@ -409,8 +468,8 @@ DirectedEdge random_edge(std::mt19937_64 *random) {
 
 void test_random(std::uint64_t *checked_count) {
   std::mt19937_64 random(UINT64_C(0x41c71e3a5eed));
-  static constexpr std::array<std::int64_t, 1> distances = {
-      kActive3Distance};
+  static constexpr std::array<std::int64_t, 2> distances = {
+      kActive3Distance, kContact4Distance};
 
   for (std::int64_t distance : distances) {
     std::vector<EdgePair> pairs;
@@ -467,17 +526,19 @@ int main() {
     test_named_cases(&checked_count);
     test_exhaustive_lattice(&checked_count);
     test_random(&checked_count);
-    std::cout << "ACTIVE.3 exact predicate: PASS (" << checked_count
-              << " GPU/oracle classifications)" << std::endl;
+    std::cout << "ACTIVE.3/CONTACT.4 exact predicate: PASS (" << checked_count
+              << " GPU/oracle/KLayout EdgeRelationFilter classifications)"
+              << std::endl;
     std::cout << "exact domain: directed nondegenerate Manhattan edges, "
-                 "d=110 DBU (55 nm at 0.5 nm/DBU)"
+                 "d=110 DBU ACTIVE.3 or d=10 DBU CONTACT.4 "
+                 "(0.5 nm/DBU)"
               << std::endl;
     std::cout << "fallback domain: degenerate/diagonal edges, unsafe signed "
                  "coordinate differences, and other configurations"
               << std::endl;
     return 0;
   } catch (const std::exception &error) {
-    std::cerr << "ACTIVE.3 exact predicate: FAIL: " << error.what()
+    std::cerr << "ACTIVE.3/CONTACT.4 exact predicate: FAIL: " << error.what()
               << std::endl;
     return 1;
   }

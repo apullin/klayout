@@ -116,11 +116,11 @@ __host__ __device__ inline Verdict classify_pair_bounded(
     return Verdict::kUncertain;
   }
   if (!detail::source_coordinate_differences_are_safe(pair) ||
-      distance != kQualifiedSceneCoordinateDistance) {
+      (distance != kQualifiedSceneCoordinateDistance &&
+       distance != kContact4QualifiedSceneCoordinateDistance)) {
     return Verdict::kUncertain;
   }
-  constexpr std::uint64_t d =
-      static_cast<std::uint64_t>(kQualifiedSceneCoordinateDistance);
+  const std::uint64_t d = static_cast<std::uint64_t>(distance);
 
   // EdgeRelationFilter's OverlapRelation swaps the well edge for its
   // ignore-angle test.  At exactly 90 degrees the source accepts precisely

@@ -59,6 +59,11 @@ target_link_libraries(via1_stack_backend_smoke PRIVATE
 add_executable(active3_exact_predicate_test
   active3_exact_predicate.cu
   active3_exact_predicate_test.cc
+  ../../src/db/db/dbEdgePairRelations.cc
+)
+target_include_directories(active3_exact_predicate_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/tl/tl
 )
 target_compile_options(active3_exact_predicate_test PRIVATE
   $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>

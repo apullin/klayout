@@ -34,6 +34,19 @@ DB_PUBLIC bool cuda_active3_try_empty (
   const db::RegionCheckOptions &options, const db::DeepLayer &merged_well,
   const db::DeepLayer &raw_active);
 
+/**
+ * Try the narrowly qualified live CONTACT.4 empty certificate.
+ *
+ * The primary is merged FreePDK45 GDS layer 1/0 (ACTIVE) and the secondary is
+ * the raw layer 10/0 (CONTACT) superset.  False always means "run the pristine
+ * CPU implementation."  True is returned only for a fully echoed COMPLETE
+ * backend result with no raw hit, uncertainty, fallback flag, or device flag.
+ */
+DB_PUBLIC bool cuda_contact4_try_empty (
+  db::edge_relation_type relation, bool different_polygons, db::Coord distance,
+  const db::RegionCheckOptions &options, const db::DeepLayer &merged_active,
+  const db::DeepLayer &raw_active, const db::DeepLayer &raw_contact);
+
 } // namespace db
 
 #endif

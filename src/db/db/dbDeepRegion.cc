@@ -2697,9 +2697,17 @@ DeepRegion::run_check (db::edge_relation_type rel, bool different_polygons, cons
     configure_proc (proc);
     proc.set_threads (polygons.store ()->threads ());
 
-    //  Consume only a zero-hit certificate over a qualified raw-ACTIVE
-    //  superset.  Every other outcome leaves this exact CPU processor and
-    //  its already-created polygons.derived() output untouched.
+    //  Consume only an operation-specific zero-hit certificate over the
+    //  qualified raw secondary superset.  Each helper is narrowly matched;
+    //  every false, hit, unsupported, or error outcome leaves this exact CPU
+    //  processor and its already-created polygons.derived() output untouched.
+    if (merged_semantics () && other_deep &&
+        db::cuda_contact4_try_empty (
+          rel, different_polygons, d, options, polygons,
+          deep_layer (), other_deep->deep_layer ())) {
+      return res.release ();
+    }
+
     if (other_deep &&
         db::cuda_active3_try_empty (
           rel, different_polygons, d, options, polygons,

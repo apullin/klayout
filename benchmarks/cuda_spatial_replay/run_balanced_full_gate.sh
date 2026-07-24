@@ -256,6 +256,8 @@ set +e
       KLAYOUT_CUDA_SPATIAL_MAX_CANDIDATES=30000000 \
       KLAYOUT_CUDA_M1_CONTACT=1 \
       KLAYOUT_CUDA_M1_CONTACT_TELEMETRY=1 \
+      KLAYOUT_CUDA_CONTACT4=1 \
+      KLAYOUT_CUDA_CONTACT4_TELEMETRY=1 \
       "${python}" "${runner}" \
         --klayout "${klayout}" \
         --deck "${balanced_deck}" \
@@ -312,6 +314,9 @@ require_telemetry \
 require_telemetry \
   "CUDA M1 contact transaction: certified-empty" \
   "M1-contact certified-empty"
+require_telemetry \
+  "CUDA CONTACT.4 empty certificate: outcome=certified-empty" \
+  "CONTACT.4 certified-empty"
 
 shard_count=$(grep -c '^shard ' "${launcher_log}" || true)
 [[ "${shard_count}" == "${#shards[@]}" ]] ||
@@ -325,7 +330,7 @@ if ! cmp -s -- "${reference_canonical}" "${report_canonical}"; then
 fi
 
 grep -R -nE --include='*.log' -- \
-  'CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_EDGE_CERT ' \
+  'CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA CONTACT\.4 empty certificate:|CUDA CONTACT\.4 live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_EDGE_CERT ' \
   "${shard_dir}" >"${work}/cuda-telemetry.txt"
 
 grep -E \
