@@ -6,6 +6,7 @@
  */
 
 #include "dbCudaSpatialApi.h"
+#include "dbCudaManhattanContour.h"
 #include "dbCudaActive3Digest.h"
 #include "dbCudaImplant12Digest.h"
 #include "active3_exact_predicate.cuh"
@@ -1273,33 +1274,6 @@ bool m1ws_request_digest(
   }
   *digest = sha.finish();
   return true;
-}
-
-bool m1ws_ranges_overlap(std::int64_t a0, std::int64_t a1,
-                         std::int64_t b0, std::int64_t b1) {
-  return std::max(std::min(a0, a1), std::min(b0, b1)) <=
-         std::min(std::max(a0, a1), std::max(b0, b1));
-}
-
-bool m1ws_segments_intersect(
-    const klayout_cuda_spatial_m1_width_space_edge_v1 &a,
-    const klayout_cuda_spatial_m1_width_space_edge_v1 &b) {
-  const bool ah = a.y1 == a.y2;
-  const bool bh = b.y1 == b.y2;
-  if (ah && bh) {
-    return a.y1 == b.y1 &&
-           m1ws_ranges_overlap(a.x1, a.x2, b.x1, b.x2);
-  }
-  if (!ah && !bh) {
-    return a.x1 == b.x1 &&
-           m1ws_ranges_overlap(a.y1, a.y2, b.y1, b.y2);
-  }
-  const auto &horizontal = ah ? a : b;
-  const auto &vertical = ah ? b : a;
-  return std::min(horizontal.x1, horizontal.x2) <= vertical.x1 &&
-         vertical.x1 <= std::max(horizontal.x1, horizontal.x2) &&
-         std::min(vertical.y1, vertical.y2) <= horizontal.y1 &&
-         horizontal.y1 <= std::max(vertical.y1, vertical.y2);
 }
 
 bool m1ws_transform_point_host(
@@ -3540,20 +3514,6 @@ __global__ void implant12_query_kernel(
       &counters->uncertain, local_uncertain, status);
 }
 
-bool m1ws_positive_collinear_overlap(
-    const klayout_cuda_spatial_m1_width_space_edge_v1 &a,
-    const klayout_cuda_spatial_m1_width_space_edge_v1 &b) {
-  if (a.y1 == a.y2 && b.y1 == b.y2 && a.y1 == b.y1) {
-    return std::min(std::max(a.x1, a.x2), std::max(b.x1, b.x2)) >
-           std::max(std::min(a.x1, a.x2), std::min(b.x1, b.x2));
-  }
-  if (a.x1 == a.x2 && b.x1 == b.x2 && a.x1 == b.x1) {
-    return std::min(std::max(a.y1, a.y2), std::max(b.y1, b.y2)) >
-           std::max(std::min(a.y1, a.y2), std::min(b.y1, b.y2));
-  }
-  return false;
-}
-
 bool m1ws_basic_request_valid(
     const klayout_cuda_spatial_m1_width_space_request_v1 &request) {
   const bool qualified_profile =
@@ -3701,7 +3661,6 @@ bool m1ws_structurally_valid(
       std::vector<klayout_cuda_spatial_m1_width_space_edge_v1>
           contour;
       contour.reserve(polygon.edge_count);
-      std::set<std::pair<std::int64_t, std::int64_t>> vertices;
       std::int64_t left = INT64_MAX;
       std::int64_t bottom = INT64_MAX;
       std::int64_t right = INT64_MIN;
@@ -3721,8 +3680,7 @@ bool m1ws_structurally_valid(
             !m1ws_coordinate_qualified(edge.x1) ||
             !m1ws_coordinate_qualified(edge.y1) ||
             !m1ws_coordinate_qualified(edge.x2) ||
-            !m1ws_coordinate_qualified(edge.y2) ||
-            !vertices.insert(std::make_pair(edge.x1, edge.y1)).second) {
+            !m1ws_coordinate_qualified(edge.y2)) {
           return false;
         }
         contour.push_back(edge);
@@ -3735,30 +3693,10 @@ bool m1ws_structurally_valid(
       }
       if (twice_area >= 0 || left != polygon.left ||
           bottom != polygon.bottom || right != polygon.right ||
-          top != polygon.top) {
+          top != polygon.top ||
+          db::cuda_manhattan_contour::validate(contour) !=
+              db::cuda_manhattan_contour::ValidationResult::Valid) {
         return false;
-      }
-      for (std::size_t first = 0; first < contour.size(); ++first) {
-        const std::size_t following = (first + 1) % contour.size();
-        if (contour[first].x2 != contour[following].x1 ||
-            contour[first].y2 != contour[following].y1) {
-          return false;
-        }
-        for (std::size_t second = first + 1;
-             second < contour.size(); ++second) {
-          if (!m1ws_segments_intersect(
-                  contour[first], contour[second])) {
-            continue;
-          }
-          const bool adjacent =
-              second == first + 1 ||
-              (first == 0 && second + 1 == contour.size());
-          if (!adjacent ||
-              m1ws_positive_collinear_overlap(
-                  contour[first], contour[second])) {
-            return false;
-          }
-        }
       }
       bounds[0] = std::min(bounds[0], polygon.left);
       bounds[1] = std::min(bounds[1], polygon.bottom);
