@@ -1697,6 +1697,37 @@ not just wall time.
         from the CUDA A/B: the combined eight-job control to ten-job candidate
         mean is 132.18 -> 100.81 s, but is not attributed to one optimization.
 
+      - [ ] **Break the post-implant three-owner plateau as one coordinated
+        campaign:** the stable ten-owner launch now has `m2_rules`,
+        `antenna_m3_m10`, and `m1_enclosure` clustered at roughly 92--96 s.
+        No isolated reduction can produce a 5% full-wall win while the other
+        two remain.  Preserve independent owner A/B measurements, but require
+        the combined full gate before booking an end-to-end improvement.
+
+        - [ ] **Generalize the exact M1 width/space transaction to M2:** add a
+          separately enabled and digest-bound 140-DBU profile for the existing
+          atomic `METAL2.1/.2` batch.  First census the exact merged M2 scene:
+          the CPU batch is 60.23 s, but the 22.95-million-polygon raw upper
+          bound may exceed current edge/membership capacities.  Proceed to
+          production only when charged lowering plus backend replay models at
+          least 5 real seconds of eventual full-wall opportunity.
+        - [ ] **Fuse POLY.3 and POLY.4 into one exact terminal-empty CUDA
+          transaction:** upload the shared derived gate once and evaluate the
+          110/140-DBU projection-enclosure profiles atomically.  The certificate
+          must reproduce normalized edge-pair-to-polygon plus
+          `without_area(0)` semantics: millions of coincident raw pairs are
+          expected and cannot be treated as hits.  Eleven preserved runs model
+          a 51.81-second gross owner ceiling before a roughly 2--5-second
+          transaction, subject to differential proof and a production census.
+        - [ ] **Reuse the cumulative M3 prefix for the M4 antenna check:** the
+          current owner spends roughly 78.33 aggregate CPU-seconds extracting
+          and evaluating M3, then rebuilding almost the entire graph for M4
+          even though the V3/M4 delta is tiny.  Start with a device-neutral
+          connectivity census and exact staged union-find replay.  A resident
+          clean-only M3/M4 transaction has a plausible 45--60-second owner
+          opportunity, but is the highest-risk item and must preserve exact
+          hierarchy, union-area, ratio, and ordered M3-before-M4 semantics.
+
       - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
         WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
         exact predicates, METAL1.3 guards, four-side reduction, and per-rule
