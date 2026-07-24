@@ -849,6 +849,37 @@ not just wall time.
     The old estimate assumed ten cumulative rebuilds.  Empty-target pruning
     removed six, so its present ceiling is much smaller and must be measured
     before implementation.
+    - [x] **Split the antenna owner into three CPU processes — completed:**
+      this is process scheduling on the CPU `perf` branch, not CUDA work.
+      The unchanged PGO executable ran `antenna_feol`, `antenna_m1_m2`, and
+      `antenna_m3_m10` as independent owners while preserving the cumulative
+      connectivity prefix required by each check.  Against the prior three-run
+      `antenna` mean of 114.409553 s, three exact x2 screens made the new
+      antenna critical path 55.402531, 56.556236, and 56.764035 s: a
+      56.240934 s mean, **50.84% less lane wall time** and **+103.43%
+      antenna throughput**, with 2.42% full-range spread.  The component means
+      are 22.506895 s FEOL, 50.393452 s M1/M2, and 56.240934 s M3--M10.
+
+      This removes antenna as a future stacked bottleneck; it does not speed
+      the present CPU-only full launch because M1 remains near 145 s.  Full
+      provenance-launch means changed only 156.691627 -> 156.006005 s
+      (**0.44% less**, treated as noise rather than a whole-run win).
+      All three clean merges have the trusted semantic SHA-256
+      `dd7b3a6f3c8303e105d5ac882261caf68f7f119da90ed40f801fb71800c46a47`
+      at 157 categories, one cell, and zero items.  The deliberately nonempty
+      hierarchical fixture proves full mode, split `all`, and the ten-owner
+      merge share semantic SHA-256
+      `409085bc15614329421b1b07a6fdd6b867fe8cad83a214a1f32a5d9986a595a4`
+      at 157 categories, two cells, and 86 items, including violations on both
+      sides of the M2/M3 owner boundary.
+
+      KLayout emits the antenna diagnostic declarations and named values in
+      process-dependent order.  The merger now canonicalizes only those named
+      fields, preserves positional values exactly, proves the complete tag
+      universe when creating a manifest, and permits a later clean layout to
+      emit an empty subset while still rejecting unknown or conflicting tags.
+      Keep `--jobs 8` with four KLayout threads per process so ten owners never
+      request more than 32 threads.
 14. [ ] **Device-neutral accelerator replay gate — active, orthogonal project**
     Do not translate the Ruby PDK deck to an accelerator language.  Build a
     device-neutral replay harness around spatial bin/sort plus candidate
