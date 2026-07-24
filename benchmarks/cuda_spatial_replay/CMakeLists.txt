@@ -117,6 +117,16 @@ set_target_properties(m1_width_space_exact_predicate_test PROPERTIES
   CUDA_RESOLVE_DEVICE_SYMBOLS OFF
 )
 
+add_executable(manhattan_contour_validator_test
+  manhattan_contour_validator_test.cc
+)
+target_include_directories(manhattan_contour_validator_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+target_compile_options(manhattan_contour_validator_test PRIVATE
+  -O3 -Wall -Wextra
+)
+
 add_executable(implant12_exact_predicate_test
   implant12_exact_predicate.cu
   implant12_exact_predicate_test.cc

@@ -377,6 +377,7 @@ HEADERS = \
   dbCudaActive3Digest.h \
   dbCudaImplant12.h \
   dbCudaImplant12Digest.h \
+  dbCudaManhattanContour.h \
   dbCudaM1WidthSpace.h \
   dbCudaSpatialApi.h \
   dbCudaSpatialBackend.h \

@@ -15,6 +15,7 @@
 #include "dbArray.h"
 #include "dbCell.h"
 #include "dbCudaActive3Digest.h"
+#include "dbCudaManhattanContour.h"
 #include "dbCudaSpatialBackend.h"
 #include "dbDeepShapeStore.h"
 #include "dbLayout.h"
@@ -224,42 +225,6 @@ struct CellTemplate
   std::vector<InstanceTemplate> instances;
 };
 
-bool positive_collinear_overlap (
-  const CudaM1WidthSpaceEdge &a, const CudaM1WidthSpaceEdge &b)
-{
-  if (a.y1 == a.y2 && b.y1 == b.y2 && a.y1 == b.y1) {
-    return std::min (std::max (a.x1, a.x2), std::max (b.x1, b.x2)) >
-           std::max (std::min (a.x1, a.x2), std::min (b.x1, b.x2));
-  }
-  if (a.x1 == a.x2 && b.x1 == b.x2 && a.x1 == b.x1) {
-    return std::min (std::max (a.y1, a.y2), std::max (b.y1, b.y2)) >
-           std::max (std::min (a.y1, a.y2), std::min (b.y1, b.y2));
-  }
-  return false;
-}
-
-bool manhattan_segments_intersect (
-  const CudaM1WidthSpaceEdge &a, const CudaM1WidthSpaceEdge &b)
-{
-  if (a.y1 == a.y2 && b.y1 == b.y2) {
-    return a.y1 == b.y1 &&
-           std::max (std::min (a.x1, a.x2), std::min (b.x1, b.x2)) <=
-           std::min (std::max (a.x1, a.x2), std::max (b.x1, b.x2));
-  }
-  if (a.x1 == a.x2 && b.x1 == b.x2) {
-    return a.x1 == b.x1 &&
-           std::max (std::min (a.y1, a.y2), std::min (b.y1, b.y2)) <=
-           std::min (std::max (a.y1, a.y2), std::max (b.y1, b.y2));
-  }
-  const CudaM1WidthSpaceEdge &horizontal = a.y1 == a.y2 ? a : b;
-  const CudaM1WidthSpaceEdge &vertical = a.y1 == a.y2 ? b : a;
-  return
-    std::min (horizontal.x1, horizontal.x2) <= vertical.x1 &&
-    vertical.x1 <= std::max (horizontal.x1, horizontal.x2) &&
-    std::min (vertical.y1, vertical.y2) <= horizontal.y1 &&
-    horizontal.y1 <= std::max (vertical.y1, vertical.y2);
-}
-
 void append_polygon (
   const db::Shape &shape, uint32_t polygon_id,
   const CudaM1WidthSpaceSceneLimits &limits,
@@ -282,7 +247,6 @@ void append_polygon (
   }
 
   std::vector<CudaM1WidthSpaceEdge> contour;
-  std::set<std::pair<int64_t, int64_t> > vertices;
   __int128 twice_area = 0;
   bool have_bounds = false;
   int64_t left = 0, bottom = 0, right = 0, top = 0;
@@ -295,9 +259,6 @@ void append_polygon (
     if ((x1 == x2 && y1 == y2) || ! (x1 == x2 || y1 == y2)) {
       throw M1WidthSpaceDecline (
         "M1 polygon has a degenerate or non-Manhattan edge");
-    }
-    if (! vertices.insert (std::make_pair (x1, y1)).second) {
-      throw M1WidthSpaceDecline ("M1 polygon repeats a contour vertex");
     }
     contour.push_back (CudaM1WidthSpaceEdge { x1, y1, x2, y2 });
     twice_area += __int128 (x1) * y2 - __int128 (x2) * y1;
@@ -319,24 +280,16 @@ void append_polygon (
     throw M1WidthSpaceDecline (
       "M1 polygon is too small, empty, or not clockwise");
   }
-  for (size_t i = 0; i < contour.size (); ++i) {
-    const size_t following = (i + 1) % contour.size ();
-    if (contour [i].x2 != contour [following].x1 ||
-        contour [i].y2 != contour [following].y1) {
-      throw M1WidthSpaceDecline ("M1 polygon contour is open");
-    }
-    for (size_t j = i + 1; j < contour.size (); ++j) {
-      if (! manhattan_segments_intersect (contour [i], contour [j])) {
-        continue;
-      }
-      const bool adjacent =
-        j == i + 1 || (i == 0 && j + 1 == contour.size ());
-      if (! adjacent ||
-          positive_collinear_overlap (contour [i], contour [j])) {
-        throw M1WidthSpaceDecline (
-          "M1 polygon contour self-intersects");
-      }
-    }
+  const cuda_manhattan_contour::ValidationResult contour_result =
+    cuda_manhattan_contour::validate (contour);
+  if (contour_result ==
+      cuda_manhattan_contour::ValidationResult::OpenContour) {
+    throw M1WidthSpaceDecline ("M1 polygon contour is open");
+  }
+  if (contour_result !=
+      cuda_manhattan_contour::ValidationResult::Valid) {
+    throw M1WidthSpaceDecline (
+      "M1 polygon contour self-intersects");
   }
   if (contour.size () > std::numeric_limits<uint32_t>::max ()) {
     throw M1WidthSpaceDecline (
