@@ -15,6 +15,8 @@ import xml.etree.ElementTree as ET
 
 
 CONTACT_SHARD = "m1_contact6"
+GRID_OWNER = "grid"
+OWNER_CHOICES = ("independent", GRID_OWNER)
 OWNED_CATEGORIES = ("CONTACT.6",)
 RETAINED_CATEGORIES = ("METAL1.1", "METAL1.2")
 
@@ -30,13 +32,16 @@ def _replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
-def split_deck(source: str) -> str:
+def split_deck(source: str, owner: str = "independent") -> str:
     """Return a deterministic LF-normalized CONTACT.6-split deck."""
 
+    if owner not in OWNER_CHOICES:
+        raise TransformError(f"unsupported CONTACT.6 owner {owner!r}")
     text = source.replace("\r\n", "\n").replace("\r", "\n")
     if (
         f'drc_shard == "{CONTACT_SHARD}"' in text
         or "run_contact6 = run_m1_contact6" in text
+        or "run_contact6 = run_grid" in text
     ):
         raise TransformError("source deck is already CONTACT.6-split")
 
@@ -47,29 +52,35 @@ def split_deck(source: str) -> str:
                 f"{category}: expected one output site, found {count}"
             )
 
-    declaration = (
-        'run_m1_width_space = drc_shard == "all" || '
-        'drc_shard == "m1_width_space"\n'
-    )
-    text = _replace_once(
-        text,
-        declaration,
-        declaration
-        + 'run_m1_contact6 = drc_shard == "all" || '
-        'drc_shard == "m1_contact6"\n',
-        "CONTACT.6 owner declaration",
-    )
-    text = _replace_once(
-        text,
-        "run_m1_enclosure || run_m1_width_space || run_m1_via_class",
-        "run_m1_enclosure || run_m1_width_space || run_m1_contact6 || "
-        "run_m1_via_class",
-        "valid-shard guard",
-    )
+    owner_predicate = "run_grid"
+    if owner == "independent":
+        declaration = (
+            'run_m1_width_space = drc_shard == "all" || '
+            'drc_shard == "m1_width_space"\n'
+        )
+        text = _replace_once(
+            text,
+            declaration,
+            declaration
+            + 'run_m1_contact6 = drc_shard == "all" || '
+            'drc_shard == "m1_contact6"\n',
+            "CONTACT.6 owner declaration",
+        )
+        text = _replace_once(
+            text,
+            "run_m1_enclosure || run_m1_width_space || run_m1_via_class",
+            "run_m1_enclosure || run_m1_width_space || run_m1_contact6 || "
+            "run_m1_via_class",
+            "valid-shard guard",
+        )
+        owner_predicate = "run_m1_contact6"
+    elif text.count('drc_shard == "grid"') != 1:
+        raise TransformError("grid owner: expected one source declaration")
+
     text = _replace_once(
         text,
         "run_contact6 = run_m1_width_space\n",
-        "run_contact6 = run_m1_contact6\n",
+        f"run_contact6 = {owner_predicate}\n",
         "CONTACT.6 owner",
     )
 
@@ -107,6 +118,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force", action="store_true", help="replace an existing output"
     )
+    parser.add_argument(
+        "--owner",
+        choices=OWNER_CHOICES,
+        default="independent",
+        help="create an independent owner or coalesce CONTACT.6 into grid",
+    )
     return parser.parse_args()
 
 
@@ -118,7 +135,7 @@ def main() -> int:
         raise SystemExit(f"refusing to overwrite {args.output}; pass --force")
     try:
         source = args.input.read_bytes().decode("utf-8")
-        transformed = split_deck(source)
+        transformed = split_deck(source, owner=args.owner)
         _write_atomic(args.output, transformed)
     except (OSError, UnicodeDecodeError, TransformError) as exc:
         raise SystemExit(str(exc)) from exc

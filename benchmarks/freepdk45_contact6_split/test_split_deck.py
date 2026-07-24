@@ -25,6 +25,7 @@ def source_deck(*, antenna_split: bool = False) -> str:
         'drc_shard == "m1_width_space"\r\n'
         'run_m1_via_class = drc_shard == "all" || '
         'drc_shard == "m1_via_class"\r\n'
+        'run_grid = drc_shard == "all" || drc_shard == "grid"\r\n'
         "raise unless run_m1_enclosure || run_m1_width_space || "
         f"run_m1_via_class || {antenna_guard}\r\n"
         "run_contact6 = run_m1_width_space\r\n"
@@ -64,10 +65,27 @@ class SplitDeckTest(unittest.TestCase):
                 )
                 ET.fromstring(result)
 
+    def test_can_coalesce_contact6_into_the_existing_grid_owner(self) -> None:
+        result = split_deck(source_deck(antenna_split=True), owner="grid")
+        self.assertIn("run_contact6 = run_grid", result)
+        self.assertNotIn("run_m1_contact6", result)
+        self.assertNotIn(f'drc_shard == "{CONTACT_SHARD}"', result)
+        self.assertLess(
+            result.index('.output("CONTACT.6"'),
+            result.index('.output("METAL1.1"'),
+        )
+
     def test_rejects_an_already_split_deck(self) -> None:
         result = split_deck(source_deck())
         with self.assertRaisesRegex(TransformError, "already CONTACT.6-split"):
             split_deck(result)
+
+    def test_rejects_a_missing_grid_owner(self) -> None:
+        source = source_deck().replace(
+            'run_grid = drc_shard == "all" || drc_shard == "grid"\r\n', ""
+        )
+        with self.assertRaisesRegex(TransformError, "grid owner"):
+            split_deck(source, owner="grid")
 
     def test_rejects_a_missing_output_site(self) -> None:
         source = source_deck().replace(
