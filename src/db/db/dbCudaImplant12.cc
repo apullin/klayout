@@ -287,6 +287,34 @@ bool manhattan_segments_intersect (
     horizontal.y1 <= std::max (vertical.y1, vertical.y2);
 }
 
+void store_contour (
+  const klayout_cuda_spatial_implant12_edge_v1 *edges, size_t edge_count,
+  uint32_t polygon_id, uint64_t max_stored_contours,
+  uint64_t max_stored_edges, CudaImplant12Scene &scene)
+{
+  const uint64_t stored_contours =
+    vector_size_u64 (scene.contours.size (), "stored contour count");
+  const uint64_t stored_edges =
+    vector_size_u64 (scene.edges.size (), "stored edge count");
+  require_room (
+    stored_contours, 1, max_stored_contours, "stored contour count");
+  require_room (
+    stored_edges, uint64_t (edge_count), max_stored_edges,
+    "stored edge count");
+  if (scene.contours.size () == scene.contours.max_size () ||
+      edge_count > scene.edges.max_size () - scene.edges.size ()) {
+    throw Implant12Decline (
+      "host vector capacity cannot represent the IMPLANT scene");
+  }
+
+  scene.contours.push_back (
+    klayout_cuda_spatial_implant12_contour_v1 {
+      stored_edges, polygon_id, 0, uint32_t (edge_count),
+      KLAYOUT_CUDA_SPATIAL_IMPLANT12_HULL
+    });
+  scene.edges.insert (scene.edges.end (), edges, edges + edge_count);
+}
+
 void append_polygon (
   const db::Shape &shape, uint32_t polygon_id, LocalBounds *bounds,
   uint64_t max_stored_contours, uint64_t max_stored_edges,
@@ -297,6 +325,31 @@ void append_polygon (
   }
   if (! shape.is_box () && ! shape.is_polygon ()) {
     throw Implant12Decline ("operand layer contains a non-polygon shape");
+  }
+
+  if (shape.is_box ()) {
+    const db::Box box = shape.box ();
+    const int64_t left = narrow_i64 (box.left (), "box left");
+    const int64_t bottom = narrow_i64 (box.bottom (), "box bottom");
+    const int64_t right = narrow_i64 (box.right (), "box right");
+    const int64_t top = narrow_i64 (box.top (), "box top");
+    if (left >= right || bottom >= top) {
+      throw Implant12Decline ("operand box is empty");
+    }
+    const std::array<klayout_cuda_spatial_implant12_edge_v1, 4> contour = {{
+      { left, bottom, left, top },
+      { left, top, right, top },
+      { right, top, right, bottom },
+      { right, bottom, left, bottom }
+    }};
+    if (bounds) {
+      bounds->add (left, bottom);
+      bounds->add (right, top);
+    }
+    store_contour (
+      contour.data (), contour.size (), polygon_id,
+      max_stored_contours, max_stored_edges, scene);
+    return;
   }
 
   db::Polygon polygon;
@@ -354,27 +407,9 @@ void append_polygon (
     }
   }
 
-  const uint64_t stored_contours =
-    vector_size_u64 (scene.contours.size (), "stored contour count");
-  const uint64_t stored_edges =
-    vector_size_u64 (scene.edges.size (), "stored edge count");
-  require_room (
-    stored_contours, 1, max_stored_contours, "stored contour count");
-  require_room (
-    stored_edges, uint64_t (contour.size ()), max_stored_edges,
-    "stored edge count");
-  if (scene.contours.size () == scene.contours.max_size () ||
-      contour.size () > scene.edges.max_size () - scene.edges.size ()) {
-    throw Implant12Decline (
-      "host vector capacity cannot represent the IMPLANT scene");
-  }
-
-  scene.contours.push_back (
-    klayout_cuda_spatial_implant12_contour_v1 {
-      stored_edges, polygon_id, 0, uint32_t (contour.size ()),
-      KLAYOUT_CUDA_SPATIAL_IMPLANT12_HULL
-    });
-  scene.edges.insert (scene.edges.end (), contour.begin (), contour.end ());
+  store_contour (
+    contour.data (), contour.size (), polygon_id,
+    max_stored_contours, max_stored_edges, scene);
 }
 
 void append_cell_layer (
