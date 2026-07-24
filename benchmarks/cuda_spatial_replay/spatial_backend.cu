@@ -4261,7 +4261,8 @@ void m1ws_echo_request(
 
 int run_m1ws_request(
     const klayout_cuda_spatial_m1_width_space_request_v1 *request,
-    klayout_cuda_spatial_m1_width_space_result_v1 *result) {
+    klayout_cuda_spatial_m1_width_space_result_v1 *result,
+    std::uint32_t expected_opcode) {
   if (!result) return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
   std::memset(result, 0, sizeof(*result));
   result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
@@ -4269,7 +4270,8 @@ int run_m1ws_request(
   result->status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
   result->disposition =
       KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN;
-  if (!request || !m1ws_structurally_valid(*request)) {
+  if (!request || request->opcode != expected_opcode ||
+      !m1ws_structurally_valid(*request)) {
     result->fallback_flags =
         KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
     set_message(
@@ -5309,7 +5311,9 @@ klayout_cuda_spatial_run_m1_width_space_empty_v1(
     const klayout_cuda_spatial_m1_width_space_request_v1 *request,
     klayout_cuda_spatial_m1_width_space_result_v1 *result) {
   try {
-    return run_m1ws_request(request, result);
+    return run_m1ws_request(
+        request, result,
+        KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_MERGED_EMPTY);
   } catch (...) {
     if (result) {
       std::memset(result, 0, sizeof(*result));
@@ -5323,6 +5327,32 @@ klayout_cuda_spatial_run_m1_width_space_empty_v1(
       set_message(
           result,
           "exception escaped the M1 width/space request boundary");
+    }
+    return KLAYOUT_CUDA_SPATIAL_ERROR;
+  }
+}
+
+extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_m2_width_space_empty_v1(
+    const klayout_cuda_spatial_m1_width_space_request_v1 *request,
+    klayout_cuda_spatial_m1_width_space_result_v1 *result) {
+  try {
+    return run_m1ws_request(
+        request, result,
+        KLAYOUT_CUDA_SPATIAL_M2_WIDTH_SPACE_MERGED_EMPTY);
+  } catch (...) {
+    if (result) {
+      std::memset(result, 0, sizeof(*result));
+      result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+      result->struct_size = sizeof(*result);
+      result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+      result->disposition =
+          KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_UNCERTAIN;
+      result->fallback_flags =
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+      set_message(
+          result,
+          "exception escaped the M2 width/space request boundary");
     }
     return KLAYOUT_CUDA_SPATIAL_ERROR;
   }

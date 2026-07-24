@@ -399,7 +399,7 @@ public:
         env_enabled ("KLAYOUT_CUDA_M1_CONTACT_TELEMETRY")),
       m_handle (0), m_run_bipartite (0), m_run_self (0),
       m_run_active3 (0), m_run_implant12 (0), m_run_m1_width_space (0),
-      m_run_via1_stack (0), m_release (0),
+      m_run_m2_width_space (0), m_run_via1_stack (0), m_release (0),
       m_min_records (100000)
   {
     const char *setting = std::getenv ("KLAYOUT_CUDA_SPATIAL_BACKEND");
@@ -445,6 +445,11 @@ public:
           GetProcAddress (
             reinterpret_cast<HMODULE> (m_handle),
             "klayout_cuda_spatial_run_m1_width_space_empty_v1"));
+      m_run_m2_width_space =
+        reinterpret_cast<klayout_cuda_spatial_run_m2_width_space_empty_v1_func> (
+          GetProcAddress (
+            reinterpret_cast<HMODULE> (m_handle),
+            "klayout_cuda_spatial_run_m2_width_space_empty_v1"));
       m_run_via1_stack =
         reinterpret_cast<klayout_cuda_spatial_run_via1_stack_empty_v1_func> (
           GetProcAddress (
@@ -479,6 +484,11 @@ public:
           dlsym (
             m_handle,
             "klayout_cuda_spatial_run_m1_width_space_empty_v1"));
+      m_run_m2_width_space =
+        reinterpret_cast<klayout_cuda_spatial_run_m2_width_space_empty_v1_func> (
+          dlsym (
+            m_handle,
+            "klayout_cuda_spatial_run_m2_width_space_empty_v1"));
       m_run_via1_stack =
         reinterpret_cast<klayout_cuda_spatial_run_via1_stack_empty_v1_func> (
           dlsym (
@@ -501,6 +511,7 @@ public:
       m_run_active3 = 0;
       m_run_implant12 = 0;
       m_run_m1_width_space = 0;
+      m_run_m2_width_space = 0;
       m_run_via1_stack = 0;
       m_release = 0;
       tl::warn << m_error;
@@ -581,7 +592,7 @@ public:
 
   bool m2_width_space_ready () const
   {
-    return m_m2_width_space_enabled && m_run_m1_width_space;
+    return m_m2_width_space_enabled && m_run_m2_width_space;
   }
 
   bool m2_width_space_enabled () const
@@ -670,6 +681,12 @@ public:
     return m_run_m1_width_space;
   }
 
+  klayout_cuda_spatial_run_m2_width_space_empty_v1_func
+  run_m2_width_space () const
+  {
+    return m_run_m2_width_space;
+  }
+
   klayout_cuda_spatial_run_via1_stack_empty_v1_func run_via1_stack () const
   {
     return m_run_via1_stack;
@@ -703,6 +720,7 @@ private:
   klayout_cuda_spatial_run_active3_empty_v1_func m_run_active3;
   klayout_cuda_spatial_run_implant12_empty_v1_func m_run_implant12;
   klayout_cuda_spatial_run_m1_width_space_empty_v1_func m_run_m1_width_space;
+  klayout_cuda_spatial_run_m2_width_space_empty_v1_func m_run_m2_width_space;
   klayout_cuda_spatial_run_via1_stack_empty_v1_func m_run_via1_stack;
   klayout_cuda_spatial_release_result_v1_func m_release;
   uint64_t m_min_records;
@@ -1548,8 +1566,9 @@ CudaM1WidthSpaceAttempt cuda_spatial_try_m1_width_space_empty (
     attempt.disposition = CudaM1WidthSpaceAttempt::BackendFallback;
     attempt.fallback_flags =
       KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
-    attempt.message =
-      "CUDA spatial backend has no M1 width/space empty-certificate entry point";
+    attempt.message = metal2
+      ? "CUDA spatial backend has no M2 width/space empty-certificate entry point"
+      : "CUDA spatial backend has no M1 width/space empty-certificate entry point";
     log_metal_width_space_attempt (attempt, metal2);
     return attempt;
   }
@@ -1563,7 +1582,9 @@ CudaM1WidthSpaceAttempt cuda_spatial_try_m1_width_space_empty (
 
   int status = KLAYOUT_CUDA_SPATIAL_ERROR;
   try {
-    status = module.run_m1_width_space () (&request, &result);
+    status =
+      (metal2 ? module.run_m2_width_space ()
+              : module.run_m1_width_space ()) (&request, &result);
   } catch (const std::exception &ex) {
     attempt.disposition = CudaM1WidthSpaceAttempt::BackendError;
     attempt.message = ex.what ();
