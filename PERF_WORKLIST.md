@@ -1477,6 +1477,29 @@ not just wall time.
         the final formal receipt SHA-256 is
         `0c55bfc620d75077d7ba8550bea18c6b1510173fd0fc17dddb36fce20d84a662`.
 
+      - [x] **Give the critical M1 owner an asymmetric thread budget —
+        completed and rejected:** one exact counterbalanced sniff held both
+        configurations to 32 requested inner threads.  The control used eight
+        concurrent owners at four threads each; the candidate used seven
+        concurrent owners, eight threads only for `m1_width_space`, and four
+        for every other owner.  Full-launch wall changed
+        **141.431988 -> 142.973989 s: 1.542001 real seconds / 1.09% more wall
+        time and -1.08% throughput**.  The M1 owner itself changed
+        **133.516010 -> 135.055034 s: 1.539024 seconds / 1.15% more wall**.
+        This is a clear screen miss, so it was not promoted to a cohort.
+
+        Both merged canonical reports retained SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+        The 86-item antenna, 99-item sentinel, and 1,587-item mixed-hierarchy
+        gates matched immutable qualified references.  Their schema must come
+        from those references: ad hoc direct all-mode reports can register
+        otherwise identical categories in a different order.  Two preliminary
+        attempts stopped before timing while this harness issue was exposed;
+        they are not observations.  The accepted screen driver SHA-256 is
+        `2fded0ea04d406f803067293a26825ec6f8101cb8aa043c9f69982f7ea95a36b`;
+        evidence is retained under
+        `/tmp/m1-width-thread-budget-pair-v1-20260724T115224568665213Z-4085758/`.
+
       - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
         WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
         exact predicates, METAL1.3 guards, four-side reduction, and per-rule
