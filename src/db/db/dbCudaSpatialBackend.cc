@@ -387,6 +387,10 @@ public:
         env_enabled ("KLAYOUT_CUDA_M1_WIDTH_SPACE")),
       m_m1_width_space_telemetry (
         env_enabled ("KLAYOUT_CUDA_M1_WIDTH_SPACE_TELEMETRY")),
+      m_m2_width_space_enabled (
+        env_enabled ("KLAYOUT_CUDA_M2_WIDTH_SPACE")),
+      m_m2_width_space_telemetry (
+        env_enabled ("KLAYOUT_CUDA_M2_WIDTH_SPACE_TELEMETRY")),
       m_via1_stack_enabled (env_enabled ("KLAYOUT_CUDA_VIA1_STACK")),
       m_via1_stack_telemetry (
         env_enabled ("KLAYOUT_CUDA_VIA1_STACK_TELEMETRY")),
@@ -575,6 +579,21 @@ public:
     return m_m1_width_space_telemetry;
   }
 
+  bool m2_width_space_ready () const
+  {
+    return m_m2_width_space_enabled && m_run_m1_width_space;
+  }
+
+  bool m2_width_space_enabled () const
+  {
+    return m_m2_width_space_enabled;
+  }
+
+  bool m2_width_space_telemetry () const
+  {
+    return m_m2_width_space_telemetry;
+  }
+
   bool via1_stack_enabled () const
   {
     return m_via1_stack_enabled;
@@ -672,6 +691,8 @@ private:
   bool m_implant12_telemetry;
   bool m_m1_width_space_enabled;
   bool m_m1_width_space_telemetry;
+  bool m_m2_width_space_enabled;
+  bool m_m2_width_space_telemetry;
   bool m_via1_stack_enabled;
   bool m_via1_stack_telemetry;
   bool m_m1_contact_enabled;
@@ -795,10 +816,12 @@ void log_active3_profile_attempt (const CudaActive3Attempt &attempt,
   }
 }
 
-void log_m1_width_space_attempt (const CudaM1WidthSpaceAttempt &attempt)
+void log_metal_width_space_attempt (
+  const CudaM1WidthSpaceAttempt &attempt, bool metal2)
 {
   CudaSpatialModule &module = cuda_spatial_module ();
-  if (! module.m1_width_space_telemetry ()) {
+  if (! (metal2 ? module.m2_width_space_telemetry ()
+                : module.m1_width_space_telemetry ())) {
     return;
   }
 
@@ -824,7 +847,9 @@ void log_m1_width_space_attempt (const CudaM1WidthSpaceAttempt &attempt)
     break;
   }
 
-  tl::info << "CUDA M1 width/space empty certificate:"
+  tl::info << (metal2
+                ? "CUDA M2 width/space empty certificate:"
+                : "CUDA M1 width/space empty certificate:")
            << " outcome=" << outcome
            << " contexts=" << attempt.context_count
            << " metal_contexts=" << attempt.metal_context_count
@@ -1501,7 +1526,13 @@ CudaM1WidthSpaceAttempt cuda_spatial_try_m1_width_space_empty (
 {
   CudaM1WidthSpaceAttempt attempt;
   CudaSpatialModule &module = cuda_spatial_module ();
-  if (! module.m1_width_space_enabled ()) {
+  const bool metal2 =
+    request.opcode == KLAYOUT_CUDA_SPATIAL_M2_WIDTH_SPACE_MERGED_EMPTY;
+  const bool metal1 =
+    request.opcode == KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_MERGED_EMPTY;
+  if (! (metal1 || metal2) ||
+      ! (metal2 ? module.m2_width_space_enabled ()
+                : module.m1_width_space_enabled ())) {
     return attempt;
   }
   if (! module.enabled ()) {
@@ -1509,16 +1540,17 @@ CudaM1WidthSpaceAttempt cuda_spatial_try_m1_width_space_empty (
     attempt.message = module.error ().empty ()
       ? "CUDA spatial backend is unavailable"
       : module.error ();
-    log_m1_width_space_attempt (attempt);
+    log_metal_width_space_attempt (attempt, metal2);
     return attempt;
   }
-  if (! module.m1_width_space_ready ()) {
+  if (! (metal2 ? module.m2_width_space_ready ()
+                : module.m1_width_space_ready ())) {
     attempt.disposition = CudaM1WidthSpaceAttempt::BackendFallback;
     attempt.fallback_flags =
       KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
     attempt.message =
       "CUDA spatial backend has no M1 width/space empty-certificate entry point";
-    log_m1_width_space_attempt (attempt);
+    log_metal_width_space_attempt (attempt, metal2);
     return attempt;
   }
 
@@ -1535,13 +1567,13 @@ CudaM1WidthSpaceAttempt cuda_spatial_try_m1_width_space_empty (
   } catch (const std::exception &ex) {
     attempt.disposition = CudaM1WidthSpaceAttempt::BackendError;
     attempt.message = ex.what ();
-    log_m1_width_space_attempt (attempt);
+    log_metal_width_space_attempt (attempt, metal2);
     return attempt;
   } catch (...) {
     attempt.disposition = CudaM1WidthSpaceAttempt::BackendError;
     attempt.message =
       "unknown exception while calling CUDA M1 width/space backend";
-    log_m1_width_space_attempt (attempt);
+    log_metal_width_space_attempt (attempt, metal2);
     return attempt;
   }
 
@@ -1574,7 +1606,7 @@ CudaM1WidthSpaceAttempt cuda_spatial_try_m1_width_space_empty (
     attempt.disposition = CudaM1WidthSpaceAttempt::InvalidResult;
     attempt.message =
       "CUDA M1 width/space backend returned an incompatible result";
-    log_m1_width_space_attempt (attempt);
+    log_metal_width_space_attempt (attempt, metal2);
     return attempt;
   }
 
@@ -1660,7 +1692,7 @@ CudaM1WidthSpaceAttempt cuda_spatial_try_m1_width_space_empty (
     attempt.disposition = CudaM1WidthSpaceAttempt::BackendError;
   }
 
-  log_m1_width_space_attempt (attempt);
+  log_metal_width_space_attempt (attempt, metal2);
   return attempt;
 }
 
@@ -1668,6 +1700,12 @@ bool cuda_spatial_m1_width_space_requested ()
 {
   CudaSpatialModule &module = cuda_spatial_module ();
   return module.enabled () && module.m1_width_space_ready ();
+}
+
+bool cuda_spatial_m2_width_space_requested ()
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  return module.enabled () && module.m2_width_space_ready ();
 }
 
 CudaVia1StackAttempt cuda_spatial_try_via1_stack_empty (

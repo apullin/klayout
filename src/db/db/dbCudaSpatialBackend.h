@@ -315,6 +315,9 @@ DB_PUBLIC CudaM1WidthSpaceAttempt cuda_spatial_try_m1_width_space_empty (
 /** Return true only when the M1 width/space opt-in and symbol exist. */
 DB_PUBLIC bool cuda_spatial_m1_width_space_requested ();
 
+/** Return true only when the independent M2 width/space opt-in and symbol exist. */
+DB_PUBLIC bool cuda_spatial_m2_width_space_requested ();
+
 /**
  * Invoke the optional atomic M1/VIA1/M2 six-rule empty certificate.
  *

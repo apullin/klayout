@@ -744,12 +744,15 @@ klayout_cuda_spatial_run_implant12_empty_v1 (
  */
 enum klayout_cuda_spatial_m1_width_space_opcode
 {
-  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_MERGED_EMPTY = 1
+  KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_MERGED_EMPTY = 1,
+  KLAYOUT_CUDA_SPATIAL_M2_WIDTH_SPACE_MERGED_EMPTY = 2
 };
 
 enum klayout_cuda_spatial_m1_width_space_option_flag
 {
   KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_EXACT_MERGED_M1 = 1u << 0,
+  /* Additive profile-neutral spelling; the legacy M1 name remains ABI-stable. */
+  KLAYOUT_CUDA_SPATIAL_METAL_WIDTH_SPACE_EXACT_MERGED_METAL = 1u << 0,
   KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_IDENTICAL_INPUT = 1u << 1,
   KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_SAME_STORE_LAYOUT_TOP_LAYER = 1u << 2,
   KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_NO_BREAKOUT = 1u << 3,

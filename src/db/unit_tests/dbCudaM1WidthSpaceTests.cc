@@ -98,6 +98,34 @@ TEST(1_FailClosedAndDigest)
     true);
   EXPECT_EQ (repeated.digest == scene.digest, true);
 
+  db::CudaM1WidthSpaceBuildSpec m2_spec;
+  m2_spec.profile = db::CudaMetalWidthSpaceProfile::Metal2;
+  m2_spec.width_distance = 140;
+  m2_spec.spacing_distance = 140;
+  m2_spec.inputs_are_merged = true;
+  db::CudaM1WidthSpaceScene m2_scene;
+  EXPECT_EQ (
+    db::cuda_m1_width_space_build_scene (
+      metal1, metal1, m2_spec, limits, m2_scene, &reason),
+    true);
+  EXPECT_EQ (m2_scene.width_distance, int64_t (140));
+  EXPECT_EQ (m2_scene.spacing_distance, int64_t (140));
+  EXPECT_EQ (m2_scene.digest == scene.digest, false);
+
+  m2_spec.width_distance = 130;
+  m2_scene.flat_polygon_count = 31;
+  EXPECT_EQ (
+    db::cuda_m1_width_space_build_scene (
+      metal1, metal1, m2_spec, limits, m2_scene, &reason),
+    false);
+  EXPECT_EQ (m2_scene.flat_polygon_count, uint64_t (31));
+  m2_spec.width_distance = 140;
+  m2_spec.profile = static_cast<db::CudaMetalWidthSpaceProfile> (99);
+  EXPECT_EQ (
+    db::cuda_m1_width_space_build_scene (
+      metal1, metal1, m2_spec, limits, m2_scene, &reason),
+    false);
+
   //  Even another layer in the same store/layout is not interchangeable.
   const db::DeepLayer other_layer = metal1.derived ();
   repeated.flat_polygon_count = 23;

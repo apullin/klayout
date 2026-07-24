@@ -1125,6 +1125,25 @@ TEST(19_M1WidthSpaceMatcher)
       qualified_width_options, qualified_spacing_options),
     true);
 
+  {
+    std::vector<db::CompoundRegionOperationNode *> m2_nodes;
+    m2_nodes.push_back (
+      make_m1_width_match_node (140, qualified_width_options));
+    m2_nodes.push_back (
+      make_m1_spacing_match_node (140, qualified_spacing_options));
+    db::CompoundRegionMultiOutputOperationNode m2 (m2_nodes);
+    EXPECT_EQ (
+      m2.matches_m1_width_space_checks (
+        140, qualified_width_options, 140, qualified_spacing_options,
+        db::IgnoreProperties),
+      true);
+    EXPECT_EQ (
+      m2.matches_m1_width_space_checks (
+        130, qualified_width_options, 130, qualified_spacing_options,
+        db::IgnoreProperties),
+      false);
+  }
+
   EXPECT_EQ (
     matches_m1_width_space_test_nodes (
       qualified_width_options, qualified_spacing_options,

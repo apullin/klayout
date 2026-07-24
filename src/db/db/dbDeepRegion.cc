@@ -2475,6 +2475,16 @@ try_cuda_m1_width_space_batch (
   }
   db::CudaM1WidthSpaceBuildSpec spec;
   spec.inputs_are_merged = true;
+  if (node.matches_m1_width_space_checks (
+        spec.width_distance, spec.width_options,
+        spec.spacing_distance, spec.spacing_options,
+        prop_constraint)) {
+    return db::cuda_m1_width_space_try_empty (polygons, spec);
+  }
+
+  spec.profile = db::CudaMetalWidthSpaceProfile::Metal2;
+  spec.width_distance = 140;
+  spec.spacing_distance = 140;
   return
     node.matches_m1_width_space_checks (
       spec.width_distance, spec.width_options,

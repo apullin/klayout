@@ -46,7 +46,8 @@ namespace
 
 const uint32_t scene_format_version = 1;
 const uint32_t qualified_dbu_per_micron = 2000;
-const int64_t qualified_distance = 130;
+const int64_t qualified_m1_distance = 130;
+const int64_t qualified_m2_distance = 140;
 const unsigned maximum_hierarchy_depth = 1024;
 const int64_t accepted_coordinate_magnitude = INT64_C (1000000000000);
 
@@ -73,6 +74,31 @@ public:
     //  nothing yet
   }
 };
+
+bool profile_is_valid (CudaMetalWidthSpaceProfile profile)
+{
+  return profile == CudaMetalWidthSpaceProfile::Metal1 ||
+         profile == CudaMetalWidthSpaceProfile::Metal2;
+}
+
+int64_t profile_distance (CudaMetalWidthSpaceProfile profile)
+{
+  if (profile == CudaMetalWidthSpaceProfile::Metal1) {
+    return qualified_m1_distance;
+  }
+  if (profile == CudaMetalWidthSpaceProfile::Metal2) {
+    return qualified_m2_distance;
+  }
+  throw M1WidthSpaceDecline ("unknown metal width/space profile");
+}
+
+bool scene_distance_is_qualified (int64_t width_distance,
+                                  int64_t spacing_distance)
+{
+  return width_distance == spacing_distance &&
+         (width_distance == qualified_m1_distance ||
+          width_distance == qualified_m2_distance);
+}
 
 uint64_t env_u64 (const char *name, uint64_t default_value)
 {
@@ -704,8 +730,9 @@ void validate_inputs (
     throw M1WidthSpaceDecline (
       "future integration did not assert merged M1 semantics");
   }
-  if (spec.width_distance != qualified_distance ||
-      spec.spacing_distance != qualified_distance ||
+  if (! profile_is_valid (spec.profile) ||
+      spec.width_distance != profile_distance (spec.profile) ||
+      spec.spacing_distance != profile_distance (spec.profile) ||
       ! options_are_qualified (spec.width_options) ||
       ! options_are_qualified (spec.spacing_options)) {
     throw M1WidthSpaceDecline (
@@ -808,8 +835,8 @@ bool structurally_valid (const CudaM1WidthSpaceScene &scene)
   if (scene.format_version != scene_format_version ||
       scene.dbu_per_micron != qualified_dbu_per_micron ||
       scene.reserved != 0 ||
-      scene.width_distance != qualified_distance ||
-      scene.spacing_distance != qualified_distance ||
+      ! scene_distance_is_qualified (
+          scene.width_distance, scene.spacing_distance) ||
       scene.cells.empty () || scene.contexts.empty () ||
       scene.polygons.empty () || scene.edges.empty () ||
       scene.root_cell >= scene.cells.size () ||
@@ -1009,8 +1036,9 @@ CudaM1WidthSpaceSceneLimits::CudaM1WidthSpaceSceneLimits ()
 }
 
 CudaM1WidthSpaceBuildSpec::CudaM1WidthSpaceBuildSpec ()
-  : width_distance (qualified_distance),
-    spacing_distance (qualified_distance),
+  : profile (CudaMetalWidthSpaceProfile::Metal1),
+    width_distance (qualified_m1_distance),
+    spacing_distance (qualified_m1_distance),
     width_options (),
     spacing_options (),
     inputs_are_merged (false)
@@ -1023,8 +1051,8 @@ CudaM1WidthSpaceScene::CudaM1WidthSpaceScene ()
     dbu_per_micron (qualified_dbu_per_micron),
     root_cell (0),
     reserved (0),
-    width_distance (qualified_distance),
-    spacing_distance (qualified_distance),
+    width_distance (qualified_m1_distance),
+    spacing_distance (qualified_m1_distance),
     flat_polygon_count (0),
     flat_edge_count (0),
     scene_left (0),
@@ -1179,12 +1207,16 @@ bool cuda_m1_width_space_try_empty (
   const db::DeepLayer &merged_metal1,
   const CudaM1WidthSpaceBuildSpec &spec)
 {
-  const bool telemetry =
-    env_enabled ("KLAYOUT_CUDA_M1_WIDTH_SPACE_TELEMETRY");
+  const bool metal2 = spec.profile == CudaMetalWidthSpaceProfile::Metal2;
+  const bool telemetry = env_enabled (
+    metal2 ? "KLAYOUT_CUDA_M2_WIDTH_SPACE_TELEMETRY"
+           : "KLAYOUT_CUDA_M1_WIDTH_SPACE_TELEMETRY");
   const std::chrono::steady_clock::time_point begin =
     std::chrono::steady_clock::now ();
   try {
-    if (! db::cuda_spatial_m1_width_space_requested ()) {
+    if (! profile_is_valid (spec.profile) ||
+        ! (metal2 ? db::cuda_spatial_m2_width_space_requested ()
+                  : db::cuda_spatial_m1_width_space_requested ())) {
       return false;
     }
 
@@ -1274,30 +1306,41 @@ bool cuda_m1_width_space_try_empty (
 
     CudaM1WidthSpaceSceneLimits limits;
     limits.max_cells = env_u64 (
-      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_CELLS", limits.max_cells);
+      metal2 ? "KLAYOUT_CUDA_M2_WIDTH_SPACE_MAX_CELLS"
+             : "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_CELLS",
+      limits.max_cells);
     limits.max_contexts = env_u64 (
-      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_CONTEXTS", limits.max_contexts);
+      metal2 ? "KLAYOUT_CUDA_M2_WIDTH_SPACE_MAX_CONTEXTS"
+             : "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_CONTEXTS",
+      limits.max_contexts);
     limits.max_stored_polygons = env_u64 (
-      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_STORED_POLYGONS",
+      metal2 ? "KLAYOUT_CUDA_M2_WIDTH_SPACE_MAX_STORED_POLYGONS"
+             : "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_STORED_POLYGONS",
       limits.max_stored_polygons);
     limits.max_stored_edges = env_u64 (
-      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_STORED_EDGES",
+      metal2 ? "KLAYOUT_CUDA_M2_WIDTH_SPACE_MAX_STORED_EDGES"
+             : "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_STORED_EDGES",
       limits.max_stored_edges);
     limits.max_flat_polygons = env_u64 (
-      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_FLAT_POLYGONS",
+      metal2 ? "KLAYOUT_CUDA_M2_WIDTH_SPACE_MAX_FLAT_POLYGONS"
+             : "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_FLAT_POLYGONS",
       backend_max_flat_polygons);
     limits.max_flat_edges = env_u64 (
-      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_FLAT_EDGES",
+      metal2 ? "KLAYOUT_CUDA_M2_WIDTH_SPACE_MAX_FLAT_EDGES"
+             : "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_FLAT_EDGES",
       backend_max_flat_edges);
 
     const uint64_t max_grid_cells = env_u64 (
-      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_GRID_CELLS",
+      metal2 ? "KLAYOUT_CUDA_M2_WIDTH_SPACE_MAX_GRID_CELLS"
+             : "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_GRID_CELLS",
       default_max_grid_cells);
     const uint64_t max_memberships = env_u64 (
-      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_MEMBERSHIPS",
+      metal2 ? "KLAYOUT_CUDA_M2_WIDTH_SPACE_MAX_MEMBERSHIPS"
+             : "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_MEMBERSHIPS",
       default_max_memberships);
     const uint64_t max_pair_work = env_u64 (
-      "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_PAIR_WORK",
+      metal2 ? "KLAYOUT_CUDA_M2_WIDTH_SPACE_MAX_PAIR_WORK"
+             : "KLAYOUT_CUDA_M1_WIDTH_SPACE_MAX_PAIR_WORK",
       default_max_pair_work);
     const uint64_t device = env_u64 ("KLAYOUT_CUDA_SPATIAL_DEVICE", 0);
     if (! max_grid_cells || ! max_memberships || ! max_pair_work ||
@@ -1319,7 +1362,9 @@ bool cuda_m1_width_space_try_empty (
     request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
     request.struct_size = sizeof (request);
     request.opcode =
-      KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_MERGED_EMPTY;
+      metal2
+        ? KLAYOUT_CUDA_SPATIAL_M2_WIDTH_SPACE_MERGED_EMPTY
+        : KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_MERGED_EMPTY;
     request.option_flags =
       KLAYOUT_CUDA_SPATIAL_M1_WIDTH_SPACE_QUALIFIED_OPTIONS;
     request.format_version = scene.format_version;
@@ -1375,7 +1420,9 @@ bool cuda_m1_width_space_try_empty (
     const std::chrono::steady_clock::time_point end =
       std::chrono::steady_clock::now ();
     if (telemetry) {
-      tl::info << "CUDA M1 width/space live lowering:"
+      tl::info << (metal2
+                    ? "CUDA M2 width/space live lowering:"
+                    : "CUDA M1 width/space live lowering:")
                << " contexts=" << request.context_count
                << " metal_contexts=" << request.metal_context_count
                << " cells=" << request.cell_count
@@ -1396,7 +1443,9 @@ bool cuda_m1_width_space_try_empty (
   } catch (const std::exception &ex) {
     if (telemetry) {
       try {
-        tl::info << "CUDA M1 width/space live lowering:"
+        tl::info << (metal2
+                      ? "CUDA M2 width/space live lowering:"
+                      : "CUDA M1 width/space live lowering:")
                  << " outcome=cpu-fallback message=" << ex.what ();
       } catch (...) {
         //  Telemetry must never turn a speculative decline into an error.
@@ -1405,7 +1454,9 @@ bool cuda_m1_width_space_try_empty (
   } catch (...) {
     if (telemetry) {
       try {
-        tl::info << "CUDA M1 width/space live lowering:"
+        tl::info << (metal2
+                      ? "CUDA M2 width/space live lowering:"
+                      : "CUDA M1 width/space live lowering:")
                  << " outcome=cpu-fallback message=unknown exception";
       } catch (...) {
         //  Telemetry must never turn a speculative decline into an error.
