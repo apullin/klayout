@@ -1500,6 +1500,31 @@ not just wall time.
         evidence is retained under
         `/tmp/m1-width-thread-budget-pair-v1-20260724T115224568665213Z-4085758/`.
 
+      - [x] **Parallelize runtime-provenance hashing — completed and
+        rejected:** a bounded, affinity-aware Python thread-pool candidate
+        preserved request order, per-file pre/hash/post checks, and the
+        existing whole-snapshot mutation checks.  Its sequential fallback
+        covered small inputs and one-CPU affinity.  All 25 runtime-provenance,
+        44 parallel-launcher, and 35 benchmark-harness unit tests passed.
+
+        A predeclared ABBAAB gate then ran three observations per treatment
+        against the same PGO executable and immutable CUDA backend.  Full
+        process wall changed **143.393333 -> 145.346667 s: 1.953333 real
+        seconds / 1.36% more wall time and -1.34% throughput**.  Prehash
+        changed 4.060807 -> 4.241979 s (**4.46% more wall**) and postverify
+        changed 3.920645 -> 4.189561 s (**6.86% more wall**), so the candidate
+        made its intended section slower and was not promoted.
+
+        Every report retained canonical SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+        The accepted driver and summary SHA-256 values are
+        `6324bce82f4225f66faf62433931aa349528b80aba6c3302e085ac0414509c3d`
+        and
+        `7de6a633b080b0020beb1548e773dc97bc3339f8a6a9e7e09d9570c64a9d5642`;
+        frozen evidence is retained under
+        `/tmp/klayout-provenance-parallel-ab-20260724T131851Z/`.  The rejected
+        source remains uncommitted in its isolated worktree for audit.
+
       - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
         WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
         exact predicates, METAL1.3 guards, four-side reduction, and per-rule
