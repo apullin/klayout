@@ -1649,7 +1649,7 @@ not just wall time.
         reports retained canonical SHA-256
         `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
 
-      - [ ] **Fuse IMPLANT.1 and IMPLANT.2 as one atomic CUDA transaction:**
+      - [x] **Fuse IMPLANT.1 and IMPLANT.2 as one atomic CUDA transaction:**
         rewrite only the two fixed projection-separation expressions into one
         exact batch, lower the merged implant primary plus gate and raw CONTACT
         secondaries once, build one resident implant index, and return two
@@ -1671,9 +1671,31 @@ not just wall time.
         - [x] The exact bounded projection-separation predicate matches an
           independent oracle and KLayout's `EdgeRelationFilter` over 480,022
           GPU classifications at the fixed 70 nm and 25 nm profiles.
-        - [ ] Finish the compact three-domain hierarchy serializer, one-index
+        - [x] Finish the compact three-domain hierarchy serializer, one-index
           CUDA backend, mirrored-context/capacity/digest gates, live clean/hit
           report differential, and repeated production owner/full-run A/B.
+
+        The completed transaction is landed through `fcc0d16` (with its
+        production full-gate launcher in `6e669c1`).  The exact backend passed
+        480,022 oracle/direct-KLayout predicate comparisons, the full malformed
+        input and capacity smoke matrix, and 16 canonical clean/hit/mirrored
+        live-report comparisons.  A same-build isolated owner A/B changed
+        **118.38 -> 88.35 s: 30.03 real seconds / 25.37% less owner wall**.
+        A matched eight-job full A/B changed **132.18 -> 108.46 s: 23.72 real
+        seconds / 17.95% less full wall**; under that contention the owner
+        changed 127.291 -> 90.781 s.  All owner reports retained canonical
+        SHA-256
+        `b0e94aa57f09535c1b283e47838fba1830ffd17f9f88c9e15c9c2512aff95f56`,
+        and all full reports retained canonical SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+
+        Raising the candidate schedule from eight to ten independent owners
+        produced three full walls of **101.07, 100.88, and 100.47 s** (100.81 s
+        mean, 0.60 s full range).  Against the eight-job candidate this is
+        **108.46 -> 100.81 s: 7.65 real seconds / 7.06% less**, without changing
+        the canonical report.  This schedule result is recorded separately
+        from the CUDA A/B: the combined eight-job control to ten-job candidate
+        mean is 132.18 -> 100.81 s, but is not attributed to one optimization.
 
       - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
         WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
