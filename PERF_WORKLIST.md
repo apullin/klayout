@@ -1662,6 +1662,19 @@ not just wall time.
         that opportunity against the new 124.47-second pole before making a
         whole-run claim.
 
+        - [x] The explicit deck transaction and fail-closed publication gate
+          are committed as `24a91ca`: certification emits two ordered empty
+          polygon categories, while every disabled, missing-method, hit, or
+          decline path retains both historical CPU expressions literally and
+          exactly once. Four rewrite tests and 12 canonical source/generated
+          fallback comparisons pass.
+        - [x] The exact bounded projection-separation predicate matches an
+          independent oracle and KLayout's `EdgeRelationFilter` over 480,022
+          GPU classifications at the fixed 70 nm and 25 nm profiles.
+        - [ ] Finish the compact three-domain hierarchy serializer, one-index
+          CUDA backend, mirrored-context/capacity/digest gates, live clean/hit
+          report differential, and repeated production owner/full-run A/B.
+
       - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
         WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
         exact predicates, METAL1.3 guards, four-side reduction, and per-rule
