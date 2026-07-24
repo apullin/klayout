@@ -1696,6 +1696,11 @@ not just wall time.
         the canonical report.  This schedule result is recorded separately
         from the CUDA A/B: the combined eight-job control to ten-job candidate
         mean is 132.18 -> 100.81 s, but is not attributed to one optimization.
+        A follow-up ten-owner/three-inner-thread screen took 101.36 s and
+        retained the same canonical report.  It is 0.55 s / 0.55% slower than
+        the ten-owner/four-thread mean, but reduces the requested inner-worker
+        budget from 40 to 30 on the 32-core host and is the accounting-safe
+        default for subsequent ten-owner work.
 
       - [ ] **Break the post-implant three-owner plateau as one coordinated
         campaign:** the stable ten-owner launch now has `m2_rules`,
@@ -1704,6 +1709,22 @@ not just wall time.
         two remain.  Preserve independent owner A/B measurements, but require
         the combined full gate before booking an end-to-end improvement.
 
+        - [x] **Split the cumulative M3 and M4 antenna checks into exact CPU
+          owners:** `antenna_m3` builds and evaluates the prefix through M3;
+          `antenna_m4_m10` builds that prefix without the M3 check, then
+          evaluates M4--M10.  `drc_shard=all` preserves every historical
+          connect/check in order exactly once.  The bounded ten-owner/three-
+          thread control put the combined owner at 96.431 s; the exact
+          eleven-owner/two-thread full gate put the two owners at 57.465 and
+          57.769 s, making the antenna lane **38.662 real seconds / 40.09%
+          shorter**.  Full wall stayed flat at 101.36 -> 101.66 s because
+          unchanged `m2_rules` became the 96.773-second pole.  Both full
+          reports retained canonical SHA-256
+          `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+          The nonempty 157-category/86-item hierarchy fixture matched at
+          semantic SHA-256
+          `409085bc15614329421b1b07a6fdd6b867fe8cad83a214a1f32a5d9986a595a4`.
+          Implementation commit `19b7c54` is pushed.
         - [ ] **Generalize the exact M1 width/space transaction to M2:** add a
           separately enabled and digest-bound 140-DBU profile for the existing
           atomic `METAL2.1/.2` batch.  First census the exact merged M2 scene:
@@ -1711,6 +1732,17 @@ not just wall time.
           bound may exceed current edge/membership capacities.  Proceed to
           production only when charged lowering plus backend replay models at
           least 5 real seconds of eventual full-wall opportunity.
+
+          - [x] The additive host/backend profile and exact runtime-distance
+            predicate are committed as `e4ce247` and `e638ac0`.  Focused DB
+            tests compile and pass.  The real merged-M2 census resolves the
+            22,945,976 raw flat polygons to only 13,166 stored polygons,
+            4,380,228 stored edges, and 4,385,384 flat edges over 39,573
+            contexts; host scene construction took 9.459 s and is comfortably
+            below the existing 100-million-edge capacity.
+          - [ ] Run the real GPU replay, focused clean/hit/fail-closed gate,
+            and same-build production owner A/B before enabling M2 in the full
+            launcher.
         - [ ] **Fuse POLY.3 and POLY.4 into one exact terminal-empty CUDA
           transaction:** upload the shared derived gate once and evaluate the
           110/140-DBU projection-enclosure profiles atomically.  The certificate
@@ -1727,6 +1759,9 @@ not just wall time.
           clean-only M3/M4 transaction has a plausible 45--60-second owner
           opportunity, but is the highest-risk item and must preserve exact
           hierarchy, union-area, ratio, and ordered M3-before-M4 semantics.
+          The exact CPU owner split above reduces this lane to roughly 58 s,
+          so defer the much harder resident rewrite until the new critical
+          path makes that remaining ceiling relevant.
 
       - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
         WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,

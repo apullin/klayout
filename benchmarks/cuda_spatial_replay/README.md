@@ -441,9 +441,10 @@ eight-owner source, applies the three-way antenna transform, and moves only
 `CONTACT.6` into the underloaded grid owner. The compound `METAL1.1` and
 `METAL1.2` traversal remains intact.
 
-The runner fixes the qualified ten-owner launch order, eight-process limit,
-four deck threads per process, CUDA resource limits, and certificate opt-ins.
-It then requires ACTIVE.3, METAL1.1/METAL1.2, VIA1-stack,
+The runner fixes the qualified ten-owner launch order, selectable bounded
+process concurrency, CUDA resource limits, and certificate opt-ins. The source
+deck controls inner KLayout threads. It then requires ACTIVE.3,
+METAL1.1/METAL1.2, VIA1-stack,
 CONTACT.1-.3/METAL1.3, and CONTACT.4 telemetry before comparing the canonical
 merged report. The older CONTACT.1 selected-empty certificate is intentionally
 not required because the atomic M1-contact certificate bypasses that CPU
@@ -452,6 +453,16 @@ explicit same-binary performance control. Supply the deck-bound manifest
 created from a CPU `drc_shard=all` reference and the ten CUDA-enabled shard
 reports. Do not create the reference with CUDA enabled: that changes
 historical category order even when the semantic report is otherwise equal.
+
+`--split-upper-antenna` is an additive eleven-owner mode. It replaces
+`antenna_m3_m10` with independent `antenna_m3` and `antenna_m4_m10` owners;
+use a separately bound eleven-owner manifest and `--jobs 11`. The accepted
+32-core-budget screen used a source deck with `threads(2)`, so the eleven
+processes request 22 inner workers. Its full report retained canonical
+SHA-256
+`01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`;
+the antenna critical lane fell from 96.431 to 57.769 s while unchanged M2
+kept full wall flat at 101.36 -> 101.66 s.
 
 ```sh
 bash benchmarks/cuda_spatial_replay/run_balanced_full_gate.sh \

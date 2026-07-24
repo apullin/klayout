@@ -161,6 +161,9 @@ done
   die "--timeout-seconds must be a positive integer"
 [[ "${jobs}" == 8 || "${jobs}" == 10 || "${jobs}" == 11 ]] ||
   die "--jobs must be 8, 10, or 11"
+if [[ "${jobs}" == 11 ]] && (( ! split_upper_antenna)); then
+  die "--jobs 11 requires --split-upper-antenna"
+fi
 
 [[ -x "${klayout}" ]] || die "KLayout is not executable: ${klayout}"
 [[ -f "${backend}" ]] || die "CUDA backend is missing: ${backend}"

@@ -84,6 +84,17 @@ class SplitDeckTest(unittest.TestCase):
             "if run_antenna_m3 || run_antenna_m4_m10",
             result,
         )
+        self.assertIn(
+            "\nif run_antenna_m3\n"
+            'antenna_check(gate, metal3, 300.0, diode).output("METAL3_ANTENNA"',
+            result,
+        )
+        self.assertIn(
+            "\nif run_antenna_m4_m10\n"
+            "# build connection of poly+gate to metal4\n"
+            "connect(metal3, via3)",
+            result,
+        )
         self.assertEqual(result.count("connect(metal2, via2)"), 1)
         self.assertEqual(result.count("connect(via2, metal3)"), 1)
 

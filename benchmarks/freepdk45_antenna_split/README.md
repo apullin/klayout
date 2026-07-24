@@ -7,11 +7,20 @@ owner with three independent KLayout processes:
 - `antenna_m1_m2`: METAL1 and METAL2 antenna checks
 - `antenna_m3_m10`: METAL3 through METAL10 antenna checks
 
+Passing `--split-upper` replaces the last owner with `antenna_m3` and
+`antenna_m4_m10`.  The latter builds the required cumulative prefix through
+M3 without evaluating M3, then evaluates M4 through M10.  `drc_shard=all`
+still performs every historical connect/check in its original order exactly
+once.
+
 Generate a candidate deck with:
 
 ```sh
 python3 benchmarks/freepdk45_antenna_split/split_deck.py \
   input.lydrc output.lydrc
+
+python3 benchmarks/freepdk45_antenna_split/split_deck.py \
+  --split-upper input.lydrc output-upper-split.lydrc
 ```
 
 The transform preserves `drc_shard=all` order and fails if its expected source
@@ -34,6 +43,10 @@ normalization when comparing a trusted full report with the merged result.
 
 Keep `--jobs 8` while the deck requests four threads per process. CLI shard
 order is launch order, so schedule the long antenna owners in the first wave.
+
+For the current eleven-owner CUDA gate, use a deck-bound eleven-owner manifest
+and `run_balanced_full_gate.sh --split-upper-antenna --jobs 11`.  The accepted
+32-core-budget screen used two inner threads per owner (22 requested workers).
 
 ## Qualified x2 result
 
@@ -61,3 +74,19 @@ SHA-256 values are respectively:
 - `be0d3be9fa0fbfb2c0e4591d7e73a6a464b12384cb8d5debc20c4972cf7c8357`
 - `ce8df8fb2f557b90e11692d03e46960761693e8fe38182b6baf03b0b92adb48b`
 - `c62ea2fe69d4c65247b892bcd78eff959565f1e85080ec97a9e17ab0d93109f5`
+
+## Optional upper split result
+
+On the current x2 CUDA workload, the bounded 10-owner/three-thread control put
+`antenna_m3_m10` at 96.431 s.  The eleven-owner/two-thread full gate put
+`antenna_m3` at 57.465 s and `antenna_m4_m10` at 57.769 s: the critical
+antenna lane is **38.662 real seconds / 40.09% shorter**.  Full wall remained
+effectively flat at 101.36 -> 101.66 s because unchanged `m2_rules` became the
+96.773-second pole.  Both full reports retained canonical SHA-256
+`01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+
+A nonempty two-owner M3/M4 sniff also proved its exact eight-category union
+against the former upper owner.  The original and split `drc_shard=all`
+fixtures matched at semantic SHA-256
+`409085bc15614329421b1b07a6fdd6b867fe8cad83a214a1f32a5d9986a595a4`
+(157 categories, two cells, 86 items).
