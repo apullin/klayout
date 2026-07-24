@@ -3616,6 +3616,8 @@ bool m1ws_structurally_valid(
   std::vector<std::uint8_t> cell_has_geometry(
       static_cast<std::size_t>(request.cell_count), 0);
   std::set<std::uint64_t> source_cells;
+  db::cuda_manhattan_contour::TranslationValidationCache<
+      klayout_cuda_spatial_m1_width_space_edge_v1> contour_cache;
   std::uint64_t next_polygon = 0;
   std::uint64_t next_edge = 0;
   for (std::uint64_t cell_id = 0; cell_id < request.cell_count; ++cell_id) {
@@ -3694,7 +3696,7 @@ bool m1ws_structurally_valid(
       if (twice_area >= 0 || left != polygon.left ||
           bottom != polygon.bottom || right != polygon.right ||
           top != polygon.top ||
-          db::cuda_manhattan_contour::validate(contour) !=
+          contour_cache.validate_contour(contour) !=
               db::cuda_manhattan_contour::ValidationResult::Valid) {
         return false;
       }

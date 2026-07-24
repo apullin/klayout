@@ -133,6 +133,59 @@ bool linearithmic (const std::vector<Edge> &edges)
          db::cuda_manhattan_contour::ValidationResult::Valid;
 }
 
+std::vector<Edge> translated (
+  const std::vector<Edge> &edges, int64_t dx, int64_t dy)
+{
+  std::vector<Edge> result;
+  result.reserve (edges.size ());
+  for (std::vector<Edge>::const_iterator edge = edges.begin ();
+       edge != edges.end (); ++edge) {
+    result.push_back (
+      Edge {
+        edge->x1 + dx, edge->y1 + dy,
+        edge->x2 + dx, edge->y2 + dy
+      });
+  }
+  return result;
+}
+
+bool translation_cache_case (
+  const char *name, const std::vector<Edge> &edges, bool valid)
+{
+  typedef db::cuda_manhattan_contour::TranslationValidationCache<Edge>
+    Cache;
+  Cache cache;
+  const db::cuda_manhattan_contour::ValidationResult expected =
+    valid
+      ? db::cuda_manhattan_contour::ValidationResult::Valid
+      : db::cuda_manhattan_contour::validate (edges);
+  const db::cuda_manhattan_contour::ValidationResult first =
+    cache.validate_contour (edges);
+  const db::cuda_manhattan_contour::ValidationResult second =
+    cache.validate_contour (edges);
+  const db::cuda_manhattan_contour::ValidationResult third =
+    cache.validate_contour (translated (edges, 1000, -2000));
+  const db::cuda_manhattan_contour::TranslationCacheStatistics &stats =
+    cache.statistics ();
+  const bool good =
+    first == expected && second == expected && third == expected &&
+    stats.full_validations == (valid ? 1 : 3) &&
+    stats.cache_hits == (valid ? 2 : 0) &&
+    stats.cached_representatives == (valid ? 1 : 0);
+  if (! good) {
+    std::cerr << name << " translation-cache mismatch:"
+              << " valid=" << valid
+              << " first=" << int (first)
+              << " second=" << int (second)
+              << " third=" << int (third)
+              << " full=" << stats.full_validations
+              << " hits=" << stats.cache_hits
+              << " representatives=" << stats.cached_representatives
+              << '\n';
+  }
+  return good;
+}
+
 bool expect (
   const char *name, const std::vector<Edge> &edges, bool accepted)
 {
@@ -262,7 +315,13 @@ bool production_scene_microbenchmark (const char *path)
     return false;
   }
 
-  const auto validate_pass = [&] (double *seconds) {
+  typedef db::cuda_manhattan_contour::TranslationValidationCache<Edge>
+    Cache;
+  typedef db::cuda_manhattan_contour::TranslationCacheStatistics
+    CacheStatistics;
+  const auto validate_pass = [&] (
+    bool memoized, double *seconds, CacheStatistics *statistics) {
+    Cache cache;
     const std::chrono::steady_clock::time_point begin =
       std::chrono::steady_clock::now ();
     for (size_t polygon_id = 0; polygon_id < spans.size ();
@@ -279,7 +338,11 @@ bool production_scene_microbenchmark (const char *path)
             load_i64 (record + 16), load_i64 (record + 24)
           });
       }
-      if (! linearithmic (edges)) {
+      const db::cuda_manhattan_contour::ValidationResult result =
+        memoized
+          ? cache.validate_contour (edges)
+          : db::cuda_manhattan_contour::validate (edges);
+      if (result != db::cuda_manhattan_contour::ValidationResult::Valid) {
         std::cerr << "KM1WSCN1 validator rejected polygon "
                   << polygon_id << " with " << span.count << " edges\n";
         return false;
@@ -288,20 +351,73 @@ bool production_scene_microbenchmark (const char *path)
     *seconds =
       std::chrono::duration<double> (
         std::chrono::steady_clock::now () - begin).count ();
+    if (statistics) {
+      *statistics = cache.statistics ();
+    }
     return true;
   };
 
-  double first = 0.0;
-  double second = 0.0;
-  if (! validate_pass (&first) || ! validate_pass (&second)) {
+  double host_plain = 0.0;
+  double dso_plain = 0.0;
+  double host_memo = 0.0;
+  double dso_memo = 0.0;
+  CacheStatistics host_statistics;
+  CacheStatistics dso_statistics;
+  if (! validate_pass (false, &host_plain, 0) ||
+      ! validate_pass (false, &dso_plain, 0) ||
+      ! validate_pass (true, &host_memo, &host_statistics) ||
+      ! validate_pass (true, &dso_memo, &dso_statistics)) {
+    return false;
+  }
+  const bool counters_good =
+    host_statistics.lookups == polygon_count &&
+    dso_statistics.lookups == polygon_count &&
+    host_statistics.cache_hits +
+      host_statistics.full_validations == polygon_count &&
+    dso_statistics.cache_hits +
+      dso_statistics.full_validations == polygon_count &&
+    host_statistics.cache_hits != 0 &&
+    host_statistics.full_validations ==
+      dso_statistics.full_validations &&
+    host_statistics.cache_hits == dso_statistics.cache_hits &&
+    host_statistics.cached_representatives ==
+      host_statistics.full_validations &&
+    dso_statistics.cached_representatives ==
+      dso_statistics.full_validations &&
+    host_statistics.capacity_bypasses == 0 &&
+    dso_statistics.capacity_bypasses == 0;
+  if (! counters_good) {
+    std::cerr << "KM1WSCN1 translation-cache counters disagree\n";
+    return false;
+  }
+  const bool production_m2_profile =
+    polygon_count == UINT64_C (13166) &&
+    edge_count == UINT64_C (4380228);
+  if (production_m2_profile &&
+      (host_statistics.full_validations != 71 ||
+       host_statistics.cache_hits != 13095 ||
+       host_statistics.cached_edges != 14978)) {
+    std::cerr << "production M2 translation-cache census changed:"
+              << " full=" << host_statistics.full_validations
+              << " hits=" << host_statistics.cache_hits
+              << " cached_edges=" << host_statistics.cached_edges
+              << '\n';
     return false;
   }
   std::cout << "KM1WSCN1 exact contour passes: polygons="
             << polygon_count << " edges=" << edge_count
             << " maximum_polygon_edges=" << maximum_edges
-            << " host_pass=" << first << " s"
-            << " DSO_pass=" << second << " s"
-            << " combined=" << first + second << " s\n";
+            << " plain_host=" << host_plain << " s"
+            << " plain_DSO=" << dso_plain << " s"
+            << " plain_combined=" << host_plain + dso_plain << " s"
+            << " memo_host=" << host_memo << " s"
+            << " memo_DSO=" << dso_memo << " s"
+            << " memo_combined=" << host_memo + dso_memo << " s"
+            << " full_validations="
+            << host_statistics.full_validations
+            << " cache_hits=" << host_statistics.cache_hits
+            << " cached_edges=" << host_statistics.cached_edges
+            << '\n';
   return true;
 }
 
@@ -420,6 +536,162 @@ int main (int argc, char *argv [])
   degenerate [0].y2 = degenerate [0].y1;
   good = expect ("degenerate-edge", degenerate, false) && good;
 
+  good = translation_cache_case (
+    "cached-valid-rectangle",
+    contour ({ { 0, 0 }, { 0, 4 }, { 6, 4 }, { 6, 0 } }),
+    true) && good;
+  good = translation_cache_case (
+    "invalid-contour-is-never-cached",
+    contour ({
+      { 0, 0 }, { 0, 6 }, { 4, 6 }, { 4, 2 }, { -2, 2 },
+      { -2, 4 }, { 6, 4 }, { 6, 0 }
+    }),
+    false) && good;
+
+  typedef db::cuda_manhattan_contour::TranslationValidationCache<Edge>
+    TranslationCache;
+  const int64_t minimum = std::numeric_limits<int64_t>::min ();
+  const int64_t maximum = std::numeric_limits<int64_t>::max ();
+  const std::vector<Edge> extreme_low = contour ({
+    { minimum, minimum },
+    { minimum, minimum + 4 },
+    { minimum + 6, minimum + 4 },
+    { minimum + 6, minimum }
+  });
+  const std::vector<Edge> extreme_high = contour ({
+    { maximum - 6, maximum - 4 },
+    { maximum - 6, maximum },
+    { maximum, maximum },
+    { maximum, maximum - 4 }
+  });
+  TranslationCache extreme_cache;
+  const bool extreme_good =
+    extreme_cache.validate_contour (extreme_low) ==
+      db::cuda_manhattan_contour::ValidationResult::Valid &&
+    extreme_cache.validate_contour (extreme_high) ==
+      db::cuda_manhattan_contour::ValidationResult::Valid &&
+    extreme_cache.statistics ().full_validations == 1 &&
+    extreme_cache.statistics ().cache_hits == 1 &&
+    db::cuda_manhattan_contour::detail::exact_translation_equivalent (
+      extreme_low, extreme_high);
+  if (! extreme_good) {
+    std::cerr << "extreme-coordinate translation cache failed\n";
+    good = false;
+  }
+
+  //  These coordinate deltas alias modulo 2^64 but are not the same
+  //  mathematical translation.  The sign+magnitude comparison must reject
+  //  the shortcut and run the exact validator twice.
+  const std::vector<Edge> extreme_span = contour ({
+    { minimum, 0 }, { minimum, 4 },
+    { maximum, 4 }, { maximum, 0 }
+  });
+  const std::vector<Edge> negative_unit_span = contour ({
+    { 0, 10 }, { 0, 14 }, { -1, 14 }, { -1, 10 }
+  });
+  TranslationCache alias_cache;
+  const bool alias_good =
+    ! db::cuda_manhattan_contour::detail::exact_translation_equivalent (
+        extreme_span, negative_unit_span) &&
+    alias_cache.validate_contour (extreme_span) ==
+      db::cuda_manhattan_contour::ValidationResult::Valid &&
+    alias_cache.validate_contour (negative_unit_span) ==
+      db::cuda_manhattan_contour::ValidationResult::Valid &&
+    alias_cache.statistics ().full_validations == 2 &&
+    alias_cache.statistics ().cache_hits == 0;
+  if (! alias_good) {
+    std::cerr << "extreme-coordinate modular-alias defense failed\n";
+    good = false;
+  }
+
+  db::cuda_manhattan_contour::TranslationCacheLimits tight_limits;
+  tight_limits.max_representatives = 1;
+  tight_limits.max_cached_edges = 4;
+  tight_limits.max_representatives_per_key = 1;
+  TranslationCache bounded_cache (tight_limits);
+  const std::vector<Edge> cached_box =
+    contour ({ { 0, 0 }, { 0, 4 }, { 6, 4 }, { 6, 0 } });
+  const std::vector<Edge> uncached_concave = contour ({
+    { 0, 0 }, { 0, 6 }, { 2, 6 }, { 2, 3 },
+    { 4, 3 }, { 4, 6 }, { 6, 6 }, { 6, 0 }
+  });
+  const bool bounded_good =
+    bounded_cache.validate_contour (cached_box) ==
+      db::cuda_manhattan_contour::ValidationResult::Valid &&
+    bounded_cache.validate_contour (
+      translated (cached_box, 20, 30)) ==
+      db::cuda_manhattan_contour::ValidationResult::Valid &&
+    bounded_cache.validate_contour (uncached_concave) ==
+      db::cuda_manhattan_contour::ValidationResult::Valid &&
+    bounded_cache.validate_contour (
+      translated (uncached_concave, 20, 30)) ==
+      db::cuda_manhattan_contour::ValidationResult::Valid &&
+    bounded_cache.statistics ().lookups == 4 &&
+    bounded_cache.statistics ().cache_hits == 1 &&
+    bounded_cache.statistics ().full_validations == 3 &&
+    bounded_cache.statistics ().cached_representatives == 1 &&
+    bounded_cache.statistics ().cached_edges == 4 &&
+    bounded_cache.statistics ().capacity_bypasses == 2;
+  if (! bounded_good) {
+    std::cerr << "bounded translation cache failed\n";
+    good = false;
+  }
+
+  db::cuda_manhattan_contour::TranslationCacheLimits collision_limits;
+  collision_limits.max_representatives = 8;
+  collision_limits.max_cached_edges = 64;
+  collision_limits.max_representatives_per_key = 2;
+  typedef db::cuda_manhattan_contour::TranslationValidationCache<Edge, 0>
+    ForcedCollisionCache;
+  ForcedCollisionCache collision_cache (collision_limits);
+  const std::vector<Edge> box6 =
+    contour ({ { 0, 0 }, { 0, 4 }, { 6, 4 }, { 6, 0 } });
+  const std::vector<Edge> box7 =
+    contour ({ { 0, 0 }, { 0, 4 }, { 7, 4 }, { 7, 0 } });
+  const std::vector<Edge> box8 =
+    contour ({ { 0, 0 }, { 0, 4 }, { 8, 4 }, { 8, 0 } });
+  const bool collision_good =
+    collision_cache.validate_contour (box6) ==
+      db::cuda_manhattan_contour::ValidationResult::Valid &&
+    collision_cache.validate_contour (box7) ==
+      db::cuda_manhattan_contour::ValidationResult::Valid &&
+    collision_cache.validate_contour (
+      translated (box7, -30, 40)) ==
+      db::cuda_manhattan_contour::ValidationResult::Valid &&
+    collision_cache.validate_contour (box8) ==
+      db::cuda_manhattan_contour::ValidationResult::Valid &&
+    collision_cache.statistics ().lookups == 4 &&
+    collision_cache.statistics ().cache_hits == 1 &&
+    collision_cache.statistics ().full_validations == 3 &&
+    collision_cache.statistics ().cached_representatives == 2 &&
+    collision_cache.statistics ().exact_comparison_misses == 4 &&
+    collision_cache.statistics ().capacity_bypasses == 1;
+  if (! collision_good) {
+    std::cerr << "bounded hash-collision fallback failed\n";
+    good = false;
+  }
+
+  ForcedCollisionCache invalid_collision_cache;
+  std::vector<Edge> colliding_open = box6;
+  colliding_open [1].x2 -= 1;
+  const bool invalid_collision_good =
+    invalid_collision_cache.validate_contour (box6) ==
+      db::cuda_manhattan_contour::ValidationResult::Valid &&
+    invalid_collision_cache.validate_contour (colliding_open) ==
+      db::cuda_manhattan_contour::ValidationResult::OpenContour &&
+    invalid_collision_cache.validate_contour (colliding_open) ==
+      db::cuda_manhattan_contour::ValidationResult::OpenContour &&
+    invalid_collision_cache.statistics ().lookups == 3 &&
+    invalid_collision_cache.statistics ().cache_hits == 0 &&
+    invalid_collision_cache.statistics ().full_validations == 3 &&
+    invalid_collision_cache.statistics ().cached_representatives == 1 &&
+    invalid_collision_cache.statistics ().exact_comparison_misses == 2 &&
+    invalid_collision_cache.statistics ().capacity_bypasses == 0;
+  if (! invalid_collision_good) {
+    std::cerr << "invalid forced-collision fallback failed\n";
+    good = false;
+  }
+
   std::mt19937_64 random (UINT64_C (0x4d32434f4e544f55));
   const size_t differential_cases = 50000;
   for (size_t test = 0; test < differential_cases; ++test) {
@@ -428,11 +700,21 @@ int main (int argc, char *argv [])
       //  Include malformed-open records as well as closed random walks.
       candidate [random () % candidate.size ()].x2 += 1;
     }
-    const bool expected = quadratic_reference (candidate);
-    const bool actual = linearithmic (candidate);
-    if (expected != actual) {
+    const bool reference = quadratic_reference (candidate);
+    const db::cuda_manhattan_contour::ValidationResult exact =
+      db::cuda_manhattan_contour::validate (candidate);
+    TranslationCache cache;
+    const db::cuda_manhattan_contour::ValidationResult cached =
+      cache.validate_contour (candidate);
+    const db::cuda_manhattan_contour::ValidationResult shifted =
+      cache.validate_contour (translated (candidate, 64, -96));
+    const bool actual =
+      exact == db::cuda_manhattan_contour::ValidationResult::Valid;
+    if (reference != actual || cached != exact || shifted != exact) {
       std::cerr << "random differential mismatch at case " << test
-                << ": reference=" << expected << " actual=" << actual
+                << ": reference=" << reference << " actual=" << actual
+                << " cached=" << int (cached)
+                << " shifted=" << int (shifted)
                 << " edges=" << candidate.size () << '\n';
       good = false;
       break;

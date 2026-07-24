@@ -228,7 +228,9 @@ struct CellTemplate
 void append_polygon (
   const db::Shape &shape, uint32_t polygon_id,
   const CudaM1WidthSpaceSceneLimits &limits,
-  CudaM1WidthSpaceScene &scene)
+  CudaM1WidthSpaceScene &scene,
+  cuda_manhattan_contour::TranslationValidationCache<
+    CudaM1WidthSpaceEdge> &contour_cache)
 {
   if (shape.prop_id () != 0) {
     throw M1WidthSpaceDecline ("M1 polygon has properties");
@@ -281,7 +283,7 @@ void append_polygon (
       "M1 polygon is too small, empty, or not clockwise");
   }
   const cuda_manhattan_contour::ValidationResult contour_result =
-    cuda_manhattan_contour::validate (contour);
+    contour_cache.validate_contour (contour);
   if (contour_result ==
       cuda_manhattan_contour::ValidationResult::OpenContour) {
     throw M1WidthSpaceDecline ("M1 polygon contour is open");
@@ -326,7 +328,9 @@ void append_polygon (
 void append_cell_layer (
   const db::Cell &cell, unsigned int layer, uint64_t source_cell_index,
   const CudaM1WidthSpaceSceneLimits &limits,
-  CudaM1WidthSpaceScene &scene, CudaM1WidthSpaceCell &record)
+  CudaM1WidthSpaceScene &scene, CudaM1WidthSpaceCell &record,
+  cuda_manhattan_contour::TranslationValidationCache<
+    CudaM1WidthSpaceEdge> &contour_cache)
 {
   record.source_cell_index = source_cell_index;
   record.polygon_begin =
@@ -343,7 +347,8 @@ void append_cell_layer (
       throw M1WidthSpaceDecline (
         "per-cell M1 polygon count exceeds uint32");
     }
-    append_polygon (*shape, polygon_id, limits, scene);
+    append_polygon (
+      *shape, polygon_id, limits, scene, contour_cache);
     ++polygon_id;
   }
 
@@ -729,6 +734,8 @@ CudaM1WidthSpaceScene serialize_scene (
   }
 
   CudaM1WidthSpaceScene scene;
+  cuda_manhattan_contour::TranslationValidationCache<
+    CudaM1WidthSpaceEdge> contour_cache;
   scene.width_distance = spec.width_distance;
   scene.spacing_distance = spec.spacing_distance;
   scene.root_cell = root->second;
@@ -749,7 +756,7 @@ CudaM1WidthSpaceScene serialize_scene (
     std::memset (&record, 0, sizeof (record));
     append_cell_layer (
       cell, metal1.layer (), uint64_t (*source),
-      limits, scene, record);
+      limits, scene, record, contour_cache);
     scene.cells [cell_id] = record;
   }
 
