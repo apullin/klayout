@@ -4409,6 +4409,38 @@ bool implant12_valid_contour(
     return false;
   }
 
+  // Boxes dominate qualified scenes.  Load their four records exactly once:
+  // this preserves the full coordinate, closure, orientation, and
+  // axis-alternation qualification without repeatedly decoding the same PODs.
+  if (contour.edge_count == 4) {
+    std::array<klayout_cuda_spatial_implant12_edge_v1, 4> edges;
+    for (std::uint32_t local = 0; local < 4; ++local) {
+      edges[local] =
+          m1ws_load_record<klayout_cuda_spatial_implant12_edge_v1>(
+              request.edges, contour.edge_begin + local,
+              request.edge_record_bytes);
+    }
+
+    __int128 twice_area = 0;
+    for (std::uint32_t local = 0; local < 4; ++local) {
+      const auto &edge = edges[local];
+      const auto &next = edges[(local + 1) % 4];
+      if (!implant12_coordinate_qualified(edge.x1) ||
+          !implant12_coordinate_qualified(edge.y1) ||
+          !implant12_coordinate_qualified(edge.x2) ||
+          !implant12_coordinate_qualified(edge.y2) ||
+          (edge.x1 == edge.x2 && edge.y1 == edge.y2) ||
+          !(edge.x1 == edge.x2 || edge.y1 == edge.y2) ||
+          edge.x2 != next.x1 || edge.y2 != next.y1 ||
+          (edge.y1 == edge.y2) == (next.y1 == next.y2)) {
+        return false;
+      }
+      twice_area +=
+          __int128(edge.x1) * edge.y2 - __int128(edge.x2) * edge.y1;
+    }
+    return twice_area < 0;
+  }
+
   __int128 twice_area = 0;
   for (std::uint32_t local = 0; local < contour.edge_count; ++local) {
     const auto edge =
@@ -4434,23 +4466,7 @@ bool implant12_valid_contour(
   }
   if (twice_area >= 0) return false;
 
-  // The overwhelmingly common four-edge box path is allocation-free.  More
-  // complex qualified contours retain a bounded exact simplicity check.
-  if (contour.edge_count == 4) {
-    for (std::uint32_t local = 0; local < 4; ++local) {
-      const auto edge =
-          m1ws_load_record<klayout_cuda_spatial_implant12_edge_v1>(
-              request.edges, contour.edge_begin + local,
-              request.edge_record_bytes);
-      const auto next =
-          m1ws_load_record<klayout_cuda_spatial_implant12_edge_v1>(
-              request.edges, contour.edge_begin + (local + 1) % 4,
-              request.edge_record_bytes);
-      if ((edge.y1 == edge.y2) == (next.y1 == next.y2)) return false;
-    }
-    return true;
-  }
-
+  // Complex qualified contours retain a bounded exact simplicity check.
   std::set<std::pair<std::int64_t, std::int64_t>> vertices;
   for (std::uint32_t local = 0; local < contour.edge_count; ++local) {
     const auto edge =

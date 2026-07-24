@@ -339,10 +339,12 @@ bool qualified_implant12_request (
     }
   }
 
-  std::array<uint8_t, 32> digest;
-  return db::cuda_implant12_digest::request_digest (request, digest) &&
-         std::equal (
-           digest.begin (), digest.end (), request.scene_digest);
+  // Deliberately do not hash the (potentially very large) serialized scene
+  // again in this wrapper.  The checks above qualify the scalar contract,
+  // capacities, context lists, and implant offsets before dispatch.  The DSO
+  // remains the trust boundary for complete record/topology validation and
+  // recomputes and verifies scene_digest before launching any device work.
+  return true;
 }
 
 uint64_t env_u64 (const char *name, uint64_t default_value)
