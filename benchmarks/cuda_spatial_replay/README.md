@@ -286,6 +286,37 @@ an integer-DBU strip proof, which greedily covers every row or column of the
 required projection cross. Touching seams are accepted; a one-DBU gap or hole
 remains a miss and forces fallback.
 
+### Live METAL1.1/METAL1.2 certificate
+
+`KLAYOUT_CUDA_M1_WIDTH_SPACE=1` enables one atomic clean-only transaction for
+the exact merged deep-region batch
+`drc_batch([width(euclidian) < 65.nm, space(euclidian) < 65.nm])` at 0.5 nm
+DBU. The host lowers the hierarchy and hole-free Manhattan contours once; the
+backend expands occurrences, builds one edge index, evaluates both exact
+predicates, and returns a digest-bound result. Only a complete result with zero
+width hits, spacing hits, uncertainty, fallback flags, and device flags may
+publish the two empty edge-pair outputs. Every hit or unsupported condition
+runs the untouched CPU batch exactly once.
+
+Telemetry is enabled with
+`KLAYOUT_CUDA_M1_WIDTH_SPACE_TELEMETRY=1`. The focused live gate checks clean
+certification, width-only and spacing-only CPU fallback, raw semantics, changed
+options, reversed output order, a missing backend, and forced capacity
+fallback:
+
+```sh
+benchmarks/cuda_spatial_replay/run_m1_width_space_live_gate.sh \
+  --klayout /path/to/klayout \
+  --backend /path/to/libklayout_cuda_spatial_backend.so
+```
+
+On the downstream-composed FreePDK45 x2 M1 owner, the same generic-`O2` binary
+changed 174.87 to 78.66 s: **96.21 real seconds / 55.02% less wall time**.
+Generator-stripped reports were byte-identical at SHA-256
+`8bb8f17de680d0b74e940e5a8ec3231a569f8e3057a6d6cde958992abfca4769`.
+The live speculative path took 29.586 s, including 12.331 s of scene lowering
+and a 17.255 s backend call; the backend device-pipeline timer was 504.110 ms.
+
 ### Live CONTACT/METAL1.3 certificate
 
 `KLAYOUT_CUDA_M1_CONTACT=1` enables a separate fail-closed use of the VIA1
@@ -353,11 +384,12 @@ eight-owner source, applies the three-way antenna transform, and moves only
 
 The runner fixes the qualified ten-owner launch order, eight-process limit,
 four deck threads per process, CUDA resource limits, and certificate opt-ins.
-It then requires ACTIVE.3, VIA1-stack, CONTACT/METAL1.3, and selected-empty
-DeepEdges telemetry before comparing the canonical merged report. Supply the
-deck-bound manifest created from a CPU `drc_shard=all` reference and the ten
-CUDA-enabled shard reports. Do not create the reference with CUDA enabled:
-that changes historical category order even when the semantic report is
+It then requires ACTIVE.3, METAL1.1/METAL1.2, VIA1-stack,
+CONTACT/METAL1.3, and selected-empty DeepEdges telemetry before comparing the
+canonical merged report. Supply the deck-bound manifest created from a CPU
+`drc_shard=all` reference and the ten CUDA-enabled shard reports. Do not create
+the reference with CUDA enabled: that changes historical category order even
+when the semantic report is
 otherwise equal.
 
 ```sh

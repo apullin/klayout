@@ -1525,7 +1525,7 @@ not just wall time.
         `/tmp/klayout-provenance-parallel-ab-20260724T131851Z/`.  The rejected
         source remains uncommitted in its isolated worktree for audit.
 
-      - [ ] **Port the current METAL1.1/.2 pole as one atomic CUDA
+      - [x] **Port the current METAL1.1/.2 pole as one atomic CUDA
         transaction:** keep the qualified shared
         `drc_batch([width(euclidian) < 65.nm, space(euclidian) < 65.nm])`
         operation intact, lower the exact merged-M1 contour hierarchy once,
@@ -1572,10 +1572,36 @@ not just wall time.
           the canonical C++ export takes 23.35 seconds and is not part of a
           future in-process live request.
 
-        - [ ] Integrate the proven atomic clean-only transaction into the live
+        - [x] Integrate the proven atomic clean-only transaction into the live
           width/space batch and measure whole-run wall.  Use the canonical host
           scene directly so file loading, redundant hashing, and standalone
           CUDA initialization are avoided or amortized.
+
+          Commit `f75d623` adds the exact two-output matcher, in-process
+          hierarchy/contour lowering, additive CUDA ABI and backend pipeline,
+          full request/result proof echo, and fail-closed live gate.  The gate
+          covers a clean hierarchical certificate, width and spacing hits with
+          CPU-identical fallback reports, raw semantics, changed options,
+          reversed output order, a missing backend, and a forced capacity
+          decline.  Focused host tests and the complete backend smoke pass.
+
+          On the production x2 M1 owner, the same generic-`O2` binary changed
+          **174.87 -> 78.66 seconds: 96.21 real seconds / 55.02% less wall
+          time**.  Both generator-stripped reports are byte-identical at
+          `8bb8f17de680d0b74e940e5a8ec3231a569f8e3057a6d6cde958992abfca4769`.
+          The certified run lowered the live scene in 12.331 s, spent 17.255 s
+          in the charged backend call, and completed the whole speculative
+          path in 29.586 s; the backend's device-pipeline timer was 504.110 ms.
+
+          The ten-owner generic-`O2` integration gate also passed with canonical
+          SHA-256
+          `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+          Its M1 owner was 80.491 s and was no longer critical;
+          `implant_contact` became the pole at 158.052 s.  Full wall was
+          162.81 s, which is deliberately not compared with the accepted PGO
+          cohort because this correctness build lacks PGO, LTO, and machine
+          specialization.  Evidence is retained under
+          `/home/pullin/personal/klayout/.scratchpad/cuda-runs/`.
 
       - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
         WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
