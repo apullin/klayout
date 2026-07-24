@@ -339,6 +339,49 @@ were identical with SHA-256
 These are critical-lane and transaction measurements, not a claim that the
 parallel full launcher fell by 114.67 s.
 
+### Balanced full-launch gate
+
+`run_balanced_full_gate.sh` packages the qualified configuration-level gate.
+It regenerates the live VIA1-stack plus CONTACT/METAL1.3 deck from the
+eight-owner source, applies the three-way antenna transform, and moves only
+`CONTACT.6` into the underloaded grid owner. The compound `METAL1.1` and
+`METAL1.2` traversal remains intact.
+
+The runner fixes the qualified ten-owner launch order, eight-process limit,
+four deck threads per process, CUDA resource limits, and certificate opt-ins.
+It then requires ACTIVE.3, VIA1-stack, CONTACT/METAL1.3, and selected-empty
+DeepEdges telemetry before comparing the canonical merged report. Supply the
+deck-bound manifest created from a CPU `drc_shard=all` reference and the ten
+CUDA-enabled shard reports. Do not create the reference with CUDA enabled:
+that changes historical category order even when the semantic report is
+otherwise equal.
+
+```sh
+bash benchmarks/cuda_spatial_replay/run_balanced_full_gate.sh \
+  --klayout /path/to/cuda/klayout \
+  --backend /path/to/libklayout_cuda_spatial_backend.so \
+  --source-deck /path/to/freepdk45-eight-way-dual-repack.lydrc \
+  --manifest /path/to/freepdk45-balanced-bound.json \
+  --input /path/to/sram_1rw0r0w_64_4096_freepdk45__x2.gds \
+  --top-cell sram_1rw0r0w_64_4096_freepdk45__x2 \
+  --reference /path/to/trusted-full-report.lyrdb \
+  --keep-work
+```
+
+The qualified source deck, generated balanced deck, manifest, x2 input, and
+canonical report SHA-256 values are respectively:
+
+- `3e981b9389a67c6c1c4b08f0640d8750ca78990c868c5686fa8ebbd401cba72c`
+- `5e32231a9232a98b4bfc7475e2f9a9400d967787734072e5678c870ffde68573`
+- `5145c61ca568c05d82675f700f6b95c3b7135880adf081f90e5692492538c59f`
+- `74911a2111a3421912e54538bf55cd12e50164f43cd1a8c47411602e64c91d98`
+- `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`
+
+The runner records every supplied and generated artifact hash, launcher
+provenance, external wall time, per-owner timings, and CUDA telemetry under
+its temporary work directory. Without `--keep-work`, that directory is
+removed after the gate.
+
 ### Opt-in `DeepEdges` merge certificate
 
 `KLAYOUT_CUDA_DISCONNECTED_MERGE=1` enables a separate, fail-closed
