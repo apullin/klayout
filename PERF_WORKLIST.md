@@ -125,17 +125,18 @@ questions:
   4 GiB peak RSS).  This is a release gate, not an iteration benchmark.
 - **FreePDK45 scale/capstone lane:** the 512-Kbit two-independent-tree SRAM
   takes 46m09.49s on a fresh upstream-master stock build.  The formally
-  qualified current PGO bundle averages 2m25.564s for eight-owner DRC plus
+  qualified pre-CUDA PGO bundle averaged 2m25.564s for eight-owner DRC plus
   strict merge, or 2m36.692s for the full provenance launcher including about
   11 s of integrity work.  The conservative stock-to-full-launcher comparison
   is **17.675x throughput and 94.34% less wall time**; comparing DRC process
   wall with child-plus-merge is **19.026x and 94.74% less wall time**.  These
   are cumulative build, engine, scheduling, allocator, and PGO results—not
   single-patch attribution.  Stock is one historical observation while the
-  current value is a three-run mean, so this multiplier is not an identity-v3
-  promoted cohort.  Use this lane to demonstrate and re-profile cumulative
-  scaling, not for routine iteration.  The checked records under ranked items
-  2 and 8 bind identities, exactness evidence, and comparison scope.
+  qualified value is a three-run mean, so this multiplier is not an
+  identity-v3 promoted cohort.  Use this lane to demonstrate and re-profile
+  cumulative scaling, not for routine iteration.  The checked records under
+  ranked items 2 and 8 bind identities, exactness evidence, and comparison
+  scope.
 
 Every promoted lane needs a pinned input/deck hash, current-binary serial
 baseline, exact category/item/cell payload comparison, and at least one
@@ -1426,21 +1427,65 @@ not just wall time.
         and lifecycle-state SHA-256
         `3a9383a9df70cf57df21425941ee83b1eb36aa6beacbefe69d2cf238f0aedb78`.
 
-      - [ ] **Retrain mixed PGO for the current CUDA host:** no profile from
-        the pre-CUDA source is valid for this tree.  If the production-build
-        result clears the whole-run gate, generate fresh profiles with one
-        balanced FreePDK45 CUDA x2 run and one real Sky130 S5 run, weight by
-        measured counter totals, build a source-bound PGO-use bundle, and
-        require at least 5% on both one-pair screens before formal cohorts.
+      - [x] **Retrain mixed PGO for the current CUDA host — completed and
+        formally qualified:** source commit
+        `f15739559610a8c31b21bf47a185ee22eaeded86`, tree
+        `3f5ec23262ed2a2797f5b8a6f47d5fa0ff979337`.  Mixed training produced
+        630 FreePDK45 CUDA x2 and 96 Sky130 S5 raw profiles.  The selected
+        FreePDK45:Sky130 merge weights are 1:4, leaving 7.832967875% weighted
+        counter imbalance.  The merged profile SHA-256 is
+        `81e0493fd312dce2df88d5dad2ff3ae0f3bacd9d7e756a1dab4d109f95974a8d`;
+        its manifest SHA-256 is
+        `01bf511283395b011d3c6467abf359d28b78a218450761964dd5917e9b424429`.
+
+        The same-source non-PGO control executable SHA-256 is
+        `007f6ddc0750d7b6b8d6c8287756a2e7a94dca298e5a4ded0c4e4bb6cb5cc252`;
+        the PGO-use executable SHA-256 is
+        `8e4a435d76ccbc9d986af43c61772dcbe45f82000d6a4deb382ba6b1e73e5d40`.
+        The PGO build-manifest and lifecycle-state SHA-256 values are
+        `0ed1379c2b817972849378f18abfa2edeab0498db5409368247bc818b2fc4a23`
+        and
+        `7da6b9780e6646ec01e6478d7ac8a188ad844f240b9a9e55e68f960417baddf4`.
+        Warnings from applying the main-program profile while linking
+        auxiliary buddy executables are a buddy-only build caveat; the main
+        `klayout` profile was source-bound and
+        `-Werror=profile-instr-out-of-date` remained enabled.
+
+        Formal serial qualification used three observations per treatment and
+        PDK.  FreePDK45 CUDA x2 full-launch means were
+        154.78227078542113 s control versus 140.58269528571205 s PGO:
+        **14.199575499709084 real seconds / 9.173903075% less wall time and
+        +10.100514484% throughput**.  Sky130 HG0 S5 means were
+        215.93017702068514 versus 188.39364087659246 s:
+        **27.53653614409268 real seconds / 12.752518672% less wall time and
+        +14.616489185% throughput**.  All four full-range spreads were below
+        2%, and all twelve primary reports were exact.  FreePDK45 raw and
+        canonical reports retained SHA-256
+        `89fa723caf5ecd620993d62c2d2e63ca6eaf8c14fe0dac25a7abf9c2992c1472`
+        and
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`;
+        Sky130 S5 retained normalized SHA-256
+        `2c9f660d7b2d7186329c510333083bfe19ab17779fe42d66c936feac0b45fdb4`.
+        The 99-item FreePDK45 screen, every 25-item Sky130 sentinel, and the
+        86-item antenna and 1,587-item mixed-hierarchy gates also passed.
+
+        The original receipt publisher failed only after freezing all evidence
+        because it treated one recorded Sky report mapping as a path.  No
+        build, training run, or timed observation was repeated.  The audited
+        no-clobber recovery preserved frozen-evidence SHA-256
+        `df0d42e761810f3b3a5dd83ad22a15d246b94cd4367f2cf5574d1aff17f03388`;
+        the final formal receipt SHA-256 is
+        `0c55bfc620d75077d7ba8550bea18c6b1510173fd0fc17dddb36fce20d84a662`.
 
       - [ ] **Fuse an ACTIVE.3-through-METAL1.3 resident tail plan:** upload
         WELL/ACTIVE/CONT/METAL1 and hierarchy once, keep candidate generation,
         exact predicates, METAL1.3 guards, four-side reduction, and per-rule
-        clean/fallback state on device, and return one terminal result.  Source
-        and profile mapping projects roughly 95--100 seconds of the 145.5-second
-        M1 lane in this interval, but that is overlapping opportunity
-        accounting, not an additive measured saving.  The existing ACTIVE.3
-        and METAL1.3 kernels are the two proven endpoints.
+        clean/fallback state on device, and return one terminal result.
+        Pre-retraining source and profile mapping projected roughly 95--100
+        seconds of its 145.5-second M1 lane in this interval, but that is
+        overlapping opportunity accounting, not an additive measured saving.
+        The existing ACTIVE.3 and METAL1.3 kernels are the two proven
+        endpoints.
 
       - [ ] **Widen the resident plan across the post-derived M1 interval:**
         after CPU construction of WELL and GATE, keep POLY.1/3/4/5/6,
@@ -1489,8 +1534,9 @@ not just wall time.
     `interaction_registration_shape2inst::add_shapes_from_intruder_inst()`
     currently materializes and hashes a transformed polygon before discovering
     that the same source shape and composed transform was already translated.
-    Its receiver is 8.14% of the post-PGO M1 profile, 4.61% of implant/contact,
-    and 1.88% of M2.  A symbolized non-LTO microscope attributes about 4.91
+    In the pre-CUDA post-PGO profile, its receiver was 8.14% of M1, 4.61% of
+    implant/contact, and 1.88% of M2.  A symbolized non-LTO microscope
+    attributes about 4.91
     profile points to polygon transform, hash, equality, lookup, and insertion;
     those non-LTO points are diagnostic attribution, not a runtime claim.
 
@@ -1505,10 +1551,10 @@ not just wall time.
 
     A secondary, overlapping trial is a no-update bounding-box converter after
     an explicit layout update.  The non-LTO build exposes 7.46 profile points
-    in repeated `Layout::update()`/dirty checks, but the PGO binary attributes
-    only about 1% directly to named bbox conversion in M1.  Do not book that
-    ceiling until path-specific counters separate genuine repeated work from
-    PGO inlining and the already-counted outer scanner.
+    in repeated `Layout::update()`/dirty checks, but that pre-CUDA PGO binary
+    attributed only about 1% directly to named bbox conversion in M1.  Do not
+    book that ceiling until path-specific counters separate genuine repeated
+    work from PGO inlining and the already-counted outer scanner.
 
 ## Measured lower-priority paths
 

@@ -382,7 +382,7 @@ provenance, external wall time, per-owner timings, and CUDA telemetry under
 its temporary work directory. Without `--keep-work`, that directory is
 removed after the gate.
 
-### Production host-build result
+### Production host control-build result
 
 Rebuilding the current CUDA host at clean commit `f15739559610a8c3`, tree
 `3f5ec23262ed2a27`, with Clang 22, full LTO/LLD, and `znver2` code generation
@@ -414,6 +414,48 @@ The 29:26.31 source-bound build produced:
   `26b7137e6fe9ff45ed0051e302d255af7fc8c1cbc4ff39eef1269fc6f3982fce`;
 - lifecycle-state SHA-256
   `3a9383a9df70cf57df21425941ee83b1eb36aa6beacbefe69d2cf238f0aedb78`.
+
+### Current-host mixed-PGO qualification
+
+The same clean source commit
+`f15739559610a8c31b21bf47a185ee22eaeded86`, tree
+`3f5ec23262ed2a2797f5b8a6f47d5fa0ff979337`, was retrained with one balanced
+FreePDK45 CUDA x2 run and one real Sky130 HG0 S5 run.  Counter-balanced
+FreePDK45:Sky130 merge weights of 1:4 left 7.832967875% weighted imbalance.
+The merged profile SHA-256 is
+`81e0493fd312dce2df88d5dad2ff3ae0f3bacd9d7e756a1dab4d109f95974a8d`.
+The control and PGO-use executable SHA-256 values are respectively
+`007f6ddc0750d7b6b8d6c8287756a2e7a94dca298e5a4ded0c4e4bb6cb5cc252`
+and
+`8e4a435d76ccbc9d986af43c61772dcbe45f82000d6a4deb382ba6b1e73e5d40`.
+
+Formal serial qualification used three observations per treatment and PDK.
+FreePDK45 CUDA x2 full-launch means were 154.78227078542113 s control versus
+140.58269528571205 s PGO: **14.199575499709084 real seconds /
+9.173903075% less wall time and +10.100514484% throughput**.  Sky130 HG0 S5
+means were 215.93017702068514 versus 188.39364087659246 s:
+**27.53653614409268 real seconds / 12.752518672% less wall time and
++14.616489185% throughput**.  All four full-range spreads were below 2%, and
+all twelve primary reports were exact.
+
+FreePDK45 raw and canonical reports retained SHA-256
+`89fa723caf5ecd620993d62c2d2e63ca6eaf8c14fe0dac25a7abf9c2992c1472`
+and
+`01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`;
+Sky130 S5 retained normalized SHA-256
+`2c9f660d7b2d7186329c510333083bfe19ab17779fe42d66c936feac0b45fdb4`.
+The nonempty sentinels and the 86-item antenna and 1,587-item mixed-hierarchy
+fixtures also passed.  Profile warnings while linking auxiliary buddy
+executables reflect their use of the main-program profile and are not a
+qualification claim for those buddies; the timed main `klayout` executable
+was source-bound and fully qualified.
+
+The original publisher failed after freezing every timed sample because it
+treated one recorded Sky report mapping as a path.  The audited recovery
+reran no builds, training, or measurements, retained frozen-evidence SHA-256
+`df0d42e761810f3b3a5dd83ad22a15d246b94cd4367f2cf5574d1aff17f03388`,
+and published formal receipt SHA-256
+`0c55bfc620d75077d7ba8550bea18c6b1510173fd0fc17dddb36fce20d84a662`.
 
 ### Opt-in `DeepEdges` merge certificate
 
