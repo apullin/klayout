@@ -1911,6 +1911,30 @@ not just wall time.
           or job boundaries; ordinary filesystem cache warmth cannot preserve
           those process-local objects.
 
+        - [ ] **Qualify a same-layout warm merged-scene service before building
+          a broker:** the exact M2 full gate reports 51.570 CPU-seconds for its
+          enclosing `drc_batch`, but only 2.953 real seconds inside the measured
+          CUDA transaction.  Roughly 48.617 CPU-seconds therefore precede
+          telemetry in merged-M2 construction.  M1 has the same shape:
+          51.950 CPU-seconds around a 5.211-second transaction, leaving 46.739
+          CPU-seconds upstream.  Each containing process used approximately one
+          effective core overall, but add explicit phase-wall timers and a
+          same-process repeated-layout A/B before converting those CPU
+          residuals into a booked wall claim.
+
+          Cache immutable merged M1/M2 geometry (or an equivalent canonical
+          raw-layer scene), then the shared 273-cell/849,265-context hierarchy,
+          cell-local layer templates, and device indexes.  Bind every reuse to
+          source-content, import/top/layer/DBU, derivation and merge semantics,
+          canonical geometry, rule, backend ABI/build, and device identity;
+          hierarchy generation alone is not a sufficient mutation token.
+          Report cold, warm, and `N`-reuse amortized latency separately.
+          Caching only current M2 packing/validation/upload models about
+          **2.6% less child wall** before `m1_enclosure` becomes critical.
+          Broad same-layout geometry reuse models roughly **8--12% less child
+          wall** (96.316 s to about 85--88 s), with antenna M1/M2 likely next;
+          this is an unmeasured opportunity estimate, not an accepted result.
+
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
         second and third reusable compositions, separate canonical
