@@ -4,13 +4,15 @@
  * The C ABI deliberately carries the compact host hierarchy rather than a
  * multi-gigabyte flattened rectangle stream.  This adapter independently
  * validates that hierarchy and its KM2RAW01 digest, decomposes only exact
- * four-edge boxes and six-edge L contours, uploads compact templates, expands
- * all eight orthogonal transforms on the GPU, and transfers ownership of the
- * resulting device rectangles directly into the shared exact union core.
+ * simple hole-free Manhattan contours into disjoint rectangles, uploads
+ * compact templates, expands all eight orthogonal transforms on the GPU, and
+ * transfers ownership of the resulting device rectangles directly into the
+ * shared exact union core.
  */
 
 #include "dbCudaActive3Digest.h"
 #include "dbCudaSpatialApi.h"
+#include "m2_manhattan_decompose.h"
 #include "manhattan_union_gpu.cuh"
 
 #include <cuda_runtime.h>
@@ -39,6 +41,7 @@
 namespace {
 
 namespace mu = klayout_cuda::manhattan_union;
+namespace md = klayout_cuda::m2_manhattan_decompose;
 
 using Context =
     klayout_cuda_spatial_m1_width_space_context_v1;
@@ -665,10 +668,12 @@ bool point_inside_cell(const std::array<Point, 6> &points,
 std::uint32_t decompose_polygon(
     const Request &request, const Polygon &polygon,
     std::uint64_t global_polygon,
-    RectangleTemplate *destination)
+    RectangleTemplate *destination,
+    std::uint64_t destination_capacity)
 {
-  if (polygon.edge_count != 4 && polygon.edge_count != 6) {
-    malformed("raw M2 contains a non-box/non-L polygon");
+  if (polygon.edge_count < 4 || (polygon.edge_count & 1u)) {
+    malformed(
+        "raw M2 polygon does not have an even edge count of at least four");
   }
   if (polygon.left >= polygon.right ||
       polygon.bottom >= polygon.top ||
@@ -685,6 +690,69 @@ std::uint32_t decompose_polygon(
     malformed(
         "raw M2 polygon edge range escapes the scene",
         KLAYOUT_CUDA_SPATIAL_FALLBACK_RECORD_CELL_SPAN);
+  }
+
+  /*
+   * Preserve the allocation-free common box/L path.  Larger contours are
+   * rare stored templates, so their independent exact slab decomposition can
+   * afford dynamic scratch without imposing it on every production box.
+   */
+  if (polygon.edge_count > 6) {
+    std::vector<md::EdgeI64> contour;
+    contour.reserve(polygon.edge_count);
+    for (std::uint32_t local = 0;
+         local < polygon.edge_count; ++local) {
+      const Edge edge = load_record<Edge>(
+          request.edges, polygon.edge_begin + local,
+          request.edge_record_bytes);
+      if (!coordinate_qualified(edge.x1) ||
+          !coordinate_qualified(edge.y1) ||
+          !coordinate_qualified(edge.x2) ||
+          !coordinate_qualified(edge.y2)) {
+        malformed(
+            "raw M2 arbitrary contour exceeds the coordinate domain");
+      }
+      contour.push_back(
+          md::EdgeI64{edge.x1, edge.y1, edge.x2, edge.y2});
+    }
+    md::Result decomposition = md::decompose(
+        contour, polygon.left, polygon.bottom,
+        polygon.right, polygon.top, global_polygon,
+        request.max_rectangles);
+    if (decomposition.status == md::Status::capacity) {
+      capacity(
+          std::string("raw M2 arbitrary contour: ") +
+          decomposition.message);
+    }
+    if (decomposition.status != md::Status::complete) {
+      malformed(
+          std::string("raw M2 arbitrary contour: ") +
+          decomposition.message);
+    }
+    if (decomposition.rectangles.size() >
+        std::numeric_limits<std::uint32_t>::max()) {
+      capacity(
+          "raw M2 arbitrary contour rectangle count exceeds capacity");
+    }
+    if (destination &&
+        decomposition.rectangles.size() > destination_capacity) {
+      malformed(
+          "raw M2 arbitrary second-pass decomposition diverged");
+    }
+    for (std::size_t index = 0;
+         destination && index < decomposition.rectangles.size();
+         ++index) {
+      const md::RectangleI64 &source =
+          decomposition.rectangles[index];
+      destination[index] = RectangleTemplate{
+          source.left, source.bottom, source.right, source.top,
+          source.source_token};
+    }
+    return static_cast<std::uint32_t>(
+        decomposition.rectangles.size());
+  }
+  if (polygon.edge_count != 4 && polygon.edge_count != 6) {
+    malformed("raw M2 box/L contour has an invalid edge count");
   }
 
   std::array<Point, 6> points{};
@@ -751,8 +819,20 @@ std::uint32_t decompose_polygon(
     malformed("raw M2 polygon bounding-box echo is inconsistent");
   }
 
-  std::sort(xs.begin(), xs.begin() + polygon.edge_count);
-  std::sort(ys.begin(), ys.begin() + polygon.edge_count);
+  const auto sort_prefix = [count = polygon.edge_count](
+                               std::array<std::int64_t, 6> *values) {
+    for (std::uint32_t index = 1; index < count; ++index) {
+      const std::int64_t value = (*values)[index];
+      std::uint32_t insertion = index;
+      while (insertion && value < (*values)[insertion - 1]) {
+        (*values)[insertion] = (*values)[insertion - 1];
+        --insertion;
+      }
+      (*values)[insertion] = value;
+    }
+  };
+  sort_prefix(&xs);
+  sort_prefix(&ys);
   const auto x_end = std::unique(
       xs.begin(), xs.begin() + polygon.edge_count);
   const auto y_end = std::unique(
@@ -820,18 +900,28 @@ std::uint32_t decompose_polygon(
        index < rectangle_count; ++index) {
     const RectangleTemplate &rectangle = rectangles[index];
     if (rectangle.left >= rectangle.right ||
-        rectangle.bottom >= rectangle.top) {
-      malformed("raw M2 decomposition produced an empty rectangle");
+        rectangle.bottom >= rectangle.top ||
+        rectangle.source_token != global_polygon) {
+      malformed(
+          "raw M2 decomposition changed bounds or source token");
     }
     rectangle_area +=
         static_cast<__int128>(
             rectangle.right - rectangle.left) *
         static_cast<__int128>(
             rectangle.top - rectangle.bottom);
-    if (destination) destination[index] = rectangle;
   }
   if (rectangle_area * 2 != abs_i128(polygon_area2)) {
     malformed("raw M2 decomposition changed exact polygon area");
+  }
+  if (destination && rectangle_count > destination_capacity) {
+    malformed("raw M2 box/L second-pass decomposition diverged");
+  }
+  if (destination) {
+    for (std::uint32_t index = 0;
+         index < rectangle_count; ++index) {
+      destination[index] = rectangles[index];
+    }
   }
   return rectangle_count;
 }
@@ -968,14 +1058,17 @@ validate_cells_and_polygons(const Request &request)
             KLAYOUT_CUDA_SPATIAL_FALLBACK_RECORD_CELL_SPAN);
       }
       const std::uint32_t produced =
-          decompose_polygon(request, polygon, polygon_id, nullptr);
+          decompose_polygon(
+              request, polygon, polygon_id, nullptr, 0);
       if (!checked_add_u64(
               rectangle_count, produced, &rectangle_count) ||
           !checked_add_u64(
               cell_edge, polygon.edge_count, &cell_edge)) {
         malformed("raw M2 polygon census overflows uint64");
       }
-      if (produced == 2) ++l_shape_count;
+      if (polygon.edge_count == 6 && produced == 2) {
+        ++l_shape_count;
+      }
     }
     if (cell_edge != edge_end ||
         rectangle_count >
@@ -1157,6 +1250,13 @@ LoweredScene lower_scene(
 
     std::uint64_t rectangle_id =
         source_census.rectangle_begin;
+    std::uint64_t cell_rectangle_end = 0;
+    if (!checked_add_u64(
+            source_census.rectangle_begin,
+            source_census.rectangle_count,
+            &cell_rectangle_end)) {
+      malformed("raw M2 second-pass cell rectangle span overflows");
+    }
     for (std::uint32_t local = 0;
          local < source.polygon_count; ++local) {
       const std::uint64_t polygon_id =
@@ -1164,22 +1264,27 @@ LoweredScene lower_scene(
       const Polygon polygon = load_record<Polygon>(
           request.polygons, polygon_id,
           request.polygon_record_bytes);
-      RectangleTemplate produced[2]{};
-      const std::uint32_t count = decompose_polygon(
-          request, polygon, polygon_id, produced);
-      for (std::uint32_t index = 0; index < count; ++index) {
-        if (rectangle_id >= lowered.rectangles.size()) {
-          malformed(
-              "raw M2 second-pass rectangle census diverged");
-        }
-        lowered.rectangles[
-            static_cast<std::size_t>(rectangle_id++)] =
-            produced[index];
+      if (rectangle_id > cell_rectangle_end ||
+          cell_rectangle_end > lowered.rectangles.size()) {
+        malformed(
+            "raw M2 second-pass rectangle census diverged");
       }
+      const std::uint64_t remaining =
+          cell_rectangle_end - rectangle_id;
+      RectangleTemplate *produced =
+          remaining
+              ? lowered.rectangles.data() +
+                    static_cast<std::size_t>(rectangle_id)
+              : nullptr;
+      const std::uint32_t count = decompose_polygon(
+          request, polygon, polygon_id, produced, remaining);
+      if (count > remaining) {
+        malformed(
+            "raw M2 second-pass rectangle census diverged");
+      }
+      rectangle_id += count;
     }
-    if (rectangle_id !=
-        source_census.rectangle_begin +
-            source_census.rectangle_count) {
+    if (rectangle_id != cell_rectangle_end) {
       malformed("raw M2 second-pass cell decomposition diverged");
     }
   }

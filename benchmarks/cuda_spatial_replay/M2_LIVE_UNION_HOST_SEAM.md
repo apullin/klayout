@@ -188,10 +188,12 @@ The production adapter is
 `benchmarks/cuda_spatial_replay/m2_union_backend.cu`.  Before its first CUDA
 allocation it independently validates record sizes and spans, root and
 context order, stored and flat censuses, exact world bounds, coordinate
-safety, and the complete `KM2RAW01` digest.  It accepts only checked
-four-edge boxes and six-edge three-cell L contours, conserves exact area,
-uploads compact local templates, expands all eight transforms on the device,
-and moves the 22,946,444-record resident buffer into the shared union core.
+safety, and the complete `KM2RAW01` digest.  It accepts checked simple,
+hole-free clockwise Manhattan contours, chooses the smaller of exact
+horizontal and vertical rectangle partitions, conserves exact area and
+source identity, uploads compact local templates, expands all eight
+transforms on the device, and moves the resident rectangle buffer into the
+shared union core.
 The 1.026-GiB world stream is never materialized on the host.
 
 ## Contract gate

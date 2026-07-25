@@ -347,6 +347,12 @@ void append_cell_layer (
   for (db::Shapes::shape_iterator shape =
          shapes.begin (db::ShapeIterator::All);
        ! shape.at_end (); ++shape) {
+    //  Region polygon semantics ignore physical-layer labels.  Keep that
+    //  filtering explicit at the raw scene boundary while continuing to
+    //  decline every other unsupported non-polygon record.
+    if (shape->is_text ()) {
+      continue;
+    }
     if (polygon_id == std::numeric_limits<uint32_t>::max ()) {
       throw M1WidthSpaceDecline (
         "per-cell Manhattan polygon count exceeds uint32");

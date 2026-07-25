@@ -1688,6 +1688,32 @@ not just wall time.
           temporaries and a fully expanded CONTACT index do not coexist on the
           10-GiB device.
 
+          - [x] **Close the raw-ACTIVE polygon-format gap:** the production
+            hierarchy census contains 700 stored boxes, eight six-edge L
+            contours, eight simple eight-edge Manhattan contours, and eight
+            ignorable text labels.  The union lowerer now retains its
+            allocation-free box/L fast path and uses an exact two-axis slab
+            decomposition for arbitrary simple, hole-free clockwise Manhattan
+            contours.  It validates topology, bounding boxes, signed
+            `__int128` area, source identity, and capacity, then chooses the
+            smaller deterministic disjoint rectangle cover.  The four distinct
+            production eight-edge shapes require 2/2/3/2 rectangles.
+
+            The projected exact ACTIVE input is 734 stored rectangle templates
+            and 24,689,164 flattened rectangles, below the existing 32-million
+            ceiling.  The standalone oracle passes all production contours,
+            all eight transforms, every cyclic start, near-coordinate-limit
+            and malformed/capacity cases under optimized, ASan, and UBSan
+            builds.  A separate deterministic 20,000-polyomino differential
+            accepted 18,274 simple contours with exact disjoint coverage.  The
+            real raw-scene unit gate passes 8/8 editable/non-editable tests and
+            proves that text is filtered while every other non-polygon still
+            declines without mutating the destination.  The independent fuzz
+            source, result, and checksum are retained under
+            `.scratchpad/cuda-runs/m2-decompose-polyomino-fuzz-20260725/`.
+            This closes an input adapter prerequisite; it is not itself a live
+            performance claim.
+
       - [x] **Fuse IMPLANT.1 and IMPLANT.2 as one atomic CUDA transaction:**
         rewrite only the two fixed projection-separation expressions into one
         exact batch, lower the merged implant primary plus gate and raw CONTACT

@@ -17,6 +17,7 @@
 #include "dbLayerProperties.h"
 #include "dbLayout.h"
 #include "dbRegion.h"
+#include "dbText.h"
 #include "tlUnitTest.h"
 
 #include <array>
@@ -170,4 +171,40 @@ TEST(3_RawHierarchyTransformsArePreserved)
   EXPECT_EQ (scene.contexts [2].ty, int64_t (2000));
   EXPECT_EQ (scene.scene_right, int64_t (1100));
   EXPECT_EQ (scene.scene_top, int64_t (2020));
+}
+
+TEST(4_TextLabelsAreFilteredButOtherNonPolygonsDecline)
+{
+  db::DeepShapeStore store ("TOP", 0.0005);
+  db::Region seed;
+  seed.insert (db::Box (0, 0, 200, 100));
+  db::DeepLayer raw_m2 = make_raw_m2 (store, seed);
+  db::Shapes &shapes =
+    raw_m2.initial_cell ().shapes (raw_m2.layer ());
+  shapes.insert (
+    db::Text ("ACTIVE_LABEL", db::Trans (db::Vector (10, 20))));
+
+  db::CudaM1WidthSpaceSceneLimits limits;
+  db::CudaM2RawManhattanScene scene;
+  std::string reason;
+  EXPECT_EQ (
+    db::cuda_m2_raw_manhattan_build_scene (
+      raw_m2, limits, scene, &reason),
+    true);
+  EXPECT_EQ (reason, "");
+  EXPECT_EQ (scene.polygons.size (), size_t (1));
+  EXPECT_EQ (scene.edges.size (), size_t (4));
+  EXPECT_EQ (scene.flat_polygon_count, uint64_t (1));
+
+  shapes.insert (db::Edge (0, 0, 100, 0));
+  db::CudaM2RawManhattanScene declined;
+  declined.flat_polygon_count = 17;
+  EXPECT_EQ (
+    db::cuda_m2_raw_manhattan_build_scene (
+      raw_m2, limits, declined, &reason),
+    false);
+  EXPECT_EQ (declined.flat_polygon_count, uint64_t (17));
+  EXPECT_EQ (
+    reason.find ("non-polygon shape") != std::string::npos,
+    true);
 }
