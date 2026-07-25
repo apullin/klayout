@@ -37,6 +37,7 @@
 #include "dbRegionProcessors.h"
 #include "dbCompoundOperation.h"
 #include "dbCudaActive3.h"
+#include "dbCudaAntennaM1.h"
 #include "dbCudaImplant12.h"
 #include "dbCudaM1WidthSpace.h"
 #include "dbCudaM2Rules.h"
@@ -1320,6 +1321,15 @@ static bool cuda_poly34_host_telemetry_enabled ()
          std::strcmp (value, "off") != 0;
 }
 
+static bool cuda_antenna_m1_capture_census_enabled ()
+{
+  const char *value =
+    std::getenv ("KLAYOUT_CUDA_ANTENNA_M1_CAPTURE_CENSUS");
+  return value && *value && std::strcmp (value, "0") != 0 &&
+         std::strcmp (value, "false") != 0 &&
+         std::strcmp (value, "off") != 0;
+}
+
 static bool cuda_poly34_host_decline (const char *reason)
 {
   try {
@@ -1362,6 +1372,103 @@ static uint64_t cuda_m2_elapsed_ns (
   const std::chrono::nanoseconds elapsed =
     std::chrono::duration_cast<std::chrono::nanoseconds> (end - begin);
   return elapsed.count () > 0 ? uint64_t (elapsed.count ()) : 0;
+}
+
+static bool cuda_antenna_m1_capture_census (
+  const db::Region *poly, const db::Region *active,
+  const db::Region *nplus, const db::Region *nwell,
+  const db::Region *contact, const db::Region *metal1)
+{
+  //  This hook is diagnostic only.  Even a complete capture returns false so
+  //  no caller can mistake a census for an antenna-rule certificate.
+  if (! cuda_antenna_m1_capture_census_enabled ()) {
+    return false;
+  }
+
+  const std::chrono::steady_clock::time_point begin =
+    std::chrono::steady_clock::now ();
+  std::string reason;
+  try {
+    const db::Region *regions [db::CudaAntennaM1DomainCount] = {
+      poly, active, nplus, nwell, contact, metal1
+    };
+    const db::DeepRegion *deep [db::CudaAntennaM1DomainCount] = {
+      0, 0, 0, 0, 0, 0
+    };
+    for (size_t domain = 0;
+         domain < db::CudaAntennaM1DomainCount; ++domain) {
+      if (! regions [domain]) {
+        reason = "one or more raw antenna regions are null";
+        break;
+      }
+      deep [domain] =
+        dynamic_cast<const db::DeepRegion *> (
+          regions [domain]->delegate ());
+      if (! deep [domain]) {
+        reason = "one or more raw antenna regions are not deep";
+        break;
+      }
+    }
+
+    db::CudaAntennaM1Capture capture;
+    db::CudaAntennaM1CaptureLimits limits;
+    //  The capture stores only compact source-cell contours.  These raised
+    //  aggregate limits let the diagnostic report the much larger hypothetical
+    //  expanded geometry without allocating it.  Per-scene record limits stay
+    //  at their independently qualified fail-closed defaults.
+    limits.max_total_expanded_geometry_bytes =
+      std::numeric_limits<uint64_t>::max ();
+    limits.max_estimated_peak_bytes =
+      std::numeric_limits<uint64_t>::max ();
+
+    if (reason.empty () &&
+        ! db::cuda_antenna_m1_build_capture (
+            deep [db::CudaAntennaM1Poly]->deep_layer (),
+            deep [db::CudaAntennaM1Active]->deep_layer (),
+            deep [db::CudaAntennaM1Nplus]->deep_layer (),
+            deep [db::CudaAntennaM1Nwell]->deep_layer (),
+            deep [db::CudaAntennaM1Contact]->deep_layer (),
+            deep [db::CudaAntennaM1Metal1]->deep_layer (),
+            limits, capture, &reason)) {
+      //  The exact decline reason is emitted below.
+    } else if (reason.empty ()) {
+      db::CudaAntennaM1Census census;
+      if (! db::cuda_antenna_m1_capture_census (
+            capture, census, &reason)) {
+        //  The exact decline reason is emitted below.
+      } else {
+        const uint64_t elapsed_ns = cuda_m2_elapsed_ns (
+          begin, std::chrono::steady_clock::now ());
+        tl::info
+          << "CUDA antenna M1 capture census:"
+          << " outcome=complete"
+          << " capture_and_census_ms=" << double (elapsed_ns) * 1.0e-6
+          << " " << db::cuda_antenna_m1_census_text (census);
+        return false;
+      }
+    }
+  } catch (const std::exception &ex) {
+    try {
+      reason = ex.what ();
+    } catch (...) {
+      reason = "exception while capturing raw M1 antenna domains";
+    }
+  } catch (...) {
+    reason = "unknown exception while capturing raw M1 antenna domains";
+  }
+
+  try {
+    const uint64_t elapsed_ns = cuda_m2_elapsed_ns (
+      begin, std::chrono::steady_clock::now ());
+    tl::info
+      << "CUDA antenna M1 capture census:"
+      << " outcome=declined"
+      << " capture_and_census_ms=" << double (elapsed_ns) * 1.0e-6
+      << " reason=" << (reason.empty () ? "unknown" : reason);
+  } catch (...) {
+    //  Census telemetry must never alter the historical CPU antenna path.
+  }
+  return false;
 }
 
 static void cuda_m2_flat_union_telemetry (
@@ -4930,6 +5037,20 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "@brief Returns true if the region is a deep (hierarchical) one\n"
     "\n"
     "This method has been added in version 0.26."
+  ) +
+  method_ext (
+    "cuda_antenna_m1_capture_census?",
+    &cuda_antenna_m1_capture_census,
+    gsi::arg ("active"), gsi::arg ("nplus"),
+    gsi::arg ("nwell"), gsi::arg ("contact"),
+    gsi::arg ("metal1"),
+    "@brief Captures the raw M1 antenna transaction for telemetry\n"
+    "\n"
+    "This internal, environment-gated diagnostic serializes raw FreePDK45 "
+    "POLY/ACTIVE/NPLUS/NWELL/CONTACT/M1 with a parent-aware common "
+    "hierarchy, validates all digests and capacities, and emits one stable "
+    "census. It always returns false and is not an antenna-rule "
+    "certificate; the complete historical CPU path remains mandatory.\n"
   ) +
   method_ext (
     "cuda_m2_flat_union", &cuda_m2_flat_union,

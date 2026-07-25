@@ -1007,6 +1007,29 @@ not just wall time.
       `.scratchpad/cuda-runs/antenna-m3-expanded-shared-x2-owner.frJDNC`,
       `.scratchpad/cuda-runs/antenna-m3-expanded-independent-x2-owner.t1mR1P`,
       and `.scratchpad/cuda-runs/antenna-m3-shared-owner.TvV8Uy`.
+
+    - [x] **Capture and size the real six-domain M1 antenna transaction —
+      completed:** an environment-gated, parent-aware serializer captured raw
+      POLY/ACTIVE/NPLUS/NWELL/CONTACT/M1 from the accepted independent-x2
+      FreePDK45 workload without changing or bypassing the historical CPU
+      rule.  The production census contains 273 shared cells and 849,265
+      hierarchy contexts.  Compact source-cell storage is 406,434,636 bytes
+      for 1,107,444 polygons and 4,430,116 edges; naive full expansion would
+      be 98,443,624 polygons, 393,800,568 edges, and 17,720,686,624 bytes.
+      M1 dominates the compact payload at 230,555,312 bytes and 1,099,662
+      polygons.  The complete diagnostic capture plus repeated digest/census
+      validation took 16.823 s and the whole owner peaked at 1,276,704 KiB
+      RSS; neither number is a CUDA speedup claim.
+
+      The generator-stripped output is byte-identical to the canonical CPU
+      report at SHA-256
+      `175bda9bff20a4cec6d76ba8570364694407182dbe721e0e51a0d82977998052`.
+      This closes the sizing gate: full geometric expansion cannot fit the
+      9.64-GiB GPU, while compact hierarchy-aware execution can.  Build the
+      next device-neutral graph from shared cell/context arrays plus
+      per-domain geometry offsets; do not duplicate or flatten all six
+      domains.  Evidence:
+      `.scratchpad/cuda-runs/antenna-m1-production-census-v1/run.XqmT9t`.
 14. [ ] **Device-neutral accelerator replay gate — active, orthogonal project**
     Do not translate the Ruby PDK deck to an accelerator language.  Build a
     device-neutral replay harness around spatial bin/sort plus candidate
