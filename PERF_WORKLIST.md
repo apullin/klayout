@@ -636,6 +636,28 @@ not just wall time.
      owner-lane result on the stated deck/build, not yet a separately measured
      full-launch wall reduction.
 
+     - [x] **Compose the proven prune with the balanced CUDA pipeline:**
+       commit `a683042` adds an independent `--prune-poly2` launcher flag.
+       The CUDA rewrites run first, the exact POLY.2 source contract runs once,
+       and only then do the antenna and CONTACT.6 owner transforms run.  With
+       the flag absent, the generated current deck is byte-identical to the
+       retained unpruned deck at SHA-256
+       `006165a1c01a16b960205fdd8ee0a4c552f3ce4414ffb33ea579c1a7c054b4ec`.
+       With it present, the pruned live deck is
+       `4ac488880c40ab78d946c2596b2c8591c8eceff3790116bd92cf87d4cc1c1fea`
+       and the final eleven-owner balanced deck is
+       `12cb2741280db76ac56bd840b4b6200801b5e2441b0738cbb2135230b61fbadc`.
+       The launcher pins both the prune implementation and pre-prune deck.
+       Its normal manifest gate rejected the old unpruned manifest before DRC
+       with the exact expected deck-hash mismatch; a manifest rebound to the
+       pruned deck advanced through validation to child invocation.
+
+       Seven transform/composition tests, all eighteen live-CUDA generator
+       tests, shell syntax, XML parsing, and the live KLayout EdgePairs/type
+       contract pass.  No new production timing is booked here: retain the
+       prior **7.205-second / 10.66% owner opportunity** until a current
+       matched measurement is run.
+
    - [x] **Optional final five-way balancing nibble — deferred below the search
      threshold:** moving the intact
      `METAL1.5-1.9` classification block (about 0.70 s) from `m1_rest` into the
