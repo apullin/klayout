@@ -2551,6 +2551,41 @@ not just wall time.
         the roofline at 18.286 s.  Evidence:
         `.scratchpad/cuda-runs/composed-12-owner-full.0ceCTb`.
 
+      - [ ] **Qualify the exact implant/contact and ACTIVE.1/.2 owner
+        splits:** commits `74261ef` and `66c63f0` add a fail-closed deck
+        transform which retains IMPLANT.1-.5 in `implant_contact`, moves the
+        intact CONTACT.1-.5 block to `contact`, and optionally moves the
+        intact ACTIVE.1/.2 block to `active12`.  All-mode textual rule order
+        is unchanged, exact source-site multiplicities are required, and the
+        launcher refuses more jobs than the selected 10--14-owner manifest.
+
+        A fresh 14-owner deck/manifest preflight binds all 157 categories.
+        The first production integration smoke preserved canonical report
+        SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`
+        and took 65.44 s.  This `N=1` run is an integrity observation, not an
+        accepted speedup.  It demonstrates the intended roofline change:
+        `implant_contact` is 49.765 s, `contact` 16.168 s, `active12`
+        40.029 s, and the remaining `via1_upper_active12` owner 25.130 s.
+        The exposed poles are `m1_enclosure` at 60.426 s,
+        `m1_via_class` at 58.769 s, and antenna at about 57.4 s.  Keep this
+        item open until a nonempty hierarchical CONTACT.1-.5/implant fixture,
+        CPU all-versus-shards manifest merge, owner telemetry isolation, and
+        repeated production composition all pass.  Evidence:
+        `.scratchpad/cuda-runs/composed-14-owner-full.E4XEQ8`.
+
+      - [ ] **Replace the rejected raw-WELL probe with an exact resident
+        `NWELL.or(PWELL)` -> ACTIVE.3 transaction:** serialize physical
+        NWELL 3/0 and PWELL 2/0 into one digest-bound scene, form their exact
+        integer-set union on-device, retain the canonical material boundary,
+        scan complete raw ACTIVE 1/0 with the proven 110-DBU ACTIVE.3
+        predicate, and return only a scalar empty/hit/uncertain disposition.
+        Every unsupported contour, capacity decline, malformed echo, hit,
+        uncertainty, CUDA error, or fault must execute the literal historical
+        CPU union and rule.  This is the valid attack on the roughly
+        10.5-second WELL-union charge; do not cascade the slower conservative
+        raw-WELL probe ahead of it.
+
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
         second and third reusable compositions, separate canonical
