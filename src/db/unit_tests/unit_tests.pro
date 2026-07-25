@@ -12,6 +12,7 @@ SOURCES = \
   dbCudaImplant12Tests.cc \
   dbCudaM1WidthSpaceTests.cc \
   dbCudaM2RawSceneTests.cc \
+  dbCudaM2RulesTests.cc \
   dbCudaM2UnionContractTests.cc \
   dbEdgeNeighborhoodTests.cc \
   dbFillToolTests.cc \
