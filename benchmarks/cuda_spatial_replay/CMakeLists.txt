@@ -251,6 +251,49 @@ target_compile_options(m2_merged_boundary_oracle PRIVATE
   -O3 -Wall -Wextra
 )
 
+# The flat bridge deliberately exercises KLayout's real stock Region
+# morphology.  It is optional because this standalone CUDA benchmark project
+# does not normally know where a qmake KLayout build placed its shared
+# libraries.
+set(KLAYOUT_QMAKE_BUILD_DIR "" CACHE PATH
+  "KLayout qmake build directory containing libklayout_db/tl/gsi")
+if(KLAYOUT_QMAKE_BUILD_DIR)
+  find_library(KLAYOUT_DB_LIBRARY
+    NAMES klayout_db
+    PATHS "${KLAYOUT_QMAKE_BUILD_DIR}"
+    NO_DEFAULT_PATH REQUIRED)
+  find_library(KLAYOUT_TL_LIBRARY
+    NAMES klayout_tl
+    PATHS "${KLAYOUT_QMAKE_BUILD_DIR}"
+    NO_DEFAULT_PATH REQUIRED)
+  find_library(KLAYOUT_GSI_LIBRARY
+    NAMES klayout_gsi
+    PATHS "${KLAYOUT_QMAKE_BUILD_DIR}"
+    NO_DEFAULT_PATH REQUIRED)
+
+  add_executable(m2_flat_region_bridge
+    m2_flat_region_bridge.cc
+  )
+  target_include_directories(m2_flat_region_bridge PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/tl/tl
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/gsi/gsi
+  )
+  target_compile_options(m2_flat_region_bridge PRIVATE
+    -O3 -Wall -Wextra
+  )
+  target_link_libraries(m2_flat_region_bridge PRIVATE
+    m2_merged_boundary_oracle
+    "${KLAYOUT_DB_LIBRARY}"
+    "${KLAYOUT_TL_LIBRARY}"
+    "${KLAYOUT_GSI_LIBRARY}"
+    Threads::Threads
+  )
+  set_target_properties(m2_flat_region_bridge PROPERTIES
+    BUILD_RPATH "${KLAYOUT_QMAKE_BUILD_DIR}"
+  )
+endif()
+
 target_link_libraries(manhattan_union_replay PRIVATE
   m2_manhattan_production_loader
   m2_merged_boundary_oracle
