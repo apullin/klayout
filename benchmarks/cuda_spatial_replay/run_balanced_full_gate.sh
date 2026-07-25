@@ -10,6 +10,7 @@ Usage:
     [--python PATH] [--timeout-seconds N] [--jobs 8|10|11] \
     [--split-upper-antenna] \
     [--without-contact4] \
+    [--with-m2-rules|--without-m2-rules] \
     [--with-m2-width-space|--without-m2-width-space] \
     [--with-implant12|--without-implant12] [--keep-work]
 
@@ -27,6 +28,13 @@ provenance are checked before success.
 
 --without-contact4 retains every other qualified CUDA transaction and exists
 only to produce a same-binary CONTACT.4-off performance control.
+
+--with-m2-rules and --without-m2-rules both generate the identical
+fail-closed METAL2.1/.2/.4-.9 speculative-flat transaction, then toggle only
+its runtime environment. The default omits that deck rewrite and preserves
+the older qualified gate. The enabled M2-rules owner and the independent
+M2-width/space certificate cannot run together; use --without-m2-width-space
+for an explicit same-deck M2-rules candidate or control.
 
 --with-m2-width-space and --without-m2-width-space preserve the same deck and
 toggle only the separately qualified METAL2.1/.2 runtime transaction.  The
@@ -65,6 +73,7 @@ timeout_seconds=900
 keep_work=0
 contact4=1
 implant12=-1
+m2_rules=-1
 m2_width_space=-1
 jobs=8
 split_upper_antenna=0
@@ -133,6 +142,18 @@ while (($#)); do
       contact4=0
       shift
       ;;
+    --with-m2-rules)
+      ((m2_rules == -1)) ||
+        die "choose exactly one M2-rules runtime mode"
+      m2_rules=1
+      shift
+      ;;
+    --without-m2-rules)
+      ((m2_rules == -1)) ||
+        die "choose exactly one M2-rules runtime mode"
+      m2_rules=0
+      shift
+      ;;
     --with-m2-width-space)
       m2_width_space=1
       shift
@@ -177,6 +198,9 @@ done
   die "--jobs must be 8, 10, or 11"
 if [[ "${jobs}" == 11 ]] && (( ! split_upper_antenna)); then
   die "--jobs 11 requires --split-upper-antenna"
+fi
+if ((m2_rules == 1 && m2_width_space == 1)); then
+  die "--with-m2-rules is incompatible with --with-m2-width-space"
 fi
 
 [[ -x "${klayout}" ]] || die "KLayout is not executable: ${klayout}"
@@ -247,6 +271,15 @@ if ((implant12 >= 0)); then
     "KLAYOUT_CUDA_IMPLANT12_TELEMETRY=${implant12}"
   )
 fi
+m2_rules_generator_args=()
+m2_rules_env=()
+if ((m2_rules >= 0)); then
+  m2_rules_generator_args=(--m2-rules)
+  m2_rules_env=(
+    "KLAYOUT_CUDA_M2_RULES=${m2_rules}"
+    "KLAYOUT_CUDA_M2_RULES_TELEMETRY=${m2_rules}"
+  )
+fi
 m2_width_space_env=()
 if ((m2_width_space >= 0)); then
   m2_width_space_env=(
@@ -257,6 +290,7 @@ fi
 run_transform "live CUDA deck generation" \
   "${python}" "${deck_generator}" \
     --input "${source_deck}" --output "${live_deck}" --m1-contact \
+    "${m2_rules_generator_args[@]}" \
     "${implant12_generator_args[@]}"
 antenna_split_args=()
 if ((split_upper_antenna)); then
@@ -340,6 +374,7 @@ set +e
       KLAYOUT_CUDA_ACTIVE3_TELEMETRY=1 \
       KLAYOUT_CUDA_M1_WIDTH_SPACE=1 \
       KLAYOUT_CUDA_M1_WIDTH_SPACE_TELEMETRY=1 \
+      "${m2_rules_env[@]}" \
       "${m2_width_space_env[@]}" \
       KLAYOUT_CUDA_VIA1_STACK=1 \
       KLAYOUT_CUDA_VIA1_STACK_TELEMETRY=1 \
@@ -416,6 +451,22 @@ elif ((m2_width_space == 0)) &&
        "CUDA M2 width/space" "${shard_dir}"; then
   die "M2 width/space-off control unexpectedly invoked M2 CUDA"
 fi
+if ((m2_rules == 1)); then
+  require_telemetry \
+    "CUDA M2 exact union boundary: outcome=complete" \
+    "M2 exact-union complete"
+  require_telemetry \
+    "CUDA M2 live flat operands: disposition=complete" \
+    "M2 live-flat operand publication"
+  require_telemetry \
+    "CUDA M2 rules transaction: certified-empty reason=all-clean" \
+    "M2 rules certified-empty"
+elif ((m2_rules == 0)) &&
+     grep -R -Eq --include='*.log' -- \
+       'CUDA M2 (exact union boundary:|live flat operands:|rules transaction:)' \
+       "${shard_dir}"; then
+  die "M2-rules-off control unexpectedly invoked the live M2 transaction"
+fi
 require_telemetry \
   "CUDA VIA1 stack empty certificate: outcome=certified-empty" \
   "VIA1-stack certified-empty"
@@ -452,7 +503,7 @@ if ! cmp -s -- "${reference_canonical}" "${report_canonical}"; then
 fi
 
 grep -R -nE --include='*.log' -- \
-  'CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M2 width/space empty certificate:|CUDA M2 width/space live lowering:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA CONTACT\.4 empty certificate:|CUDA CONTACT\.4 live lowering:|CUDA IMPLANT\.1/\.2 transaction:|CUDA IMPLANT\.1/\.2 empty certificate:|CUDA IMPLANT\.1/\.2 live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_EDGE_CERT ' \
+  'CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M2 width/space empty certificate:|CUDA M2 width/space live lowering:|CUDA M2 exact union boundary:|CUDA M2 live flat operands:|CUDA M2 rules transaction:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA CONTACT\.4 empty certificate:|CUDA CONTACT\.4 live lowering:|CUDA IMPLANT\.1/\.2 transaction:|CUDA IMPLANT\.1/\.2 empty certificate:|CUDA IMPLANT\.1/\.2 live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_EDGE_CERT ' \
   "${shard_dir}" >"${work}/cuda-telemetry.txt"
 
 grep -E \
@@ -487,4 +538,4 @@ cat -- "${work}/launcher-summary.txt"
 cat -- "${work}/canonical-report-sha256.txt"
 cat -- "${work}/cuda-telemetry.txt"
 echo \
-  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} m2_width_space=${m2_width_space} implant12=${implant12} split_upper_antenna=${split_upper_antenna}"
+  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} split_upper_antenna=${split_upper_antenna}"
