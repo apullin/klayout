@@ -529,9 +529,16 @@ owner_active_split=(active12)
 owner_suffix_post=(
   via1_upper_active12
   grid
-  m1_via_class
-  antenna_feol
 )
+if ((m1_5_9 == 1)); then
+  # The exact raw-M1 transaction is the only owner whose resident allocation
+  # approaches the full 10-GiB device.  Keep every long antenna owner in the
+  # first launch wave and queue this now-short owner last; with one fewer job
+  # than owners, early CUDA transactions drain before raw M1 begins.
+  owner_suffix_post+=(antenna_feol m1_via_class)
+else
+  owner_suffix_post+=(m1_via_class antenna_feol)
+fi
 shards=("${owner_prefix[@]}")
 if ((split_implant_contact)); then
   shards+=("${owner_implant_split[@]}")
