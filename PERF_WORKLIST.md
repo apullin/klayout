@@ -2551,7 +2551,7 @@ not just wall time.
         the roofline at 18.286 s.  Evidence:
         `.scratchpad/cuda-runs/composed-12-owner-full.0ceCTb`.
 
-      - [ ] **Qualify the exact implant/contact and ACTIVE.1/.2 owner
+      - [x] **Qualify the exact implant/contact and ACTIVE.1/.2 owner
         splits:** commits `74261ef` and `66c63f0` add a fail-closed deck
         transform which retains IMPLANT.1-.5 in `implant_contact`, moves the
         intact CONTACT.1-.5 block to `contact`, and optionally moves the
@@ -2571,8 +2571,21 @@ not just wall time.
         `m1_via_class` at 58.769 s, and antenna at about 57.4 s.  Keep this
         item open until a nonempty hierarchical CONTACT.1-.5/implant fixture,
         CPU all-versus-shards manifest merge, owner telemetry isolation, and
-        repeated production composition all pass.  Evidence:
-        `.scratchpad/cuda-runs/composed-14-owner-full.E4XEQ8`.
+        repeated production composition all pass.
+
+        Those closure gates now pass.  The retained nonempty hierarchical
+        fixture exercises all five CONTACT rules and IMPLANT.5; its 13-way
+        CPU strict merge retains all 157 categories and matches the all-mode
+        semantic report.  Production logs isolate IMPLANT.1/.2 to
+        `implant_contact`, fused CONTACT.4 to `contact`, and the intended VIA1
+        transaction to `via1_upper_active12`.  Finally, the exact 14-owner
+        production cohort completed at 63.75, 63.64, and 63.55 s with canonical
+        report SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`
+        in every replicate.  Evidence:
+        `.scratchpad/cuda-runs/composed-14-owner-full.E4XEQ8`,
+        `/tmp/freepdk45-owner-split-cpu-gate.2xz9iwcw`, and
+        `.scratchpad/cuda-runs/composed-14-owner-full.xgZl6S`.
 
       - [x] **Replace the rejected raw-WELL probe with an exact resident
         `NWELL.or(PWELL)` -> ACTIVE.3 transaction:** serialize physical
@@ -2597,16 +2610,17 @@ not just wall time.
         path.  The first 14-owner full-production gate preserved canonical
         merged-report SHA-256
         `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`
-        and took 63.85 s, **1.79 real seconds / 2.73% less full-launch wall**
-        than the preceding accepted 65.64-second composition.  That latter
-        comparison is an `N=1` cross-run observation, not yet an accepted
-        statistical whole-run claim.  Exact production telemetry covered
+        and first took 63.85 s.  The subsequent three-run exact production
+        cohort took 63.75, 63.64, and 63.55 s, averaging 63.647 s.  Against
+        the immediately preceding accepted 65.640-second composition, this is
+        **1.993 real seconds / 3.037% less full-launch wall** (`N=3`,
+        cross-run cumulative comparison).  Exact production telemetry covered
         6,637,536 WELL polygons, 98,754,896 ACTIVE edges, 174,739,004 exact
         candidates, and zero hits or uncertainty without geometry D2H.
         Evidence:
         `.scratchpad/cuda-runs/active3-well-union-focused.lsOHyo`,
         `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.Nvr8tg`, and
-        `.scratchpad/cuda-runs/composed-14-owner-full.GD4Env`.
+        `.scratchpad/cuda-runs/composed-14-owner-full.xgZl6S`.
 
       - [ ] **Reassociate the antenna diode algebra small-first, with exact
         differential gates:** Ruby parses the current
