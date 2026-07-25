@@ -127,6 +127,15 @@ Comparison compare_candidate(
     const BoundaryOracle &oracle,
     const std::vector<DirectedSegmentI64> &candidate);
 
+// Checked portable-record digests used by qualification artifacts.
+std::string canonical_boundary_sha256(
+    const std::vector<DirectedSegmentI64> &segments);
+
+std::uint64_t canonical_boundary_fnv64(
+    const std::vector<DirectedSegmentI64> &segments);
+
+std::string candidate_stream_file_sha256(const std::string &path);
+
 // Candidate stream is a checked little-endian KM2BND02 header followed by
 // canonical 32-byte DirectedSegmentI64 records.
 std::vector<DirectedSegmentI64> read_candidate_stream(
