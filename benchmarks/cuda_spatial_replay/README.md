@@ -19,6 +19,12 @@ The later contiguous clean-certificate islands are documented separately:
 [`ACTIVE3_GPU_ISLAND.md`](ACTIVE3_GPU_ISLAND.md) and
 [`M1_WIDTH_SPACE_GPU_ISLAND.md`](M1_WIDTH_SPACE_GPU_ISLAND.md).
 
+The exact integer rectangle-union feasibility harness is documented in
+[`MANHATTAN_UNION_GPU.md`](MANHATTAN_UNION_GPU.md).  It moves the seam farther
+upstream than the rule-specific islands: expanded Manhattan rectangles are
+sorted and scan-converted on the GPU into exact directed boundary segments,
+without floating point or a dense pixel raster.
+
 ## KLayout-pointer-free record contract
 
 The on-disk/host replay record is an 80-byte POD with:
