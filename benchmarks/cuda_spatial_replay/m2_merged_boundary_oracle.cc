@@ -1101,6 +1101,20 @@ Comparison compare_candidate(
   return result;
 }
 
+std::string canonical_boundary_sha256(
+    const std::vector<DirectedSegmentI64> &segments)
+{
+  validate_canonical_candidate(segments);
+  return boundary_sha256(segments);
+}
+
+std::uint64_t canonical_boundary_fnv64(
+    const std::vector<DirectedSegmentI64> &segments)
+{
+  validate_canonical_candidate(segments);
+  return boundary_fnv64(segments);
+}
+
 std::vector<DirectedSegmentI64> read_candidate_stream(
     const std::string &path, const BoundaryOracle &oracle)
 {
@@ -1174,6 +1188,12 @@ void write_candidate_stream(const std::string &path,
                             const BoundaryOracle &oracle)
 {
   validate_canonical_candidate(oracle.segments);
+  if (normalized_digest(
+          oracle.boundary_sha256, "candidate boundary SHA-256") !=
+      boundary_sha256(oracle.segments)) {
+    throw std::runtime_error(
+        "candidate boundary SHA-256 disagrees with payload");
+  }
   const std::uint64_t payload_bytes =
       oracle.segments.size() * sizeof(DirectedSegmentI64);
   const std::uint64_t file_bytes =

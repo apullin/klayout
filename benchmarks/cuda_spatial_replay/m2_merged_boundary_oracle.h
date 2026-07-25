@@ -111,6 +111,14 @@ Comparison compare_candidate(
     const BoundaryOracle &oracle,
     const std::vector<DirectedSegmentI64> &candidate);
 
+// Digests use the checked little-endian 32-byte candidate record encoding,
+// never the host ABI representation.
+std::string canonical_boundary_sha256(
+    const std::vector<DirectedSegmentI64> &segments);
+
+std::uint64_t canonical_boundary_fnv64(
+    const std::vector<DirectedSegmentI64> &segments);
+
 // Candidate stream is a checked little-endian 128-byte header followed by
 // canonical 32-byte DirectedSegmentI64 records.
 std::vector<DirectedSegmentI64> read_candidate_stream(

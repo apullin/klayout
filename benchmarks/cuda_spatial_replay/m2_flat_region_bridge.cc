@@ -301,8 +301,67 @@ std::uint64_t pair_count(const db::EdgePairs &pairs)
   return static_cast<std::uint64_t>(pairs.count());
 }
 
+bool canonical_less(const oracle::DirectedSegmentI64 &first,
+                    const oracle::DirectedSegmentI64 &second)
+{
+  const auto first_axis = static_cast<std::uint32_t>(first.axis);
+  const auto second_axis = static_cast<std::uint32_t>(second.axis);
+  if (first_axis != second_axis) return first_axis < second_axis;
+  if (first.side != second.side) return first.side < second.side;
+  if (first.fixed != second.fixed) return first.fixed < second.fixed;
+  if (first.lo != second.lo) return first.lo < second.lo;
+  return first.hi < second.hi;
+}
+
+oracle::DirectedSegmentI64 canonical_segment(const db::Edge &edge)
+{
+  if (edge.y1() == edge.y2() && edge.x1() != edge.x2()) {
+    return {
+        edge.y1(), std::min(edge.x1(), edge.x2()),
+        std::max(edge.x1(), edge.x2()), edge.x2() > edge.x1() ? 1 : -1,
+        oracle::SegmentAxis::horizontal};
+  }
+  if (edge.x1() == edge.x2() && edge.y1() != edge.y2()) {
+    return {
+        edge.x1(), std::min(edge.y1(), edge.y2()),
+        std::max(edge.y1(), edge.y2()), edge.y2() > edge.y1() ? -1 : 1,
+        oracle::SegmentAxis::vertical};
+  }
+  throw std::runtime_error(
+      "stock F90 edge is degenerate or non-Manhattan");
+}
+
+void write_gt90_boundary(const db::Edges &edges,
+                         const std::string &path)
+{
+  oracle::BoundaryOracle result;
+  result.segments.reserve(kGt90MergedEdges);
+  for (db::Edges::const_iterator edge = edges.begin();
+       !edge.at_end(); ++edge) {
+    result.segments.push_back(canonical_segment(*edge));
+  }
+  std::sort(
+      result.segments.begin(), result.segments.end(), canonical_less);
+  if (result.segments.size() != kGt90MergedEdges) {
+    throw std::runtime_error(
+        "stock F90 serialized boundary census mismatch");
+  }
+  result.scene_sha256 = kSceneSha256;
+  result.boundary_sha256 =
+      oracle::canonical_boundary_sha256(result.segments);
+  result.boundary_fnv64 =
+      oracle::canonical_boundary_fnv64(result.segments);
+  oracle::write_candidate_stream(path, result);
+  std::cout << "M2_GT90_BOUNDARY_WRITTEN"
+            << " path=" << path
+            << " segments=" << result.segments.size()
+            << " sha256=" << result.boundary_sha256
+            << " fnv64=" << result.boundary_fnv64 << "\n";
+}
+
 void run(const std::string &path, bool audit_full_boundary,
-         bool audit_m2_width_space)
+         bool audit_m2_width_space,
+         const std::string &gt90_boundary_path)
 {
   const auto all_begin = Clock::now();
 
@@ -375,8 +434,9 @@ void run(const std::string &path, bool audit_full_boundary,
   const auto edges90_begin = Clock::now();
   std::uint64_t gt90_edge_count = 0;
   db::Edges long_edges;
-  if (audit_full_boundary) {
-    db::Edges gt90_edges = gt90.edges();
+  db::Edges gt90_edges;
+  if (audit_full_boundary || !gt90_boundary_path.empty()) {
+    gt90_edges = gt90.edges();
     gt90_edge_count = edge_count(gt90_edges);
     if (gt90_edge_count != kGt90MergedEdges) {
       throw std::runtime_error("F90 merged-edge census mismatch");
@@ -391,6 +451,9 @@ void run(const std::string &path, bool audit_full_boundary,
   const std::uint64_t gt90_long = edge_count(long_edges);
   if (gt90_long != kGt90LongEdges) {
     throw std::runtime_error("F90 long-edge census mismatch");
+  }
+  if (!gt90_boundary_path.empty()) {
+    write_gt90_boundary(gt90_edges, gt90_boundary_path);
   }
 
   const auto space_begin = Clock::now();
@@ -431,7 +494,9 @@ void run(const std::string &path, bool audit_full_boundary,
                                : "not-audited")
       << " gt90_raw_polygons=" << gt90_raw
       << " gt90_merged_edges="
-      << (audit_full_boundary ? std::to_string(gt90_edge_count) : "not-audited")
+      << ((audit_full_boundary || !gt90_boundary_path.empty())
+              ? std::to_string(gt90_edge_count)
+              : "not-audited")
       << " gt90_long_edges=" << gt90_long
       << " gt90_space_pairs=" << pair_count(spacing)
       << " gt270_shrunk_polygons=" << gt270_shrunk_count
@@ -447,7 +512,9 @@ void run(const std::string &path, bool audit_full_boundary,
       << " shrink90_ms=" << milliseconds(shrink90_begin, shrink90_end)
       << " grow90_ms=" << milliseconds(grow90_begin, grow90_end)
       << " edge_extract_mode="
-      << (audit_full_boundary ? "full-then-filter" : "fused-length-filter")
+      << ((audit_full_boundary || !gt90_boundary_path.empty())
+              ? "full-then-filter"
+              : "fused-length-filter")
       << " edge_extract_ms=" << milliseconds(edges90_begin, edges90_end)
       << " long_space_ms=" << milliseconds(space_begin, space_end)
       << " shrink270_ms=" << milliseconds(shrink270_begin, shrink270_end)
@@ -465,6 +532,7 @@ int main(int argc, char **argv)
     bool audit_full_boundary = false;
     bool audit_m2_width_space = false;
     bool run_self_test = false;
+    std::string gt90_boundary_path;
     std::string path;
     for (int index = 1; index < argc; ++index) {
       const std::string argument = argv[index];
@@ -474,6 +542,9 @@ int main(int argc, char **argv)
         audit_m2_width_space = true;
       } else if (argument == "--self-test") {
         run_self_test = true;
+      } else if (argument == "--write-gt90-boundary" &&
+                 index + 1 < argc) {
+        gt90_boundary_path = argv[++index];
       } else if (path.empty()) {
         path = argument;
       } else {
@@ -487,10 +558,12 @@ int main(int argc, char **argv)
       std::cerr << "usage: " << argv[0]
                 << " [--self-test] [--audit-full-boundary] "
                    "[--audit-m2-width-space] "
+                   "[--write-gt90-boundary FILE] "
                    "CPU_MERGED_M2.km1ws\n";
       return EXIT_FAILURE;
     }
-    run(path, audit_full_boundary, audit_m2_width_space);
+    run(path, audit_full_boundary, audit_m2_width_space,
+        gt90_boundary_path);
     return EXIT_SUCCESS;
   } catch (const std::exception &error) {
     std::cerr << "M2_FLAT_REGION_BRIDGE FAIL " << error.what() << "\n";
