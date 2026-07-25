@@ -615,6 +615,27 @@ not just wall time.
      `polygons?` type-test guard is always false; no signoff repair was mixed
      into this experiment.
 
+   - [x] **Prune the unreachable FreePDK45 POLY.2 calculation — completed:**
+     `separation` returns an EdgePairs-backed DRC layer, whereas the historical
+     output was guarded by `polygons?`, which is true only for Region-backed
+     layers.  The branch could therefore never publish a result even though
+     its full `poly.separation(active, 140.nm, projection)` calculation still
+     ran.  A fail-closed source transform now accepts exactly one known block,
+     rejects drift, duplicates, extra POLY.2 outputs, malformed XML, and
+     already-pruned decks, and a live DRC API gate proves the type contract and
+     unreachable branch.
+
+     On the current CUDA-aware FreePDK45 downstream-composed x2
+     `m1_enclosure` owner, an ABBA gate measured controls at 67.27 and 67.90 s
+     and candidates at 60.01 and 60.75 s: **67.585 -> 60.380 s mean, saving
+     7.205 real seconds / 10.66% wall time**, N=2 per lane.  All four reports
+     had the exact semantic SHA-256
+     `67c0e2d632fe87fec7c7c20a66ca0816718c029d96702242b621f003600df434`
+     at seven categories, one cell, and zero items.  Evidence is retained at
+     `.scratchpad/perf-evidence/freepdk45-poly2-prune-20260725/`.  This is an
+     owner-lane result on the stated deck/build, not yet a separately measured
+     full-launch wall reduction.
+
    - [x] **Optional final five-way balancing nibble — deferred below the search
      threshold:** moving the intact
      `METAL1.5-1.9` classification block (about 0.70 s) from `m1_rest` into the
