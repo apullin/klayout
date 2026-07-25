@@ -48,11 +48,11 @@ constexpr std::int64_t kQualifiedLeft = INT64_C(6230);
 constexpr std::int64_t kQualifiedBottom = INT64_C(6225);
 constexpr std::int64_t kQualifiedRight = INT64_C(1788415);
 constexpr std::int64_t kQualifiedTop = INT64_C(1487300);
-constexpr std::uint32_t kCandidateVersion = 1;
-constexpr std::uint32_t kCandidateHeaderBytes = 128;
+constexpr std::uint32_t kCandidateVersion = 2;
+constexpr std::uint32_t kCandidateHeaderBytes = 160;
 constexpr std::uint32_t kEndianTag = UINT32_C(0x01020304);
 constexpr char kCandidateMagic[8] =
-    {'K', 'M', '2', 'B', 'N', 'D', '0', '1'};
+    {'K', 'M', '2', 'B', 'N', 'D', '0', '2'};
 
 struct Context
 {
@@ -1102,8 +1102,22 @@ Comparison compare_candidate(
 }
 
 std::vector<DirectedSegmentI64> read_candidate_stream(
-    const std::string &path, const BoundaryOracle &oracle)
+    const std::string &path, const CandidateStreamIdentity &identity)
 {
+  const std::string expected_scene =
+      normalized_digest(identity.producer_scene_sha256,
+                        "candidate producer-scene SHA-256");
+  const std::string expected_qualification_scene =
+      normalized_digest(identity.qualification_scene_sha256,
+                        "candidate qualification-scene SHA-256");
+  const std::string expected_boundary =
+      normalized_digest(identity.boundary_sha256,
+                        "candidate boundary SHA-256");
+  if (!identity.segment_count || !identity.boundary_fnv64) {
+    throw std::runtime_error(
+        "candidate stream identity census/digest is incomplete");
+  }
+
   std::ifstream input(path, std::ios::binary | std::ios::ate);
   if (!input) {
     throw std::runtime_error("cannot open boundary candidate: " + path);
@@ -1142,20 +1156,26 @@ std::vector<DirectedSegmentI64> read_candidate_stream(
           count, sizeof(DirectedSegmentI64), payload_bytes) ||
       !format::checked_add_u64(
           kCandidateHeaderBytes, payload_bytes, expected_bytes) ||
-      file_bytes != expected_bytes || file_bytes != storage.size()) {
+      file_bytes != expected_bytes || file_bytes != storage.size() ||
+      count != identity.segment_count) {
     throw std::runtime_error(
         "candidate stream count/length is invalid");
   }
-  if (hex_digest(storage.data() + 72, 32) != oracle.scene_sha256 ||
-      std::any_of(storage.begin() + 104, storage.begin() + 128,
+  const std::string header_boundary =
+      hex_digest(storage.data() + 40, 32);
+  if (header_boundary != expected_boundary ||
+      hex_digest(storage.data() + 72, 32) != expected_scene ||
+      hex_digest(storage.data() + 104, 32) !=
+          expected_qualification_scene ||
+      std::any_of(storage.begin() + 136, storage.begin() + 160,
                   [](std::uint8_t byte) { return byte != 0; })) {
     throw std::runtime_error(
-        "candidate stream scene identity/reserved bytes mismatch");
+        "candidate stream allowlisted identity/reserved bytes mismatch");
   }
   const std::string payload_digest =
       sha256(storage.data() + kCandidateHeaderBytes,
              static_cast<std::size_t>(payload_bytes));
-  if (payload_digest != hex_digest(storage.data() + 40, 32)) {
+  if (payload_digest != header_boundary) {
     throw std::runtime_error(
         "candidate stream payload SHA-256 mismatch");
   }
@@ -1167,15 +1187,60 @@ std::vector<DirectedSegmentI64> read_candidate_stream(
                        index * sizeof(DirectedSegmentI64)));
   }
   validate_canonical_candidate(result);
+  if (boundary_fnv64(result) != identity.boundary_fnv64) {
+    throw std::runtime_error(
+        "candidate stream boundary FNV-64 mismatch");
+  }
   return result;
 }
 
-void write_candidate_stream(const std::string &path,
-                            const BoundaryOracle &oracle)
+std::vector<DirectedSegmentI64> read_candidate_stream(
+    const std::string &path, const BoundaryOracle &oracle)
 {
-  validate_canonical_candidate(oracle.segments);
+  CandidateStreamIdentity identity;
+  identity.producer_scene_sha256 = oracle.scene_sha256;
+  identity.qualification_scene_sha256 = oracle.scene_sha256;
+  identity.boundary_sha256 =
+      oracle.boundary_sha256.empty()
+          ? boundary_sha256(oracle.segments)
+          : oracle.boundary_sha256;
+  identity.segment_count = oracle.segments.size();
+  identity.boundary_fnv64 =
+      oracle.boundary_fnv64
+          ? oracle.boundary_fnv64
+          : boundary_fnv64(oracle.segments);
+  return read_candidate_stream(path, identity);
+}
+
+void write_candidate_stream(
+    const std::string &path,
+    const std::vector<DirectedSegmentI64> &segments,
+    const CandidateStreamIdentity &identity)
+{
+  validate_canonical_candidate(segments);
+  const std::string expected_scene =
+      normalized_digest(identity.producer_scene_sha256,
+                        "candidate producer-scene SHA-256");
+  const std::string expected_qualification_scene =
+      normalized_digest(identity.qualification_scene_sha256,
+                        "candidate qualification-scene SHA-256");
+  const std::string expected_boundary =
+      normalized_digest(identity.boundary_sha256,
+                        "candidate boundary SHA-256");
+  if (!identity.segment_count || !identity.boundary_fnv64 ||
+      segments.size() != identity.segment_count) {
+    throw std::runtime_error(
+        "candidate stream output census/digest is incomplete");
+  }
+  const std::string actual_boundary = boundary_sha256(segments);
+  if (actual_boundary != expected_boundary ||
+      boundary_fnv64(segments) != identity.boundary_fnv64) {
+    throw std::runtime_error(
+        "candidate stream output disagrees with allowlisted boundary");
+  }
+
   const std::uint64_t payload_bytes =
-      oracle.segments.size() * sizeof(DirectedSegmentI64);
+      segments.size() * sizeof(DirectedSegmentI64);
   const std::uint64_t file_bytes =
       kCandidateHeaderBytes + payload_bytes;
   std::array<std::uint8_t, kCandidateHeaderBytes> header{};
@@ -1187,12 +1252,16 @@ void write_candidate_stream(const std::string &path,
       header.data() + 20, sizeof(DirectedSegmentI64));
   format::store_u64_le(header.data() + 24, file_bytes);
   format::store_u64_le(
-      header.data() + 32, oracle.segments.size());
+      header.data() + 32, segments.size());
   const auto boundary_digest =
-      digest_from_hex(oracle.boundary_sha256);
-  const auto scene_digest = digest_from_hex(oracle.scene_sha256);
+      digest_from_hex(actual_boundary);
+  const auto scene_digest = digest_from_hex(expected_scene);
+  const auto qualification_scene_digest =
+      digest_from_hex(expected_qualification_scene);
   std::memcpy(header.data() + 40, boundary_digest.data(), 32);
   std::memcpy(header.data() + 72, scene_digest.data(), 32);
+  std::memcpy(
+      header.data() + 104, qualification_scene_digest.data(), 32);
 
   std::ofstream output(path, std::ios::binary | std::ios::trunc);
   if (!output) {
@@ -1201,7 +1270,7 @@ void write_candidate_stream(const std::string &path,
   output.write(reinterpret_cast<const char *>(header.data()),
                header.size());
   std::array<std::uint8_t, 32> record{};
-  for (const DirectedSegmentI64 &segment : oracle.segments) {
+  for (const DirectedSegmentI64 &segment : segments) {
     encode_segment(segment, record.data());
     output.write(reinterpret_cast<const char *>(record.data()),
                  record.size());
@@ -1210,6 +1279,24 @@ void write_candidate_stream(const std::string &path,
   if (!output) {
     throw std::runtime_error("failed writing candidate stream: " + path);
   }
+}
+
+void write_candidate_stream(const std::string &path,
+                            const BoundaryOracle &oracle)
+{
+  CandidateStreamIdentity identity;
+  identity.producer_scene_sha256 = oracle.scene_sha256;
+  identity.qualification_scene_sha256 = oracle.scene_sha256;
+  identity.boundary_sha256 =
+      oracle.boundary_sha256.empty()
+          ? boundary_sha256(oracle.segments)
+          : oracle.boundary_sha256;
+  identity.segment_count = oracle.segments.size();
+  identity.boundary_fnv64 =
+      oracle.boundary_fnv64
+          ? oracle.boundary_fnv64
+          : boundary_fnv64(oracle.segments);
+  write_candidate_stream(path, oracle.segments, identity);
 }
 
 }  // namespace m2_boundary_oracle

@@ -185,3 +185,21 @@ manhattan_union_replay \
   --production-m2-oracle /path/to/m2-width-space-census-exact.km1ws \
   --repeat 6
 ```
+
+To publish the actual final GPU result without loading the CPU oracle in the
+producer numerator, use:
+
+```sh
+manhattan_union_replay \
+  --production-m2-kact /path/to/m2-via1-x2.kact \
+  --production-m2-candidate-out /path/to/gpu-boundary.km2bnd \
+  --repeat 4
+```
+
+The writer accepts only the pinned production segment census/FNV/SHA and emits
+`KM2BND02`, which binds the output to both the raw KACT producer identity and
+the independent merged-oracle qualification identity.  The reported
+`published_candidate_pipeline_ms` charges raw-scene load, host expansion, the
+actual GPU call producing the file, D2H/teardown, portable vector conversion,
+hashing, and serialization.  See `M2_FLAT_REGION_BRIDGE.md` for the complete
+producer-to-stock-morphology gate.

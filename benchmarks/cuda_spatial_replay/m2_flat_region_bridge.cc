@@ -41,9 +41,13 @@ constexpr char kFileSha256[] =
     "980d439ba40535117505dc4e6d31d866af2f897e29fc46b041cebe9a55de7d0f";
 constexpr char kSceneSha256[] =
     "441475a90d0471b886d5f09622d083b29aaa92f9cf47f31f4b7715792cf14480";
+constexpr char kRawSceneSha256[] =
+    "dd239a45408a046eece0ca1e4c8759ea4b8539e6b7a51599c2ac9a2996a86bd2";
 constexpr char kBoundarySha256[] =
     "94b715fc2f9e2ab53f0af0f3dda5a579e9fa4b55b98fc2d04a1a0d9732ad820d";
 constexpr std::uint64_t kBoundarySegments = UINT64_C(4385384);
+constexpr std::uint64_t kBoundaryFnv64 =
+    UINT64_C(7541395996791771514);
 constexpr std::uint64_t kContours = UINT64_C(14222);
 constexpr std::uint64_t kGt90RawPolygons = UINT64_C(1063596);
 constexpr std::uint64_t kGt90MergedEdges = UINT64_C(4254384);
@@ -301,19 +305,32 @@ std::uint64_t pair_count(const db::EdgePairs &pairs)
   return static_cast<std::uint64_t>(pairs.count());
 }
 
-void run(const std::string &path, bool audit_full_boundary,
-         bool audit_m2_width_space)
+void run(const std::string &path, bool candidate_stream,
+         bool audit_full_boundary, bool audit_m2_width_space)
 {
   const auto all_begin = Clock::now();
 
-  oracle::LoadOptions options;
-  options.expected_file_sha256 = kFileSha256;
-  options.expected_scene_sha256 = kSceneSha256;
-  options.expected_boundary_sha256 = kBoundarySha256;
-
   const auto load_begin = Clock::now();
-  const oracle::BoundaryOracle boundary =
-      oracle::load_cpu_merged_boundary(path, options);
+  oracle::BoundaryOracle boundary;
+  if (candidate_stream) {
+    oracle::CandidateStreamIdentity identity;
+    identity.producer_scene_sha256 = kRawSceneSha256;
+    identity.qualification_scene_sha256 = kSceneSha256;
+    identity.boundary_sha256 = kBoundarySha256;
+    identity.segment_count = kBoundarySegments;
+    identity.boundary_fnv64 = kBoundaryFnv64;
+    boundary.segments =
+        oracle::read_candidate_stream(path, identity);
+    boundary.scene_sha256 = kRawSceneSha256;
+    boundary.boundary_sha256 = kBoundarySha256;
+    boundary.boundary_fnv64 = kBoundaryFnv64;
+  } else {
+    oracle::LoadOptions options;
+    options.expected_file_sha256 = kFileSha256;
+    options.expected_scene_sha256 = kSceneSha256;
+    options.expected_boundary_sha256 = kBoundarySha256;
+    boundary = oracle::load_cpu_merged_boundary(path, options);
+  }
   const auto load_end = Clock::now();
 
   const auto stitch_begin = Clock::now();
@@ -417,6 +434,13 @@ void run(const std::string &path, bool audit_full_boundary,
 
   std::cout
       << "M2_FLAT_REGION_BRIDGE PASS"
+      << " input_mode="
+      << (candidate_stream ? "gpu-km2bnd" : "cpu-km1ws-oracle")
+      << " producer_scene_sha256="
+      << (candidate_stream ? kRawSceneSha256 : boundary.scene_sha256)
+      << " qualification_scene_sha256=" << kSceneSha256
+      << " boundary_sha256=" << boundary.boundary_sha256
+      << " boundary_fnv64=" << boundary.boundary_fnv64
       << " segments=" << boundary.segments.size()
       << " contours=" << stitched.contours
       << " vertices=" << stitched.vertices
@@ -438,7 +462,9 @@ void run(const std::string &path, bool audit_full_boundary,
       << " gt270_polygons=" << gt270.count() << "\n"
       << std::fixed << std::setprecision(3)
       << "TIMING"
-      << " oracle_load_ms=" << milliseconds(load_begin, load_end)
+      << " input_load_validate_ms=" << milliseconds(load_begin, load_end)
+      << " oracle_qualification_ms="
+      << (candidate_stream ? 0.0 : milliseconds(load_begin, load_end))
       << " endpoint_stitch_and_shapes_ms="
       << milliseconds(stitch_begin, stitch_end)
       << " region_copy_ms=" << milliseconds(region_begin, region_end)
@@ -465,6 +491,7 @@ int main(int argc, char **argv)
     bool audit_full_boundary = false;
     bool audit_m2_width_space = false;
     bool run_self_test = false;
+    bool candidate_stream = false;
     std::string path;
     for (int index = 1; index < argc; ++index) {
       const std::string argument = argv[index];
@@ -474,6 +501,20 @@ int main(int argc, char **argv)
         audit_m2_width_space = true;
       } else if (argument == "--self-test") {
         run_self_test = true;
+      } else if (argument == "--candidate" && index + 1 < argc) {
+        if (!path.empty()) {
+          path.clear();
+          break;
+        }
+        candidate_stream = true;
+        path = argv[++index];
+      } else if (argument.rfind("--candidate=", 0) == 0) {
+        if (!path.empty()) {
+          path.clear();
+          break;
+        }
+        candidate_stream = true;
+        path = argument.substr(std::string("--candidate=").size());
       } else if (path.empty()) {
         path = argument;
       } else {
@@ -487,10 +528,12 @@ int main(int argc, char **argv)
       std::cerr << "usage: " << argv[0]
                 << " [--self-test] [--audit-full-boundary] "
                    "[--audit-m2-width-space] "
-                   "CPU_MERGED_M2.km1ws\n";
+                   "[--candidate GPU_BOUNDARY.km2bnd | "
+                   "CPU_MERGED_M2.km1ws]\n";
       return EXIT_FAILURE;
     }
-    run(path, audit_full_boundary, audit_m2_width_space);
+    run(path, candidate_stream, audit_full_boundary,
+        audit_m2_width_space);
     return EXIT_SUCCESS;
   } catch (const std::exception &error) {
     std::cerr << "M2_FLAT_REGION_BRIDGE FAIL " << error.what() << "\n";

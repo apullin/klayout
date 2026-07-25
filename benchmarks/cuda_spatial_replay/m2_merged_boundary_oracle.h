@@ -104,6 +104,22 @@ struct Comparison
   std::string message;
 };
 
+// Independent allowlist for consuming or producing a KM2BND02 stream without
+// loading the heavyweight CPU-merged qualification oracle.  Every field is
+// checked.  The SHA-256 pins the complete portable segment payload while the
+// FNV-64 is the production CUDA union's independently computed census digest.
+struct CandidateStreamIdentity
+{
+  // Exact scene consumed by the producer (raw hierarchical KACT for the GPU
+  // path) and the independent scene used to qualify the expected boundary.
+  // Keeping both prevents a boundary digest from obscuring input provenance.
+  std::string producer_scene_sha256;
+  std::string qualification_scene_sha256;
+  std::string boundary_sha256;
+  std::uint64_t segment_count = 0;
+  std::uint64_t boundary_fnv64 = 0;
+};
+
 BoundaryOracle load_cpu_merged_boundary(const std::string &path,
                                         const LoadOptions &options);
 
@@ -111,13 +127,21 @@ Comparison compare_candidate(
     const BoundaryOracle &oracle,
     const std::vector<DirectedSegmentI64> &candidate);
 
-// Candidate stream is a checked little-endian 128-byte header followed by
+// Candidate stream is a checked little-endian KM2BND02 header followed by
 // canonical 32-byte DirectedSegmentI64 records.
 std::vector<DirectedSegmentI64> read_candidate_stream(
     const std::string &path, const BoundaryOracle &oracle);
 
+std::vector<DirectedSegmentI64> read_candidate_stream(
+    const std::string &path, const CandidateStreamIdentity &identity);
+
 void write_candidate_stream(const std::string &path,
                             const BoundaryOracle &oracle);
+
+void write_candidate_stream(
+    const std::string &path,
+    const std::vector<DirectedSegmentI64> &segments,
+    const CandidateStreamIdentity &identity);
 
 }  // namespace m2_boundary_oracle
 }  // namespace klayout_cuda

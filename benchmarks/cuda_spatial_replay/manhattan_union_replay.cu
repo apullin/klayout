@@ -2031,8 +2031,40 @@ void compare_production_boundary(
   }
 }
 
+void validate_production_boundary_identity(const UnionOutput &candidate)
+{
+  if (candidate.fallback) {
+    throw std::runtime_error(
+        "production CUDA union fell back: " + candidate.message);
+  }
+  if (candidate.segments.size() != kProductionM2BoundarySegments ||
+      candidate.digest != kProductionM2BoundaryFnv64) {
+    std::ostringstream stream;
+    stream << "production boundary census/digest mismatch candidate_count="
+           << candidate.segments.size()
+           << " candidate_fnv=" << candidate.digest;
+    throw std::runtime_error(stream.str());
+  }
+}
+
+std::vector<m2oracle::DirectedSegmentI64> portable_candidate(
+    const UnionOutput &candidate)
+{
+  validate_production_boundary_identity(candidate);
+  std::vector<m2oracle::DirectedSegmentI64> result;
+  result.reserve(candidate.segments.size());
+  for (const DirectedSegmentI64 &segment : candidate.segments) {
+    result.push_back(
+        {segment.fixed, segment.lo, segment.hi, segment.side,
+         static_cast<m2oracle::SegmentAxis>(
+             static_cast<std::uint32_t>(segment.axis))});
+  }
+  return result;
+}
+
 void run_production_m2(const std::string &kact_path,
                        const std::string &oracle_path,
+                       const std::string &candidate_output_path,
                        std::uint32_t repeat, int device)
 {
   if (!repeat)
@@ -2051,17 +2083,21 @@ void run_production_m2(const std::string &kact_path,
   const std::vector<RectI64> rectangles =
       expand_production_rectangles(scene, &host_expand_ms);
 
-  const auto oracle_begin = Clock::now();
-  m2oracle::LoadOptions oracle_options;
-  oracle_options.expected_file_sha256 =
-      kProductionM2OracleFileSha256;
-  oracle_options.expected_scene_sha256 =
-      kProductionM2OracleSceneSha256;
-  oracle_options.expected_boundary_sha256 =
-      kProductionM2BoundarySha256;
-  const m2oracle::BoundaryOracle oracle =
-      m2oracle::load_cpu_merged_boundary(oracle_path, oracle_options);
-  const double oracle_ms = elapsed_ms(oracle_begin, Clock::now());
+  m2oracle::BoundaryOracle oracle;
+  double oracle_ms = 0.0;
+  if (!oracle_path.empty()) {
+    const auto oracle_begin = Clock::now();
+    m2oracle::LoadOptions oracle_options;
+    oracle_options.expected_file_sha256 =
+        kProductionM2OracleFileSha256;
+    oracle_options.expected_scene_sha256 =
+        kProductionM2OracleSceneSha256;
+    oracle_options.expected_boundary_sha256 =
+        kProductionM2BoundarySha256;
+    oracle =
+        m2oracle::load_cpu_merged_boundary(oracle_path, oracle_options);
+    oracle_ms = elapsed_ms(oracle_begin, Clock::now());
+  }
 
   Limits limits;
   limits.max_memberships = UINT64_C(100000000);
@@ -2074,16 +2110,39 @@ void run_production_m2(const std::string &kact_path,
   UnionOutput candidate;
   for (std::uint32_t run = 0; run < repeat; ++run) {
     candidate = gpu_union(rectangles, limits, device);
-    compare_production_boundary(oracle, candidate);
+    validate_production_boundary_identity(candidate);
+    if (!oracle_path.empty()) {
+      compare_production_boundary(oracle, candidate);
+    }
     print_gpu_timing(run, candidate);
     if (run)
       warm_times.push_back(candidate.total_ms);
     else
       cold_time = candidate.total_ms;
   }
+  double candidate_write_ms = 0.0;
+  if (!candidate_output_path.empty()) {
+    const auto write_begin = Clock::now();
+    const std::vector<m2oracle::DirectedSegmentI64> segments =
+        portable_candidate(candidate);
+    m2oracle::CandidateStreamIdentity identity;
+    // Bind the published boundary to the exact raw hierarchical KACT input,
+    // not merely to the independently qualified merged-boundary oracle.
+    identity.producer_scene_sha256 = kProductionM2SceneSha256;
+    identity.qualification_scene_sha256 =
+        kProductionM2OracleSceneSha256;
+    identity.boundary_sha256 = kProductionM2BoundarySha256;
+    identity.segment_count = kProductionM2BoundarySegments;
+    identity.boundary_fnv64 = kProductionM2BoundaryFnv64;
+    m2oracle::write_candidate_stream(
+        candidate_output_path, segments, identity);
+    candidate_write_ms = elapsed_ms(write_begin, Clock::now());
+  }
   const double warm_median =
       warm_times.empty() ? cold_time : median(warm_times);
   const double pipeline_ms = load_ms + host_expand_ms + warm_median;
+  const double published_pipeline_ms =
+      load_ms + host_expand_ms + candidate.total_ms + candidate_write_ms;
   std::cout
       << "M2_MANHATTAN_PRODUCTION_UNION PASS"
       << " rectangles=" << rectangles.size()
@@ -2093,10 +2152,17 @@ void run_production_m2(const std::string &kact_path,
       << " boundary_fnv64=" << candidate.digest
       << " load_ms=" << std::fixed << std::setprecision(3) << load_ms
       << " host_expand_ms=" << host_expand_ms
+      << " oracle_qualification="
+      << (oracle_path.empty() ? 0 : 1)
       << " oracle_ms=" << oracle_ms
       << " cold_gpu_ms=" << cold_time
       << " warm_gpu_median_ms=" << warm_median
       << " charged_host_roundtrip_pipeline_ms=" << pipeline_ms
+      << " candidate_output="
+      << (candidate_output_path.empty() ? "none" : candidate_output_path)
+      << " candidate_gpu_ms=" << candidate.total_ms
+      << " candidate_write_ms=" << candidate_write_ms
+      << " published_candidate_pipeline_ms=" << published_pipeline_ms
       << " sampled_live_allocation_delta_mib="
       << std::setprecision(1)
       << (candidate.device_free_begin_bytes -
@@ -2123,6 +2189,7 @@ void print_help(const char *program)
       << "  --benchmark-grid N       union an N-by-N touching rectangle grid\n"
       << "  --production-m2-kact P   qualified raw hierarchical M2 capture\n"
       << "  --production-m2-oracle P qualified CPU-merged KM1WS oracle\n"
+      << "  --production-m2-candidate-out P write exact GPU KM2BND02 result\n"
       << "  --repeat N               benchmark process-local runs (default 5)\n"
       << "  --device N               CUDA device (default 0)\n"
       << "  --help                   show this text\n";
@@ -2139,6 +2206,7 @@ int main(int argc, char **argv)
     int device = 0;
     std::string production_kact;
     std::string production_oracle;
+    std::string production_candidate_output;
     for (int index = 1; index < argc; ++index) {
       const std::string option = argv[index];
       if (option == "--self-test") {
@@ -2153,6 +2221,9 @@ int main(int argc, char **argv)
       } else if (option == "--production-m2-oracle" &&
                  index + 1 < argc) {
         production_oracle = argv[++index];
+      } else if (option == "--production-m2-candidate-out" &&
+                 index + 1 < argc) {
+        production_candidate_output = argv[++index];
       } else if (option == "--device" && index + 1 < argc) {
         device = static_cast<int>(parse_u32(argv[++index], "--device"));
       } else if (option == "--help") {
@@ -2164,13 +2235,22 @@ int main(int argc, char **argv)
     }
     if (self_test) run_self_test(device);
     if (benchmark_grid) run_benchmark(benchmark_grid, repeat, device);
-    if (production_kact.empty() != production_oracle.empty()) {
+    if (production_kact.empty() &&
+        (!production_oracle.empty() ||
+         !production_candidate_output.empty())) {
       throw std::runtime_error(
-          "production M2 requires both KACT and KM1WS paths");
+          "production M2 oracle/output requires a KACT path");
+    }
+    if (!production_kact.empty() &&
+        production_oracle.empty() &&
+        production_candidate_output.empty()) {
+      throw std::runtime_error(
+          "production M2 requires an oracle or candidate output");
     }
     if (!production_kact.empty()) {
       run_production_m2(
-          production_kact, production_oracle, repeat, device);
+          production_kact, production_oracle,
+          production_candidate_output, repeat, device);
     }
     if (!self_test && !benchmark_grid && production_kact.empty())
       throw std::runtime_error("no action requested");

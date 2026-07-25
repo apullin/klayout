@@ -1,7 +1,7 @@
 # Exact merged-M2 flat Region bridge
 
-Status: production offline feasibility gate passed; live integration is not
-implemented.
+Status: production direct-stream offline gate passed; the in-process KLayout
+ABI hook is not implemented.
 
 ## Result
 
@@ -39,6 +39,86 @@ This is a practical earlier landing point than porting the full morphology
 chain to CUDA.  The GPU still removes the expensive raw 22.95-million-polygon
 union; KLayout receives the exact merged boundary and performs the remaining
 set operations on only 14,222 flat contours.
+
+## Actual GPU-output transaction
+
+The original feasibility result below loaded the independent CPU oracle and
+composed separately measured timings.  The direct production gate now runs
+the actual producer and consumer in sequence:
+
+```text
+pinned raw KACT
+  -> 22,946,444 exact expanded rectangles
+  -> CUDA global Manhattan union
+  -> actual 4,385,384-segment D2H result
+  -> checked KM2BND02 serialization
+  -> checked KM2BND02 read
+  -> endpoint stitch + already-merged FlatRegion
+  -> stock M2.1/.2 + F90/long-edge spacing + F270
+```
+
+`KM2BND02` removes the former provenance ambiguity by carrying both scene
+identities:
+
+```text
+producer/raw-KACT SHA-256
+  dd239a45408a046eece0ca1e4c8759ea4b8539e6b7a51599c2ac9a2996a86bd2
+qualification/KM1WS SHA-256
+  441475a90d0471b886d5f09622d083b29aaa92f9cf47f31f4b7715792cf14480
+boundary-payload SHA-256
+  94b715fc2f9e2ab53f0af0f3dda5a579e9fa4b55b98fc2d04a1a0d9732ad820d
+boundary FNV-64
+  7541395996791771514
+```
+
+The 32-byte `(fixed,lo,hi,side,axis)` record ABI is unchanged.  Before KLayout
+materialization, the consumer requires the exact two scene identities,
+payload SHA-256, FNV-64, 4,385,384-record census, strict
+`(axis,side,fixed,lo,hi)` order, valid segment semantics, and maximal
+nonoverlapping fragments.  The existing endpoint-degree and contour checks
+then run as a second independent topology barrier.  Production payload-bit
+and truncation probes were both rejected before stitching.
+
+The producer did not load the CPU oracle.  The independent CPU oracle was run
+after serialization and compared all 4,385,384 records exactly; its 5.935 s
+load and 0.981 s comparison are qualification-only and excluded below.
+
+On the local RTX 3080 host, the charged producer half was:
+
+| producer phase | time |
+| --- | ---: |
+| pinned KACT load | 0.563 s |
+| 32-thread hierarchy expansion | 0.583 s |
+| actual final warm GPU union including D2H/teardown | 0.575 s |
+| vector conversion + SHA/FNV + KM2BND02 write | 1.077 s |
+| **producer total** | **2.798 s** |
+
+Three independent fused consumer processes all reproduced the exact output
+censuses.  Their charged timings were:
+
+| consumer phase | median | range |
+| --- | ---: | ---: |
+| KM2BND02 read + all identity/canonical checks | 0.963 s | 0.958-0.966 s |
+| endpoint stitch + `Shapes` | 2.341 s | 2.250-2.392 s |
+| already-merged `Region` copy | 0.006 s | 0.006-0.008 s |
+| stock M2.1 width check | 1.073 s | 1.073-1.074 s |
+| stock M2.2 space check | 2.453 s | 2.436-2.457 s |
+| stock F90/F270 certificate | 14.804 s | 14.799-14.882 s |
+| **consumer total** | **21.648 s** | **21.606-21.689 s** |
+
+Therefore the serialization/read-charged standalone transaction is
+**24.446 s median** (24.404-24.487 s), including the exact M2.1/.2 and
+F90/F270 clean certificates.  Against the deliberately conservative prior
+67.612 s two-merge denominator, this is 43.166 s, or 63.84%, less time.
+That comparison remains unequal in the favorable direction for the old path
+because the new numerator also includes downstream certificates.
+
+This is a directly executed producer-to-consumer gate, no longer a sum of
+separate historical trials.  It is still an offline file seam, not a measured
+live KLayout ABI or full-launcher wall-time win.  An in-memory backend should
+remove most of the 1.077 s write and 0.963 s read payments.
+The immutable local run bundle is
+`/home/pullin/personal/klayout/.scratchpad/cuda-runs/m2-gpu-flat-pipeline.5QWPAg`.
 
 ## Trust boundary and topology
 
@@ -169,8 +249,25 @@ until the other near-equal poles are reduced.
 
 ## Reproduction
 
-The gate needs an optimized qmake KLayout build and the pinned production
-KM1WS oracle:
+The direct gate needs an optimized qmake KLayout build, raw production KACT,
+and pinned production KM1WS qualification oracle:
+
+```sh
+KLAYOUT_QMAKE_BUILD_DIR=/path/to/klayout-build \
+KLAYOUT_M2_GPU_FLAT_KACT=/path/to/m2-via1-x2.kact \
+KLAYOUT_M2_GPU_FLAT_ORACLE=/tmp/m2-width-space-census-exact.km1ws \
+  benchmarks/cuda_spatial_replay/run_m2_gpu_flat_pipeline.sh \
+  /path/to/standalone-build
+```
+
+It builds both endpoints, runs ten candidate-stream tests and five contour
+tests, publishes the actual production GPU result, performs the excluded
+independent oracle comparison and full-boundary qualification, runs three
+charged fused consumers, and proves payload corruption/truncation rejection.
+The final `M2_GPU_FLAT_PIPELINE` line reports the charged producer, consumer
+median, and direct-stream total separately.
+
+The older CPU-oracle-only feasibility gate remains available:
 
 ```sh
 KLAYOUT_QMAKE_BUILD_DIR=/path/to/klayout-build \
@@ -191,4 +288,3 @@ KM1WS scene
 canonical boundary
   94b715fc2f9e2ab53f0af0f3dda5a579e9fa4b55b98fc2d04a1a0d9732ad820d
 ```
-
