@@ -36,6 +36,7 @@
 #include "dbFillTool.h"
 #include "dbRegionProcessors.h"
 #include "dbCompoundOperation.h"
+#include "dbCudaActive3.h"
 #include "dbCudaImplant12.h"
 #include "dbCudaM2Rules.h"
 #include "dbCudaPoly34.h"
@@ -1709,6 +1710,52 @@ static bool cuda_m1_contact_clean (
          contact->merged_semantics () && metal1->merged_semantics () &&
          db::cuda_m1_contact_try_empty (
            deep_metal1->deep_layer (), deep_contact->deep_layer ());
+}
+
+static bool cuda_active3_raw_wells_clean (
+  const db::Region *nwell, const db::Region *pwell,
+  const db::Region *active)
+{
+  // Resolve the optional capability before touching hierarchy state.  The
+  // caller retains all three pristine operands for the exact CPU fallback.
+  if (! db::cuda_spatial_active3_raw_wells_requested ()) {
+    return false;
+  }
+  const db::DeepRegion *deep_nwell =
+    dynamic_cast<const db::DeepRegion *> (nwell->delegate ());
+  const db::DeepRegion *deep_pwell =
+    dynamic_cast<const db::DeepRegion *> (pwell->delegate ());
+  const db::DeepRegion *deep_active =
+    dynamic_cast<const db::DeepRegion *> (active->delegate ());
+  if (! deep_nwell || ! deep_pwell || ! deep_active ||
+      ! nwell->merged_semantics () || ! pwell->merged_semantics () ||
+      ! active->merged_semantics ()) {
+    return false;
+  }
+
+  const db::DeepLayer &raw_nwell = deep_nwell->deep_layer ();
+  const db::DeepLayer &raw_pwell = deep_pwell->deep_layer ();
+  const db::DeepLayer &raw_active = deep_active->deep_layer ();
+  if (raw_nwell.layer () >= raw_nwell.layout ().layers () ||
+      raw_pwell.layer () >= raw_pwell.layout ().layers () ||
+      raw_active.layer () >= raw_active.layout ().layers () ||
+      ! raw_nwell.layout ().get_properties (raw_nwell.layer ()).log_equal (
+          db::LayerProperties (3, 0)) ||
+      ! raw_pwell.layout ().get_properties (raw_pwell.layer ()).log_equal (
+          db::LayerProperties (2, 0)) ||
+      ! raw_active.layout ().get_properties (raw_active.layer ()).log_equal (
+          db::LayerProperties (1, 0))) {
+    return false;
+  }
+
+  try {
+    return db::cuda_active3_raw_wells_try_empty (
+      raw_nwell, raw_pwell, raw_active);
+  } catch (...) {
+    // This is a speculative empty certificate.  No exception is permitted to
+    // bypass the historical WELL union and ACTIVE.3 implementation.
+    return false;
+  }
 }
 
 static bool cuda_implant12_clean (
@@ -4842,6 +4889,16 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "contact size and spacing, full M1 containment, and two-opposite-side M1 "
     "enclosure rules are all certified empty. False requires every historical "
     "CPU rule.\n"
+  ) +
+  method_ext (
+    "cuda_active3_raw_wells_clean?", &cuda_active3_raw_wells_clean,
+    gsi::arg ("pwell"), gsi::arg ("active"),
+    "@brief Tries ACTIVE.3 before constructing merged WELL or ACTIVE\n"
+    "\n"
+    "This internal fail-closed hook serializes complete raw physical NWELL, "
+    "PWELL, and ACTIVE contours. True means their qualified raw superset has "
+    "no ACTIVE.3 hit. False requires the unchanged WELL union and historical "
+    "ACTIVE.3 expression.\n"
   ) +
   method_ext (
     "cuda_implant12_clean?", &cuda_implant12_clean,

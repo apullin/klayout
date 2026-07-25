@@ -31,6 +31,13 @@ POLY4 = (
     '70nm")'
 )
 POLY34_SOURCE_BLOCK = f"{POLY3}\n{POLY4}"
+ACTIVE3_WELL = "well = nwell.or(pwell) if need_well"
+ACTIVE3_RULE = (
+    "well.enclosing(active, 55.nm, euclidian)"
+    '.output("ACTIVE.3", "ACTIVE.3 : Minimum enclosure/spacing of '
+    'nwell/pwell to active: 55nm")'
+)
+ACTIVE3_SOURCE_BLOCK = f"{ACTIVE3_WELL}\nintervening\n{ACTIVE3_RULE}"
 
 M2_CPU12 = """metal2_width, metal2_space = metal2.drc_batch([
   width(euclidian) &lt; 70.nm,
@@ -431,6 +438,136 @@ class Poly34TransformTest(unittest.TestCase):
             "expected one source block, found 0",
         ):
             generator.inject_poly34_ruby_exception(POLY34_SOURCE_BLOCK)
+
+
+class Active3RawWellsTransformTest(unittest.TestCase):
+    def test_exact_transaction_is_deterministic_and_fail_closed(self) -> None:
+        source = f"before\n{ACTIVE3_SOURCE_BLOCK}\nafter\n"
+
+        first = generator.add_active3_raw_wells(source)
+        second = generator.add_active3_raw_wells(source)
+
+        self.assertEqual(first, second)
+        self.assertTrue(first.startswith("before\n"))
+        self.assertTrue(first.endswith("\nafter\n"))
+        self.assertEqual(
+            first.count(
+                'active3_raw_wells_request = '
+                'ENV["KLAYOUT_CUDA_ACTIVE3_RAW_WELLS"].to_s'
+            ),
+            1,
+        )
+        self.assertIn(
+            "nwell.respond_to?(:cuda_active3_raw_wells_clean?)", first
+        )
+        self.assertIn(
+            "nwell.cuda_active3_raw_wells_clean?(pwell, active)", first
+        )
+        self.assertIn(
+            "rescue StandardError =&gt; active3_raw_wells_error", first
+        )
+        self.assertLess(
+            first.index("active3_raw_wells_clean = false"),
+            first.index("unless active3_raw_wells_clean"),
+        )
+
+        # Each exact source operation remains once, exclusively in the
+        # fail-closed branch.  The certified branch only publishes an empty
+        # category and never constructs WELL.
+        self.assertEqual(first.count(ACTIVE3_WELL), 1)
+        self.assertEqual(first.count(ACTIVE3_RULE), 1)
+        clean_branch = first.split(
+            "\nif active3_raw_wells_clean\n", 1
+        )[1].split("\nelse", 1)[0]
+        self.assertNotIn("nwell.or(pwell)", clean_branch)
+        self.assertNotIn("well.enclosing", clean_branch)
+        self.assertIn("active3_raw_wells_empty.output", clean_branch)
+
+    def test_owner_excludes_every_other_well_consumer(self) -> None:
+        transformed = generator.add_active3_raw_wells(ACTIVE3_SOURCE_BLOCK)
+        owner = next(
+            line
+            for line in transformed.splitlines()
+            if line.startswith("active3_raw_wells_owner =")
+        )
+
+        for required in (
+            "active3_raw_wells_requested",
+            "DRC",
+            "run_active3",
+            "!run_well",
+            "!run_active4",
+            "!(OFFGRID &amp;&amp; run_grid)",
+        ):
+            self.assertIn(required, owner)
+
+    def test_exception_is_caught_before_literal_cpu_fallback(self) -> None:
+        transformed = generator.add_active3_raw_wells(ACTIVE3_SOURCE_BLOCK)
+
+        call_at = transformed.index(
+            "nwell.cuda_active3_raw_wells_clean?(pwell, active)"
+        )
+        rescue_at = transformed.index(
+            "rescue StandardError =&gt; active3_raw_wells_error"
+        )
+        reset_at = transformed.index(
+            "active3_raw_wells_clean = false", rescue_at
+        )
+        union_at = transformed.index(f"  {ACTIVE3_WELL}")
+        rule_at = transformed.index(f"  {ACTIVE3_RULE}")
+        self.assertLess(call_at, rescue_at)
+        self.assertLess(rescue_at, reset_at)
+        self.assertLess(reset_at, union_at)
+        self.assertLess(reset_at, rule_at)
+
+    def test_rejects_changed_or_duplicate_source_anchors(self) -> None:
+        changed_union = ACTIVE3_SOURCE_BLOCK.replace(
+            "nwell.or(pwell)", "nwell | pwell"
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"ACTIVE\.3 raw-WELL union transaction: "
+            r"expected one source block, found 0",
+        ):
+            generator.add_active3_raw_wells(changed_union)
+
+        changed_rule = ACTIVE3_SOURCE_BLOCK.replace("55.nm", "56.nm")
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"ACTIVE\.3 raw-WELL output transaction: "
+            r"expected one source block, found 0",
+        ):
+            generator.add_active3_raw_wells(changed_rule)
+
+        duplicated = (
+            f"{ACTIVE3_WELL}\n{ACTIVE3_WELL}\nintervening\n{ACTIVE3_RULE}"
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"ACTIVE\.3 raw-WELL union transaction: "
+            r"expected one source block, found 2",
+        ):
+            generator.add_active3_raw_wells(duplicated)
+
+    def test_composes_with_poly34_without_weakening_either_fallback(
+        self,
+    ) -> None:
+        source = f"{ACTIVE3_SOURCE_BLOCK}\n{POLY34_SOURCE_BLOCK}"
+
+        transformed = generator.add_poly34(
+            generator.add_active3_raw_wells(source)
+        )
+
+        self.assertEqual(transformed.count(ACTIVE3_WELL), 1)
+        self.assertEqual(transformed.count(ACTIVE3_RULE), 1)
+        self.assertEqual(transformed.count(POLY3), 1)
+        self.assertEqual(transformed.count(POLY4), 1)
+        self.assertEqual(
+            transformed.count("BEGIN KLAYOUT CUDA ACTIVE3 RAW WELLS"), 1
+        )
+        self.assertEqual(
+            transformed.count("BEGIN KLAYOUT CUDA POLY34 TRANSACTION"), 1
+        )
 
 
 class CombinedM2PolyTransformTest(unittest.TestCase):

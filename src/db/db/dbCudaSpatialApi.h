@@ -315,7 +315,17 @@ enum klayout_cuda_spatial_active3_opcode
    * complete raw ACTIVE.  Zero unshielded raw hits soundly certifies the
    * later merged-ACTIVE check empty; any hit or uncertainty falls back.
    */
-  KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_SUPERSET_EMPTY = 3
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_SUPERSET_EMPTY = 3,
+  /*
+   * ACTIVE.3 before WELL construction.  The indexed historical WELL domain
+   * is the concatenation of complete raw NWELL and raw PWELL contours, while
+   * the streamed ACTIVE domain is also raw.  Every boundary of
+   * union(NWELL, PWELL) and merged ACTIVE is an orientation-preserving
+   * subsegment of this raw universe.  Consequently only zero unshielded raw
+   * hits is consumable; every hit or uncertainty retains the exact WELL union
+   * and historical ACTIVE.3 path.
+   */
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_WELLS_BOTH_SUPERSET_EMPTY = 4
 };
 
 enum klayout_cuda_spatial_active3_option_flag
@@ -338,7 +348,13 @@ enum klayout_cuda_spatial_active3_option_flag
    * The indexed (historical WELL) operand is the relation's secondary
    * operand.  This bit is deliberately absent from the ACTIVE.3 profile.
    */
-  KLAYOUT_CUDA_SPATIAL_ACTIVE3_INDEXED_SECONDARY = 1u << 14
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_INDEXED_SECONDARY = 1u << 14,
+  /*
+   * The indexed domain is complete raw NWELL followed by complete raw PWELL,
+   * rather than the exact merged WELL boundary used by the established
+   * ACTIVE.3 profile.
+   */
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_WELLS_SUPERSET = 1u << 15
 };
 
 #define KLAYOUT_CUDA_SPATIAL_ACTIVE3_QUALIFIED_OPTIONS \
@@ -349,6 +365,10 @@ enum klayout_cuda_spatial_active3_option_flag
 
 #define KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_QUALIFIED_OPTIONS \
   ((1u << 15) - 1u)
+
+#define KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_WELLS_QUALIFIED_OPTIONS \
+  (KLAYOUT_CUDA_SPATIAL_ACTIVE3_QUALIFIED_OPTIONS | \
+   KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_WELLS_SUPERSET)
 
 enum klayout_cuda_spatial_active3_disposition
 {

@@ -1,0 +1,40 @@
+# Focused live host gate for the pre-WELL ACTIVE.3 certificate.
+
+raise("missing -rd input=PATH") unless $input
+raise("missing -rd topcell=NAME") unless $topcell
+raise("missing -rd output=PATH") unless $output
+
+mode = ($mode || "cpu").to_s
+raise("unsupported mode #{mode}") unless %w[cpu cuda].include?(mode)
+
+source($input, $topcell)
+report("ACTIVE.3 raw-WELL CUDA gate", $output)
+deep
+
+active = polygons(1, 0)
+pwell = polygons(2, 0)
+nwell = polygons(3, 0)
+
+clean = false
+if mode == "cuda"
+  clean =
+    nwell.respond_to?(:cuda_active3_raw_wells_clean?) &&
+    nwell.cuda_active3_raw_wells_clean?(pwell, active)
+end
+
+if clean
+  result = polygon_layer
+else
+  well = nwell.or(pwell)
+  result = well.enclosing(active, 55.nm, euclidian)
+end
+
+result.output(
+  "ACTIVE.3",
+  "ACTIVE.3 : Minimum enclosure/spacing of nwell/pwell to active: 55nm"
+)
+puts(
+  "ACTIVE3_RAW_WELLS_LIVE_DECK ok" \
+  " mode=#{mode} top=#{$topcell}" \
+  " certified=#{clean ? 1 : 0} empty=#{result.is_empty? ? 1 : 0}"
+)

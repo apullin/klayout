@@ -57,6 +57,10 @@ const int64_t qualified_distance = 110;
 const int64_t qualified_grid_cell = 2000;
 const uint32_t qualified_dbu_per_micron = 2000;
 const int64_t qualified_contact4_distance = 10;
+const int qualified_active_layer = 1;
+const int qualified_pwell_layer = 2;
+const int qualified_nwell_layer = 3;
+const int qualified_active3_datatype = 0;
 const int qualified_contact4_active_layer = 1;
 const int qualified_contact4_contact_layer = 10;
 const int qualified_contact4_datatype = 0;
@@ -213,11 +217,16 @@ struct LiveScene
   std::vector<klayout_cuda_spatial_active3_cell_v1> cells;
   std::vector<klayout_cuda_spatial_active3_edge_v1> edges;
   uint64_t flat_well_edges;
+  uint64_t flat_first_well_edges;
+  uint64_t flat_second_well_edges;
   uint64_t flat_active_edges;
+  std::vector<uint32_t> first_well_edge_counts;
+  std::vector<uint32_t> second_well_edge_counts;
   int64_t well_left, well_bottom, well_right, well_top;
 
   LiveScene ()
-    : flat_well_edges (0), flat_active_edges (0),
+    : flat_well_edges (0), flat_first_well_edges (0),
+      flat_second_well_edges (0), flat_active_edges (0),
       well_left (0), well_bottom (0), well_right (0), well_top (0)
   {
     //  nothing yet
@@ -532,6 +541,16 @@ void derive_context_lists_and_well_box (LiveScene &scene)
             scene.flat_well_edges)) {
         throw Active3Decline ("flat WELL edge count overflow");
       }
+      if (! checked_add_u64 (
+            scene.flat_first_well_edges,
+            scene.first_well_edge_counts [context.cell_id],
+            scene.flat_first_well_edges) ||
+          ! checked_add_u64 (
+            scene.flat_second_well_edges,
+            scene.second_well_edge_counts [context.cell_id],
+            scene.flat_second_well_edges)) {
+        throw Active3Decline ("flat raw-WELL edge count overflow");
+      }
       for (uint32_t local = 0; local < cell.well_edge_count; ++local) {
         const klayout_cuda_spatial_active3_edge_v1 &edge =
           scene.edges [cell.well_edge_begin + local];
@@ -572,17 +591,25 @@ void derive_context_lists_and_well_box (LiveScene &scene)
     throw Active3Decline (
       "qualified scene has an empty operand or too many WELL edges");
   }
+  uint64_t split_well_edges = 0;
+  if (! checked_add_u64 (
+        scene.flat_first_well_edges, scene.flat_second_well_edges,
+        split_well_edges) ||
+      split_well_edges != scene.flat_well_edges) {
+    throw Active3Decline ("raw-WELL edge census is inconsistent");
+  }
 }
 
-LiveScene serialize_live_scene (
-  const db::DeepLayer &well, const db::DeepLayer &active,
+LiveScene serialize_live_scene_impl (
+  const db::DeepLayer &first_well, const db::DeepLayer *second_well,
+  const db::DeepLayer &active,
   uint64_t max_contexts)
 {
-  const db::Layout &layout = well.layout ();
-  const db::cell_index_type top = well.initial_cell ().cell_index ();
+  const db::Layout &layout = first_well.layout ();
+  const db::cell_index_type top = first_well.initial_cell ().cell_index ();
   std::set<db::cell_index_type> reachable;
   reachable.insert (top);
-  well.initial_cell ().collect_called_cells (reachable);
+  first_well.initial_cell ().collect_called_cells (reachable);
   if (reachable.empty () ||
       reachable.size () > std::numeric_limits<uint32_t>::max ()) {
     throw Active3Decline ("reachable hierarchy has an invalid cell count");
@@ -602,6 +629,8 @@ LiveScene serialize_live_scene (
 
   LiveScene scene;
   scene.cells.resize (reachable.size ());
+  scene.first_well_edge_counts.resize (reachable.size (), 0);
+  scene.second_well_edge_counts.resize (reachable.size (), 0);
   std::vector<CellTemplate> templates (reachable.size ());
   for (std::set<db::cell_index_type>::const_iterator source =
          reachable.begin (); source != reachable.end (); ++source) {
@@ -616,8 +645,27 @@ LiveScene serialize_live_scene (
     klayout_cuda_spatial_active3_cell_v1 record;
     std::memset (&record, 0, sizeof (record));
     append_cell_layer (
-      cell, well.layer (), scene.edges,
+      cell, first_well.layer (), scene.edges,
       record.well_edge_begin, record.well_edge_count);
+    scene.first_well_edge_counts [cell_id] = record.well_edge_count;
+    if (second_well) {
+      uint64_t second_begin = 0;
+      uint32_t second_count = 0;
+      append_cell_layer (
+        cell, second_well->layer (), scene.edges,
+        second_begin, second_count);
+      const uint64_t expected_second_begin =
+        record.well_edge_begin + record.well_edge_count;
+      if (second_begin != expected_second_begin ||
+          second_count >
+            std::numeric_limits<uint32_t>::max () -
+              record.well_edge_count) {
+        throw Active3Decline (
+          "concatenated raw-WELL cell record exceeds uint32");
+      }
+      record.well_edge_count += second_count;
+      scene.second_well_edge_counts [cell_id] = second_count;
+    }
     append_cell_layer (
       cell, active.layer (), scene.edges,
       record.active_edge_begin, record.active_edge_count);
@@ -628,6 +676,61 @@ LiveScene serialize_live_scene (
     root->second, templates, max_contexts, scene.contexts);
   derive_context_lists_and_well_box (scene);
   return scene;
+}
+
+LiveScene serialize_live_scene (
+  const db::DeepLayer &well, const db::DeepLayer &active,
+  uint64_t max_contexts)
+{
+  return serialize_live_scene_impl (well, 0, active, max_contexts);
+}
+
+LiveScene serialize_raw_wells_live_scene (
+  const db::DeepLayer &nwell, const db::DeepLayer &pwell,
+  const db::DeepLayer &active, uint64_t max_contexts)
+{
+  return serialize_live_scene_impl (nwell, &pwell, active, max_contexts);
+}
+
+bool physical_layer_is (
+  const db::DeepLayer &operand, int layer, int datatype)
+{
+  if (operand.layer () >= operand.layout ().layers ()) {
+    return false;
+  }
+  const db::LayerProperties &properties =
+    operand.layout ().get_properties (operand.layer ());
+  return properties.layer == layer && properties.datatype == datatype;
+}
+
+bool eligible_raw_wells (
+  const db::DeepLayer &nwell, const db::DeepLayer &pwell,
+  const db::DeepLayer &active)
+{
+  return
+    physical_layer_is (
+      nwell, qualified_nwell_layer, qualified_active3_datatype) &&
+    physical_layer_is (
+      pwell, qualified_pwell_layer, qualified_active3_datatype) &&
+    physical_layer_is (
+      active, qualified_active_layer, qualified_active3_datatype) &&
+    nwell.store () == pwell.store () &&
+    nwell.store () == active.store () &&
+    &nwell.layout () == &pwell.layout () &&
+    &nwell.layout () == &active.layout () &&
+    nwell.layout_index () == pwell.layout_index () &&
+    nwell.layout_index () == active.layout_index () &&
+    nwell.initial_cell ().cell_index () ==
+      pwell.initial_cell ().cell_index () &&
+    nwell.initial_cell ().cell_index () ==
+      active.initial_cell ().cell_index () &&
+    nwell.breakout_cells () == 0 &&
+    pwell.breakout_cells () == 0 &&
+    active.breakout_cells () == 0 &&
+    nwell.layer () != pwell.layer () &&
+    nwell.layer () != active.layer () &&
+    pwell.layer () != active.layer () &&
+    nwell.layout ().dbu () == 0.0005;
 }
 
 bool eligible (
@@ -968,6 +1071,156 @@ bool cuda_active3_try_empty (
     if (telemetry) {
       try {
         tl::info << "CUDA ACTIVE.3 live lowering:"
+                 << " outcome=cpu-fallback message=unknown exception";
+      } catch (...) {
+        //  Telemetry must never turn a speculative decline into an error.
+      }
+    }
+  }
+  return false;
+}
+
+bool cuda_active3_raw_wells_try_empty (
+  const db::DeepLayer &raw_nwell, const db::DeepLayer &raw_pwell,
+  const db::DeepLayer &raw_active)
+{
+  const bool telemetry =
+    env_enabled ("KLAYOUT_CUDA_ACTIVE3_RAW_WELLS_TELEMETRY");
+  const std::chrono::steady_clock::time_point begin =
+    std::chrono::steady_clock::now ();
+  try {
+    if (! db::cuda_spatial_active3_raw_wells_requested () ||
+        ! eligible_raw_wells (raw_nwell, raw_pwell, raw_active)) {
+      return false;
+    }
+
+    const uint64_t max_contexts = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_RAW_WELLS_MAX_CONTEXTS",
+      default_max_contexts);
+    const uint64_t max_grid_cells = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_RAW_WELLS_MAX_GRID_CELLS",
+      default_max_grid_cells);
+    const uint64_t max_memberships = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_RAW_WELLS_MAX_MEMBERSHIPS",
+      default_max_memberships);
+    const uint64_t max_pair_work = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_RAW_WELLS_MAX_PAIR_WORK",
+      default_max_pair_work);
+    if (! max_contexts || ! max_grid_cells || ! max_memberships ||
+        ! max_pair_work) {
+      throw Active3Decline ("a raw-WELL ACTIVE.3 capacity is zero");
+    }
+
+    LiveScene scene = serialize_raw_wells_live_scene (
+      raw_nwell, raw_pwell, raw_active, max_contexts);
+    uint64_t pair_work = 0;
+    if (! checked_multiply_u64 (
+          scene.flat_well_edges, scene.flat_active_edges, pair_work)) {
+      throw Active3Decline ("raw-WELL/ACTIVE pair-work census overflow");
+    }
+    if (pair_work > max_pair_work) {
+      if (telemetry) {
+        tl::info << "CUDA ACTIVE.3 raw-WELL live lowering:"
+                 << " outcome=cpu-fallback"
+                 << " reason=pair-work-capacity"
+                 << " contexts=" << scene.contexts.size ()
+                 << " nwell_edges=" << scene.flat_first_well_edges
+                 << " pwell_edges=" << scene.flat_second_well_edges
+                 << " active_edges=" << scene.flat_active_edges
+                 << " pair_bound=" << pair_work
+                 << " max_pair_work=" << max_pair_work;
+      }
+      return false;
+    }
+
+    klayout_cuda_spatial_active3_request_v1 request;
+    std::memset (&request, 0, sizeof (request));
+    request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+    request.struct_size = sizeof (request);
+    request.opcode =
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_WELLS_BOTH_SUPERSET_EMPTY;
+    request.option_flags =
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_WELLS_QUALIFIED_OPTIONS;
+    request.dbu_per_micron = qualified_dbu_per_micron;
+    request.distance = qualified_distance;
+    request.grid_cell_size = qualified_grid_cell;
+    request.contexts = scene.contexts.data ();
+    request.context_count = scene.contexts.size ();
+    request.well_contexts = scene.well_contexts.data ();
+    request.well_context_count = scene.well_contexts.size ();
+    request.well_offsets = scene.well_offsets.data ();
+    request.well_offset_count = scene.well_offsets.size ();
+    request.active_contexts = scene.active_contexts.data ();
+    request.active_context_count = scene.active_contexts.size ();
+    request.cells = scene.cells.data ();
+    request.cell_count = scene.cells.size ();
+    request.edges = scene.edges.data ();
+    request.edge_count = scene.edges.size ();
+    request.flat_well_edge_count = scene.flat_well_edges;
+    request.flat_active_edge_count = scene.flat_active_edges;
+    request.well_left = scene.well_left;
+    request.well_bottom = scene.well_bottom;
+    request.well_right = scene.well_right;
+    request.well_top = scene.well_top;
+    request.max_contexts = max_contexts;
+    request.max_grid_cells = max_grid_cells;
+    request.max_memberships = max_memberships;
+    request.max_pair_work = max_pair_work;
+    std::array<uint8_t, 32> digest;
+    if (! db::cuda_active3_digest::request_digest (request, digest)) {
+      throw Active3Decline ("unable to digest the raw-WELL live scene");
+    }
+    std::copy (digest.begin (), digest.end (), request.scene_digest);
+
+    const std::chrono::steady_clock::time_point call_begin =
+      std::chrono::steady_clock::now ();
+    const db::CudaActive3Attempt attempt =
+      db::cuda_spatial_try_active3_empty (request);
+    const std::chrono::steady_clock::time_point end =
+      std::chrono::steady_clock::now ();
+    if (telemetry) {
+      tl::info << "CUDA ACTIVE.3 raw-WELL live lowering:"
+               << " outcome="
+               << (attempt.disposition ==
+                     db::CudaActive3Attempt::CertifiedEmpty
+                     ? "certified-empty"
+                     : "cpu-fallback")
+               << " contexts=" << request.context_count
+               << " well_contexts=" << request.well_context_count
+               << " active_contexts=" << request.active_context_count
+               << " cells=" << request.cell_count
+               << " stored_edges=" << request.edge_count
+               << " nwell_edges=" << scene.flat_first_well_edges
+               << " pwell_edges=" << scene.flat_second_well_edges
+               << " active_edges=" << request.flat_active_edge_count
+               << " pair_bound=" << pair_work
+               << " max_pair_work=" << max_pair_work
+               << " candidates=" << attempt.candidate_pair_count
+               << " raw_hits=" << attempt.raw_hit_count
+               << " lower_ms="
+               << std::chrono::duration<double, std::milli> (
+                    call_begin - begin).count ()
+               << " call_ms="
+               << std::chrono::duration<double, std::milli> (
+                    end - call_begin).count ()
+               << " total_ms="
+               << std::chrono::duration<double, std::milli> (
+                    end - begin).count ();
+    }
+    return attempt.disposition == db::CudaActive3Attempt::CertifiedEmpty;
+  } catch (const std::exception &ex) {
+    if (telemetry) {
+      try {
+        tl::info << "CUDA ACTIVE.3 raw-WELL live lowering:"
+                 << " outcome=cpu-fallback message=" << ex.what ();
+      } catch (...) {
+        //  Telemetry must never turn a speculative decline into an error.
+      }
+    }
+  } catch (...) {
+    if (telemetry) {
+      try {
+        tl::info << "CUDA ACTIVE.3 raw-WELL live lowering:"
                  << " outcome=cpu-fallback message=unknown exception";
       } catch (...) {
         //  Telemetry must never turn a speculative decline into an error.

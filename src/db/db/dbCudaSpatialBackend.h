@@ -447,6 +447,15 @@ DB_PUBLIC CudaActive3Attempt cuda_spatial_try_active3_empty (
 DB_PUBLIC bool cuda_spatial_active3_requested ();
 
 /**
+ * Return true only when the pre-WELL raw-NWELL/PWELL ACTIVE.3 opt-in and the
+ * established ACTIVE.3 backend symbol exist.
+ *
+ * The new profile has an explicit opcode/options contract, so an older
+ * backend that exports the symbol still fails closed when invoked.
+ */
+DB_PUBLIC bool cuda_spatial_active3_raw_wells_requested ();
+
+/**
  * Invoke the optional CONTACT.4 raw-CONTACT-superset empty certificate.
  *
  * The request reuses the ACTIVE.3 scene ABI: the historical WELL fields hold

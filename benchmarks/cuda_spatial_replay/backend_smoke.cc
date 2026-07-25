@@ -942,6 +942,122 @@ bool run_active3_abi_smoke() {
   }
   good = clean_good;
 
+  // Pre-WELL ACTIVE.3 deliberately reuses the exact predicate and export,
+  // but its opcode/options pair is inseparable.  In this bounded scene the
+  // indexed four-edge contour stands for the concatenated raw-WELL domain.
+  klayout_cuda_spatial_active3_request_v1 raw_wells_request = request;
+  raw_wells_request.opcode =
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_WELLS_BOTH_SUPERSET_EMPTY;
+  raw_wells_request.option_flags =
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_WELLS_QUALIFIED_OPTIONS;
+  const bool raw_wells_digest_good = set_active3_digest(raw_wells_request);
+  klayout_cuda_spatial_active3_result_v1 raw_wells_clean{};
+  const int raw_wells_status =
+      raw_wells_digest_good
+          ? klayout_cuda_spatial_run_active3_empty_v1(
+                &raw_wells_request, &raw_wells_clean)
+          : KLAYOUT_CUDA_SPATIAL_ERROR;
+  const bool raw_wells_good =
+      raw_wells_digest_good &&
+      raw_wells_status == KLAYOUT_CUDA_SPATIAL_OK &&
+      raw_wells_clean.status == KLAYOUT_CUDA_SPATIAL_OK &&
+      raw_wells_clean.disposition ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_COMPLETE &&
+      raw_wells_clean.opcode ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_WELLS_BOTH_SUPERSET_EMPTY &&
+      raw_wells_clean.option_flags ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_WELLS_QUALIFIED_OPTIONS &&
+      raw_wells_clean.fallback_flags == 0 &&
+      raw_wells_clean.device_flags == 0 &&
+      raw_wells_clean.raw_hit_count == 0 &&
+      raw_wells_clean.uncertain_count == 0;
+  if (!raw_wells_good) {
+    report_active3_failure(
+        "CUDA ACTIVE.3 raw-WELL clean-certificate smoke",
+        raw_wells_status, raw_wells_clean);
+  }
+  good = raw_wells_good && good;
+
+  klayout_cuda_spatial_active3_request_v1 raw_wells_wrong_options =
+      raw_wells_request;
+  raw_wells_wrong_options.option_flags =
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_QUALIFIED_OPTIONS;
+  const bool raw_wells_wrong_options_digest_good =
+      set_active3_digest(raw_wells_wrong_options);
+  klayout_cuda_spatial_active3_result_v1 raw_wells_wrong_options_result{};
+  const int raw_wells_wrong_options_status =
+      raw_wells_wrong_options_digest_good
+          ? klayout_cuda_spatial_run_active3_empty_v1(
+                &raw_wells_wrong_options,
+                &raw_wells_wrong_options_result)
+          : KLAYOUT_CUDA_SPATIAL_ERROR;
+  const bool raw_wells_wrong_options_good =
+      raw_wells_wrong_options_digest_good &&
+      raw_wells_wrong_options_status ==
+          KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      raw_wells_wrong_options_result.status ==
+          KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      raw_wells_wrong_options_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN;
+  if (!raw_wells_wrong_options_good) {
+    report_active3_failure(
+        "CUDA ACTIVE.3 raw-WELL strict-option gate",
+        raw_wells_wrong_options_status,
+        raw_wells_wrong_options_result);
+  }
+  good = raw_wells_wrong_options_good && good;
+
+  klayout_cuda_spatial_active3_request_v1 merged_wrong_options = request;
+  merged_wrong_options.option_flags =
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_WELLS_QUALIFIED_OPTIONS;
+  const bool merged_wrong_options_digest_good =
+      set_active3_digest(merged_wrong_options);
+  klayout_cuda_spatial_active3_result_v1 merged_wrong_options_result{};
+  const int merged_wrong_options_status =
+      merged_wrong_options_digest_good
+          ? klayout_cuda_spatial_run_active3_empty_v1(
+                &merged_wrong_options, &merged_wrong_options_result)
+          : KLAYOUT_CUDA_SPATIAL_ERROR;
+  const bool merged_wrong_options_good =
+      merged_wrong_options_digest_good &&
+      merged_wrong_options_status ==
+          KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      merged_wrong_options_result.status ==
+          KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      merged_wrong_options_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN;
+  if (!merged_wrong_options_good) {
+    report_active3_failure(
+        "CUDA ACTIVE.3 merged profile rejects raw-WELL options",
+        merged_wrong_options_status, merged_wrong_options_result);
+  }
+  good = merged_wrong_options_good && good;
+
+  klayout_cuda_spatial_active3_request_v1 raw_wells_capacity =
+      raw_wells_request;
+  raw_wells_capacity.max_pair_work = 15;
+  const bool raw_wells_capacity_digest_good =
+      set_active3_digest(raw_wells_capacity);
+  klayout_cuda_spatial_active3_result_v1 raw_wells_capacity_result{};
+  const int raw_wells_capacity_status =
+      raw_wells_capacity_digest_good
+          ? klayout_cuda_spatial_run_active3_empty_v1(
+                &raw_wells_capacity, &raw_wells_capacity_result)
+          : KLAYOUT_CUDA_SPATIAL_ERROR;
+  const bool raw_wells_capacity_good =
+      raw_wells_capacity_digest_good &&
+      raw_wells_capacity_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      raw_wells_capacity_result.status ==
+          KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      raw_wells_capacity_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN;
+  if (!raw_wells_capacity_good) {
+    report_active3_failure(
+        "CUDA ACTIVE.3 raw-WELL Cartesian capacity gate",
+        raw_wells_capacity_status, raw_wells_capacity_result);
+  }
+  good = raw_wells_capacity_good && good;
+
   // Move ACTIVE within 50 DBU of every WELL edge: raw hits must request
   // pristine CPU fallback and must never masquerade as publishable markers.
   edges[4] = {50, 50, 50, 950};
@@ -1016,8 +1132,8 @@ bool run_active3_abi_smoke() {
 
   if (good) {
     std::cout << "CUDA ACTIVE.3 additive ABI smoke passed: "
-                 "clean certificate, raw-hit fallback, digest/count "
-                 "rejection\n";
+                 "clean certificate, raw-WELL profile/options/capacity, "
+                 "raw-hit fallback, digest/count rejection\n";
   }
   return good;
 }

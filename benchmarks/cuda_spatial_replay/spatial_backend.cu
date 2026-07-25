@@ -2547,6 +2547,13 @@ bool active3_profile_qualified(
                klayout_cuda::active3::
                    kContact4QualifiedSceneCoordinateDistance;
   }
+  if (request.opcode ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_WELLS_BOTH_SUPERSET_EMPTY) {
+    return request.option_flags ==
+               KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_WELLS_QUALIFIED_OPTIONS &&
+           request.distance ==
+               klayout_cuda::active3::kQualifiedSceneCoordinateDistance;
+  }
   return false;
 }
 
@@ -2584,13 +2591,14 @@ bool valid_active3_request(
     return false;
   }
 
-  // Preserve the original conservative ACTIVE.3 gate.  Its production scene
-  // fits the Cartesian bound.  CONTACT.4 deliberately indexes tens of
-  // millions of raw CONTACT edges, making the Cartesian product unusable;
-  // that profile is bounded against actual spatial candidates in the query
-  // kernel instead.
+  // Preserve the conservative Cartesian gate for both ACTIVE.3 profiles.
+  // CONTACT.4 deliberately indexes tens of millions of raw CONTACT edges,
+  // making the Cartesian product unusable; that profile is bounded against
+  // actual spatial candidates in the query kernel instead.
   if (request.opcode ==
-      KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_SUPERSET_EMPTY) {
+        KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_SUPERSET_EMPTY ||
+      request.opcode ==
+        KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_WELLS_BOTH_SUPERSET_EMPTY) {
     if (request.flat_active_edge_count >
         std::numeric_limits<std::uint64_t>::max() /
             request.flat_well_edge_count) {
@@ -3019,6 +3027,9 @@ int run_active3_request(
     return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
   }
   echo_active3_request(*request, result);
+  const bool raw_wells_profile =
+      request->opcode ==
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_WELLS_BOTH_SUPERSET_EMPTY;
   const char *profile =
       request->opcode ==
               KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_SUPERSET_EMPTY
@@ -3026,7 +3037,7 @@ int run_active3_request(
           : (request->opcode ==
                      KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_SUPERSET_EMPTY
                  ? "CONTACT.4"
-                 : "ACTIVE.3");
+                 : (raw_wells_profile ? "raw-WELL ACTIVE.3" : "ACTIVE.3"));
 
   const auto total_begin = Clock::now();
   try {

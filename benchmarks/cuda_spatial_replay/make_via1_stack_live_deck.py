@@ -426,6 +426,52 @@ end
     )
 
 
+def add_active3_raw_wells(text: str) -> str:
+    text = replace_once(
+        text,
+        """well = nwell.or(pwell) if need_well""",
+        """# BEGIN KLAYOUT CUDA ACTIVE3 RAW WELLS TRANSACTION
+# This transaction may bypass WELL construction only when ACTIVE.3 is its sole
+# consumer.  Every missing method, exception, host/backend decline, raw hit,
+# or uncertainty leaves this flag false and executes the literal source union.
+active3_raw_wells_request = ENV["KLAYOUT_CUDA_ACTIVE3_RAW_WELLS"].to_s
+active3_raw_wells_requested = !active3_raw_wells_request.empty? &amp;&amp; active3_raw_wells_request != "0" &amp;&amp; active3_raw_wells_request != "false" &amp;&amp; active3_raw_wells_request != "off"
+active3_raw_wells_owner = active3_raw_wells_requested &amp;&amp; DRC &amp;&amp; run_active3 &amp;&amp; !run_well &amp;&amp; !run_active4 &amp;&amp; !(OFFGRID &amp;&amp; run_grid)
+active3_raw_wells_clean = false
+active3_raw_wells_reason = "not-owner"
+if active3_raw_wells_owner
+  active3_raw_wells_reason = "method-unavailable"
+  begin
+    if nwell.respond_to?(:cuda_active3_raw_wells_clean?)
+      active3_raw_wells_clean = nwell.cuda_active3_raw_wells_clean?(pwell, active)
+      active3_raw_wells_reason = active3_raw_wells_clean ? "certified-empty" : "certificate-declined"
+    end
+  rescue StandardError =&gt; active3_raw_wells_error
+    active3_raw_wells_clean = false
+    active3_raw_wells_reason = "exception:#{active3_raw_wells_error.class}"
+  end
+end
+active3_raw_wells_empty = polygon_layer if active3_raw_wells_clean
+info("CUDA ACTIVE.3 raw-WELL transaction: #{active3_raw_wells_clean ? 'certified-empty' : 'full-cpu-fallback'} reason=#{active3_raw_wells_reason}") if active3_raw_wells_owner
+
+unless active3_raw_wells_clean
+  well = nwell.or(pwell) if need_well
+end
+# END KLAYOUT CUDA ACTIVE3 RAW WELLS TRANSACTION""",
+        "ACTIVE.3 raw-WELL union transaction",
+    )
+    return replace_once(
+        text,
+        """well.enclosing(active, 55.nm, euclidian).output("ACTIVE.3", "ACTIVE.3 : Minimum enclosure/spacing of nwell/pwell to active: 55nm")""",
+        """if active3_raw_wells_clean
+  active3_raw_wells_empty.output("ACTIVE.3", "ACTIVE.3 : Minimum enclosure/spacing of nwell/pwell to active: 55nm")
+else
+  well.enclosing(active, 55.nm, euclidian).output("ACTIVE.3", "ACTIVE.3 : Minimum enclosure/spacing of nwell/pwell to active: 55nm")
+end""",
+        "ACTIVE.3 raw-WELL output transaction",
+    )
+
+
 def inject_poly34_ruby_exception(text: str) -> str:
     return replace_once(
         text,
@@ -460,6 +506,11 @@ def main() -> int:
         help="also add the fail-closed POLY.3/.4 transaction",
     )
     parser.add_argument(
+        "--active3-raw-wells",
+        action="store_true",
+        help="also try ACTIVE.3 before constructing the WELL union",
+    )
+    parser.add_argument(
         "--inject-poly34-ruby-exception",
         action="store_true",
         help="gate-only: replace the qualified POLY.3/.4 hook with an exception",
@@ -470,6 +521,8 @@ def main() -> int:
 
     source = args.input.read_text(encoding="utf-8")
     output = transform(source)
+    if args.active3_raw_wells:
+        output = add_active3_raw_wells(output)
     if args.m2_rules:
         output = add_m2_rules(output)
     if args.implant12:

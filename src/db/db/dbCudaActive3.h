@@ -35,6 +35,19 @@ DB_PUBLIC bool cuda_active3_try_empty (
   const db::DeepLayer &raw_active);
 
 /**
+ * Try ACTIVE.3 before constructing merged WELL or merged ACTIVE.
+ *
+ * The indexed operand is the complete raw NWELL contour stream followed by
+ * the complete raw PWELL contour stream.  The primary is complete raw ACTIVE.
+ * True is returned only for an exact, fully echoed zero-hit certificate.
+ * Every decline, hit, uncertainty, error, or malformed input means that the
+ * caller must retain the historical WELL union and ACTIVE.3 implementation.
+ */
+DB_PUBLIC bool cuda_active3_raw_wells_try_empty (
+  const db::DeepLayer &raw_nwell, const db::DeepLayer &raw_pwell,
+  const db::DeepLayer &raw_active);
+
+/**
  * Try the narrowly qualified live CONTACT.4 empty certificate.
  *
  * The primary is merged FreePDK45 GDS layer 1/0 (ACTIVE) and the secondary is
