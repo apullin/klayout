@@ -58,6 +58,35 @@ static_assert (
   offsetof (CudaM2UnionTiming, setup_ns) == 8 &&
   offsetof (CudaM2UnionTiming, total_ns) == 64,
   "additive M2 union component-timing ABI layout changed");
+static_assert (
+  sizeof (void *) != 8 ||
+    (sizeof (klayout_cuda_spatial_contact4_active_union_scene_v1) == 280 &&
+     offsetof (
+       klayout_cuda_spatial_contact4_active_union_scene_v1,
+       digest_domain) == 224 &&
+     offsetof (
+       klayout_cuda_spatial_contact4_active_union_scene_v1,
+       scene_digest) == 232),
+  "CONTACT.4 ACTIVE-union scene ABI layout changed");
+static_assert (
+  sizeof (void *) != 8 ||
+    (sizeof (klayout_cuda_spatial_contact4_active_union_scene_echo_v1) ==
+       192 &&
+     sizeof (klayout_cuda_spatial_contact4_active_union_request_v1) == 760 &&
+     offsetof (
+       klayout_cuda_spatial_contact4_active_union_request_v1,
+       active) == 48 &&
+     offsetof (
+       klayout_cuda_spatial_contact4_active_union_request_v1,
+       contact) == 328 &&
+     sizeof (klayout_cuda_spatial_contact4_active_union_result_v1) == 944 &&
+     offsetof (
+       klayout_cuda_spatial_contact4_active_union_result_v1,
+       active) == 64 &&
+     offsetof (
+       klayout_cuda_spatial_contact4_active_union_result_v1,
+       contact) == 256),
+  "CONTACT.4 ACTIVE-union request/result ABI layout changed");
 
 CudaSpatialAttempt::CudaSpatialAttempt ()
   : disposition (Disabled), fallback_flags (0), membership_count (0),
@@ -72,6 +101,21 @@ CudaActive3Attempt::CudaActive3Attempt ()
     context_count (0), well_context_count (0), active_context_count (0),
     cell_count (0), edge_count (0), flat_well_edge_count (0),
     flat_active_edge_count (0), grid_cell_count (0), membership_count (0),
+    candidate_pair_count (0), raw_hit_count (0), uncertain_count (0),
+    total_ns (0)
+{
+  //  nothing yet
+}
+
+CudaContact4ActiveUnionAttempt::CudaContact4ActiveUnionAttempt ()
+  : disposition (Disabled), fallback_flags (0), device_flags (0),
+    active_context_count (0), contact_context_count (0),
+    flat_active_polygon_count (0), flat_active_edge_count (0),
+    flat_contact_polygon_count (0), flat_contact_edge_count (0),
+    rectangle_count (0), x_slab_count (0), union_membership_count (0),
+    strip_interval_count (0), boundary_segment_count (0),
+    grid_cell_count (0), contact_membership_count (0),
+    boundary_cell_visit_count (0), member_visit_count (0),
     candidate_pair_count (0), raw_hit_count (0), uncertain_count (0),
     total_ns (0)
 {
@@ -325,6 +369,137 @@ bool qualified_m2_union_request (
       request.context_count);
 }
 
+bool contact4_active_union_domain_matches (
+  const uint8_t domain [KLAYOUT_CUDA_SPATIAL_CONTACT4_DIGEST_DOMAIN_BYTES],
+  const char *expected)
+{
+  return std::memcmp (
+           domain, expected,
+           KLAYOUT_CUDA_SPATIAL_CONTACT4_DIGEST_DOMAIN_BYTES) == 0;
+}
+
+bool qualified_contact4_active_union_scene (
+  const klayout_cuda_spatial_contact4_active_union_scene_v1 &scene,
+  uint32_t expected_role, uint32_t expected_layer,
+  const char *expected_digest_domain, uint64_t max_contexts)
+{
+  uint64_t minimum_source_edges = 0;
+  uint64_t minimum_flat_edges = 0;
+  return
+    checked_multiply_u64 (
+      scene.polygon_count, UINT64_C (4), minimum_source_edges) &&
+    checked_multiply_u64 (
+      scene.flat_polygon_count, UINT64_C (4), minimum_flat_edges) &&
+    scene.struct_size == sizeof (scene) &&
+    scene.role == expected_role &&
+    scene.format_version == 1 &&
+    scene.dbu_per_micron == 2000 &&
+    scene.layer == expected_layer && scene.datatype == 0 &&
+    scene.reserved0 == 0 && scene.context_reserved == 0 &&
+    scene.cell_reserved == 0 && scene.polygon_reserved == 0 &&
+    scene.edge_reserved == 0 &&
+    scene.reserved1 [0] == 0 && scene.reserved1 [1] == 0 &&
+    contact4_active_union_domain_matches (
+      scene.digest_domain, expected_digest_domain) &&
+    scene.context_count && scene.contexts &&
+    scene.context_record_bytes ==
+      sizeof (klayout_cuda_spatial_m1_width_space_context_v1) &&
+    scene.layer_context_count && scene.layer_contexts &&
+    scene.context_polygon_offset_count == scene.layer_context_count &&
+    scene.context_polygon_offsets &&
+    scene.context_edge_offset_count == scene.layer_context_count &&
+    scene.context_edge_offsets &&
+    scene.cell_count && scene.cells &&
+    scene.cell_record_bytes ==
+      sizeof (klayout_cuda_spatial_m1_width_space_cell_v1) &&
+    scene.polygon_count && scene.polygons &&
+    scene.polygon_record_bytes ==
+      sizeof (klayout_cuda_spatial_m1_width_space_polygon_v1) &&
+    scene.edge_count && scene.edges &&
+    scene.edge_record_bytes ==
+      sizeof (klayout_cuda_spatial_m1_width_space_edge_v1) &&
+    scene.root_cell < scene.cell_count &&
+    scene.flat_polygon_count && scene.flat_edge_count &&
+    scene.edge_count >= minimum_source_edges &&
+    scene.flat_edge_count >= minimum_flat_edges &&
+    scene.scene_left < scene.scene_right &&
+    scene.scene_bottom < scene.scene_top &&
+    max_contexts &&
+    scene.context_count <= max_contexts &&
+    scene.context_count <= std::numeric_limits<uint32_t>::max () &&
+    scene.layer_context_count <= std::numeric_limits<uint32_t>::max () &&
+    scene.cell_count <= std::numeric_limits<uint32_t>::max () &&
+    scene.polygon_count <= std::numeric_limits<uint32_t>::max () &&
+    scene.edge_count <= std::numeric_limits<uint32_t>::max () &&
+    scene.flat_polygon_count <= std::numeric_limits<uint32_t>::max () &&
+    scene.flat_edge_count <= std::numeric_limits<uint32_t>::max () &&
+    array_bytes_fit (scene.context_count, scene.context_record_bytes) &&
+    array_bytes_fit (scene.layer_context_count, sizeof (uint32_t)) &&
+    array_bytes_fit (
+      scene.context_polygon_offset_count, sizeof (uint64_t)) &&
+    array_bytes_fit (
+      scene.context_edge_offset_count, sizeof (uint64_t)) &&
+    array_bytes_fit (scene.cell_count, scene.cell_record_bytes) &&
+    array_bytes_fit (scene.polygon_count, scene.polygon_record_bytes) &&
+    array_bytes_fit (scene.edge_count, scene.edge_record_bytes) &&
+    strictly_increasing_context_ids (
+      scene.layer_contexts, scene.layer_context_count,
+      scene.context_count);
+}
+
+bool qualified_contact4_active_union_request (
+  const klayout_cuda_spatial_contact4_active_union_request_v1 &request)
+{
+  return
+    request.abi_version == KLAYOUT_CUDA_SPATIAL_ABI_VERSION &&
+    request.struct_size == sizeof (request) &&
+    request.opcode ==
+      KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_EMPTY &&
+    request.option_flags ==
+      KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_QUALIFIED_OPTIONS &&
+    request.format_version == 1 && request.dbu_per_micron == 2000 &&
+    request.device >= 0 && request.reserved0 == 0 &&
+    request.distance == 10 && request.grid_cell_size == 2000 &&
+    request.union_reserved == 0 &&
+    request.reserved1 [0] == 0 && request.reserved1 [1] == 0 &&
+    request.reserved1 [2] == 0 && request.reserved1 [3] == 0 &&
+    request.max_contexts &&
+    request.max_contexts <= std::numeric_limits<uint32_t>::max () &&
+    request.max_rectangles && request.max_x_slabs &&
+    request.max_union_memberships && request.max_events &&
+    request.max_raw_segments && request.max_boundary_segments &&
+    request.max_slabs_per_rectangle &&
+    request.max_x_slabs <= std::numeric_limits<uint32_t>::max () &&
+    request.max_contact_edges &&
+    request.max_contact_edges <= std::numeric_limits<uint32_t>::max () &&
+    request.max_grid_cells &&
+    request.max_grid_cells <= std::numeric_limits<uint32_t>::max () &&
+    request.max_contact_memberships &&
+    request.max_boundary_cell_visits &&
+    request.max_member_visits && request.max_pair_work &&
+    request.max_cells_per_contact_edge &&
+    request.max_cells_per_boundary_edge &&
+    qualified_contact4_active_union_scene (
+      request.active, KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_ROLE, 1,
+      KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_DIGEST_DOMAIN,
+      request.max_contexts) &&
+    qualified_contact4_active_union_scene (
+      request.contact, KLAYOUT_CUDA_SPATIAL_CONTACT4_CONTACT_ROLE, 10,
+      KLAYOUT_CUDA_SPATIAL_CONTACT4_CONTACT_DIGEST_DOMAIN,
+      request.max_contexts) &&
+    request.active.format_version == request.format_version &&
+    request.contact.format_version == request.format_version &&
+    request.active.dbu_per_micron == request.dbu_per_micron &&
+    request.contact.dbu_per_micron == request.dbu_per_micron &&
+    request.contact.flat_edge_count <= request.max_contact_edges &&
+    array_bytes_fit (
+      request.max_rectangles,
+      sizeof (klayout_cuda_spatial_m1_width_space_polygon_v1)) &&
+    array_bytes_fit (
+      request.max_boundary_segments,
+      sizeof (klayout_cuda_spatial_m2_union_segment_v1));
+}
+
 bool qualified_via1_stack_request (
   const klayout_cuda_spatial_via1_stack_request_v1 &request)
 {
@@ -564,6 +739,10 @@ public:
         env_enabled ("KLAYOUT_CUDA_CONTACT4_RAW_ACTIVE")),
       m_contact4_raw_active_telemetry (
         env_enabled ("KLAYOUT_CUDA_CONTACT4_RAW_ACTIVE_TELEMETRY")),
+      m_contact4_active_union_enabled (
+        env_enabled ("KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION")),
+      m_contact4_active_union_telemetry (
+        env_enabled ("KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_TELEMETRY")),
       m_implant12_enabled (env_enabled ("KLAYOUT_CUDA_IMPLANT12")),
       m_implant12_telemetry (
         env_enabled ("KLAYOUT_CUDA_IMPLANT12_TELEMETRY")),
@@ -589,6 +768,7 @@ public:
         env_enabled ("KLAYOUT_CUDA_M1_CONTACT_TELEMETRY")),
       m_handle (0), m_run_bipartite (0), m_run_self (0),
       m_run_active3 (0), m_run_contact4_raw_active (0),
+      m_run_contact4_active_union (0),
       m_run_implant12 (0), m_run_m1_width_space (0),
       m_run_m2_width_space (0), m_run_m2_union (0),
       m_release_m2_union (0), m_run_poly34 (0),
@@ -634,6 +814,12 @@ public:
           GetProcAddress (
             reinterpret_cast<HMODULE> (m_handle),
             "klayout_cuda_spatial_run_contact4_raw_active_empty_v1"));
+      m_run_contact4_active_union =
+        reinterpret_cast<
+          klayout_cuda_spatial_run_contact4_active_union_empty_v1_func> (
+          GetProcAddress (
+            reinterpret_cast<HMODULE> (m_handle),
+            "klayout_cuda_spatial_run_contact4_active_union_empty_v1"));
       m_run_implant12 =
         reinterpret_cast<klayout_cuda_spatial_run_implant12_empty_v1_func> (
           GetProcAddress (
@@ -696,6 +882,12 @@ public:
           dlsym (
             m_handle,
             "klayout_cuda_spatial_run_contact4_raw_active_empty_v1"));
+      m_run_contact4_active_union =
+        reinterpret_cast<
+          klayout_cuda_spatial_run_contact4_active_union_empty_v1_func> (
+          dlsym (
+            m_handle,
+            "klayout_cuda_spatial_run_contact4_active_union_empty_v1"));
       m_run_implant12 =
         reinterpret_cast<klayout_cuda_spatial_run_implant12_empty_v1_func> (
           dlsym (
@@ -746,6 +938,7 @@ public:
       m_run_self = 0;
       m_run_active3 = 0;
       m_run_contact4_raw_active = 0;
+      m_run_contact4_active_union = 0;
       m_run_implant12 = 0;
       m_run_m1_width_space = 0;
       m_run_m2_width_space = 0;
@@ -798,6 +991,16 @@ public:
   bool contact4_raw_active_enabled () const
   {
     return m_contact4_raw_active_enabled;
+  }
+
+  bool contact4_active_union_ready () const
+  {
+    return m_contact4_active_union_enabled && m_run_contact4_active_union;
+  }
+
+  bool contact4_active_union_enabled () const
+  {
+    return m_contact4_active_union_enabled;
   }
 
   bool contact4_enabled () const
@@ -925,6 +1128,11 @@ public:
     return m_contact4_raw_active_telemetry;
   }
 
+  bool contact4_active_union_telemetry () const
+  {
+    return m_contact4_active_union_telemetry;
+  }
+
   bool via1_stack_telemetry () const
   {
     return m_via1_stack_telemetry;
@@ -959,6 +1167,12 @@ public:
   run_contact4_raw_active () const
   {
     return m_run_contact4_raw_active;
+  }
+
+  klayout_cuda_spatial_run_contact4_active_union_empty_v1_func
+  run_contact4_active_union () const
+  {
+    return m_run_contact4_active_union;
   }
 
   klayout_cuda_spatial_run_implant12_empty_v1_func run_implant12 () const
@@ -1014,6 +1228,8 @@ private:
   bool m_contact4_telemetry;
   bool m_contact4_raw_active_enabled;
   bool m_contact4_raw_active_telemetry;
+  bool m_contact4_active_union_enabled;
+  bool m_contact4_active_union_telemetry;
   bool m_implant12_enabled;
   bool m_implant12_telemetry;
   bool m_m1_width_space_enabled;
@@ -1034,6 +1250,8 @@ private:
   klayout_cuda_spatial_run_active3_empty_v1_func m_run_active3;
   klayout_cuda_spatial_run_contact4_raw_active_empty_v1_func
     m_run_contact4_raw_active;
+  klayout_cuda_spatial_run_contact4_active_union_empty_v1_func
+    m_run_contact4_active_union;
   klayout_cuda_spatial_run_implant12_empty_v1_func m_run_implant12;
   klayout_cuda_spatial_run_m1_width_space_empty_v1_func m_run_m1_width_space;
   klayout_cuda_spatial_run_m2_width_space_empty_v1_func m_run_m2_width_space;
@@ -1156,6 +1374,58 @@ void log_active3_profile_attempt (const CudaActive3Attempt &attempt,
   } else {
     log_active3_attempt (attempt);
   }
+}
+
+void log_contact4_active_union_attempt (
+  const CudaContact4ActiveUnionAttempt &attempt)
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  if (! module.contact4_active_union_telemetry ()) {
+    return;
+  }
+
+  const char *outcome = "unknown";
+  switch (attempt.disposition) {
+  case CudaContact4ActiveUnionAttempt::CertifiedEmpty:
+    outcome = "certified-empty";
+    break;
+  case CudaContact4ActiveUnionAttempt::RawHits:
+    outcome = "raw-hits-cpu-fallback";
+    break;
+  case CudaContact4ActiveUnionAttempt::BackendFallback:
+    outcome = "fallback";
+    break;
+  case CudaContact4ActiveUnionAttempt::BackendError:
+    outcome = "error";
+    break;
+  case CudaContact4ActiveUnionAttempt::InvalidResult:
+    outcome = "invalid-result";
+    break;
+  case CudaContact4ActiveUnionAttempt::Disabled:
+    outcome = "disabled";
+    break;
+  }
+
+  tl::info << "CUDA CONTACT.4 fused ACTIVE-union empty certificate:"
+           << " outcome=" << outcome
+           << " active_contexts=" << attempt.active_context_count
+           << " contact_contexts=" << attempt.contact_context_count
+           << " active_polygons=" << attempt.flat_active_polygon_count
+           << " contact_edges=" << attempt.flat_contact_edge_count
+           << " rectangles=" << attempt.rectangle_count
+           << " boundary_segments=" << attempt.boundary_segment_count
+           << " grid_cells=" << attempt.grid_cell_count
+           << " memberships=" << attempt.contact_membership_count
+           << " boundary_visits=" << attempt.boundary_cell_visit_count
+           << " member_visits=" << attempt.member_visit_count
+           << " candidates=" << attempt.candidate_pair_count
+           << " raw_hits=" << attempt.raw_hit_count
+           << " uncertain=" << attempt.uncertain_count
+           << " total_ms=" << (double (attempt.total_ns) / 1.0e6)
+           << " fallback_flags=" << attempt.fallback_flags
+           << " device_flags=" << attempt.device_flags
+           << (attempt.message.empty () ? "" : " message=")
+           << attempt.message;
 }
 
 void log_metal_width_space_attempt (
@@ -1572,6 +1842,42 @@ void interpret_result (CudaSpatialAttempt &attempt, int status,
   }
 }
 
+bool contact4_active_union_scene_echo_matches (
+  const klayout_cuda_spatial_contact4_active_union_scene_v1 &scene,
+  const klayout_cuda_spatial_contact4_active_union_scene_echo_v1 &echo)
+{
+  return
+    echo.struct_size == sizeof (echo) &&
+    echo.role == scene.role &&
+    echo.format_version == scene.format_version &&
+    echo.dbu_per_micron == scene.dbu_per_micron &&
+    echo.root_cell == scene.root_cell &&
+    echo.layer == scene.layer && echo.datatype == scene.datatype &&
+    echo.reserved0 == 0 &&
+    echo.context_count == scene.context_count &&
+    echo.layer_context_count == scene.layer_context_count &&
+    echo.context_polygon_offset_count ==
+      scene.context_polygon_offset_count &&
+    echo.context_edge_offset_count == scene.context_edge_offset_count &&
+    echo.cell_count == scene.cell_count &&
+    echo.polygon_count == scene.polygon_count &&
+    echo.edge_count == scene.edge_count &&
+    echo.flat_polygon_count == scene.flat_polygon_count &&
+    echo.flat_edge_count == scene.flat_edge_count &&
+    echo.scene_left == scene.scene_left &&
+    echo.scene_bottom == scene.scene_bottom &&
+    echo.scene_right == scene.scene_right &&
+    echo.scene_top == scene.scene_top &&
+    std::equal (
+      echo.digest_domain,
+      echo.digest_domain +
+        KLAYOUT_CUDA_SPATIAL_CONTACT4_DIGEST_DOMAIN_BYTES,
+      scene.digest_domain) &&
+    std::equal (
+      echo.scene_digest, echo.scene_digest + 32, scene.scene_digest) &&
+    echo.reserved1 [0] == 0 && echo.reserved1 [1] == 0;
+}
+
 } // anonymous namespace
 
 CudaSpatialAttempt cuda_spatial_try_bipartite (
@@ -1755,6 +2061,188 @@ bool cuda_spatial_requested ()
 {
   CudaSpatialModule &module = cuda_spatial_module ();
   return module.enabled () && module.ready ();
+}
+
+bool cuda_spatial_validate_contact4_active_union_result (
+  const klayout_cuda_spatial_contact4_active_union_request_v1 &request,
+  const klayout_cuda_spatial_contact4_active_union_result_v1 &result,
+  int backend_status, std::string *error)
+{
+  const auto fail = [error] (const char *message) {
+    if (error) {
+      try {
+        *error = message;
+      } catch (...) {
+        //  Diagnostics cannot turn a fail-closed result into an exception.
+      }
+    }
+    return false;
+  };
+
+  try {
+    if (! qualified_contact4_active_union_request (request)) {
+      return fail (
+        "host supplied an unqualified CONTACT.4 ACTIVE-union request");
+    }
+    if (result.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+        result.struct_size != sizeof (result) ||
+        result.reserved0 != 0 ||
+        result.reserved1 [0] != 0 || result.reserved1 [1] != 0) {
+      return fail (
+        "CUDA CONTACT.4 ACTIVE-union backend returned an incompatible result");
+    }
+    if (backend_status != int (result.status)) {
+      return fail (
+        "CUDA CONTACT.4 ACTIVE-union backend returned inconsistent statuses");
+    }
+    if (backend_status != KLAYOUT_CUDA_SPATIAL_OK) {
+      return fail (
+        "CUDA CONTACT.4 ACTIVE-union backend did not return a proof");
+    }
+    if (result.opcode != request.opcode ||
+        result.option_flags != request.option_flags ||
+        result.format_version != request.format_version ||
+        result.dbu_per_micron != request.dbu_per_micron ||
+        result.device != request.device ||
+        result.distance != request.distance ||
+        result.grid_cell_size != request.grid_cell_size ||
+        ! contact4_active_union_scene_echo_matches (
+            request.active, result.active) ||
+        ! contact4_active_union_scene_echo_matches (
+            request.contact, result.contact) ||
+        result.fallback_flags != KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE ||
+        result.device_flags != 0) {
+      return fail (
+        "CUDA CONTACT.4 ACTIVE-union backend returned a mismatched proof echo");
+    }
+
+    uint64_t expected_event_count = 0;
+    uint64_t maximum_contact_memberships = 0;
+    uint64_t maximum_boundary_cell_visits = 0;
+    if (! checked_multiply_u64 (
+          result.union_membership_count, UINT64_C (2),
+          expected_event_count) ||
+        ! checked_multiply_u64 (
+          result.contact_expanded_edge_count,
+          request.max_cells_per_contact_edge,
+          maximum_contact_memberships) ||
+        ! checked_multiply_u64 (
+          result.boundary_segment_count,
+          request.max_cells_per_boundary_edge,
+          maximum_boundary_cell_visits) ||
+        result.rectangle_count < request.active.flat_polygon_count ||
+        result.rectangle_count > request.max_rectangles ||
+        ! result.x_slab_count ||
+        result.x_slab_count > request.max_x_slabs ||
+        ! result.union_membership_count ||
+        result.union_membership_count > request.max_union_memberships ||
+        result.event_count != expected_event_count ||
+        result.event_count > request.max_events ||
+        ! result.strip_interval_count ||
+        result.strip_interval_count > result.union_membership_count ||
+        ! result.boundary_segment_count ||
+        result.boundary_segment_count > request.max_boundary_segments ||
+        result.raw_segment_count < result.boundary_segment_count ||
+        result.raw_segment_count > request.max_raw_segments ||
+        result.contact_expanded_edge_count !=
+          request.contact.flat_edge_count ||
+        result.contact_expanded_edge_count > request.max_contact_edges ||
+        ! result.grid_cell_count ||
+        result.grid_cell_count > request.max_grid_cells ||
+        result.contact_membership_count <
+          result.contact_expanded_edge_count ||
+        result.contact_membership_count >
+          request.max_contact_memberships ||
+        result.contact_membership_count > maximum_contact_memberships ||
+        result.boundary_cell_visit_count >
+          request.max_boundary_cell_visits ||
+        result.boundary_cell_visit_count >
+          maximum_boundary_cell_visits ||
+        result.member_visit_count > request.max_member_visits ||
+        result.candidate_pair_count > result.member_visit_count ||
+        result.candidate_pair_count > request.max_pair_work ||
+        result.raw_hit_count > result.candidate_pair_count ||
+        result.uncertain_count > result.candidate_pair_count ||
+        result.raw_hit_count >
+          result.candidate_pair_count - result.uncertain_count) {
+      return fail (
+        "CUDA CONTACT.4 ACTIVE-union backend returned impossible proof "
+        "counters");
+    }
+
+    if (! result.device_total_bytes ||
+        result.union_free_begin_bytes > result.device_total_bytes ||
+        result.union_free_low_bytes > result.union_free_begin_bytes ||
+        result.callback_free_begin_bytes > result.device_total_bytes ||
+        result.callback_free_low_bytes >
+          result.callback_free_begin_bytes ||
+        result.post_scan_free_bytes > result.device_total_bytes ||
+        result.callback_incremental_peak_bytes !=
+          result.callback_free_begin_bytes -
+            result.callback_free_low_bytes) {
+      return fail (
+        "CUDA CONTACT.4 ACTIVE-union backend returned impossible memory "
+        "telemetry");
+    }
+
+    const uint64_t component_times [] = {
+      result.setup_ns,
+      result.active_h2d_ns,
+      result.active_expand_ns,
+      result.x_membership_ns,
+      result.strip_scan_ns,
+      result.boundary_ns,
+      result.contact_h2d_ns,
+      result.contact_expand_ns,
+      result.boundary_preflight_ns,
+      result.grid_count_ns,
+      result.grid_build_ns,
+      result.query_ns,
+      result.d2h_ns
+    };
+    if (! result.total_ns) {
+      return fail (
+        "CUDA CONTACT.4 ACTIVE-union backend returned impossible timing "
+        "telemetry");
+    }
+    for (size_t index = 0;
+         index < sizeof (component_times) / sizeof (component_times [0]);
+         ++index) {
+      if (component_times [index] > result.total_ns) {
+        return fail (
+          "CUDA CONTACT.4 ACTIVE-union backend returned impossible timing "
+          "telemetry");
+      }
+    }
+
+    if (result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_COMPLETE &&
+        result.raw_hit_count == 0 && result.uncertain_count == 0) {
+      //  sole consumable outcome
+    } else if (
+      result.disposition ==
+        KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_RAW_HITS &&
+      result.raw_hit_count != 0 && result.uncertain_count == 0) {
+      //  valid diagnostic result; the wrapper retains CPU fallback
+    } else if (
+      result.disposition ==
+        KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_UNCERTAIN &&
+      result.uncertain_count != 0) {
+      //  valid bounded decline; the wrapper retains CPU fallback
+    } else {
+      return fail (
+        "CUDA CONTACT.4 ACTIVE-union backend returned an inconsistent "
+        "disposition");
+    }
+
+    if (error) {
+      error->clear ();
+    }
+    return true;
+  } catch (...) {
+    return fail (
+      "exception while validating the CUDA CONTACT.4 ACTIVE-union proof");
+  }
 }
 
 static CudaActive3Attempt cuda_spatial_try_active3_profile_empty (
@@ -1957,6 +2445,127 @@ CudaActive3Attempt cuda_spatial_try_contact4_raw_active_empty (
   return cuda_spatial_try_active3_profile_empty (request, true, true);
 }
 
+CudaContact4ActiveUnionAttempt
+cuda_spatial_try_contact4_active_union_empty (
+  const klayout_cuda_spatial_contact4_active_union_request_v1 &request)
+{
+  CudaContact4ActiveUnionAttempt attempt;
+  CudaSpatialModule &module = cuda_spatial_module ();
+  if (! module.contact4_active_union_enabled ()) {
+    return attempt;
+  }
+  if (! module.enabled ()) {
+    attempt.disposition = CudaContact4ActiveUnionAttempt::BackendError;
+    attempt.message = module.error ().empty ()
+      ? "CUDA spatial backend is unavailable"
+      : module.error ();
+    log_contact4_active_union_attempt (attempt);
+    return attempt;
+  }
+  if (! module.contact4_active_union_ready ()) {
+    attempt.disposition = CudaContact4ActiveUnionAttempt::BackendFallback;
+    attempt.fallback_flags =
+      KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+    attempt.message =
+      "CUDA spatial backend has no fused CONTACT.4 ACTIVE-union capability";
+    log_contact4_active_union_attempt (attempt);
+    return attempt;
+  }
+  if (! qualified_contact4_active_union_request (request)) {
+    attempt.disposition = CudaContact4ActiveUnionAttempt::InvalidResult;
+    attempt.message =
+      "host supplied an unqualified CONTACT.4 ACTIVE-union request";
+    log_contact4_active_union_attempt (attempt);
+    return attempt;
+  }
+
+  klayout_cuda_spatial_contact4_active_union_result_v1 result;
+  std::memset (&result, 0, sizeof (result));
+  result.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  result.struct_size = sizeof (result);
+  result.status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  result.disposition =
+    KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_UNCERTAIN;
+
+  int status = KLAYOUT_CUDA_SPATIAL_ERROR;
+  try {
+    status = module.run_contact4_active_union () (&request, &result);
+  } catch (const std::exception &ex) {
+    attempt.disposition = CudaContact4ActiveUnionAttempt::BackendError;
+    attempt.message = ex.what ();
+    log_contact4_active_union_attempt (attempt);
+    return attempt;
+  } catch (...) {
+    attempt.disposition = CudaContact4ActiveUnionAttempt::BackendError;
+    attempt.message =
+      "unknown exception while calling CUDA CONTACT.4 ACTIVE-union backend";
+    log_contact4_active_union_attempt (attempt);
+    return attempt;
+  }
+
+  attempt.fallback_flags = result.fallback_flags;
+  attempt.device_flags = result.device_flags;
+  attempt.active_context_count = result.active.context_count;
+  attempt.contact_context_count = result.contact.context_count;
+  attempt.flat_active_polygon_count = result.active.flat_polygon_count;
+  attempt.flat_active_edge_count = result.active.flat_edge_count;
+  attempt.flat_contact_polygon_count = result.contact.flat_polygon_count;
+  attempt.flat_contact_edge_count = result.contact.flat_edge_count;
+  attempt.rectangle_count = result.rectangle_count;
+  attempt.x_slab_count = result.x_slab_count;
+  attempt.union_membership_count = result.union_membership_count;
+  attempt.strip_interval_count = result.strip_interval_count;
+  attempt.boundary_segment_count = result.boundary_segment_count;
+  attempt.grid_cell_count = result.grid_cell_count;
+  attempt.contact_membership_count = result.contact_membership_count;
+  attempt.boundary_cell_visit_count = result.boundary_cell_visit_count;
+  attempt.member_visit_count = result.member_visit_count;
+  attempt.candidate_pair_count = result.candidate_pair_count;
+  attempt.raw_hit_count = result.raw_hit_count;
+  attempt.uncertain_count = result.uncertain_count;
+  attempt.total_ns = result.total_ns;
+  attempt.message.assign (
+    result.message,
+    std::find (result.message, result.message + sizeof (result.message), '\0'));
+
+  if (result.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      result.struct_size != sizeof (result) ||
+      result.reserved0 != 0 ||
+      result.reserved1 [0] != 0 || result.reserved1 [1] != 0) {
+    attempt.disposition = CudaContact4ActiveUnionAttempt::InvalidResult;
+    attempt.message =
+      "CUDA CONTACT.4 ACTIVE-union backend returned an incompatible result";
+  } else if (status != int (result.status)) {
+    attempt.disposition = CudaContact4ActiveUnionAttempt::InvalidResult;
+    attempt.message =
+      "CUDA CONTACT.4 ACTIVE-union backend returned inconsistent statuses";
+  } else if (status == KLAYOUT_CUDA_SPATIAL_FALLBACK) {
+    attempt.disposition = CudaContact4ActiveUnionAttempt::BackendFallback;
+  } else if (status != KLAYOUT_CUDA_SPATIAL_OK) {
+    attempt.disposition = CudaContact4ActiveUnionAttempt::BackendError;
+  } else {
+    std::string validation_error;
+    if (! cuda_spatial_validate_contact4_active_union_result (
+          request, result, status, &validation_error)) {
+      attempt.disposition = CudaContact4ActiveUnionAttempt::InvalidResult;
+      attempt.message = validation_error;
+    } else if (
+      result.disposition ==
+        KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_COMPLETE) {
+      attempt.disposition = CudaContact4ActiveUnionAttempt::CertifiedEmpty;
+    } else if (
+      result.disposition ==
+        KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_RAW_HITS) {
+      attempt.disposition = CudaContact4ActiveUnionAttempt::RawHits;
+    } else {
+      attempt.disposition = CudaContact4ActiveUnionAttempt::BackendFallback;
+    }
+  }
+
+  log_contact4_active_union_attempt (attempt);
+  return attempt;
+}
+
 bool cuda_spatial_active3_requested ()
 {
   CudaSpatialModule &module = cuda_spatial_module ();
@@ -1973,6 +2582,12 @@ bool cuda_spatial_contact4_raw_active_requested ()
 {
   CudaSpatialModule &module = cuda_spatial_module ();
   return module.enabled () && module.contact4_raw_active_ready ();
+}
+
+bool cuda_spatial_contact4_active_union_requested ()
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  return module.enabled () && module.contact4_active_union_ready ();
 }
 
 CudaM1WidthSpaceAttempt cuda_spatial_try_m1_width_space_empty (

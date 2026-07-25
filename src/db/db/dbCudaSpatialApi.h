@@ -1610,6 +1610,269 @@ klayout_cuda_spatial_run_via1_stack_empty_v1 (
   const struct klayout_cuda_spatial_via1_stack_request_v1 *request,
   struct klayout_cuda_spatial_via1_stack_result_v1 *result);
 
+/*
+ * Optional fused raw-ACTIVE union / CONTACT.4 empty certificate.
+ *
+ * This additive entry point consumes two independently serialized raw
+ * Manhattan hierarchies.  The backend expands and unions ACTIVE exactly,
+ * retains its canonical directed boundary on the selected device, expands
+ * CONTACT on that same device and applies the complete CONTACT.4 relation
+ * without publishing either intermediate geometry to the host.
+ *
+ * The two digest domains are part of the proof contract.  Each digest is
+ * SHA-256 over the fixed eight-byte domain below, followed by format_version,
+ * dbu_per_micron, root_cell and the scene reserved word in little-endian form,
+ * then the unchanged canonical raw-hierarchy geometry payload.  role, layer
+ * and datatype bind the descriptor at this API boundary but are deliberately
+ * not inserted into that existing host-serializer digest payload.
+ *
+ * COMPLETE is the sole consumable outcome.  A raw hit is diagnostic only and
+ * requires the pristine CPU rule, as does every malformed echo, uncertainty,
+ * bounded decline, loader failure or CUDA error.
+ */
+#define KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_DIGEST_DOMAIN "KARAW001"
+#define KLAYOUT_CUDA_SPATIAL_CONTACT4_CONTACT_DIGEST_DOMAIN "KCRAW001"
+#define KLAYOUT_CUDA_SPATIAL_CONTACT4_DIGEST_DOMAIN_BYTES 8u
+
+enum klayout_cuda_spatial_contact4_active_union_opcode
+{
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_EMPTY = 1
+};
+
+enum klayout_cuda_spatial_contact4_active_union_role
+{
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_ROLE = 1,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_CONTACT_ROLE = 2
+};
+
+enum klayout_cuda_spatial_contact4_active_union_option_flag
+{
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_RAW_ACTIVE_HIERARCHY = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_RAW_CONTACT_HIERARCHY = 1u << 1,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_SAME_STORE_LAYOUT_TOP = 1u << 2,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_NO_BREAKOUT = 1u << 3,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_ORTHOGONAL_UNIT_TRANSFORMS = 1u << 4,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_NO_PROPERTIES = 1u << 5,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_CLOCKWISE_MANHATTAN_CONTOURS = 1u << 6,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_EXACT_ACTIVE_INTEGER_SET_UNION = 1u << 7,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_CANONICAL_ACTIVE_BOUNDARY = 1u << 8,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_CONTACT_INDEXED_SECONDARY = 1u << 9,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_OVERLAP_RELATION = 1u << 10,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_DIFFERENT_POLYGONS = 1u << 11,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_EUCLIDIAN = 1u << 12,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_IGNORE_ANGLE_90 = 1u << 13,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_WHOLE_EDGES_FALSE = 1u << 14,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_PROJECTION_DEFAULTS = 1u << 15,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_SHIELDED = 1u << 16,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_NO_FILTERS_OR_NEGATIVE = 1u << 17,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_INCLUDE_TOUCHING = 1u << 18,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_UNION_DEFAULT_STREAM = 1u << 19
+};
+
+#define KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_QUALIFIED_OPTIONS \
+  ((1u << 20) - 1u)
+
+enum klayout_cuda_spatial_contact4_active_union_disposition
+{
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_COMPLETE = 0,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_RAW_HITS = 1,
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_UNCERTAIN = 2
+};
+
+/*
+ * Pointer-free records behind these byte-addressed arrays are the established
+ * klayout_cuda_spatial_m1_width_space_{context,cell,polygon,edge}_v1 layouts.
+ * Keeping a nested descriptor gives ACTIVE and CONTACT separate cell graphs,
+ * context lists, flat censuses, bounds and digest domains without repacking
+ * either owning host scene.
+ */
+struct klayout_cuda_spatial_contact4_active_union_scene_v1
+{
+  uint32_t struct_size;
+  uint32_t role;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  uint32_t root_cell;
+  uint32_t layer;
+  uint32_t datatype;
+  uint32_t reserved0;
+
+  const void *contexts;
+  uint64_t context_count;
+  uint32_t context_record_bytes;
+  uint32_t context_reserved;
+  const uint32_t *layer_contexts;
+  uint64_t layer_context_count;
+  const uint64_t *context_polygon_offsets;
+  uint64_t context_polygon_offset_count;
+  const uint64_t *context_edge_offsets;
+  uint64_t context_edge_offset_count;
+  const void *cells;
+  uint64_t cell_count;
+  uint32_t cell_record_bytes;
+  uint32_t cell_reserved;
+  const void *polygons;
+  uint64_t polygon_count;
+  uint32_t polygon_record_bytes;
+  uint32_t polygon_reserved;
+  const void *edges;
+  uint64_t edge_count;
+  uint32_t edge_record_bytes;
+  uint32_t edge_reserved;
+
+  uint64_t flat_polygon_count;
+  uint64_t flat_edge_count;
+  int64_t scene_left;
+  int64_t scene_bottom;
+  int64_t scene_right;
+  int64_t scene_top;
+  uint8_t digest_domain[KLAYOUT_CUDA_SPATIAL_CONTACT4_DIGEST_DOMAIN_BYTES];
+  uint8_t scene_digest[32];
+  uint64_t reserved1[2];
+};
+
+/*
+ * Pointer-free scalar echo of one scene.  A COMPLETE result is accepted only
+ * when every field exactly matches its request descriptor.
+ */
+struct klayout_cuda_spatial_contact4_active_union_scene_echo_v1
+{
+  uint32_t struct_size;
+  uint32_t role;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  uint32_t root_cell;
+  uint32_t layer;
+  uint32_t datatype;
+  uint32_t reserved0;
+  uint64_t context_count;
+  uint64_t layer_context_count;
+  uint64_t context_polygon_offset_count;
+  uint64_t context_edge_offset_count;
+  uint64_t cell_count;
+  uint64_t polygon_count;
+  uint64_t edge_count;
+  uint64_t flat_polygon_count;
+  uint64_t flat_edge_count;
+  int64_t scene_left;
+  int64_t scene_bottom;
+  int64_t scene_right;
+  int64_t scene_top;
+  uint8_t digest_domain[KLAYOUT_CUDA_SPATIAL_CONTACT4_DIGEST_DOMAIN_BYTES];
+  uint8_t scene_digest[32];
+  uint64_t reserved1[2];
+};
+
+struct klayout_cuda_spatial_contact4_active_union_request_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  int32_t device;
+  uint32_t reserved0;
+  int64_t distance;
+  int64_t grid_cell_size;
+
+  struct klayout_cuda_spatial_contact4_active_union_scene_v1 active;
+  struct klayout_cuda_spatial_contact4_active_union_scene_v1 contact;
+
+  uint64_t max_contexts;
+  uint64_t max_rectangles;
+  uint64_t max_x_slabs;
+  uint64_t max_union_memberships;
+  uint64_t max_events;
+  uint64_t max_raw_segments;
+  uint64_t max_boundary_segments;
+  uint32_t max_slabs_per_rectangle;
+  uint32_t union_reserved;
+
+  uint64_t max_contact_edges;
+  uint64_t max_grid_cells;
+  uint64_t max_contact_memberships;
+  uint64_t max_boundary_cell_visits;
+  uint64_t max_member_visits;
+  uint64_t max_pair_work;
+  uint32_t max_cells_per_contact_edge;
+  uint32_t max_cells_per_boundary_edge;
+  uint64_t reserved1[4];
+};
+
+struct klayout_cuda_spatial_contact4_active_union_result_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t status;
+  uint32_t fallback_flags;
+  uint32_t disposition;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  int32_t device;
+  uint32_t device_flags;
+  uint32_t reserved0;
+  int64_t distance;
+  int64_t grid_cell_size;
+
+  struct klayout_cuda_spatial_contact4_active_union_scene_echo_v1 active;
+  struct klayout_cuda_spatial_contact4_active_union_scene_echo_v1 contact;
+
+  uint64_t rectangle_count;
+  uint64_t x_slab_count;
+  uint64_t union_membership_count;
+  uint64_t event_count;
+  uint64_t strip_interval_count;
+  uint64_t raw_segment_count;
+  uint64_t boundary_segment_count;
+
+  uint64_t contact_expanded_edge_count;
+  uint64_t grid_cell_count;
+  uint64_t contact_membership_count;
+  uint64_t boundary_cell_visit_count;
+  uint64_t member_visit_count;
+  uint64_t candidate_pair_count;
+  uint64_t raw_hit_count;
+  uint64_t uncertain_count;
+
+  uint64_t device_total_bytes;
+  uint64_t union_free_begin_bytes;
+  uint64_t union_free_low_bytes;
+  uint64_t callback_free_begin_bytes;
+  uint64_t callback_free_low_bytes;
+  uint64_t post_scan_free_bytes;
+  uint64_t callback_incremental_peak_bytes;
+
+  uint64_t setup_ns;
+  uint64_t active_h2d_ns;
+  uint64_t active_expand_ns;
+  uint64_t x_membership_ns;
+  uint64_t strip_scan_ns;
+  uint64_t boundary_ns;
+  uint64_t contact_h2d_ns;
+  uint64_t contact_expand_ns;
+  uint64_t boundary_preflight_ns;
+  uint64_t grid_count_ns;
+  uint64_t grid_build_ns;
+  uint64_t query_ns;
+  uint64_t d2h_ns;
+  uint64_t total_ns;
+  uint64_t reserved1[2];
+  char message[192];
+};
+
+typedef int
+(*klayout_cuda_spatial_run_contact4_active_union_empty_v1_func) (
+  const struct klayout_cuda_spatial_contact4_active_union_request_v1 *,
+  struct klayout_cuda_spatial_contact4_active_union_result_v1 *);
+
+KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_contact4_active_union_empty_v1 (
+  const struct klayout_cuda_spatial_contact4_active_union_request_v1 *request,
+  struct klayout_cuda_spatial_contact4_active_union_result_v1 *result);
+
 #ifdef __cplusplus
 }
 #endif

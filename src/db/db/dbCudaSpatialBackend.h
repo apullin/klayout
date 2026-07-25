@@ -85,6 +85,45 @@ struct DB_PUBLIC CudaActive3Attempt
   std::string message;
 };
 
+struct DB_PUBLIC CudaContact4ActiveUnionAttempt
+{
+  enum Disposition
+  {
+    Disabled,
+    CertifiedEmpty,
+    RawHits,
+    BackendFallback,
+    BackendError,
+    InvalidResult
+  };
+
+  CudaContact4ActiveUnionAttempt ();
+
+  Disposition disposition;
+  uint32_t fallback_flags;
+  uint32_t device_flags;
+  uint64_t active_context_count;
+  uint64_t contact_context_count;
+  uint64_t flat_active_polygon_count;
+  uint64_t flat_active_edge_count;
+  uint64_t flat_contact_polygon_count;
+  uint64_t flat_contact_edge_count;
+  uint64_t rectangle_count;
+  uint64_t x_slab_count;
+  uint64_t union_membership_count;
+  uint64_t strip_interval_count;
+  uint64_t boundary_segment_count;
+  uint64_t grid_cell_count;
+  uint64_t contact_membership_count;
+  uint64_t boundary_cell_visit_count;
+  uint64_t member_visit_count;
+  uint64_t candidate_pair_count;
+  uint64_t raw_hit_count;
+  uint64_t uncertain_count;
+  uint64_t total_ns;
+  std::string message;
+};
+
 struct DB_PUBLIC CudaM1WidthSpaceAttempt
 {
   enum Disposition
@@ -415,6 +454,32 @@ DB_PUBLIC CudaActive3Attempt cuda_spatial_try_contact4_raw_active_empty (
 
 /** Return true only when the early raw-ACTIVE CONTACT.4 symbol exists. */
 DB_PUBLIC bool cuda_spatial_contact4_raw_active_requested ();
+
+/**
+ * Invoke the optional fused raw-ACTIVE union / CONTACT.4 certificate.
+ *
+ * Only CertifiedEmpty is consumable.  ACTIVE and CONTACT remain on the
+ * selected device across the exact union and relation scan; raw hits and all
+ * bounded declines retain the pristine CPU rule.
+ */
+DB_PUBLIC CudaContact4ActiveUnionAttempt
+cuda_spatial_try_contact4_active_union_empty (
+  const klayout_cuda_spatial_contact4_active_union_request_v1 &request);
+
+/** Return true only when the independent fused opt-in and symbol exist. */
+DB_PUBLIC bool cuda_spatial_contact4_active_union_requested ();
+
+/**
+ * Validate a successful fused proof against its complete request echo.
+ *
+ * This public seam keeps the runtime loader and focused unit tests on the same
+ * strict scalar/capacity/disposition contract.  backend_status is the entry
+ * point's integer return value and must agree with result.status.
+ */
+DB_PUBLIC bool cuda_spatial_validate_contact4_active_union_result (
+  const klayout_cuda_spatial_contact4_active_union_request_v1 &request,
+  const klayout_cuda_spatial_contact4_active_union_result_v1 &result,
+  int backend_status, std::string *error = 0);
 
 /**
  * Invoke the optional atomic METAL1.1/METAL1.2 empty certificate.
