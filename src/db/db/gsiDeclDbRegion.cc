@@ -1320,9 +1320,13 @@ static bool cuda_poly34_host_telemetry_enabled ()
 
 static bool cuda_poly34_host_decline (const char *reason)
 {
-  if (cuda_poly34_host_telemetry_enabled ()) {
-    tl::info << "CUDA POLY.3/.4 host guard: outcome=cpu-fallback reason="
-             << reason;
+  try {
+    if (cuda_poly34_host_telemetry_enabled ()) {
+      tl::info << "CUDA POLY.3/.4 host guard: outcome=cpu-fallback reason="
+               << reason;
+    }
+  } catch (...) {
+    // Telemetry must never turn a conservative decline into an exception.
   }
   return false;
 }
@@ -1759,11 +1763,7 @@ static bool cuda_poly34_clean (
       deep_active->merged_deep_layer (),
       deep_gate->merged_deep_layer (), spec);
   } catch (const std::exception &error) {
-    if (cuda_poly34_host_telemetry_enabled ()) {
-      tl::info << "CUDA POLY.3/.4 host guard: outcome=cpu-fallback reason="
-               << error.what ();
-    }
-    return false;
+    return cuda_poly34_host_decline (error.what ());
   } catch (...) {
     return cuda_poly34_host_decline ("unknown-host-exception");
   }

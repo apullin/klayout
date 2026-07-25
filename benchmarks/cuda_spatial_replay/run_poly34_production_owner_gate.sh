@@ -601,6 +601,21 @@ if grep -Fq -- "CUDA POLY.3/.4" "${work}/logs/control.log"; then
   die "feature-off control unexpectedly invoked POLY.3/.4 CUDA"
 fi
 assert_transaction cuda certified-empty
+cuda_certificate_count=$(
+  grep -Fc -- \
+    "CUDA POLY.3/.4 terminal-empty certificate:" \
+    "${work}/logs/cuda.log" || true
+)
+[[ "${cuda_certificate_count}" == 1 ]] ||
+  die "CUDA lane expected one terminal certificate, found ${cuda_certificate_count}"
+grep -Fq -- \
+  "CUDA POLY.3/.4 terminal-empty certificate: outcome=certified-empty contexts=849265 poly_boxes=5013998 active_boxes=2684780 gates=3401254 certified_mask=3 poly_candidates=4462594 active_candidates=3403326 atomic_empty=3401254 fallback_gates=0" \
+  "${work}/logs/cuda.log" ||
+  die "CUDA lane did not report the exact production certificate census"
+grep -Fq -- \
+  "fallback_flags=0 device_flags=0 message=complete atomic POLY.3/.4 terminal-empty certificate" \
+  "${work}/logs/cuda.log" ||
+  die "CUDA lane terminal certificate reported fallback or device flags"
 cuda_lowering_count=$(
   grep -Fc -- "CUDA POLY.3/.4 live lowering:" "${work}/logs/cuda.log" || true
 )
