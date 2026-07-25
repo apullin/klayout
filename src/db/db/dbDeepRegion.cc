@@ -46,10 +46,148 @@
 #include "dbLayoutToNetlist.h"
 #include "tlTimer.h"
 
+#include <cerrno>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <typeinfo>
 
 namespace db
 {
+
+namespace
+{
+
+typedef std::chrono::steady_clock DeepRegionPhaseClock;
+
+bool
+deep_region_phase_telemetry_enabled ()
+{
+  //  This setting is intentionally read once.  Telemetry is a process-start
+  //  diagnostic and malformed values must leave it disabled.
+  static const bool enabled = [] () {
+    const char *value =
+      std::getenv ("KLAYOUT_DEEP_REGION_MULTI_TELEMETRY");
+    return value &&
+           (std::strcmp (value, "1") == 0 ||
+            std::strcmp (value, "true") == 0 ||
+            std::strcmp (value, "on") == 0);
+  } ();
+  return enabled;
+}
+
+DeepRegionPhaseClock::time_point
+deep_region_phase_now (bool enabled)
+{
+  if (! enabled) {
+    return DeepRegionPhaseClock::time_point ();
+  }
+
+  const int saved_errno = errno;
+  const DeepRegionPhaseClock::time_point now = DeepRegionPhaseClock::now ();
+  errno = saved_errno;
+  return now;
+}
+
+double
+deep_region_phase_milliseconds (
+  const DeepRegionPhaseClock::time_point &begin,
+  const DeepRegionPhaseClock::time_point &end)
+{
+  return std::chrono::duration<double, std::milli> (end - begin).count ();
+}
+
+void
+report_deep_region_merge_phases (
+  bool enabled, const char *outcome,
+  const DeepRegionPhaseClock::time_point &begin,
+  const DeepRegionPhaseClock::time_point &prepared,
+  const DeepRegionPhaseClock::time_point &clusters_built,
+  const DeepRegionPhaseClock::time_point &clusters_merged,
+  const DeepRegionPhaseClock::time_point &done)
+{
+  if (! enabled) {
+    return;
+  }
+
+  //  Keep optional diagnostics observational: reporting failures cannot alter
+  //  the merge result, and stdio must not leak errno into the caller.
+  const int saved_errno = errno;
+  std::fprintf (
+    stderr,
+    "KLAYOUT_DEEP_REGION_MERGE"
+    " outcome=%s prepare_ms=%.6f cluster_build_ms=%.6f"
+    " cluster_merger_ms=%.6f finalize_ms=%.6f total_ms=%.6f\n",
+    outcome,
+    deep_region_phase_milliseconds (begin, prepared),
+    deep_region_phase_milliseconds (prepared, clusters_built),
+    deep_region_phase_milliseconds (clusters_built, clusters_merged),
+    deep_region_phase_milliseconds (clusters_merged, done),
+    deep_region_phase_milliseconds (begin, done));
+  errno = saved_errno;
+}
+
+void
+report_deep_region_multi_phases (
+  bool enabled, const char *outcome, const char *output_kind,
+  size_t input_count, size_t output_count,
+  const DeepRegionPhaseClock::time_point &begin,
+  const DeepRegionPhaseClock::time_point &inputs_validated,
+  const DeepRegionPhaseClock::time_point &merged_layer_ready,
+  const DeepRegionPhaseClock::time_point &outputs_ready,
+  const DeepRegionPhaseClock::time_point &cuda_attempted,
+  const DeepRegionPhaseClock::time_point &cpu_setup_done,
+  const DeepRegionPhaseClock::time_point &cpu_run_done,
+  const DeepRegionPhaseClock::time_point &cpu_cleanup_done,
+  const DeepRegionPhaseClock::time_point &done)
+{
+  if (! enabled) {
+    return;
+  }
+
+  const int saved_errno = errno;
+  std::fprintf (
+    stderr,
+    "KLAYOUT_DEEP_REGION_MULTI"
+    " outcome=%s output_kind=%s inputs=%zu outputs=%zu"
+    " input_validation_ms=%.6f merged_deep_layer_ms=%.6f"
+    " output_setup_ms=%.6f cuda_attempt_ms=%.6f"
+    " cpu_setup_ms=%.6f cpu_run_ms=%.6f cpu_cleanup_ms=%.6f"
+    " release_ms=%.6f"
+    " total_ms=%.6f\n",
+    outcome, output_kind, input_count, output_count,
+    deep_region_phase_milliseconds (begin, inputs_validated),
+    deep_region_phase_milliseconds (inputs_validated, merged_layer_ready),
+    deep_region_phase_milliseconds (merged_layer_ready, outputs_ready),
+    deep_region_phase_milliseconds (outputs_ready, cuda_attempted),
+    deep_region_phase_milliseconds (cuda_attempted, cpu_setup_done),
+    deep_region_phase_milliseconds (cpu_setup_done, cpu_run_done),
+    deep_region_phase_milliseconds (cpu_run_done, cpu_cleanup_done),
+    deep_region_phase_milliseconds (cpu_cleanup_done, done),
+    deep_region_phase_milliseconds (begin, done));
+  errno = saved_errno;
+}
+
+const char *
+deep_region_multi_output_kind (const db::EdgePair *)
+{
+  return "edge_pairs";
+}
+
+const char *
+deep_region_multi_output_kind (const db::Edge *)
+{
+  return "edges";
+}
+
+const char *
+deep_region_multi_output_kind (const db::PolygonRef *)
+{
+  return "regions";
+}
+
+}
 
 /**
  *  @brief An iterator delegate for the deep region
@@ -749,15 +887,28 @@ DeepRegion::merged_polygons_available () const
 void
 DeepRegion::ensure_merged_polygons_valid () const
 {
+  const bool phase_telemetry = deep_region_phase_telemetry_enabled ();
+  const DeepRegionPhaseClock::time_point phase_begin =
+    deep_region_phase_now (phase_telemetry);
+
   if (! m_merged_polygons_valid || (! m_is_merged && m_merged_polygons_boc_hash != deep_layer ().breakout_cells_hash ())) {
+
+    DeepRegionPhaseClock::time_point phase_prepared = phase_begin;
+    DeepRegionPhaseClock::time_point phase_clusters_built = phase_begin;
+    DeepRegionPhaseClock::time_point phase_clusters_merged = phase_begin;
+    const char *phase_outcome = "reused-deep-layer";
 
     if (m_is_merged) {
 
       //  NOTE: this will reuse the deep layer reference
       m_merged_polygons = deep_layer ();
+      phase_prepared = deep_region_phase_now (phase_telemetry);
+      phase_clusters_built = phase_prepared;
+      phase_clusters_merged = phase_prepared;
 
     } else {
 
+      phase_outcome = "built";
       m_merged_polygons = deep_layer ().derived ();
 
       tl::SelfTimer timer (tl::verbosity () > base_verbosity (), "Ensure merged polygons");
@@ -768,39 +919,50 @@ DeepRegion::ensure_merged_polygons_valid () const
       db::Connectivity conn;
       conn.connect (deep_layer ());
       hc.set_base_verbosity (base_verbosity () + 10);
+      phase_prepared = deep_region_phase_now (phase_telemetry);
       hc.build (layout, deep_layer ().initial_cell (), conn, 0, deep_layer ().breakout_cells (), ! join_properties_on_merge ());
+      phase_clusters_built = deep_region_phase_now (phase_telemetry);
 
       //  collect the clusters and merge them into big polygons
       //  NOTE: using the ClusterMerger we merge bottom-up forming bigger and bigger polygons. This is
       //  hopefully more efficient that collecting everything and will lead to reuse of parts.
 
-      ClusterMerger cm (deep_layer ().layer (), layout, hc, min_coherence (), report_progress (), progress_desc ());
-      cm.set_base_verbosity (base_verbosity () + 10);
+      {
+        ClusterMerger cm (deep_layer ().layer (), layout, hc, min_coherence (), report_progress (), progress_desc ());
+        cm.set_base_verbosity (base_verbosity () + 10);
 
-      //  Specify the property name ID for the pseudo-labels, so we can filter out those properties
-      //  (for backward compatibility only if join_properties_on_merge is true - if we don't with
-      //  join_properties_on_merge, the pseudo-label properties may get attached to other shapes which
-      //  will be taken as texts then)
-      if (join_properties_on_merge ()) {
-        cm.set_text_name (deep_layer ().store ()->text_property_name ());
-      }
+        //  Specify the property name ID for the pseudo-labels, so we can filter out those properties
+        //  (for backward compatibility only if join_properties_on_merge is true - if we don't with
+        //  join_properties_on_merge, the pseudo-label properties may get attached to other shapes which
+        //  will be taken as texts then)
+        if (join_properties_on_merge ()) {
+          cm.set_text_name (deep_layer ().store ()->text_property_name ());
+        }
 
-      //  TODO: iterate only over the called cells?
-      for (db::Layout::iterator c = layout.begin (); c != layout.end (); ++c) {
-        const db::connected_clusters<db::PolygonRef> &cc = hc.clusters_per_cell (c->cell_index ());
-        for (db::connected_clusters<db::PolygonRef>::all_iterator cl = cc.begin_all (); ! cl.at_end (); ++cl) {
-          if (cc.is_root (*cl)) {
-            db::Shapes &s = cm.merged (*cl, c->cell_index ());
-            c->shapes (m_merged_polygons.layer ()).insert (s);
-            cm.erase (*cl, c->cell_index ()); //  not needed anymore
+        //  TODO: iterate only over the called cells?
+        for (db::Layout::iterator c = layout.begin (); c != layout.end (); ++c) {
+          const db::connected_clusters<db::PolygonRef> &cc = hc.clusters_per_cell (c->cell_index ());
+          for (db::connected_clusters<db::PolygonRef>::all_iterator cl = cc.begin_all (); ! cl.at_end (); ++cl) {
+            if (cc.is_root (*cl)) {
+              db::Shapes &s = cm.merged (*cl, c->cell_index ());
+              c->shapes (m_merged_polygons.layer ()).insert (s);
+              cm.erase (*cl, c->cell_index ()); //  not needed anymore
+            }
           }
         }
       }
+      phase_clusters_merged = deep_region_phase_now (phase_telemetry);
 
     }
 
     m_merged_polygons_valid = true;
     m_merged_polygons_boc_hash = deep_layer ().breakout_cells_hash ();
+
+    const DeepRegionPhaseClock::time_point phase_done =
+      deep_region_phase_now (phase_telemetry);
+    report_deep_region_merge_phases (
+      phase_telemetry, phase_outcome, phase_begin, phase_prepared,
+      phase_clusters_built, phase_clusters_merged, phase_done);
 
   }
 }
@@ -2502,19 +2664,43 @@ try_cuda_m1_width_space_batch (
   return false;
 }
 
+template <class TR>
+static const char *
+region_cop_multi_output_kind ()
+{
+  return deep_region_multi_output_kind (static_cast<const TR *> (0));
+}
+
 template <class TR, class Output>
 static
 std::vector<Output *> region_cop_multi_with_properties_impl (DeepRegion *region, db::CompoundRegionMultiOutputOperationNode &node, db::PropertyConstraint prop_constraint)
 {
+  const bool phase_telemetry = deep_region_phase_telemetry_enabled ();
+  const DeepRegionPhaseClock::time_point phase_begin =
+    deep_region_phase_now (phase_telemetry);
+  const char *output_kind = region_cop_multi_output_kind<TR> ();
+
   //  Fall back to flat mode if one of the inputs is flat.
   std::vector<db::Region *> inputs = node.inputs ();
   for (std::vector<db::Region *>::const_iterator i = inputs.begin (); i != inputs.end (); ++i) {
     if (! is_subject_regionptr (*i) && ! dynamic_cast<const db::DeepRegion *> ((*i)->delegate ())) {
+      const DeepRegionPhaseClock::time_point phase_done =
+        deep_region_phase_now (phase_telemetry);
+      if (phase_telemetry) {
+        report_deep_region_multi_phases (
+          true, "flat-fallback", output_kind, inputs.size (),
+          node.outputs (), phase_begin, phase_done, phase_done, phase_done,
+          phase_done, phase_done, phase_done, phase_done, phase_done);
+      }
       return std::vector<Output *> ();
     }
   }
 
+  const DeepRegionPhaseClock::time_point phase_inputs_validated =
+    deep_region_phase_now (phase_telemetry);
   const db::DeepLayer &polygons (region->merged_deep_layer ());
+  const DeepRegionPhaseClock::time_point phase_merged_layer_ready =
+    deep_region_phase_now (phase_telemetry);
   std::vector<std::unique_ptr<Output> > owned_outputs;
   std::vector<unsigned int> output_layers;
   owned_outputs.reserve (node.outputs ());
@@ -2525,13 +2711,24 @@ std::vector<Output *> region_cop_multi_with_properties_impl (DeepRegion *region,
     output_layers.push_back (owned_outputs.back ()->deep_layer ().layer ());
   }
 
+  const DeepRegionPhaseClock::time_point phase_outputs_ready =
+    deep_region_phase_now (phase_telemetry);
   if (owned_outputs.empty ()) {
+    report_deep_region_multi_phases (
+      phase_telemetry, "no-outputs", output_kind, inputs.size (), 0,
+      phase_begin, phase_inputs_validated, phase_merged_layer_ready,
+      phase_outputs_ready, phase_outputs_ready, phase_outputs_ready,
+      phase_outputs_ready, phase_outputs_ready, phase_outputs_ready);
     return std::vector<Output *> ();
   }
 
-  if (try_cuda_m1_width_space_batch (
-        polygons, node, prop_constraint, region->merged_semantics (),
-        static_cast<const TR *> (0))) {
+  const bool cuda_certified_empty =
+    try_cuda_m1_width_space_batch (
+      polygons, node, prop_constraint, region->merged_semantics (),
+      static_cast<const TR *> (0));
+  const DeepRegionPhaseClock::time_point phase_cuda_attempted =
+    deep_region_phase_now (phase_telemetry);
+  if (cuda_certified_empty) {
     std::vector<Output *> outputs;
     outputs.reserve (owned_outputs.size ());
     for (typename std::vector<std::unique_ptr<Output> >::iterator o =
@@ -2539,39 +2736,55 @@ std::vector<Output *> region_cop_multi_with_properties_impl (DeepRegion *region,
          o != owned_outputs.end (); ++o) {
       outputs.push_back (o->release ());
     }
+    const DeepRegionPhaseClock::time_point phase_done =
+      deep_region_phase_now (phase_telemetry);
+    report_deep_region_multi_phases (
+      phase_telemetry, "cuda-certified-empty", output_kind, inputs.size (),
+      outputs.size (), phase_begin, phase_inputs_validated,
+      phase_merged_layer_ready, phase_outputs_ready, phase_cuda_attempted,
+      phase_cuda_attempted, phase_cuda_attempted, phase_cuda_attempted,
+      phase_done);
     return outputs;
   }
 
-  db::local_processor<db::PolygonRefWithProperties, db::PolygonRefWithProperties, db::object_with_properties<TR> > proc (&owned_outputs.front ()->deep_layer ().layout (), &owned_outputs.front ()->deep_layer ().initial_cell (), region->deep_layer ().breakout_cells ());
+  DeepRegionPhaseClock::time_point phase_cpu_setup_done;
+  DeepRegionPhaseClock::time_point phase_cpu_run_done;
+  {
+    db::local_processor<db::PolygonRefWithProperties, db::PolygonRefWithProperties, db::object_with_properties<TR> > proc (&owned_outputs.front ()->deep_layer ().layout (), &owned_outputs.front ()->deep_layer ().initial_cell (), region->deep_layer ().breakout_cells ());
 
-  proc.set_description (region->progress_desc ());
-  proc.set_report_progress (region->report_progress ());
-  proc.set_base_verbosity (region->base_verbosity ());
-  proc.set_threads (region->deep_layer ().store ()->threads ());
+    proc.set_description (region->progress_desc ());
+    proc.set_report_progress (region->report_progress ());
+    proc.set_base_verbosity (region->base_verbosity ());
+    proc.set_threads (region->deep_layer ().store ()->threads ());
 
-  std::vector<unsigned int> other_layers;
+    std::vector<unsigned int> other_layers;
 
-  for (std::vector<db::Region *>::const_iterator i = inputs.begin (); i != inputs.end (); ++i) {
+    for (std::vector<db::Region *>::const_iterator i = inputs.begin (); i != inputs.end (); ++i) {
 
-    if (is_subject_regionptr (*i)) {
-      if (*i == subject_regionptr ()) {
-        other_layers.push_back (subject_idlayer ());
+      if (is_subject_regionptr (*i)) {
+        if (*i == subject_regionptr ()) {
+          other_layers.push_back (subject_idlayer ());
+        } else {
+          other_layers.push_back (foreign_idlayer ());
+        }
       } else {
-        other_layers.push_back (foreign_idlayer ());
+        const db::DeepRegion *other_deep = dynamic_cast<const db::DeepRegion *> ((*i)->delegate ());
+        tl_assert (other_deep != 0);
+        if (&other_deep->deep_layer ().layout () != &region->deep_layer ().layout () || &other_deep->deep_layer ().initial_cell () != &region->deep_layer ().initial_cell ()) {
+          throw tl::Exception (tl::to_string (tr ("Complex DeepRegion operations need to use the same layout and top cell for all inputs")));
+        }
+        other_layers.push_back (other_deep->deep_layer ().layer ());
       }
-    } else {
-      const db::DeepRegion *other_deep = dynamic_cast<const db::DeepRegion *> ((*i)->delegate ());
-      tl_assert (other_deep != 0);
-      if (&other_deep->deep_layer ().layout () != &region->deep_layer ().layout () || &other_deep->deep_layer ().initial_cell () != &region->deep_layer ().initial_cell ()) {
-        throw tl::Exception (tl::to_string (tr ("Complex DeepRegion operations need to use the same layout and top cell for all inputs")));
-      }
-      other_layers.push_back (other_deep->deep_layer ().layer ());
+
     }
 
+    compound_local_operation_with_properties<db::PolygonRef, db::PolygonRef, TR> op (&node, prop_constraint);
+    phase_cpu_setup_done = deep_region_phase_now (phase_telemetry);
+    proc.run (&op, polygons.layer (), other_layers, output_layers, true /*make_variants*/);
+    phase_cpu_run_done = deep_region_phase_now (phase_telemetry);
   }
-
-  compound_local_operation_with_properties<db::PolygonRef, db::PolygonRef, TR> op (&node, prop_constraint);
-  proc.run (&op, polygons.layer (), other_layers, output_layers, true /*make_variants*/);
+  const DeepRegionPhaseClock::time_point phase_cpu_cleanup_done =
+    deep_region_phase_now (phase_telemetry);
 
   std::vector<Output *> outputs;
   outputs.reserve (owned_outputs.size ());
@@ -2579,6 +2792,14 @@ std::vector<Output *> region_cop_multi_with_properties_impl (DeepRegion *region,
     outputs.push_back (o->release ());
   }
 
+  const DeepRegionPhaseClock::time_point phase_done =
+    deep_region_phase_now (phase_telemetry);
+  report_deep_region_multi_phases (
+    phase_telemetry, "cpu-complete", output_kind, inputs.size (),
+    outputs.size (), phase_begin, phase_inputs_validated,
+    phase_merged_layer_ready, phase_outputs_ready, phase_cuda_attempted,
+    phase_cpu_setup_done, phase_cpu_run_done, phase_cpu_cleanup_done,
+    phase_done);
   return outputs;
 }
 
