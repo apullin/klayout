@@ -62,10 +62,11 @@ struct Counters
   unsigned long long uncertain;
 };
 
-struct ValidatedRequest
+struct ValidatedHostRequest
 {
   Grid grid;
   std::uint64_t memberships;
+  c4::ContactBounds bounds;
 };
 
 double elapsed_ms(
@@ -228,6 +229,26 @@ __device__ bool edge_grid_span(
   return true;
 }
 
+__device__ bool device_contact_valid(
+    const a3::DirectedEdge &edge,
+    const c4::ContactBounds &bounds)
+{
+  const bool coordinates_qualified =
+      edge.x1 >= -kCoordinateLimit && edge.x1 <= kCoordinateLimit &&
+      edge.y1 >= -kCoordinateLimit && edge.y1 <= kCoordinateLimit &&
+      edge.x2 >= -kCoordinateLimit && edge.x2 <= kCoordinateLimit &&
+      edge.y2 >= -kCoordinateLimit && edge.y2 <= kCoordinateLimit;
+  const bool manhattan_nonzero =
+      ! (edge.x1 == edge.x2 && edge.y1 == edge.y2) &&
+      (edge.x1 == edge.x2 || edge.y1 == edge.y2);
+  const bool inside_bounds =
+      edge.x1 >= bounds.left && edge.x1 <= bounds.right &&
+      edge.x2 >= bounds.left && edge.x2 <= bounds.right &&
+      edge.y1 >= bounds.bottom && edge.y1 <= bounds.top &&
+      edge.y2 >= bounds.bottom && edge.y2 <= bounds.top;
+  return coordinates_qualified && manhattan_nonzero && inside_bounds;
+}
+
 __device__ bool clip_span(
     const Grid &grid, std::int64_t *x0,
     std::int64_t *y0, std::int64_t *x1,
@@ -302,7 +323,8 @@ __device__ bool boundary_to_edge(
 
 __global__ void count_contact_memberships_kernel(
     const a3::DirectedEdge *contacts, std::uint32_t contact_count,
-    Grid grid, std::uint32_t max_cells_per_edge,
+    c4::ContactBounds bounds, Grid grid,
+    std::uint32_t max_cells_per_edge,
     std::uint32_t *counts, unsigned long long *total,
     std::uint32_t *status)
 {
@@ -312,6 +334,10 @@ __global__ void count_contact_memberships_kernel(
        id < contact_count;
        id += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
     const a3::DirectedEdge edge = contacts[id];
+    if (!device_contact_valid(edge, bounds)) {
+      atomicOr(status, std::uint32_t(kInvalidContact));
+      continue;
+    }
     std::int64_t x0 = 0;
     std::int64_t y0 = 0;
     std::int64_t x1 = 0;
@@ -593,34 +619,97 @@ __global__ void query_boundary_kernel(
   }
 }
 
-ValidatedRequest validate_request(
-    const c4::Request &request,
-    std::uint64_t boundary_count)
+void validate_common_request(
+    std::uint64_t contact_count,
+    std::uint64_t boundary_count,
+    std::int64_t distance,
+    std::int64_t grid_cell_size,
+    int device,
+    c4::ContactDirectionContract direction_contract,
+    const c4::Limits &limits)
 {
-  if (!request.contact_edges || !request.contact_edge_count ||
-      request.contact_edge_count > request.limits.max_contact_edges ||
-      request.contact_edge_count > UINT32_MAX ||
+  if (direction_contract !=
+      c4::ContactDirectionContract::
+          validated_material_on_right_contours) {
+    throw std::runtime_error(
+        "resident CONTACT.4 direction contract declined");
+  }
+  if (!contact_count ||
+      contact_count > limits.max_contact_edges ||
+      contact_count > UINT32_MAX ||
       !boundary_count ||
-      request.distance !=
+      distance !=
           a3::kContact4QualifiedSceneCoordinateDistance ||
-      request.grid_cell_size <= 0 ||
-      request.device < 0 ||
-      !request.limits.max_grid_cells ||
-      !request.limits.max_memberships ||
-      !request.limits.max_boundary_cell_visits ||
-      !request.limits.max_member_visits ||
-      !request.limits.max_pair_work ||
-      !request.limits.max_cells_per_contact_edge ||
-      !request.limits.max_cells_per_boundary_edge) {
+      grid_cell_size <= 0 ||
+      device < 0 ||
+      !limits.max_grid_cells ||
+      !limits.max_memberships ||
+      !limits.max_boundary_cell_visits ||
+      !limits.max_member_visits ||
+      !limits.max_pair_work ||
+      !limits.max_cells_per_contact_edge ||
+      !limits.max_cells_per_boundary_edge) {
     throw std::runtime_error(
         "invalid resident CONTACT.4 request or capacity");
   }
+}
+
+Grid grid_from_bounds(
+    const c4::ContactBounds &bounds,
+    std::int64_t grid_cell_size,
+    std::int64_t distance,
+    const c4::Limits &limits)
+{
+  if (!coordinate_qualified(bounds.left) ||
+      !coordinate_qualified(bounds.bottom) ||
+      !coordinate_qualified(bounds.right) ||
+      !coordinate_qualified(bounds.top) ||
+      bounds.left >= bounds.right ||
+      bounds.bottom >= bounds.top) {
+    throw std::runtime_error(
+        "resident CONTACT.4 contact bounds are invalid");
+  }
+  const std::int64_t base_x =
+      floor_div_host(bounds.left, grid_cell_size);
+  const std::int64_t base_y =
+      floor_div_host(bounds.bottom, grid_cell_size);
+  const std::int64_t maximum_x =
+      floor_div_host(bounds.right, grid_cell_size);
+  const std::int64_t maximum_y =
+      floor_div_host(bounds.top, grid_cell_size);
+  const __int128 width =
+      static_cast<__int128>(maximum_x) - base_x + 1;
+  const __int128 height =
+      static_cast<__int128>(maximum_y) - base_y + 1;
+  if (width <= 0 || height <= 0 ||
+      width > UINT32_MAX || height > UINT32_MAX ||
+      width * height >
+          static_cast<__int128>(limits.max_grid_cells) ||
+      width * height > UINT64_MAX) {
+    throw std::runtime_error(
+        "resident CONTACT.4 grid exceeds capacity");
+  }
+  return {
+      base_x, base_y, grid_cell_size, distance,
+      static_cast<std::uint32_t>(width),
+      static_cast<std::uint32_t>(height)};
+}
+
+ValidatedHostRequest validate_host_request(
+    const c4::Request &request,
+    std::uint64_t boundary_count)
+{
+  if (!request.contact_edges) {
+    throw std::runtime_error(
+        "invalid resident CONTACT.4 request or capacity");
+  }
+  validate_common_request(
+      request.contact_edge_count, boundary_count,
+      request.distance, request.grid_cell_size, request.device,
+      request.contact_direction_contract, request.limits);
   require_contact_contours(request);
 
-  std::int64_t left = 0;
-  std::int64_t bottom = 0;
-  std::int64_t right = 0;
-  std::int64_t top = 0;
+  c4::ContactBounds bounds;
   for (std::uint64_t id = 0;
        id < request.contact_edge_count; ++id) {
     const a3::DirectedEdge &edge = request.contact_edges[id];
@@ -633,41 +722,18 @@ ValidatedRequest validate_request(
     const std::int64_t edge_right = std::max(edge.x1, edge.x2);
     const std::int64_t edge_top = std::max(edge.y1, edge.y2);
     if (!id) {
-      left = edge_left;
-      bottom = edge_bottom;
-      right = edge_right;
-      top = edge_top;
+      bounds = {
+          edge_left, edge_bottom, edge_right, edge_top};
     } else {
-      left = std::min(left, edge_left);
-      bottom = std::min(bottom, edge_bottom);
-      right = std::max(right, edge_right);
-      top = std::max(top, edge_top);
+      bounds.left = std::min(bounds.left, edge_left);
+      bounds.bottom = std::min(bounds.bottom, edge_bottom);
+      bounds.right = std::max(bounds.right, edge_right);
+      bounds.top = std::max(bounds.top, edge_top);
     }
   }
-  const std::int64_t base_x =
-      floor_div_host(left, request.grid_cell_size);
-  const std::int64_t base_y =
-      floor_div_host(bottom, request.grid_cell_size);
-  const std::int64_t maximum_x =
-      floor_div_host(right, request.grid_cell_size);
-  const std::int64_t maximum_y =
-      floor_div_host(top, request.grid_cell_size);
-  const __int128 width =
-      static_cast<__int128>(maximum_x) - base_x + 1;
-  const __int128 height =
-      static_cast<__int128>(maximum_y) - base_y + 1;
-  if (width <= 0 || height <= 0 ||
-      width > UINT32_MAX || height > UINT32_MAX ||
-      width * height >
-          static_cast<__int128>(request.limits.max_grid_cells) ||
-      width * height > UINT64_MAX) {
-    throw std::runtime_error(
-        "resident CONTACT.4 grid exceeds capacity");
-  }
-  const Grid grid = {
-      base_x, base_y, request.grid_cell_size, request.distance,
-      static_cast<std::uint32_t>(width),
-      static_cast<std::uint32_t>(height)};
+  const Grid grid = grid_from_bounds(
+      bounds, request.grid_cell_size, request.distance,
+      request.limits);
 
   __int128 membership_total = 0;
   for (std::uint64_t id = 0;
@@ -703,72 +769,60 @@ ValidatedRequest validate_request(
     }
   }
   return {
-      grid, static_cast<std::uint64_t>(membership_total)};
+      grid, static_cast<std::uint64_t>(membership_total), bounds};
 }
 
-c4::Result consume(
+Grid validate_device_request(
+    const c4::DeviceRequest &request,
+    std::uint64_t boundary_count)
+{
+  if (!request.contacts.device_edges) {
+    throw std::runtime_error(
+        "resident CONTACT.4 device view pointer is null");
+  }
+  validate_common_request(
+      request.contacts.count, boundary_count,
+      request.distance, request.grid_cell_size, request.device,
+      request.contact_direction_contract, request.limits);
+  const Grid grid = grid_from_bounds(
+      request.contacts.bounds, request.grid_cell_size,
+      request.distance, request.limits);
+
+  cudaPointerAttributes attributes{};
+  cuda_require(
+      cudaPointerGetAttributes(
+          &attributes, request.contacts.device_edges),
+      "resident CONTACT.4 device view pointer attributes");
+  if (attributes.type != cudaMemoryTypeDevice ||
+      attributes.device != request.device) {
+    throw std::runtime_error(
+        "resident CONTACT.4 device view is not on the selected device");
+  }
+  return grid;
+}
+
+c4::Result consume_device_core(
     cudaStream_t stream,
     const mu::DirectedSegmentI64 *horizontal,
     std::uint64_t horizontal_count,
     const mu::DirectedSegmentI64 *vertical,
     std::uint64_t vertical_count,
-    const c4::Request &request)
+    const c4::DeviceRequest &request,
+    const Grid &grid,
+    std::uint64_t expected_memberships,
+    c4::Result result,
+    const Clock::time_point &total_begin)
 {
-  const Clock::time_point total_begin = Clock::now();
-  c4::Result result;
-  result.contact_edges = request.contact_edge_count;
-  if (horizontal_count >
-      std::numeric_limits<std::uint64_t>::max() - vertical_count) {
-    throw std::runtime_error(
-        "resident CONTACT.4 boundary census overflows");
-  }
-  result.boundary_segments = horizontal_count + vertical_count;
-
-  const Clock::time_point setup_begin = Clock::now();
-  if (stream != nullptr) {
-    throw std::runtime_error(
-        "resident CONTACT.4 v1 requires the default CUDA stream");
-  }
-  const ValidatedRequest validated =
-      validate_request(request, result.boundary_segments);
-  const Grid grid = validated.grid;
-  result.memberships = validated.memberships;
   result.grid_cells =
       static_cast<std::uint64_t>(grid.width) * grid.height;
   if (result.boundary_segments >
           UINT64_MAX /
               request.limits.max_cells_per_boundary_edge ||
       request.limits.max_boundary_cell_visits >
-          UINT64_MAX / request.contact_edge_count) {
+          UINT64_MAX / request.contacts.count) {
     throw std::runtime_error(
         "resident CONTACT.4 traversal census can overflow");
   }
-  int current_device = -1;
-  cuda_require(
-      cudaGetDevice(&current_device),
-      "resident CONTACT.4 cudaGetDevice");
-  if (current_device != request.device) {
-    throw std::runtime_error(
-        "resident CONTACT.4 device contract declined");
-  }
-  sample_memory(&result);
-  result.setup_ms = elapsed_ms(setup_begin, Clock::now());
-
-  const Clock::time_point h2d_begin = Clock::now();
-  thrust::device_vector<a3::DirectedEdge> contacts(
-      request.contact_edge_count);
-  cuda_require(
-      cudaMemcpyAsync(
-          thrust::raw_pointer_cast(contacts.data()),
-          request.contact_edges,
-          request.contact_edge_count * sizeof(a3::DirectedEdge),
-          cudaMemcpyHostToDevice, stream),
-      "resident CONTACT.4 contact H2D");
-  cuda_require(
-      cudaStreamSynchronize(stream),
-      "resident CONTACT.4 contact H2D synchronize");
-  sample_memory(&result);
-  result.contact_h2d_ms = elapsed_ms(h2d_begin, Clock::now());
 
   thrust::device_vector<std::uint32_t> status(1, 0);
   thrust::device_vector<unsigned long long> membership_total(1, 0);
@@ -790,12 +844,13 @@ c4::Result consume(
 
   const Clock::time_point count_begin = Clock::now();
   const std::uint32_t contact_blocks =
-      launch_blocks(request.contact_edge_count);
+      launch_blocks(request.contacts.count);
   count_contact_memberships_kernel<<<
       contact_blocks, kThreads, 0, stream>>>(
-      thrust::raw_pointer_cast(contacts.data()),
-      static_cast<std::uint32_t>(request.contact_edge_count),
-      grid, request.limits.max_cells_per_contact_edge,
+      request.contacts.device_edges,
+      static_cast<std::uint32_t>(request.contacts.count),
+      request.contacts.bounds, grid,
+      request.limits.max_cells_per_contact_edge,
       thrust::raw_pointer_cast(cell_counts.data()),
       thrust::raw_pointer_cast(membership_total.data()),
       thrust::raw_pointer_cast(status.data()));
@@ -820,10 +875,21 @@ c4::Result consume(
       "resident CONTACT.4 count status D2H");
   result.device_flags = host_status;
   result.grid_count_ms = elapsed_ms(count_begin, Clock::now());
-  if (host_status || host_memberships != result.memberships) {
+  if (host_status) {
+    throw std::runtime_error(
+        "resident CONTACT.4 device contact gate declined");
+  }
+  if (host_memberships > request.limits.max_memberships) {
+    throw std::runtime_error(
+        "resident CONTACT.4 membership gate declined: "
+        "total cell capacity");
+  }
+  if (expected_memberships &&
+      host_memberships != expected_memberships) {
     throw std::runtime_error(
         "resident CONTACT.4 membership census mismatch");
   }
+  result.memberships = host_memberships;
 
   const Clock::time_point build_begin = Clock::now();
   const auto policy = thrust::cuda::par.on(stream);
@@ -845,8 +911,8 @@ c4::Result consume(
       result.memberships);
   fill_contact_memberships_kernel<<<
       contact_blocks, kThreads, 0, stream>>>(
-      thrust::raw_pointer_cast(contacts.data()),
-      static_cast<std::uint32_t>(request.contact_edge_count),
+      request.contacts.device_edges,
+      static_cast<std::uint32_t>(request.contacts.count),
       grid,
       thrust::raw_pointer_cast(cell_cursors.data()),
       thrust::raw_pointer_cast(members.data()), result.memberships,
@@ -983,8 +1049,8 @@ c4::Result consume(
     query_boundary_kernel<<<
         launch_blocks(horizontal_count), kThreads, 0, stream>>>(
         horizontal, horizontal_count,
-        thrust::raw_pointer_cast(contacts.data()),
-        static_cast<std::uint32_t>(request.contact_edge_count),
+        request.contacts.device_edges,
+        static_cast<std::uint32_t>(request.contacts.count),
         grid, thrust::raw_pointer_cast(cell_counts.data()),
         thrust::raw_pointer_cast(cell_offsets.data()),
         thrust::raw_pointer_cast(members.data()),
@@ -999,8 +1065,8 @@ c4::Result consume(
     query_boundary_kernel<<<
         launch_blocks(vertical_count), kThreads, 0, stream>>>(
         vertical, vertical_count,
-        thrust::raw_pointer_cast(contacts.data()),
-        static_cast<std::uint32_t>(request.contact_edge_count),
+        request.contacts.device_edges,
+        static_cast<std::uint32_t>(request.contacts.count),
         grid, thrust::raw_pointer_cast(cell_counts.data()),
         thrust::raw_pointer_cast(cell_offsets.data()),
         thrust::raw_pointer_cast(members.data()),
@@ -1049,6 +1115,114 @@ c4::Result consume(
   return result;
 }
 
+c4::Result initialize_result(
+    cudaStream_t stream, std::uint64_t contact_count,
+    std::uint64_t horizontal_count,
+    std::uint64_t vertical_count)
+{
+  if (stream != nullptr) {
+    throw std::runtime_error(
+        "resident CONTACT.4 v1 requires the default CUDA stream");
+  }
+  if (horizontal_count >
+      std::numeric_limits<std::uint64_t>::max() - vertical_count) {
+    throw std::runtime_error(
+        "resident CONTACT.4 boundary census overflows");
+  }
+  c4::Result result;
+  result.contact_edges = contact_count;
+  result.boundary_segments = horizontal_count + vertical_count;
+  return result;
+}
+
+void require_current_device(int requested_device)
+{
+  int current_device = -1;
+  cuda_require(
+      cudaGetDevice(&current_device),
+      "resident CONTACT.4 cudaGetDevice");
+  if (current_device != requested_device) {
+    throw std::runtime_error(
+        "resident CONTACT.4 device contract declined");
+  }
+}
+
+c4::Result consume_host(
+    cudaStream_t stream,
+    const mu::DirectedSegmentI64 *horizontal,
+    std::uint64_t horizontal_count,
+    const mu::DirectedSegmentI64 *vertical,
+    std::uint64_t vertical_count,
+    const c4::Request &request)
+{
+  const Clock::time_point total_begin = Clock::now();
+  c4::Result result = initialize_result(
+      stream, request.contact_edge_count,
+      horizontal_count, vertical_count);
+
+  const Clock::time_point setup_begin = Clock::now();
+  const ValidatedHostRequest validated =
+      validate_host_request(request, result.boundary_segments);
+  require_current_device(request.device);
+  sample_memory(&result);
+  result.setup_ms = elapsed_ms(setup_begin, Clock::now());
+
+  const Clock::time_point h2d_begin = Clock::now();
+  thrust::device_vector<a3::DirectedEdge> contacts(
+      request.contact_edge_count);
+  cuda_require(
+      cudaMemcpyAsync(
+          thrust::raw_pointer_cast(contacts.data()),
+          request.contact_edges,
+          request.contact_edge_count * sizeof(a3::DirectedEdge),
+          cudaMemcpyHostToDevice, stream),
+      "resident CONTACT.4 contact H2D");
+  cuda_require(
+      cudaStreamSynchronize(stream),
+      "resident CONTACT.4 contact H2D synchronize");
+  sample_memory(&result);
+  result.contact_h2d_ms = elapsed_ms(h2d_begin, Clock::now());
+
+  c4::DeviceRequest device_request;
+  device_request.contacts = {
+      thrust::raw_pointer_cast(contacts.data()),
+      request.contact_edge_count, validated.bounds};
+  device_request.distance = request.distance;
+  device_request.grid_cell_size = request.grid_cell_size;
+  device_request.device = request.device;
+  device_request.contact_direction_contract =
+      request.contact_direction_contract;
+  device_request.limits = request.limits;
+  return consume_device_core(
+      stream, horizontal, horizontal_count, vertical, vertical_count,
+      device_request, validated.grid, validated.memberships,
+      result, total_begin);
+}
+
+c4::Result consume_device(
+    cudaStream_t stream,
+    const mu::DirectedSegmentI64 *horizontal,
+    std::uint64_t horizontal_count,
+    const mu::DirectedSegmentI64 *vertical,
+    std::uint64_t vertical_count,
+    const c4::DeviceRequest &request)
+{
+  const Clock::time_point total_begin = Clock::now();
+  c4::Result result = initialize_result(
+      stream, request.contacts.count,
+      horizontal_count, vertical_count);
+
+  const Clock::time_point setup_begin = Clock::now();
+  require_current_device(request.device);
+  const Grid grid =
+      validate_device_request(request, result.boundary_segments);
+  sample_memory(&result);
+  result.setup_ms = elapsed_ms(setup_begin, Clock::now());
+  return consume_device_core(
+      stream, horizontal, horizontal_count, vertical, vertical_count,
+      request, grid, 0, result, total_begin);
+}
+
 }  // namespace
 
 namespace klayout_cuda {
@@ -1068,7 +1242,7 @@ void consume_boundary_hook(
         "invalid resident CONTACT.4 callback state");
   }
   context->invoked = true;
-  context->result = consume(
+  context->result = consume_host(
       stream, horizontal, horizontal_count,
       vertical, vertical_count, context->request);
   if (!context->result.certified_empty) {
@@ -1086,6 +1260,43 @@ manhattan_union::ResidentBoundaryHook make_resident_hook(
   }
   manhattan_union::ResidentBoundaryHook hook;
   hook.consume = consume_boundary_hook;
+  hook.context = context;
+  hook.stop_before_d2h = true;
+  return hook;
+}
+
+void consume_device_boundary_hook(
+    cudaStream_t stream,
+    const manhattan_union::DirectedSegmentI64 *horizontal,
+    std::uint64_t horizontal_count,
+    const manhattan_union::DirectedSegmentI64 *vertical,
+    std::uint64_t vertical_count, void *opaque)
+{
+  DeviceResidentContext *context =
+      static_cast<DeviceResidentContext *>(opaque);
+  if (!context || context->invoked) {
+    throw std::runtime_error(
+        "invalid resident CONTACT.4 device callback state");
+  }
+  context->invoked = true;
+  context->result = consume_device(
+      stream, horizontal, horizontal_count,
+      vertical, vertical_count, context->request);
+  if (!context->result.certified_empty) {
+    throw std::runtime_error(
+        "resident CONTACT.4 nonempty result declined");
+  }
+}
+
+manhattan_union::ResidentBoundaryHook make_device_resident_hook(
+    DeviceResidentContext *context)
+{
+  if (!context || context->invoked) {
+    throw std::runtime_error(
+        "invalid resident CONTACT.4 device hook context");
+  }
+  manhattan_union::ResidentBoundaryHook hook;
+  hook.consume = consume_device_boundary_hook;
   hook.context = context;
   hook.stop_before_d2h = true;
   return hook;

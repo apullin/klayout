@@ -1,14 +1,12 @@
 /*
  * Exact bounded CONTACT.4 consumer for a resident Manhattan-union boundary.
  *
- * This qualification module deliberately accepts a host array of already
- * expanded, directed raw-CONTACT edges.  It copies and indexes those edges
- * only from the resident-boundary callback, after the union engine has
- * released its sweep high-water storage.  The ACTIVE union boundary never
- * leaves the device.
- *
- * A production hierarchy adapter can replace the host edge upload with a
- * compact device expander while retaining the same boundary/query contract.
+ * The core accepts an already-expanded DeviceContactView and indexes it only
+ * from the resident-boundary callback, after the union engine has released
+ * its sweep high-water storage.  Neither CONTACT nor ACTIVE geometry leaves
+ * the device.  The original Request/ResidentContext API remains as a
+ * qualification wrapper that validates and uploads host edges before entering
+ * the same device-view core.
  */
 
 #ifndef KLAYOUT_CUDA_CONTACT4_UNION_RESIDENT_CUH
@@ -49,6 +47,28 @@ struct Limits
   std::uint32_t max_cells_per_boundary_edge = 4096;
 };
 
+struct ContactBounds
+{
+  std::int64_t left = 0;
+  std::int64_t bottom = 0;
+  std::int64_t right = 0;
+  std::int64_t top = 0;
+};
+
+struct DeviceContactView
+{
+  // Non-owning pointer.  It must address `count` DirectedEdge records on
+  // `DeviceRequest::device` and remain live until the synchronous resident
+  // callback returns.
+  const active3::DirectedEdge *device_edges = nullptr;
+  std::uint64_t count = 0;
+
+  // Inclusive coordinate bounds containing every edge endpoint.  Tight bounds
+  // minimize the grid but are not required for correctness; undersized bounds
+  // are detected on device and fail closed.
+  ContactBounds bounds;
+};
+
 struct Request
 {
   const active3::DirectedEdge *contact_edges = nullptr;
@@ -57,6 +77,23 @@ struct Request
       active3::kContact4QualifiedSceneCoordinateDistance;
   std::int64_t grid_cell_size = 2000;
   int device = 0;
+  ContactDirectionContract contact_direction_contract =
+      ContactDirectionContract::unspecified;
+  Limits limits;
+};
+
+struct DeviceRequest
+{
+  DeviceContactView contacts;
+  std::int64_t distance =
+      active3::kContact4QualifiedSceneCoordinateDistance;
+  std::int64_t grid_cell_size = 2000;
+  int device = 0;
+
+  // This is a required producer assertion for the device-resident view.
+  // Per-edge geometry and containment in `contacts.bounds` are independently
+  // checked on device, but contour simplicity/closure/winding are not copied
+  // back to the host for revalidation.
   ContactDirectionContract contact_direction_contract =
       ContactDirectionContract::unspecified;
   Limits limits;
@@ -105,6 +142,13 @@ struct ResidentContext
   Result result;
 };
 
+struct DeviceResidentContext
+{
+  DeviceRequest request;
+  bool invoked = false;
+  Result result;
+};
+
 /*
  * Internal qualification C++ API.  Its layout is intentionally not a stable
  * binary ABI: every static consumer must be rebuilt with this header.
@@ -122,6 +166,16 @@ void consume_boundary_hook(
 
 manhattan_union::ResidentBoundaryHook make_resident_hook(
     ResidentContext *context);
+
+void consume_device_boundary_hook(
+    cudaStream_t stream,
+    const manhattan_union::DirectedSegmentI64 *horizontal,
+    std::uint64_t horizontal_count,
+    const manhattan_union::DirectedSegmentI64 *vertical,
+    std::uint64_t vertical_count, void *opaque);
+
+manhattan_union::ResidentBoundaryHook make_device_resident_hook(
+    DeviceResidentContext *context);
 
 }  // namespace contact4_union_resident
 }  // namespace klayout_cuda

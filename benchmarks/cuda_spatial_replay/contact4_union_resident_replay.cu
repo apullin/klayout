@@ -13,6 +13,8 @@
 
 #include <cuda_runtime.h>
 
+#include <thrust/device_vector.h>
+
 #include <algorithm>
 #include <cstdint>
 #include <iostream>
@@ -74,11 +76,21 @@ struct Aggregate
   std::uint64_t union_peak_bytes = 0;
   std::uint64_t callback_incremental_peak_bytes = 0;
   std::uint64_t full_process_callback_high_water_bytes = 0;
+  std::uint64_t device_view_cases = 0;
+  std::uint64_t device_view_expected_fallbacks = 0;
 };
 
 void require(bool condition, const std::string &message)
 {
   if (!condition) throw std::runtime_error(message);
+}
+
+void cuda_require(cudaError_t status, const char *operation)
+{
+  if (status != cudaSuccess) {
+    throw std::runtime_error(
+        std::string(operation) + ": " + cudaGetErrorString(status));
+  }
 }
 
 std::int64_t floor_div(
@@ -183,6 +195,28 @@ HostGrid contact_grid(
       cell_size};
 }
 
+c4::ContactBounds contact_bounds(
+    const std::vector<a3::DirectedEdge> &contacts)
+{
+  require(!contacts.empty(), "empty CONTACT bounds input");
+  c4::ContactBounds bounds = {
+      std::min(contacts[0].x1, contacts[0].x2),
+      std::min(contacts[0].y1, contacts[0].y2),
+      std::max(contacts[0].x1, contacts[0].x2),
+      std::max(contacts[0].y1, contacts[0].y2)};
+  for (const a3::DirectedEdge &edge : contacts) {
+    bounds.left =
+        std::min(bounds.left, std::min(edge.x1, edge.x2));
+    bounds.bottom =
+        std::min(bounds.bottom, std::min(edge.y1, edge.y2));
+    bounds.right =
+        std::max(bounds.right, std::max(edge.x1, edge.x2));
+    bounds.top =
+        std::max(bounds.top, std::max(edge.y1, edge.y2));
+  }
+  return bounds;
+}
+
 CellSpan edge_span(
     const a3::DirectedEdge &edge, const HostGrid &grid,
     std::int64_t expansion)
@@ -267,6 +301,22 @@ c4::ResidentContext qualified_context(
   c4::ResidentContext context;
   context.request.contact_edges = contacts.data();
   context.request.contact_edge_count = contacts.size();
+  context.request.device = device;
+  context.request.grid_cell_size = grid_cell_size;
+  context.request.contact_direction_contract =
+      c4::ContactDirectionContract::
+          validated_material_on_right_contours;
+  return context;
+}
+
+c4::DeviceResidentContext qualified_device_context(
+    const a3::DirectedEdge *device_edges,
+    const std::vector<a3::DirectedEdge> &host_edges,
+    int device, std::int64_t grid_cell_size = 2000)
+{
+  c4::DeviceResidentContext context;
+  context.request.contacts = {
+      device_edges, host_edges.size(), contact_bounds(host_edges)};
   context.request.device = device;
   context.request.grid_cell_size = grid_cell_size;
   context.request.contact_direction_contract =
@@ -458,6 +508,86 @@ void run_named_cases(int device, Aggregate *aggregate)
       10, false, true);
 }
 
+void run_device_view_case(
+    const std::string &name,
+    const std::vector<Box> &active_boxes,
+    const std::vector<a3::DirectedEdge> &contacts,
+    int device, Aggregate *aggregate,
+    std::int64_t grid_cell_size = 2000)
+{
+  const std::vector<mu::RectI64> input =
+      rectangles(active_boxes);
+  mu::GpuUnionLimits union_limits;
+  const mu::GpuUnionOutput reference =
+      mu::cpu_union_reference_for_test(input, union_limits);
+  require(
+      !reference.fallback && !reference.segments.empty(),
+      name + ": device-view CPU union reference declined");
+  Aggregate oracle_accounting;
+  const Oracle expected = oracle(
+      reference.segments, contacts, grid_cell_size,
+      &oracle_accounting);
+  const bool expected_empty =
+      expected.hits == 0 && expected.uncertain == 0;
+
+  cuda_require(
+      cudaSetDevice(device),
+      "device-view replay cudaSetDevice");
+  thrust::device_vector<a3::DirectedEdge> device_contacts(
+      contacts.begin(), contacts.end());
+  c4::DeviceResidentContext context =
+      qualified_device_context(
+          thrust::raw_pointer_cast(device_contacts.data()),
+          contacts, device, grid_cell_size);
+  mu::ResidentBoundaryHook hook =
+      c4::make_device_resident_hook(&context);
+  const mu::GpuUnionOutput actual =
+      mu::gpu_union_host(
+          input, union_limits, device, nullptr, &hook);
+
+  require(
+      context.invoked &&
+          actual.fallback == !expected_empty &&
+          actual.resident_boundary_consumer_completed ==
+              expected_empty &&
+          actual.segments.empty() && actual.d2h_ms == 0.0,
+      name + ": device-view empty-only contract mismatch: " +
+          actual.message);
+  if (!expected_empty) {
+    require(
+        actual.message.find(
+            "resident CONTACT.4 nonempty result declined") !=
+            std::string::npos,
+        name + ": device-view nonempty result did not fail closed");
+    ++aggregate->device_view_expected_fallbacks;
+  }
+  require(
+      context.result.contact_h2d_ms == 0.0 &&
+          context.result.contact_edges == contacts.size() &&
+          context.result.hits == expected.hits &&
+          context.result.uncertain == expected.uncertain &&
+          context.result.candidate_pairs == expected.candidates &&
+          context.result.certified_empty == expected_empty,
+      name + ": device-view result differs from exact oracle");
+  ++aggregate->device_view_cases;
+}
+
+void run_device_view_cases(int device, Aggregate *aggregate)
+{
+  run_device_view_case(
+      "device-clean", {{0, 0, 100, 100}},
+      box_edges({20, 20, 80, 80}), device, aggregate);
+  run_device_view_case(
+      "device-strict-nine-hit", {{0, 0, 100, 100}},
+      box_edges({9, 20, 80, 80}), device, aggregate);
+  run_device_view_case(
+      "device-negative-multicell", {{-50, -50, 50, 50}},
+      box_edges({-30, -30, -10, -10}), device, aggregate, 10);
+  run_device_view_case(
+      "device-lexicographic-owner", {{0, 0, 100, 100}},
+      box_edges({5, 20, 60, 80}), device, aggregate, 10);
+}
+
 mu::GpuUnionOutput run_context(
     const std::vector<mu::RectI64> &input, int device,
     c4::ResidentContext *context)
@@ -465,6 +595,17 @@ mu::GpuUnionOutput run_context(
   mu::GpuUnionLimits union_limits;
   mu::ResidentBoundaryHook hook =
       c4::make_resident_hook(context);
+  return mu::gpu_union_host(
+      input, union_limits, device, nullptr, &hook);
+}
+
+mu::GpuUnionOutput run_device_context(
+    const std::vector<mu::RectI64> &input, int device,
+    c4::DeviceResidentContext *context)
+{
+  mu::GpuUnionLimits union_limits;
+  mu::ResidentBoundaryHook hook =
+      c4::make_device_resident_hook(context);
   return mu::gpu_union_host(
       input, union_limits, device, nullptr, &hook);
 }
@@ -481,6 +622,20 @@ void require_decline(
           output.message.find(message_fragment) !=
               std::string::npos,
       name + " did not propagate fail-closed: " + output.message);
+}
+
+void require_device_decline(
+    const std::string &name, const mu::GpuUnionOutput &output,
+    const c4::DeviceResidentContext &context,
+    const std::string &message_fragment)
+{
+  require(
+      output.fallback && context.invoked &&
+          !output.resident_boundary_consumer_completed &&
+          output.segments.empty() &&
+          output.message.find(message_fragment) !=
+              std::string::npos,
+      name + " device view did not fail closed: " + output.message);
 }
 
 void run_capacity_cases(int device)
@@ -597,6 +752,65 @@ void run_contract_cases(int device)
       "empty union success was incorrectly treated as a certificate");
 }
 
+void run_device_view_contract_cases(int device)
+{
+  cuda_require(
+      cudaSetDevice(device),
+      "device-view contract cudaSetDevice");
+  const std::vector<mu::RectI64> input =
+      rectangles({{0, 0, 100, 100}});
+  const std::vector<a3::DirectedEdge> contacts =
+      box_edges({20, 20, 80, 80});
+  thrust::device_vector<a3::DirectedEdge> device_contacts(
+      contacts.begin(), contacts.end());
+  const a3::DirectedEdge *const device_pointer =
+      thrust::raw_pointer_cast(device_contacts.data());
+
+  c4::DeviceResidentContext null_pointer =
+      qualified_device_context(nullptr, contacts, device);
+  require_device_decline(
+      "null pointer",
+      run_device_context(input, device, &null_pointer),
+      null_pointer, "device view pointer is null");
+
+  c4::DeviceResidentContext host_pointer =
+      qualified_device_context(contacts.data(), contacts, device);
+  require_device_decline(
+      "host pointer",
+      run_device_context(input, device, &host_pointer),
+      host_pointer, "device view");
+
+  c4::DeviceResidentContext missing_contract =
+      qualified_device_context(device_pointer, contacts, device);
+  missing_contract.request.contact_direction_contract =
+      c4::ContactDirectionContract::unspecified;
+  require_device_decline(
+      "missing producer contract",
+      run_device_context(input, device, &missing_contract),
+      missing_contract, "direction contract declined");
+
+  c4::DeviceResidentContext undersized_bounds =
+      qualified_device_context(device_pointer, contacts, device);
+  --undersized_bounds.request.contacts.bounds.right;
+  require_device_decline(
+      "undersized bounds",
+      run_device_context(input, device, &undersized_bounds),
+      undersized_bounds, "device contact gate declined");
+
+  const std::vector<a3::DirectedEdge> diagonal = {
+      {0, 0, 10, 10}};
+  thrust::device_vector<a3::DirectedEdge> device_diagonal(
+      diagonal.begin(), diagonal.end());
+  c4::DeviceResidentContext invalid_edge =
+      qualified_device_context(
+          thrust::raw_pointer_cast(device_diagonal.data()),
+          diagonal, device);
+  require_device_decline(
+      "diagonal edge",
+      run_device_context(input, device, &invalid_edge),
+      invalid_edge, "device contact gate declined");
+}
+
 void run_random_cases(int device, Aggregate *aggregate)
 {
   std::mt19937_64 random(UINT64_C(0xc04a4e5eeda11));
@@ -648,8 +862,10 @@ int main(int argc, char **argv)
     }
     Aggregate aggregate;
     run_named_cases(device, &aggregate);
+    run_device_view_cases(device, &aggregate);
     run_capacity_cases(device);
     run_contract_cases(device);
+    run_device_view_contract_cases(device);
     run_random_cases(device, &aggregate);
     require(
         aggregate.oracle_candidates == aggregate.gpu_candidates,
@@ -670,6 +886,12 @@ int main(int argc, char **argv)
         << " multi_cell_fixtures=5"
         << " capacity_fallbacks=5"
         << " contract_fallbacks=4"
+        << " device_view_exact_cases="
+        << aggregate.device_view_cases
+        << " device_view_expected_fallbacks="
+        << aggregate.device_view_expected_fallbacks
+        << " device_view_contract_fallbacks=5"
+        << " device_view_h2d_zero=1"
         << " empty_hook_regression=1"
         << " union_peak_mib="
         << static_cast<double>(aggregate.union_peak_bytes) /
