@@ -2700,18 +2700,21 @@ not just wall time.
         randomized fixtures, and seven fail-closed capacity cases; the
         historical core smoke remains unchanged.  The production transpose
         needs a per-rectangle span cap of 256 (64 and 128 decline safely) and
-        should form about eight windows.  Before production enablement,
-        precompute packed rectangle slab endpoints once: the correctness-first
-        version repeats roughly 1.32 billion binary searches across those
-        windows and may trade its memory win for excess runtime.  No wall-time
-        speedup is booked until the exact live input passes with measured
-        transient memory headroom and report equality.
+        should form about eight windows.  Production wiring now caches each
+        rectangle's canonical `[first,last)` slab IDs once during the
+        histogram, adding about 313 MiB for this scene while replacing roughly
+        1.32 billion repeated binary searches with cached loads and clips.
+        Raw M1 alone selects the windowed producer; the historical union users
+        remain unchanged.  No wall-time speedup is booked until the exact live
+        input passes with measured transient memory headroom and report
+        equality.
         Evidence:
         `.scratchpad/cuda-runs/m1-resident-morph-census.N7asak`,
         `.scratchpad/cuda-runs/m1-resident-morph-production.bkyw9Z`, and
         `.scratchpad/cuda-runs/m1-resident-morph-probe.MhYkgL`,
         `.scratchpad/cuda-runs/m1-resident-morph-probe.C7fVur`, and
         `.scratchpad/cuda-runs/m1-resident-morph-small-transpose.QwiGpK`,
+        `.scratchpad/cuda-runs/m1-resident-morph-small-transpose.88Cuwv`,
         `.scratchpad/cuda-runs/m1-resident-morph-probe.6Cdgrw`,
         `.scratchpad/cuda-runs/m1-resident-morph-probe.TunPqf`, and
         `.scratchpad/cuda-runs/m1-resident-morph-probe.d1s5lV`.

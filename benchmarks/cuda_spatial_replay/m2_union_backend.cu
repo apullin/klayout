@@ -3858,6 +3858,28 @@ int run_m1_morph_request(
     union_limits.max_slabs_per_rectangle =
         request->max_slabs_per_rectangle;
 
+    /*
+     * The raw-M1 terminal consumer needs the canonical strips, not a
+     * materialized boundary.  Bound each window independently while retaining
+     * the request's whole-scene membership/event gates.  The internal defaults
+     * cap temporary event storage and the exact stitched strip allocation;
+     * clamping them to the caller's existing union limits cannot broaden the
+     * accepted workload.  Each strip interval consumes two raw transitions.
+     */
+    mu::GpuUnionStripWindowLimits window_limits;
+    window_limits.max_window_events = std::min(
+        window_limits.max_window_events, union_limits.max_events);
+    window_limits.max_strip_intervals = std::min(
+        {window_limits.max_strip_intervals,
+         union_limits.max_memberships,
+         union_limits.max_raw_segments / 2});
+    window_limits.max_windows = std::min(
+        window_limits.max_windows, union_limits.max_x_slabs);
+    window_limits.max_window_slabs =
+        static_cast<std::uint32_t>(std::min<std::uint64_t>(
+            window_limits.max_window_slabs,
+            union_limits.max_x_slabs));
+
     M1MorphCallbackContext callback;
     callback.request.limits.max_input_x_slabs =
         request->max_x_slabs;
@@ -3889,9 +3911,10 @@ int run_m1_morph_request(
         static_cast<double>(
             result->h2d_ns + result->rectangle_expand_ns) /
         1000000.0;
-    const mu::GpuUnionOutput output = mu::gpu_union_resident(
+    const mu::GpuUnionOutput output =
+        mu::gpu_union_resident_windowed_strips(
         std::move(expanded.rectangles), raw.scene_left,
-        raw.scene_right, union_limits, raw.device,
+        raw.scene_right, union_limits, window_limits, raw.device,
         input_prepare_ms, &hook);
     copy_m1_union_telemetry(output, result);
 

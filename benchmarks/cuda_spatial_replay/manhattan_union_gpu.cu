@@ -82,6 +82,9 @@ using Limits = GpuUnionLimits;
 
 using PackedEventKey = std::uint64_t;
 
+using PackedSlabSpan = std::uint64_t;
+constexpr PackedSlabSpan kInvalidSlabSpan = UINT64_MAX;
+
 using PackedTransition = std::uint64_t;
 constexpr PackedTransition kInvalidTransition = UINT64_MAX;
 
@@ -597,6 +600,31 @@ __device__ std::uint64_t lower_bound_device(
   return first;
 }
 
+MU_HD PackedSlabSpan pack_slab_span(
+    std::uint32_t first, std::uint32_t last)
+{
+  return (static_cast<std::uint64_t>(first) << 32) | last;
+}
+
+MU_HD std::uint32_t slab_span_first(PackedSlabSpan span)
+{
+  return static_cast<std::uint32_t>(span >> 32);
+}
+
+MU_HD std::uint32_t slab_span_last(PackedSlabSpan span)
+{
+  return static_cast<std::uint32_t>(span);
+}
+
+MU_HD bool valid_slab_span(
+    PackedSlabSpan span, std::uint32_t x_slabs)
+{
+  const std::uint32_t first = slab_span_first(span);
+  const std::uint32_t last = slab_span_last(span);
+  return span != kInvalidSlabSpan && first < last &&
+         last <= x_slabs;
+}
+
 MU_HD PackedEventKey pack_event_key(
     std::uint32_t slab, std::int64_t y, std::int64_t y_base)
 {
@@ -647,16 +675,18 @@ __global__ void count_memberships_kernel(
 
 /*
  * Build the exact number of rectangle memberships in every canonical slab
- * without materializing one count/offset pair per rectangle.  Unsigned
- * two's-complement subtraction is intentional: after the inclusive scan each
- * prefix is the nonnegative active-rectangle count for that slab, and the
- * final endpoint prefix is exactly zero.
+ * and cache each rectangle's canonical half-open slab span.  The cache makes
+ * every later window pass O(1) per rectangle instead of repeating two binary
+ * searches.  Unsigned two's-complement subtraction is intentional: after the
+ * inclusive scan each prefix is the nonnegative active-rectangle count for
+ * that slab, and the final endpoint prefix is exactly zero.
  */
 __global__ void histogram_slab_memberships_kernel(
     const RectI64 *rectangles, std::uint64_t rectangle_count,
     const std::int64_t *xs, std::uint64_t x_count,
     std::uint32_t max_slabs_per_rectangle,
-    unsigned long long *endpoint_differences, std::uint32_t *status)
+    unsigned long long *endpoint_differences,
+    PackedSlabSpan *rectangle_spans, std::uint32_t *status)
 {
   for (std::uint64_t index =
            static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
@@ -664,6 +694,7 @@ __global__ void histogram_slab_memberships_kernel(
        index < rectangle_count;
        index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
     const RectI64 rectangle = rectangles[index];
+    rectangle_spans[index] = kInvalidSlabSpan;
     const std::uint64_t first =
         lower_bound_device(xs, x_count, rectangle.left);
     const std::uint64_t last =
@@ -681,14 +712,17 @@ __global__ void histogram_slab_memberships_kernel(
           static_cast<std::uint32_t>(kStatusPerRectangleCapacity));
       continue;
     }
+    rectangle_spans[index] = pack_slab_span(
+        static_cast<std::uint32_t>(first),
+        static_cast<std::uint32_t>(last));
     atomicAdd(endpoint_differences + first, 1ULL);
     atomicAdd(endpoint_differences + last, ~0ULL);
   }
 }
 
 __global__ void count_window_memberships_kernel(
-    const RectI64 *rectangles, std::uint64_t rectangle_count,
-    const std::int64_t *xs, std::uint64_t x_count,
+    const PackedSlabSpan *rectangle_spans,
+    std::uint64_t rectangle_count, std::uint32_t x_slabs,
     std::uint32_t first_slab, std::uint32_t last_slab,
     std::uint32_t *counts, std::uint32_t *status)
 {
@@ -697,35 +731,30 @@ __global__ void count_window_memberships_kernel(
            threadIdx.x;
        index < rectangle_count;
        index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
-    const RectI64 rectangle = rectangles[index];
-    const std::uint64_t first =
-        lower_bound_device(xs, x_count, rectangle.left);
-    const std::uint64_t last =
-        lower_bound_device(xs, x_count, rectangle.right);
-    if (first >= x_count || last >= x_count ||
-        xs[first] != rectangle.left || xs[last] != rectangle.right ||
-        first >= last) {
+    const PackedSlabSpan span = rectangle_spans[index];
+    if (!valid_slab_span(span, x_slabs)) {
       atomicOr(status, static_cast<std::uint32_t>(kStatusEndpointLookup));
       counts[index] = 0;
       continue;
     }
-    const std::uint64_t clipped_first =
-        max(first, static_cast<std::uint64_t>(first_slab));
-    const std::uint64_t clipped_last =
-        min(last, static_cast<std::uint64_t>(last_slab));
+    const std::uint32_t clipped_first =
+        max(slab_span_first(span), first_slab);
+    const std::uint32_t clipped_last =
+        min(slab_span_last(span), last_slab);
     counts[index] = clipped_first < clipped_last
-                        ? static_cast<std::uint32_t>(
-                              clipped_last - clipped_first)
+                        ? clipped_last - clipped_first
                         : 0;
   }
 }
 
 __global__ void fill_window_events_kernel(
     const RectI64 *rectangles, std::uint64_t rectangle_count,
-    const std::int64_t *xs, std::uint64_t x_count,
-    std::int64_t y_base, std::uint32_t first_slab,
+    const PackedSlabSpan *rectangle_spans,
+    std::uint32_t x_slabs, std::int64_t y_base,
+    std::uint32_t first_slab,
     std::uint32_t last_slab, const std::uint64_t *offsets,
-    PackedEventKey *keys, std::int32_t *deltas)
+    PackedEventKey *keys, std::int32_t *deltas,
+    std::uint32_t *status)
 {
   for (std::uint64_t index =
            static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
@@ -733,22 +762,23 @@ __global__ void fill_window_events_kernel(
        index < rectangle_count;
        index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
     const RectI64 rectangle = rectangles[index];
-    const std::uint64_t first =
-        lower_bound_device(xs, x_count, rectangle.left);
-    const std::uint64_t last =
-        lower_bound_device(xs, x_count, rectangle.right);
-    const std::uint64_t clipped_first =
-        max(first, static_cast<std::uint64_t>(first_slab));
-    const std::uint64_t clipped_last =
-        min(last, static_cast<std::uint64_t>(last_slab));
+    const PackedSlabSpan span = rectangle_spans[index];
+    if (!valid_slab_span(span, x_slabs)) {
+      atomicOr(status, static_cast<std::uint32_t>(kStatusEndpointLookup));
+      continue;
+    }
+    const std::uint32_t clipped_first =
+        max(slab_span_first(span), first_slab);
+    const std::uint32_t clipped_last =
+        min(slab_span_last(span), last_slab);
     std::uint64_t output = offsets[index] * 2;
-    for (std::uint64_t slab = clipped_first; slab < clipped_last;
+    for (std::uint32_t slab = clipped_first; slab < clipped_last;
          ++slab) {
       keys[output] = pack_event_key(
-          static_cast<std::uint32_t>(slab), rectangle.bottom, y_base);
+          slab, rectangle.bottom, y_base);
       deltas[output++] = 1;
       keys[output] = pack_event_key(
-          static_cast<std::uint32_t>(slab), rectangle.top, y_base);
+          slab, rectangle.top, y_base);
       deltas[output++] = -1;
     }
   }
@@ -2051,11 +2081,14 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
 
     thrust::device_vector<unsigned long long> slab_memberships(
         x_count, 0);
+    thrust::device_vector<PackedSlabSpan> rectangle_slab_spans(
+        output.rectangle_count);
     histogram_slab_memberships_kernel<<<rectangle_blocks, kThreads>>>(
         thrust::raw_pointer_cast(device_rectangles.data()),
         output.rectangle_count, thrust::raw_pointer_cast(xs.data()),
         x_count, limits.max_slabs_per_rectangle,
         thrust::raw_pointer_cast(slab_memberships.data()),
+        thrust::raw_pointer_cast(rectangle_slab_spans.data()),
         thrust::raw_pointer_cast(status.data()));
     cuda_require(
         cudaGetLastError(), "histogram windowed slab memberships");
@@ -2148,9 +2181,10 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
     sample_device_memory(&output);
 
     /*
-     * These two O(rectangle_count) arrays are reused by every window.  The
-     * high-water event, delta, reduction and coverage vectors below are
-     * bounded by max_window_events instead of the whole-input event census.
+     * These two O(rectangle_count) arrays and the canonical slab-span cache
+     * built by the histogram are reused by every window.  The high-water
+     * event, delta, reduction and coverage vectors below are bounded by
+     * max_window_events instead of the whole-input event census.
      */
     thrust::device_vector<std::uint32_t> window_membership_counts(
         output.rectangle_count);
@@ -2162,9 +2196,10 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
     for (const SlabWindow &window : windows) {
       if (!window.memberships) continue;
       count_window_memberships_kernel<<<rectangle_blocks, kThreads>>>(
-          thrust::raw_pointer_cast(device_rectangles.data()),
-          output.rectangle_count, thrust::raw_pointer_cast(xs.data()),
-          x_count, window.first, window.last,
+          thrust::raw_pointer_cast(rectangle_slab_spans.data()),
+          output.rectangle_count,
+          static_cast<std::uint32_t>(output.x_slabs),
+          window.first, window.last,
           thrust::raw_pointer_cast(window_membership_counts.data()),
           thrust::raw_pointer_cast(status.data()));
       cuda_require(
@@ -2216,11 +2251,14 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
           window_event_count);
       fill_window_events_kernel<<<rectangle_blocks, kThreads>>>(
           thrust::raw_pointer_cast(device_rectangles.data()),
-          output.rectangle_count, thrust::raw_pointer_cast(xs.data()),
-          x_count, y_base, window.first, window.last,
+          output.rectangle_count,
+          thrust::raw_pointer_cast(rectangle_slab_spans.data()),
+          static_cast<std::uint32_t>(output.x_slabs), y_base,
+          window.first, window.last,
           thrust::raw_pointer_cast(window_membership_offsets.data()),
           thrust::raw_pointer_cast(event_keys.data()),
-          thrust::raw_pointer_cast(event_deltas.data()));
+          thrust::raw_pointer_cast(event_deltas.data()),
+          thrust::raw_pointer_cast(status.data()));
       cuda_require(cudaGetLastError(), "fill window slab events");
       thrust::sort_by_key(
           thrust::device, event_keys.begin(), event_keys.end(),
@@ -2390,6 +2428,7 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
      * allocates morphology output.
      */
     release_device_vector(&device_rectangles);
+    release_device_vector(&rectangle_slab_spans);
     release_device_vector(&window_membership_counts);
     release_device_vector(&window_membership_offsets);
     sample_device_memory(&output);
