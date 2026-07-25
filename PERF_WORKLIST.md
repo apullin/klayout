@@ -1334,6 +1334,30 @@ not just wall time.
         denominator.  This first qualified pair is not yet a repeated
         statistical M1 result or a parallel full-launch measurement.
 
+      - [x] **Reject the conservative pre-union raw-WELL ACTIVE.3 shortcut on
+        the production x2 workload:** commits `409ba25`, `19ad028`, and
+        `0d472f9` add a default-off, fail-closed transaction over pristine
+        NWELL, PWELL, and ACTIVE.  A zero raw-hit result would soundly bypass
+        the CPU WELL union; every raw hit, uncertainty, capacity, malformed
+        profile, loader error, or exception retains the literal historical
+        union and ACTIVE.3 rule.  Clean, deliberate internal-edge
+        false-positive, true-hit, cross-profile, Cartesian-policy, and actual-
+        candidate-capacity gates pass with exact CPU/CUDA reports.
+
+        The production census is 11,172,432 NWELL plus 15,379,472 PWELL edges,
+        or 26,551,904 raw WELL edges against 98,754,896 raw ACTIVE edges.  The
+        bounded GPU probe completed 713,335,096 spatial candidates in
+        0.593 s, but found 11,855,006 conservative raw hits and therefore
+        correctly ran the existing merged-WELL certificate.  Focused external
+        wall changed **12.51 -> 14.21 s: 1.70 real seconds / 13.59% longer**.
+        Both reports retained canonical SHA-256
+        `273f908b94ca18b1f8ceeb7af72c9f1812fe1cc7cf4b437a2856da17015d6163`.
+        This shortcut is a current-design performance NO-GO and must remain
+        disabled.  The next valid attack is an exact device-resident
+        `NWELL.or(PWELL)` followed directly by the proven ACTIVE.3 predicate,
+        not cascading this rejected probe ahead of it.  Evidence:
+        `.scratchpad/cuda-runs/active3-raw-wells-production-focused.FWljWC`.
+
       - [x] **Prove a reusable device-resident VIA1 sandwich on both metal
         boundaries — completed experimentally:** exact packed-scene oracles
         now retain the raw M1/VIA1 and M2/VIA1 hierarchies and execute the
