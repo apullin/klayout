@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<klayout-macro>
+ <description>Capture raw hierarchical FreePDK45 M2/VIA2 operands</description>
+ <version/>
+ <category>drc</category>
+ <prolog/>
+ <epilog/>
+ <doc/>
+ <autorun>false</autorun>
+ <autorun-early>false</autorun-early>
+ <shortcut/>
+ <show-in-menu>false</show-in-menu>
+ <group-name>drc_scripts</group-name>
+ <menu-path>tools_menu.drc.end</menu-path>
+ <interpreter>dsl</interpreter>
+ <dsl-interpreter-name>drc-dsl-xml</dsl-interpreter-name>
+ <text>
+input_path = $input
+top_name = $topcell
+scene_path = $scene_output
+report_path = $output
+thread_text = ($threads || "1").to_s
+
+raise("missing -rd input=PATH") unless input_path &amp;&amp; !input_path.to_s.empty?
+raise("missing -rd topcell=NAME") unless top_name &amp;&amp; !top_name.to_s.empty?
+raise("missing -rd scene_output=PATH") unless scene_path &amp;&amp; !scene_path.to_s.empty?
+raise("missing -rd output=PATH") unless report_path &amp;&amp; !report_path.to_s.empty?
+raise("threads must be positive") unless thread_text =~ /\A[1-9][0-9]*\z/
+
+input_abs = File.realpath(File.expand_path(input_path.to_s))
+scene_abs = File.expand_path(scene_path.to_s)
+report_abs = File.expand_path(report_path.to_s)
+raise("scene output already exists") if File.exist?(scene_abs)
+raise("report output already exists") if File.exist?(report_abs)
+
+source(input_abs, top_name.to_s)
+report("FreePDK45 M2/VIA2 capture", report_abs)
+deep
+threads(thread_text.to_i)
+verbose(true)
+
+metal2 = polygons(13, 0)
+via2 = polygons(14, 0)
+
+capture_layout = RBA::Layout.new
+capture_layout.dbu = dbu
+capture_top = capture_layout.create_cell("KLAYOUT_CUDA_M2_VIA2_SCENE")
+capture_metal2 = capture_layout.layer(RBA::LayerInfo.new(101, 0))
+capture_via2 = capture_layout.layer(RBA::LayerInfo.new(102, 0))
+metal2.data.insert_into(
+  capture_layout, capture_top.cell_index, capture_metal2
+)
+via2.data.insert_into(
+  capture_layout, capture_top.cell_index, capture_via2
+)
+
+captured_shapes = [0, 0]
+removed_texts = 0
+capture_layout.each_cell do |cell|
+  [capture_metal2, capture_via2].each_with_index do |layer_index, operand|
+    shapes = cell.shapes(layer_index)
+    texts = []
+    shapes.each(RBA::Shapes::STexts) { |shape| texts &lt;&lt; shape }
+    texts.each do |shape|
+      shapes.erase(shape)
+      removed_texts += 1
+    end
+    shapes.each(RBA::Shapes::SAll) do |shape|
+      unless shape.is_box? || shape.is_polygon? || shape.is_simple_polygon?
+        raise("captured operand contains a non-polygon shape in #{cell.name}")
+      end
+      unless shape.prop_id == 0
+        raise("captured operand contains properties in #{cell.name}")
+      end
+      captured_shapes[operand] += 1
+    end
+  end
+end
+
+raise("captured M2 operand is empty") if captured_shapes[0] == 0
+raise("captured VIA2 operand is empty") if captured_shapes[1] == 0
+capture_layout.write(scene_abs)
+info(
+  "M2_VIA2_CAPTURE scene=#{scene_abs} " \
+  "top=KLAYOUT_CUDA_M2_VIA2_SCENE metal2=101/0 via2=102/0 " \
+  "metal2_shapes=#{captured_shapes[0]} via2_shapes=#{captured_shapes[1]} " \
+  "removed_texts=#{removed_texts} dbu=#{capture_layout.dbu}"
+)
+ </text>
+</klayout-macro>

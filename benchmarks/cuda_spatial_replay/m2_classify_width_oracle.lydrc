@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<klayout-macro>
+ <description>FreePDK45 M2 classify-by-width audit oracle</description>
+ <version/>
+ <category>drc</category>
+ <prolog/>
+ <epilog/>
+ <doc/>
+ <autorun>false</autorun>
+ <autorun-early>false</autorun-early>
+ <shortcut/>
+ <show-in-menu>false</show-in-menu>
+ <group-name>drc_scripts</group-name>
+ <menu-path>tools_menu.drc.end</menu-path>
+ <interpreter>dsl</interpreter>
+ <dsl-interpreter-name>drc-dsl-xml</dsl-interpreter-name>
+ <text>
+input_path = $input
+top_name = $topcell
+report_path = $output
+
+raise("missing -rd input=PATH") unless input_path &amp;&amp; !input_path.to_s.empty?
+raise("missing -rd topcell=NAME") unless top_name &amp;&amp; !top_name.to_s.empty?
+raise("missing -rd output=PATH") unless report_path &amp;&amp; !report_path.to_s.empty?
+
+source(File.realpath(File.expand_path(input_path.to_s)), top_name.to_s)
+report("FreePDK45 M2 classify audit", File.expand_path(report_path.to_s))
+deep
+threads(2)
+verbose(true)
+
+metal2 = polygons(13, 0)
+
+def classify_by_width(layer, *dimensions)
+  dimensions.collect do |dimension|
+    delta = 0.5 * (dimension - 1.dbu)
+    layer = layer.sized(-delta).sized(delta)
+  end
+end
+
+metal2_gt90, metal2_gt270, metal2_gt500, metal2_gt900, metal2_gt1500 =
+  classify_by_width(metal2, 90.nm, 270.nm, 500.nm, 900.nm, 1500.nm)
+
+gt90_edges = metal2_gt90.edges
+long90 = gt90_edges.with_length(300.nm, nil)
+gt270_edges = metal2_gt270.edges
+long270 = gt270_edges.with_length(900.nm, nil)
+
+info(
+  "M2_CHAIN_ORACLE " \
+  "gt90_flat=#{metal2_gt90.count} gt90_hier=#{metal2_gt90.hier_count} " \
+  "gt90_edges_flat=#{gt90_edges.count} gt90_edges_hier=#{gt90_edges.hier_count} " \
+  "long90_flat=#{long90.count} long90_hier=#{long90.hier_count} " \
+  "gt270_flat=#{metal2_gt270.count} gt270_hier=#{metal2_gt270.hier_count} " \
+  "long270_flat=#{long270.count} long270_hier=#{long270.hier_count}"
+)
+
+long90.output(
+  "M2_GT90_LONG",
+  "M2 gt90 boundary edges with length at least 300nm"
+)
+long270.output(
+  "M2_GT270_LONG",
+  "M2 gt270 boundary edges with length at least 900nm"
+)
+
+[metal2_gt90, metal2_gt270, metal2_gt500, metal2_gt900, metal2_gt1500,
+ gt90_edges, gt270_edges, long90, long270].each { |layer| layer.forget }
+ </text>
+</klayout-macro>
