@@ -12,7 +12,8 @@ Usage:
     [--without-contact4] \
     [--with-m2-rules|--without-m2-rules] \
     [--with-m2-width-space|--without-m2-width-space] \
-    [--with-implant12|--without-implant12] [--keep-work]
+    [--with-implant12|--without-implant12] \
+    [--with-poly34|--without-poly34] [--keep-work]
 
 Regenerates the qualified FreePDK45 live-CUDA deck, applies the antenna split,
 coalesces CONTACT.6 into the grid owner, and runs the exact balanced full-launch
@@ -42,6 +43,10 @@ default leaves its environment unset for compatibility with historical gates.
 
 --with-implant12 and --without-implant12 both generate the identical fused
 IMPLANT.1/.2 transaction deck, then toggle only its runtime environment. The
+default omits that deck rewrite and preserves the older qualified gate.
+
+--with-poly34 and --without-poly34 both generate the identical atomic
+POLY.3/.4 transaction deck, then toggle only its runtime environment. The
 default omits that deck rewrite and preserves the older qualified gate.
 
 All generated decks, reports, logs, homes, and caches live under a fresh
@@ -75,6 +80,7 @@ contact4=1
 implant12=-1
 m2_rules=-1
 m2_width_space=-1
+poly34=-1
 jobs=8
 split_upper_antenna=0
 
@@ -172,6 +178,18 @@ while (($#)); do
       ((implant12 == -1)) ||
         die "choose exactly one IMPLANT.1/.2 runtime mode"
       implant12=0
+      shift
+      ;;
+    --with-poly34)
+      ((poly34 == -1)) ||
+        die "choose exactly one POLY.3/.4 runtime mode"
+      poly34=1
+      shift
+      ;;
+    --without-poly34)
+      ((poly34 == -1)) ||
+        die "choose exactly one POLY.3/.4 runtime mode"
+      poly34=0
       shift
       ;;
     -h|--help)
@@ -287,11 +305,21 @@ if ((m2_width_space >= 0)); then
     "KLAYOUT_CUDA_M2_WIDTH_SPACE_TELEMETRY=${m2_width_space}"
   )
 fi
+poly34_generator_args=()
+poly34_env=()
+if ((poly34 >= 0)); then
+  poly34_generator_args=(--poly34)
+  poly34_env=(
+    "KLAYOUT_CUDA_POLY34=${poly34}"
+    "KLAYOUT_CUDA_POLY34_TELEMETRY=${poly34}"
+  )
+fi
 run_transform "live CUDA deck generation" \
   "${python}" "${deck_generator}" \
     --input "${source_deck}" --output "${live_deck}" --m1-contact \
     "${m2_rules_generator_args[@]}" \
-    "${implant12_generator_args[@]}"
+    "${implant12_generator_args[@]}" \
+    "${poly34_generator_args[@]}"
 antenna_split_args=()
 if ((split_upper_antenna)); then
   antenna_split_args=(--split-upper)
@@ -392,6 +420,7 @@ set +e
       "KLAYOUT_CUDA_CONTACT4=${contact4}" \
       "KLAYOUT_CUDA_CONTACT4_TELEMETRY=${contact4}" \
       "${implant12_env[@]}" \
+      "${poly34_env[@]}" \
       "${python}" "${runner}" \
         --klayout "${klayout}" \
         --deck "${balanced_deck}" \
@@ -490,6 +519,15 @@ elif ((implant12 == 0)) &&
        "CUDA IMPLANT.1/.2 transaction:" "${shard_dir}"; then
   die "IMPLANT.1/.2-off control unexpectedly invoked IMPLANT CUDA"
 fi
+if ((poly34 == 1)); then
+  require_telemetry \
+    "CUDA POLY.3/.4 transaction: certified-empty" \
+    "POLY.3/.4 certified-empty"
+elif ((poly34 == 0)) &&
+     grep -R -Fq --include='*.log' -- \
+       "CUDA POLY.3/.4" "${shard_dir}"; then
+  die "POLY.3/.4-off control unexpectedly invoked POLY CUDA"
+fi
 
 shard_count=$(grep -c '^shard ' "${launcher_log}" || true)
 [[ "${shard_count}" == "${#shards[@]}" ]] ||
@@ -503,7 +541,7 @@ if ! cmp -s -- "${reference_canonical}" "${report_canonical}"; then
 fi
 
 grep -R -nE --include='*.log' -- \
-  'CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M2 width/space empty certificate:|CUDA M2 width/space live lowering:|CUDA M2 exact union boundary:|CUDA M2 live flat operands:|CUDA M2 rules transaction:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA CONTACT\.4 empty certificate:|CUDA CONTACT\.4 live lowering:|CUDA IMPLANT\.1/\.2 transaction:|CUDA IMPLANT\.1/\.2 empty certificate:|CUDA IMPLANT\.1/\.2 live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_EDGE_CERT ' \
+  'CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M2 width/space empty certificate:|CUDA M2 width/space live lowering:|CUDA M2 exact union boundary:|CUDA M2 live flat operands:|CUDA M2 rules transaction:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA CONTACT\.4 empty certificate:|CUDA CONTACT\.4 live lowering:|CUDA IMPLANT\.1/\.2 transaction:|CUDA IMPLANT\.1/\.2 empty certificate:|CUDA IMPLANT\.1/\.2 live lowering:|CUDA POLY\.3/\.4 transaction:|CUDA POLY\.3/\.4 live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_EDGE_CERT ' \
   "${shard_dir}" >"${work}/cuda-telemetry.txt"
 
 grep -E \
@@ -538,4 +576,4 @@ cat -- "${work}/launcher-summary.txt"
 cat -- "${work}/canonical-report-sha256.txt"
 cat -- "${work}/cuda-telemetry.txt"
 echo \
-  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} split_upper_antenna=${split_upper_antenna}"
+  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} poly34=${poly34} split_upper_antenna=${split_upper_antenna}"

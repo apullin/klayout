@@ -432,6 +432,53 @@ end""",
     )
 
 
+def add_poly34(text: str) -> str:
+    return replace_once(
+        text,
+        """poly.enclosing(gate, 55.nm, projection).polygons.without_area(0).output("POLY.3", "POLY.3 : Minimum poly extension beyond active : 55nm")
+active.enclosing(gate, 70.nm, projection).polygons.without_area(0).output("POLY.4", "POLY.4 : Minimum enclosure of active around gate : 70nm")""",
+        """# BEGIN KLAYOUT CUDA POLY34 TRANSACTION
+# One qualified transaction may prove both fixed projection-enclosure
+# categories empty.  The generated opt-in is fail-closed: a missing method or
+# any Ruby/host/backend decline executes both historical CPU expressions
+# unchanged and in their original output order.
+poly34_request = ENV["KLAYOUT_CUDA_POLY34"].to_s
+poly34_requested = !poly34_request.empty? &amp;&amp; poly34_request != "0" &amp;&amp; poly34_request != "false" &amp;&amp; poly34_request != "off"
+poly34_clean = false
+poly34_error = nil
+if poly34_requested
+  begin
+    poly34_clean = poly.respond_to?(:cuda_poly34_clean?) &amp;&amp; poly.cuda_poly34_clean?(active, gate)
+  rescue StandardError =&gt; error
+    poly34_clean = false
+    poly34_error = "#{error.class}: #{error.message}"
+  end
+end
+poly34_empty = polygon_layer if poly34_clean
+info("CUDA POLY.3/.4 transaction: #{poly34_clean ? 'certified-empty' : 'full-cpu-fallback'}") if poly34_requested
+info("CUDA POLY.3/.4 Ruby fallback: #{poly34_error}") if poly34_error
+
+if poly34_clean
+  poly34_empty.output("POLY.3", "POLY.3 : Minimum poly extension beyond active : 55nm")
+  poly34_empty.output("POLY.4", "POLY.4 : Minimum enclosure of active around gate : 70nm")
+else
+  poly.enclosing(gate, 55.nm, projection).polygons.without_area(0).output("POLY.3", "POLY.3 : Minimum poly extension beyond active : 55nm")
+  active.enclosing(gate, 70.nm, projection).polygons.without_area(0).output("POLY.4", "POLY.4 : Minimum enclosure of active around gate : 70nm")
+end
+# END KLAYOUT CUDA POLY34 TRANSACTION""",
+        "POLY.3/.4 transaction",
+    )
+
+
+def inject_poly34_ruby_exception(text: str) -> str:
+    return replace_once(
+        text,
+        """poly34_clean = poly.respond_to?(:cuda_poly34_clean?) &amp;&amp; poly.cuda_poly34_clean?(active, gate)""",
+        """raise("injected POLY34 Ruby exception")""",
+        "POLY.3/.4 injected Ruby exception",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True, type=Path)
@@ -451,7 +498,19 @@ def main() -> int:
         action="store_true",
         help="also add the fail-closed live M2.1/.2/.4-.9 transaction",
     )
+    parser.add_argument(
+        "--poly34",
+        action="store_true",
+        help="also add the fail-closed POLY.3/.4 transaction",
+    )
+    parser.add_argument(
+        "--inject-poly34-ruby-exception",
+        action="store_true",
+        help="gate-only: replace the qualified POLY.3/.4 hook with an exception",
+    )
     args = parser.parse_args()
+    if args.inject_poly34_ruby_exception and not args.poly34:
+        parser.error("--inject-poly34-ruby-exception requires --poly34")
 
     source = args.input.read_text(encoding="utf-8")
     output = transform(source)
@@ -459,6 +518,10 @@ def main() -> int:
         output = add_m2_rules(output)
     if args.implant12:
         output = add_implant12(output)
+    if args.poly34:
+        output = add_poly34(output)
+    if args.inject_poly34_ruby_exception:
+        output = inject_poly34_ruby_exception(output)
     if args.m1_contact:
         output = add_m1_contact(output)
     args.output.parent.mkdir(parents=True, exist_ok=True)

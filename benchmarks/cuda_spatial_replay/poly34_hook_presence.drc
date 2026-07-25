@@ -1,0 +1,12 @@
+# Lightweight production-runtime preflight for the internal POLY.3/.4 hook.
+#
+# This intentionally does not touch layout geometry or the CUDA device.  It
+# catches a stale KLayout DSO/macro closure before a long feature-off owner run.
+
+deep
+probe = polygon_layer
+unless probe.respond_to?(:cuda_poly34_clean?)
+  raise("loaded KLayout runtime has no cuda_poly34_clean? hook")
+end
+
+puts("POLY34_HOOK_PRESENCE ok")

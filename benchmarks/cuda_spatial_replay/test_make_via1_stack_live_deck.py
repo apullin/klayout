@@ -20,6 +20,17 @@ IMPLANT2 = (
     'pimplant to contact : 25nm")'
 )
 SOURCE_BLOCK = f"{IMPLANT1}\n{IMPLANT2}"
+POLY3 = (
+    "poly.enclosing(gate, 55.nm, projection).polygons.without_area(0)"
+    '.output("POLY.3", "POLY.3 : Minimum poly extension beyond active : '
+    '55nm")'
+)
+POLY4 = (
+    "active.enclosing(gate, 70.nm, projection).polygons.without_area(0)"
+    '.output("POLY.4", "POLY.4 : Minimum enclosure of active around gate : '
+    '70nm")'
+)
+POLY34_SOURCE_BLOCK = f"{POLY3}\n{POLY4}"
 
 M2_CPU12 = """metal2_width, metal2_space = metal2.drc_batch([
   width(euclidian) &lt; 70.nm,
@@ -305,6 +316,147 @@ class M2RulesTransformTest(unittest.TestCase):
             r"expected one source block, found 2",
         ):
             generator.add_m2_rules(duplicated)
+
+
+class Poly34TransformTest(unittest.TestCase):
+    def test_rewrites_only_the_exact_pair(self) -> None:
+        source = f"before\n{POLY34_SOURCE_BLOCK}\nafter\n"
+
+        transformed = generator.add_poly34(source)
+
+        self.assertTrue(transformed.startswith("before\n"))
+        self.assertTrue(transformed.endswith("\nafter\n"))
+        self.assertIn(
+            "poly34_clean = poly.respond_to?(:cuda_poly34_clean?) "
+            "&amp;&amp; poly.cuda_poly34_clean?(active, gate)",
+            transformed,
+        )
+        self.assertIn("rescue StandardError =&gt; error", transformed)
+        self.assertIn("poly34_clean = false", transformed)
+        self.assertIn(
+            'info("CUDA POLY.3/.4 Ruby fallback: #{poly34_error}") '
+            "if poly34_error",
+            transformed,
+        )
+        self.assertIn(
+            'poly34_empty.output("POLY.3", '
+            '"POLY.3 : Minimum poly extension beyond active : 55nm")',
+            transformed,
+        )
+        self.assertIn(
+            'poly34_empty.output("POLY.4", '
+            '"POLY.4 : Minimum enclosure of active around gate : 70nm")',
+            transformed,
+        )
+
+        # The only projection-enclosure calls left are the two historical
+        # expressions preserved literally inside the fail-closed CPU branch.
+        self.assertEqual(transformed.count(POLY3), 1)
+        self.assertEqual(transformed.count(POLY4), 1)
+        false_branch = transformed.split("else\n", 1)[1].split("\nend", 1)[0]
+        self.assertEqual(false_branch, f"  {POLY3}\n  {POLY4}")
+
+    def test_preserves_output_order_and_pristine_cpu_postprocessing(
+        self,
+    ) -> None:
+        transformed = generator.add_poly34(POLY34_SOURCE_BLOCK)
+
+        clean_branch = transformed.split(
+            "if poly34_clean\n", 1
+        )[1].split("\nelse", 1)[0]
+        self.assertLess(
+            clean_branch.index('output("POLY.3"'),
+            clean_branch.index('output("POLY.4"'),
+        )
+        self.assertNotIn(".enclosing", clean_branch)
+        self.assertNotIn(".polygons", clean_branch)
+        self.assertNotIn(".without_area", clean_branch)
+
+    def test_ruby_exception_path_precedes_pristine_cpu_fallback(self) -> None:
+        transformed = generator.add_poly34(POLY34_SOURCE_BLOCK)
+
+        begin_at = transformed.index("  begin\n")
+        call_at = transformed.index("poly.cuda_poly34_clean?(active, gate)")
+        rescue_at = transformed.index("  rescue StandardError =&gt; error")
+        fail_closed_at = transformed.index(
+            "    poly34_clean = false", rescue_at
+        )
+        cpu_branch_at = transformed.index(f"  {POLY3}")
+
+        self.assertLess(begin_at, call_at)
+        self.assertLess(call_at, rescue_at)
+        self.assertLess(rescue_at, fail_closed_at)
+        self.assertLess(fail_closed_at, cpu_branch_at)
+
+    def test_rejects_a_changed_rule(self) -> None:
+        changed = POLY34_SOURCE_BLOCK.replace("70.nm", "71.nm")
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"POLY\.3/\.4 transaction: expected one source block, found 0",
+        ):
+            generator.add_poly34(changed)
+
+    def test_rejects_duplicate_source_pairs(self) -> None:
+        duplicated = f"{POLY34_SOURCE_BLOCK}\n{POLY34_SOURCE_BLOCK}"
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"POLY\.3/\.4 transaction: expected one source block, found 2",
+        ):
+            generator.add_poly34(duplicated)
+
+    def test_injected_ruby_exception_replaces_only_the_hook(self) -> None:
+        transformed = generator.add_poly34(POLY34_SOURCE_BLOCK)
+        injected = generator.inject_poly34_ruby_exception(transformed)
+
+        self.assertNotIn(
+            "poly.cuda_poly34_clean?(active, gate)", injected
+        )
+        self.assertEqual(
+            injected.count('raise("injected POLY34 Ruby exception")'), 1
+        )
+        self.assertIn("rescue StandardError =&gt; error", injected)
+        self.assertEqual(injected.count(POLY3), 1)
+        self.assertEqual(injected.count(POLY4), 1)
+
+    def test_injected_ruby_exception_rejects_missing_hook(self) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "POLY.3/.4 injected Ruby exception: "
+            "expected one source block, found 0",
+        ):
+            generator.inject_poly34_ruby_exception(POLY34_SOURCE_BLOCK)
+
+
+class CombinedM2PolyTransformTest(unittest.TestCase):
+    def test_combined_transform_is_deterministic_and_preserves_both(self) -> None:
+        source = f"before\n{M2_OWNER_BLOCK}\n{POLY34_SOURCE_BLOCK}\nafter\n"
+
+        first = generator.add_poly34(generator.add_m2_rules(source))
+        second = generator.add_poly34(generator.add_m2_rules(source))
+
+        self.assertEqual(first, second)
+        self.assertEqual(
+            first.count(
+                'm2_rules_request = ENV["KLAYOUT_CUDA_M2_RULES"].to_s'
+            ),
+            1,
+        )
+        self.assertEqual(
+            first.count('poly34_request = ENV["KLAYOUT_CUDA_POLY34"].to_s'),
+            1,
+        )
+        self.assertEqual(first.count("m2_rules_empty.output"), 8)
+        self.assertEqual(first.count("poly34_empty.output"), 2)
+        self.assertEqual(first.count(POLY3), 1)
+        self.assertEqual(first.count(POLY4), 1)
+        self.assertLess(
+            first.index(
+                'm2_rules_request = ENV["KLAYOUT_CUDA_M2_RULES"].to_s'
+            ),
+            first.index("BEGIN KLAYOUT CUDA POLY34 TRANSACTION"),
+        )
 
 
 if __name__ == "__main__":
