@@ -13,6 +13,7 @@
 #include "manhattan_union_replay.cu"
 
 #include <set>
+#include <thrust/count.h>
 
 namespace {
 
@@ -30,7 +31,7 @@ enum MorphStatus : std::uint32_t
 
 struct MorphLimits
 {
-  std::uint64_t max_output_slabs = UINT64_C(200000);
+  std::uint64_t max_output_slabs = UINT64_C(1000000);
   std::uint64_t max_output_intervals = UINT64_C(64000000);
   std::uint64_t max_total_source_visits = UINT64_C(2000000000);
   std::uint64_t max_source_visits_per_band = UINT64_C(4000000);
@@ -513,7 +514,8 @@ std::string morph_status_message(std::uint32_t status)
 
 DeviceBandSet morph_bands(
     const DeviceBandView &source, std::int64_t radius, bool erosion,
-    const MorphLimits &limits, MorphMetrics *metrics)
+    const MorphLimits &limits, MorphMetrics *metrics,
+    bool count_only = false)
 {
   const auto begin = Clock::now();
   if (radius < 0) {
@@ -660,11 +662,22 @@ DeviceBandSet morph_bands(
     host_status |= kMorphWorkCapacity;
   }
   if (host_status) {
-    throw std::runtime_error(
-        "morph count failed: " + morph_status_message(host_status));
+    std::ostringstream stream;
+    stream << "morph count failed: " << morph_status_message(host_status)
+           << " observed_max_active=" << metrics->max_active_slabs
+           << " source_visits=" << metrics->source_visits;
+    throw std::runtime_error(stream.str());
   }
   if (output_intervals > limits.max_output_intervals) {
     throw std::runtime_error("output interval capacity");
+  }
+  metrics->output_intervals = output_intervals;
+  if (count_only) {
+    cuda_require(
+        cudaDeviceSynchronize(), "count-only morphology synchronize");
+    sample_morph_memory(metrics);
+    metrics->elapsed_ms = elapsed_ms(begin, Clock::now());
+    return result;
   }
 
   result.intervals.resize(output_intervals);
@@ -696,7 +709,6 @@ DeviceBandSet morph_bands(
         "morph emit failed: " + morph_status_message(host_status));
   }
   sample_morph_memory(metrics);
-  metrics->output_intervals = output_intervals;
   metrics->elapsed_ms = elapsed_ms(begin, Clock::now());
   return result;
 }
@@ -720,8 +732,9 @@ __global__ void emit_horizontal_band_boundary_kernel(
   }
 }
 
-std::vector<DirectedSegmentI64> boundary_from_bands(
-    const DeviceBandSet &bands, std::uint64_t max_segments)
+thrust::device_vector<DirectedSegmentI64> device_boundary_from_bands(
+    const DeviceBandSet &bands, std::uint64_t max_segments,
+    MorphMetrics *memory_metrics = nullptr)
 {
   const DeviceBandView view = bands.view();
   if (!view.x_slabs || !view.interval_count) return {};
@@ -729,6 +742,7 @@ std::vector<DirectedSegmentI64> boundary_from_bands(
       static_cast<std::uint64_t>(view.x_slabs) + 1;
   thrust::device_vector<std::uint64_t> vertical_counts(boundary_count);
   thrust::device_vector<std::uint64_t> vertical_offsets(boundary_count);
+  if (memory_metrics) sample_morph_memory(memory_metrics);
   count_vertical_xor_kernel<<<
       launch_blocks(boundary_count), kThreads>>>(
       view.intervals, view.slab_offsets, view.slab_counts,
@@ -771,6 +785,7 @@ std::vector<DirectedSegmentI64> boundary_from_bands(
   }
 
   thrust::device_vector<DirectedSegmentI64> raw(raw_count);
+  if (memory_metrics) sample_morph_memory(memory_metrics);
   if (view.interval_count) {
     emit_horizontal_band_boundary_kernel<<<
         launch_blocks(view.interval_count), kThreads>>>(
@@ -797,7 +812,15 @@ std::vector<DirectedSegmentI64> boundary_from_bands(
   canonicalize_device_segments(&raw);
   cuda_require(
       cudaDeviceSynchronize(), "morph boundary canonicalize synchronize");
+  if (memory_metrics) sample_morph_memory(memory_metrics);
+  return raw;
+}
 
+std::vector<DirectedSegmentI64> boundary_from_bands(
+    const DeviceBandSet &bands, std::uint64_t max_segments)
+{
+  thrust::device_vector<DirectedSegmentI64> raw =
+      device_boundary_from_bands(bands, max_segments);
   std::vector<DirectedSegmentI64> host(raw.size());
   if (!host.empty()) {
     cuda_require(
@@ -1107,9 +1130,384 @@ void run_differential_gate(int device)
             << " random=64\n";
 }
 
+constexpr char kGt90GoldenFileSha256[] =
+    "e7149202ef0ace74618a01f56135ea1cde2b4a0bdb00102f9a5f4a072af2ea49";
+constexpr char kGt90GoldenPayloadSha256[] =
+    "233a611bc306126b0292763954aab2d984508f2466a56ced2d1cf08af6c526ff";
+constexpr std::uint64_t kGt90GoldenSegments = UINT64_C(4254384);
+constexpr std::uint64_t kGt90GoldenFnv64 =
+    UINT64_C(2057677162565968634);
+constexpr std::uint64_t kGt90LongSegments = UINT64_C(8);
+
+struct LongSegment
+{
+  std::uint64_t minimum;
+
+  MU_HD bool operator()(const DirectedSegmentI64 &segment) const
+  {
+    return static_cast<std::uint64_t>(segment.hi) -
+               static_cast<std::uint64_t>(segment.lo) >=
+           minimum;
+  }
+};
+
+struct ProductionMorphContext
+{
+  bool qualify_boundary = false;
+  bool invoked = false;
+  MorphMetrics erode89;
+  MorphMetrics dilate90;
+  MorphMetrics boundary_memory;
+  MorphMetrics erode269_count;
+  std::uint64_t gt90_boundary_segments = 0;
+  std::uint64_t gt90_long_segments = 0;
+  std::uint64_t gt270_eroded_intervals = 0;
+  std::uint64_t callback_device_total_bytes = 0;
+  std::uint64_t callback_device_free_begin_bytes = 0;
+  std::uint64_t callback_device_free_low_bytes = 0;
+  double boundary_ms = 0.0;
+  double callback_ms = 0.0;
+  std::vector<DirectedSegmentI64> qualified_boundary;
+};
+
+void include_memory_sample(
+    const MorphMetrics &sample, ProductionMorphContext *context)
+{
+  if (!sample.device_total_bytes) return;
+  context->callback_device_total_bytes = sample.device_total_bytes;
+  context->callback_device_free_low_bytes =
+      std::min(
+          context->callback_device_free_low_bytes,
+          sample.device_free_low_bytes);
+}
+
+void production_consume_strips(
+    const std::int64_t *xs, std::uint32_t x_slabs,
+    const StripInterval *intervals, std::uint64_t interval_count,
+    const std::uint64_t *slab_offsets,
+    const std::uint32_t *slab_counts, void *opaque)
+{
+  auto *context = static_cast<ProductionMorphContext *>(opaque);
+  if (!context || context->invoked) {
+    throw std::runtime_error("production resident callback state");
+  }
+  context->invoked = true;
+  const auto callback_begin = Clock::now();
+  std::size_t free_bytes = 0;
+  std::size_t total_bytes = 0;
+  cuda_require(
+      cudaMemGetInfo(&free_bytes, &total_bytes),
+      "production callback cudaMemGetInfo");
+  context->callback_device_total_bytes = total_bytes;
+  context->callback_device_free_begin_bytes = free_bytes;
+  context->callback_device_free_low_bytes = free_bytes;
+
+  if (!x_slabs) {
+    throw std::runtime_error("production source has no x slabs");
+  }
+  std::uint64_t final_offset = 0;
+  std::uint32_t final_count = 0;
+  cuda_require(
+      cudaMemcpy(
+          &final_offset, slab_offsets + x_slabs - 1,
+          sizeof(final_offset), cudaMemcpyDeviceToHost),
+      "production source final offset D2H");
+  cuda_require(
+      cudaMemcpy(
+          &final_count, slab_counts + x_slabs - 1,
+          sizeof(final_count), cudaMemcpyDeviceToHost),
+      "production source final count D2H");
+  if (final_offset >
+          std::numeric_limits<std::uint64_t>::max() - final_count ||
+      final_offset + final_count != interval_count) {
+    throw std::runtime_error(
+        "production resident source interval census mismatch");
+  }
+
+  const DeviceBandView source = {
+      xs, x_slabs, intervals, interval_count, slab_offsets, slab_counts};
+  MorphLimits limits;
+  // The exact r=269 count-only pass revisits 4.682 billion source
+  // intervals across overlapping x windows on the pinned production scene.
+  // Keep a measured, finite production allowance rather than disabling the
+  // fail-closed work gate.
+  limits.max_total_source_visits = UINT64_C(8000000000);
+  DeviceBandSet eroded89;
+  try {
+    eroded89 = morph_bands(
+        source, 89, true, limits, &context->erode89);
+  } catch (const std::exception &error) {
+    throw std::runtime_error(
+        std::string("erode89: ") + error.what());
+  }
+  if (!eroded89.x_slabs() || !context->erode89.output_intervals) {
+    throw std::runtime_error("production F90 erosion unexpectedly empty");
+  }
+  DeviceBandSet gt90;
+  try {
+    gt90 = morph_bands(
+        eroded89.view(), 90, false, limits, &context->dilate90);
+  } catch (const std::exception &error) {
+    throw std::runtime_error(
+        std::string("dilate90: ") + error.what());
+  }
+  if (!gt90.x_slabs() || !context->dilate90.output_intervals) {
+    throw std::runtime_error("production F90 dilation unexpectedly empty");
+  }
+  include_memory_sample(context->erode89, context);
+  include_memory_sample(context->dilate90, context);
+  release_device_vector(&eroded89.xs);
+  release_device_vector(&eroded89.intervals);
+  release_device_vector(&eroded89.slab_offsets);
+  release_device_vector(&eroded89.slab_counts);
+
+  const auto boundary_begin = Clock::now();
+  thrust::device_vector<DirectedSegmentI64> boundary =
+      device_boundary_from_bands(
+          gt90, limits.max_output_intervals * 4,
+          &context->boundary_memory);
+  context->gt90_boundary_segments = boundary.size();
+  context->gt90_long_segments = thrust::count_if(
+      thrust::device, boundary.begin(), boundary.end(),
+      LongSegment{600});
+  if (context->qualify_boundary) {
+    context->qualified_boundary.resize(boundary.size());
+    if (!boundary.empty()) {
+      cuda_require(
+          cudaMemcpy(
+              context->qualified_boundary.data(),
+              thrust::raw_pointer_cast(boundary.data()),
+              boundary.size() * sizeof(DirectedSegmentI64),
+              cudaMemcpyDeviceToHost),
+          "qualified gt90 boundary D2H");
+    }
+  }
+  cuda_require(
+      cudaDeviceSynchronize(), "production gt90 boundary synchronize");
+  context->boundary_ms = elapsed_ms(boundary_begin, Clock::now());
+  include_memory_sample(context->boundary_memory, context);
+  release_device_vector(&boundary);
+
+  DeviceBandSet gt270_eroded;
+  try {
+    gt270_eroded = morph_bands(
+        gt90.view(), 269, true, limits, &context->erode269_count, true);
+  } catch (const std::exception &error) {
+    throw std::runtime_error(
+        std::string("erode269-count: ") + error.what());
+  }
+  context->gt270_eroded_intervals =
+      context->erode269_count.output_intervals;
+  include_memory_sample(context->erode269_count, context);
+  if (context->gt270_eroded_intervals != 0) {
+    throw std::runtime_error(
+        "production F270 count-only erosion is not empty");
+  }
+  context->callback_ms = elapsed_ms(callback_begin, Clock::now());
+}
+
+void require_production_boundary_equal(
+    const std::vector<m2oracle::DirectedSegmentI64> &expected,
+    const std::vector<DirectedSegmentI64> &actual)
+{
+  if (expected.size() != kGt90GoldenSegments ||
+      actual.size() != expected.size() ||
+      digest_segments(actual) != kGt90GoldenFnv64) {
+    std::ostringstream stream;
+    stream << "gt90 boundary census/digest mismatch expected_count="
+           << expected.size() << " actual_count=" << actual.size()
+           << " actual_fnv64=" << digest_segments(actual);
+    throw std::runtime_error(stream.str());
+  }
+  for (std::size_t index = 0; index < actual.size(); ++index) {
+    const DirectedSegmentI64 &left = actual[index];
+    const m2oracle::DirectedSegmentI64 &right = expected[index];
+    if (left.fixed != right.fixed || left.lo != right.lo ||
+        left.hi != right.hi || left.side != right.side ||
+        static_cast<std::uint32_t>(left.axis) !=
+            static_cast<std::uint32_t>(right.axis)) {
+      throw std::runtime_error(
+          "gt90 exact boundary first differs at segment " +
+          std::to_string(index) + " actual='" + segment_string(left) +
+          "'");
+    }
+  }
+}
+
+double production_resident_peak_delta_mib(
+    const ProductionMorphContext &context)
+{
+  return (context.callback_device_free_begin_bytes -
+          context.callback_device_free_low_bytes) /
+         (1024.0 * 1024.0);
+}
+
+double production_resident_peak_in_use_mib(
+    const ProductionMorphContext &context)
+{
+  return (context.callback_device_total_bytes -
+          context.callback_device_free_low_bytes) /
+         (1024.0 * 1024.0);
+}
+
+void print_production_morph_timing(
+    std::uint32_t run, const UnionOutput &output,
+    const ProductionMorphContext &context)
+{
+  std::cout
+      << "M2_RESIDENT_F90_GPU"
+      << " run=" << run
+      << " qualification=" << context.qualify_boundary
+      << " union_resident_total_ms=" << std::fixed
+      << std::setprecision(3) << output.total_ms
+      << " erode89_ms=" << context.erode89.elapsed_ms
+      << " dilate90_ms=" << context.dilate90.elapsed_ms
+      << " boundary_and_long_count_ms=" << context.boundary_ms
+      << " erode269_count_ms=" << context.erode269_count.elapsed_ms
+      << " resident_callback_ms=" << context.callback_ms
+      << " gt90_intervals=" << context.dilate90.output_intervals
+      << " gt90_segments=" << context.gt90_boundary_segments
+      << " gt90_long_segments=" << context.gt90_long_segments
+      << " gt270_eroded_intervals="
+      << context.gt270_eroded_intervals
+      << " erode89_max_active=" << context.erode89.max_active_slabs
+      << " dilate90_max_active=" << context.dilate90.max_active_slabs
+      << " erode269_max_active="
+      << context.erode269_count.max_active_slabs
+      << " resident_peak_delta_mib=" << std::setprecision(1)
+      << production_resident_peak_delta_mib(context)
+      << " resident_peak_in_use_mib="
+      << production_resident_peak_in_use_mib(context)
+      << std::setprecision(3) << "\n";
+}
+
+void run_production_morphology(
+    const std::string &kact_path, const std::string &gt90_path,
+    std::uint32_t repeat, int device)
+{
+  if (repeat < 2) {
+    throw std::runtime_error(
+        "production morphology requires qualification plus a warm run");
+  }
+  const auto all_begin = Clock::now();
+  const auto load_begin = Clock::now();
+  m2prod::LoadOptions load_options;
+  load_options.expected_scene_sha256 = kProductionM2SceneSha256;
+  load_options.expected_flat_polygons = kProductionM2FlatPolygons;
+  load_options.expected_flat_rectangles = kProductionM2FlatRectangles;
+  const m2prod::CompactScene scene =
+      m2prod::load_kact_templates(kact_path, load_options);
+  const double load_ms = elapsed_ms(load_begin, Clock::now());
+  double host_expand_ms = 0.0;
+  const std::vector<RectI64> rectangles =
+      expand_production_rectangles(scene, &host_expand_ms);
+
+  const auto golden_begin = Clock::now();
+  const std::string gt90_file_sha256 =
+      m2oracle::candidate_stream_file_sha256(gt90_path);
+  if (gt90_file_sha256 != kGt90GoldenFileSha256) {
+    throw std::runtime_error("gt90 golden file SHA-256 mismatch");
+  }
+  m2oracle::BoundaryOracle golden_identity;
+  golden_identity.scene_sha256 = kProductionM2OracleSceneSha256;
+  const std::vector<m2oracle::DirectedSegmentI64> golden =
+      m2oracle::read_candidate_stream(gt90_path, golden_identity);
+  if (m2oracle::canonical_boundary_sha256(golden) !=
+          kGt90GoldenPayloadSha256 ||
+      m2oracle::canonical_boundary_fnv64(golden) != kGt90GoldenFnv64 ||
+      golden.size() != kGt90GoldenSegments) {
+    throw std::runtime_error("gt90 golden payload identity mismatch");
+  }
+  const double golden_ms = elapsed_ms(golden_begin, Clock::now());
+
+  Limits union_limits;
+  union_limits.max_memberships = UINT64_C(100000000);
+  union_limits.max_events = UINT64_C(200000000);
+  union_limits.max_segments = UINT64_C(8000000);
+  union_limits.max_slabs_per_rectangle = 64;
+
+  std::vector<double> warm_union_resident_ms;
+  std::vector<double> warm_callback_ms;
+  std::vector<double> warm_peak_delta_mib;
+  double qualification_ms = 0.0;
+  for (std::uint32_t run = 0; run < repeat; ++run) {
+    ProductionMorphContext context;
+    context.qualify_boundary = run == 0;
+    ResidentStripHook hook;
+    hook.consume = production_consume_strips;
+    hook.context = &context;
+    hook.stop_before_boundary = true;
+    const UnionOutput output =
+        gpu_union(rectangles, union_limits, device, &hook);
+    if (output.fallback) {
+      throw std::runtime_error(
+          "production union/resident morphology fallback: " +
+          output.message);
+    }
+    if (!context.invoked ||
+        context.gt90_boundary_segments != kGt90GoldenSegments ||
+        context.gt90_long_segments != kGt90LongSegments ||
+        context.gt270_eroded_intervals != 0) {
+      throw std::runtime_error(
+          "production resident morphology census mismatch");
+    }
+    if (run == 0) {
+      require_production_boundary_equal(
+          golden, context.qualified_boundary);
+      qualification_ms = output.total_ms;
+      std::cout
+          << "M2_RESIDENT_F90_QUALIFICATION PASS"
+          << " compared_edges=" << context.qualified_boundary.size()
+          << " boundary_fnv64="
+          << digest_segments(context.qualified_boundary)
+          << " golden_file_sha256=" << gt90_file_sha256 << "\n";
+    } else {
+      warm_union_resident_ms.push_back(output.total_ms);
+      warm_callback_ms.push_back(context.callback_ms);
+      warm_peak_delta_mib.push_back(
+          production_resident_peak_delta_mib(context));
+    }
+    print_production_morph_timing(run, output, context);
+  }
+
+  const double warm_union_resident =
+      median(warm_union_resident_ms);
+  const double warm_callback = median(warm_callback_ms);
+  const double warm_peak_delta = median(warm_peak_delta_mib);
+  constexpr double flat_bridge_ms = 22077.0;
+  const double callback_reduction =
+      100.0 * (flat_bridge_ms - warm_callback) / flat_bridge_ms;
+  const double resident_reduction =
+      100.0 * (flat_bridge_ms - warm_union_resident) / flat_bridge_ms;
+  std::cout
+      << "M2_RESIDENT_F90_PRODUCTION PASS"
+      << " rectangles=" << rectangles.size()
+      << " qualification_union_resident_ms=" << std::fixed
+      << std::setprecision(3) << qualification_ms
+      << " warm_union_resident_median_ms=" << warm_union_resident
+      << " warm_callback_median_ms=" << warm_callback
+      << " compact_load_ms=" << load_ms
+      << " host_expand_ms=" << host_expand_ms
+      << " golden_load_and_hash_ms=" << golden_ms
+      << " warm_resident_peak_delta_mib=" << std::setprecision(1)
+      << warm_peak_delta
+      << std::setprecision(3)
+      << " versus_flat_bridge_callback_less_time_pct="
+      << callback_reduction
+      << " versus_flat_bridge_union_resident_less_time_pct="
+      << resident_reduction
+      << " verification_total_ms="
+      << elapsed_ms(all_begin, Clock::now()) << "\n";
+}
+
 void print_morph_help(const char *program)
 {
-  std::cout << "Usage: " << program << " --self-test [--device N]\n";
+  std::cout
+      << "Usage: " << program
+      << " --self-test [--device N]\n"
+      << "       " << program
+      << " --production --kact FILE --gt90-golden FILE"
+         " [--repeat N] [--device N]\n";
 }
 
 }  // namespace
@@ -1119,10 +1517,23 @@ int main(int argc, char **argv)
   try {
     int device = 0;
     bool self_test = false;
+    bool production = false;
+    std::uint32_t repeat = 4;
+    std::string kact_path;
+    std::string gt90_path;
     for (int index = 1; index < argc; ++index) {
       const std::string argument = argv[index];
       if (argument == "--self-test") {
         self_test = true;
+      } else if (argument == "--production") {
+        production = true;
+      } else if (argument == "--kact" && index + 1 < argc) {
+        kact_path = argv[++index];
+      } else if (argument == "--gt90-golden" &&
+                 index + 1 < argc) {
+        gt90_path = argv[++index];
+      } else if (argument == "--repeat" && index + 1 < argc) {
+        repeat = parse_u32(argv[++index], "--repeat");
       } else if (argument == "--device" && index + 1 < argc) {
         device = std::stoi(argv[++index]);
       } else if (argument == "--help" || argument == "-h") {
@@ -1132,12 +1543,21 @@ int main(int argc, char **argv)
         throw std::runtime_error("unknown argument: " + argument);
       }
     }
-    if (!self_test) {
+    if (self_test == production) {
       print_morph_help(argv[0]);
       return 2;
     }
     cuda_require(cudaSetDevice(device), "morph cudaSetDevice");
-    run_differential_gate(device);
+    if (self_test) {
+      run_differential_gate(device);
+    } else {
+      if (kact_path.empty() || gt90_path.empty()) {
+        print_morph_help(argv[0]);
+        return 2;
+      }
+      run_production_morphology(
+          kact_path, gt90_path, repeat, device);
+    }
     return 0;
   } catch (const std::exception &error) {
     std::cerr << "M2_RESIDENT_MORPH_ERROR " << error.what() << "\n";
