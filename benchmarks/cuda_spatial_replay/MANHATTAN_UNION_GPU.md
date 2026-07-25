@@ -35,16 +35,18 @@ a host round trip.
    span and total membership capacity make worst-case growth explicit.
 3. Emit signed y events per membership into packed uint64 `(slab,y-y_base)`
    keys, radix-sort/reduce identical events, and segmented-scan coverage.
-4. Compact only zero-to-positive and positive-to-zero transitions into
-   disjoint covered strip intervals.
-5. Retain per-slab offsets into those already-sorted disjoint intervals.  One
+4. Compact only zero-to-positive and positive-to-zero transitions into packed
+   uint64 records, then pair them into disjoint covered strip intervals.
+5. Reuse the transition allocation for packed `(side,y,slab)` horizontal keys.
+   Sort those keys and reduce contiguous slabs on each directed line into
+   maximal horizontal runs before materializing 32-byte output segments.
+6. Retain per-slab offsets into the already-sorted disjoint intervals.  One
    count/prefix/emit pass directly XOR-merges the two interval lists adjacent
    to each x boundary.  This emits exact vertical boundaries in linear work
    without a second four-events-per-interval sort.
-6. Sort horizontal and vertical fragments and merge collinear intervals.
-   Segment grouping uses a per-line segmented prefix maximum, which remains
-   exact for nested fragments such as `[0,100], [10,20], [30,40], [100,120]`.
-7. Copy only canonical boundary segments to the host.
+7. Sort only the vertical output.  Horizontal and vertical streams are each
+   already canonical, so copy them to the host in axis order without a final
+   full-output device sort or concatenation buffer.
 
 All device allocation and teardown, H2D/D2H transfers, sorting, scanning,
 compaction, and output hashing are charged in `total_ms`.  The first run also
@@ -54,6 +56,11 @@ retain scene buffers between calls.
 
 Any rectangle, event, membership, segment, arithmetic or internal coverage
 invariant failure returns a fallback with no partial result.
+
+`sampled_live_allocation_delta_mib` is the largest live-allocation delta seen
+at explicit phase boundaries.  It is not an allocator high-water mark:
+temporary CUB/Thrust sort scratch can be allocated and released between
+samples.
 
 ## Integrity gates
 
@@ -84,21 +91,20 @@ segments and digest as the CPU sweep:
 
 | path | charged time |
 |---|---:|
-| CPU oracle | 377.784 ms |
-| GPU first/cold call | 178.846 ms |
-| GPU warm median, four calls | 14.562 ms |
+| CPU oracle | 357.804 ms |
+| GPU first/cold call | 179.958 ms |
+| GPU warm median, four calls | 14.532 ms |
 
-The warm replay used **96.15% less time** than this CPU oracle
-(**+2494.25% throughput**).  This synthetic case demonstrates the mechanics;
+The warm replay used **95.94% less time** than this CPU oracle
+(**+2362.15% throughput**).  This synthetic case demonstrates the mechanics;
 it is not a claim of a 95% KLayout end-to-end reduction.
 
-## Production M2 sizing and next gate
+## Exact production M2 result
 
-The captured FreePDK45 M2 scene is favorable but larger than the first generic
-defaults:
+The qualified raw FreePDK45 M2 capture contains:
 
-- 45,954 local box templates plus six simple six-edge Manhattan templates;
-- 568,456 hierarchy contexts;
+- 45,960 stored M2 polygons, including six simple six-edge L shapes;
+- 568,632 M2 hierarchy contexts;
 - 22,945,976 expanded polygon occurrences;
 - 22,946,444 exact rectangle records after deterministic decomposition;
 - 46,384 unique world x coordinates;
@@ -109,16 +115,51 @@ The capture is
 `/tmp/m2-via1-x2.39i7kG/m2-via1-x2.kact`; the existing merged contour oracle is
 `/tmp/m2-width-space-census-exact.km1ws`.
 
-The checked packed event key and linear adjacent-slab XOR are now implemented,
-and phase-dead buffers are explicitly released before the next full-volume
-allocation.  The immediate production gate is therefore the global scene:
-compare its canonical directed boundary multiset against the 4,385,384-edge
-merged KM1WS oracle.  If the measured sort scratch still exceeds 10 GB, the
-exact fallback design is bounded contiguous x-slab tiles with a one-slab halo.
+The global exact gate now passes.  Six consecutive GPU calls independently
+matched all 4,385,384 canonical directed boundary segments from the CPU-merged
+oracle, not merely their count or hash.  The pinned result is:
 
-After that boundary proof, a live path must add exact component IDs, fail
-closed on kissing vertices, and feed the existing M2 width/spacing predicate
-without materializing KLayout polygons on the CPU.
+```text
+boundary SHA-256  94b715fc2f9e2ab53f0af0f3dda5a579e9fa4b55b98fc2d04a1a0d9732ad820d
+boundary FNV-1a   7541395996791771514
+horizontal        2192692
+vertical          2192692
+```
+
+The six-call charged run on the RTX 3080 measured:
+
+| phase | wall time |
+|---|---:|
+| standalone KACT validation/load | 564.005 ms |
+| 32-thread host hierarchy expansion | 562.740 ms |
+| first/cold complete GPU union | 820.188 ms |
+| warm complete GPU union, median of five | 580.634 ms |
+| conservative host-roundtrip pipeline | 1707.380 ms |
+| independent oracle load/validation | 5978.154 ms |
+
+The GPU timing includes allocation, hierarchy-expanded rectangle H2D, all
+sort/scan/compaction work, canonical-boundary D2H, and teardown.  The
+1.707-second pipeline adds input load and host expansion once; the
+5.978-second oracle validation is qualification-only and is not included.
+Explicit phase-boundary samples saw a 4,234 MiB live-allocation delta, and the
+complete run fit on the 10-GiB card.
+
+This is a standalone exact replacement candidate, not yet a KLayout
+end-to-end result.  Against the separately measured 46.331706-second native
+merge stage, its conservative 1.707380-second warm host-roundtrip path models
+**44.624326 real seconds removed**, or **96.315% less stage time**.  That is a
+like-for-like stage opportunity, not a measured whole-run saving.  The wider
+48.617 CPU-second telemetry residual also includes construction and
+integration work and remains an invalid denominator until the live seam is
+wired.
+
+The next live step is to expand directly from compact hierarchy records into a
+resident device buffer, reject unsupported kissing-vertex topology, and feed
+the existing M2 width/spacing predicate without materializing merged KLayout
+polygons on the CPU.  Production can either retain exact component identity or
+conservatively test the superset of all properly oriented boundary pairs and
+fall back on any hit; a zero result still proves clean.  The qualified oracle
+has zero kissing, crossing, overlap, duplicate, or nonmaximal-boundary errors.
 
 ## Build
 
@@ -130,4 +171,17 @@ benchmarks/cuda_spatial_replay/run_manhattan_union_replay.sh \
 The optional environment variables
 `KLAYOUT_CUDA_MANHATTAN_UNION_GRID` and
 `KLAYOUT_CUDA_MANHATTAN_UNION_REPEAT` select the synthetic grid and number of
-process-local calls.
+process-local calls.  Setting both
+`KLAYOUT_CUDA_MANHATTAN_UNION_PRODUCTION_KACT` and
+`KLAYOUT_CUDA_MANHATTAN_UNION_PRODUCTION_ORACLE` adds the pinned production
+comparison to the same build-and-test invocation; setting only one fails
+before the build.
+
+The production gate is also available directly from the CMake-built binary:
+
+```sh
+manhattan_union_replay \
+  --production-m2-kact /path/to/m2-via1-x2.kact \
+  --production-m2-oracle /path/to/m2-width-space-census-exact.km1ws \
+  --repeat 6
+```

@@ -14,6 +14,8 @@
  */
 
 #include "manhattan_union_format.cuh"
+#include "m2_manhattan_production_loader.h"
+#include "m2_merged_boundary_oracle.h"
 
 #include <cuda_runtime.h>
 
@@ -31,6 +33,7 @@
 #include <thrust/unique.h>
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -46,6 +49,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -54,11 +58,26 @@ namespace {
 using klayout_cuda::manhattan_union::DirectedSegmentI64;
 using klayout_cuda::manhattan_union::RectI64;
 using klayout_cuda::manhattan_union::SegmentAxis;
+namespace m2prod = klayout_cuda::m2_production;
+namespace m2oracle = klayout_cuda::m2_boundary_oracle;
 using Clock = std::chrono::steady_clock;
 
 #define MU_HD __host__ __device__
 
 constexpr std::uint32_t kThreads = 256;
+constexpr char kProductionM2SceneSha256[] =
+    "dd239a45408a046eece0ca1e4c8759ea4b8539e6b7a51599c2ac9a2996a86bd2";
+constexpr char kProductionM2OracleFileSha256[] =
+    "980d439ba40535117505dc4e6d31d866af2f897e29fc46b041cebe9a55de7d0f";
+constexpr char kProductionM2OracleSceneSha256[] =
+    "441475a90d0471b886d5f09622d083b29aaa92f9cf47f31f4b7715792cf14480";
+constexpr char kProductionM2BoundarySha256[] =
+    "94b715fc2f9e2ab53f0af0f3dda5a579e9fa4b55b98fc2d04a1a0d9732ad820d";
+constexpr std::uint64_t kProductionM2FlatPolygons = UINT64_C(22945976);
+constexpr std::uint64_t kProductionM2FlatRectangles = UINT64_C(22946444);
+constexpr std::uint64_t kProductionM2BoundarySegments = UINT64_C(4385384);
+constexpr std::uint64_t kProductionM2BoundaryFnv64 =
+    UINT64_C(7541395996791771514);
 
 enum DeviceStatus : std::uint32_t
 {
@@ -81,19 +100,22 @@ struct Limits
 
 using PackedEventKey = std::uint64_t;
 
-struct Transition
-{
-  std::int64_t y;
-  std::uint32_t slab;
-  std::int32_t kind;
-};
-
 struct StripInterval
 {
   std::int64_t bottom;
   std::int64_t top;
   std::uint32_t slab;
   std::uint32_t reserved;
+};
+
+using PackedTransition = std::uint64_t;
+constexpr PackedTransition kInvalidTransition = UINT64_MAX;
+
+struct HorizontalRun
+{
+  std::uint64_t line;
+  std::uint32_t first_slab;
+  std::uint32_t last_slab;
 };
 
 struct SegmentLine
@@ -103,10 +125,11 @@ struct SegmentLine
   SegmentAxis axis;
 };
 
-static_assert(sizeof(Transition) == 16, "unexpected transition padding");
 static_assert(sizeof(StripInterval) == 24,
               "unexpected strip-interval padding");
 static_assert(sizeof(SegmentLine) == 16, "unexpected segment-line padding");
+static_assert(sizeof(HorizontalRun) == 16,
+              "unexpected horizontal-run padding");
 
 struct EventSlab
 {
@@ -127,9 +150,30 @@ struct ZeroEventDelta
 
 struct InvalidTransition
 {
-  MU_HD bool operator()(const Transition &transition) const
+  MU_HD bool operator()(PackedTransition transition) const
   {
-    return transition.kind == 0;
+    return transition == kInvalidTransition;
+  }
+};
+
+struct HorizontalRunFromKey
+{
+  MU_HD HorizontalRun operator()(std::uint64_t key) const
+  {
+    const std::uint32_t slab =
+        static_cast<std::uint32_t>(key & UINT64_C(0x7fffffff));
+    return {key >> 31, slab, slab + 1};
+  }
+};
+
+struct HorizontalRunMerge
+{
+  MU_HD HorizontalRun operator()(const HorizontalRun &first,
+                                 const HorizontalRun &second) const
+  {
+    return {
+        first.line, min(first.first_slab, second.first_slab),
+        max(first.last_slab, second.last_slab)};
   }
 };
 
@@ -208,6 +252,13 @@ struct CpuBoundaryEvent
   std::int32_t right;
 };
 
+struct CpuTransition
+{
+  std::int64_t y;
+  std::uint32_t slab;
+  std::int32_t kind;
+};
+
 struct UnionOutput
 {
   bool fallback = false;
@@ -224,6 +275,9 @@ struct UnionOutput
   double strip_scan_ms = 0.0;
   double boundary_ms = 0.0;
   double d2h_ms = 0.0;
+  std::uint64_t device_total_bytes = 0;
+  std::uint64_t device_free_begin_bytes = 0;
+  std::uint64_t device_free_low_bytes = 0;
 };
 
 double elapsed_ms(Clock::time_point begin, Clock::time_point end)
@@ -236,6 +290,23 @@ void cuda_require(cudaError_t status, const char *operation)
   if (status != cudaSuccess) {
     throw std::runtime_error(std::string(operation) + ": " +
                              cudaGetErrorString(status));
+  }
+}
+
+void sample_device_memory(UnionOutput *output)
+{
+  std::size_t free_bytes = 0;
+  std::size_t total_bytes = 0;
+  cuda_require(
+      cudaMemGetInfo(&free_bytes, &total_bytes), "cudaMemGetInfo");
+  if (!output->device_free_begin_bytes) {
+    output->device_free_begin_bytes = free_bytes;
+    output->device_free_low_bytes = free_bytes;
+    output->device_total_bytes = total_bytes;
+  } else {
+    output->device_free_low_bytes =
+        std::min<std::uint64_t>(
+            output->device_free_low_bytes, free_bytes);
   }
 }
 
@@ -384,7 +455,7 @@ UnionOutput cpu_union(const std::vector<RectI64> &rectangles,
               return first.y < second.y;
             });
 
-  std::vector<Transition> transitions;
+  std::vector<CpuTransition> transitions;
   for (std::size_t begin = 0; begin < events.size();) {
     const std::uint32_t slab = events[begin].slab;
     std::int32_t coverage = 0;
@@ -417,8 +488,8 @@ UnionOutput cpu_union(const std::vector<RectI64> &rectangles,
   std::vector<DirectedSegmentI64> raw;
   raw.reserve(transitions.size() * 2);
   for (std::size_t index = 0; index < transitions.size(); index += 2) {
-    const Transition &start = transitions[index];
-    const Transition &finish = transitions[index + 1];
+    const CpuTransition &start = transitions[index];
+    const CpuTransition &finish = transitions[index + 1];
     if (start.kind != 1 || finish.kind != -1 ||
         start.slab != finish.slab || start.y >= finish.y) {
       throw std::runtime_error("invalid CPU transition pair");
@@ -607,10 +678,10 @@ __global__ void fill_events_kernel(
   }
 }
 
-__global__ void extract_transitions_kernel(
+__global__ void extract_packed_transitions_kernel(
     const PackedEventKey *keys, const std::int32_t *coverage,
-    std::uint64_t event_count, std::int64_t y_base,
-    Transition *transitions, std::uint32_t *status)
+    std::uint64_t event_count, PackedTransition *transitions,
+    std::uint32_t *status)
 {
   for (std::uint64_t index =
            static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
@@ -625,14 +696,14 @@ __global__ void extract_transitions_kernel(
                 static_cast<std::uint32_t>(keys[index - 1] >> 32) == slab
             ? coverage[index - 1]
             : 0;
-    Transition transition = {0, 0, 0};
+    PackedTransition transition = kInvalidTransition;
     if (after < 0) {
       atomicOr(status,
                static_cast<std::uint32_t>(kStatusCoverageInvariant));
     } else if (!before && after > 0) {
-      transition = {unpack_event_y(keys[index], y_base), slab, 1};
+      transition = keys[index];
     } else if (before > 0 && !after) {
-      transition = {unpack_event_y(keys[index], y_base), slab, -1};
+      transition = keys[index] | (UINT64_C(1) << 63);
     }
     if ((index + 1 == event_count ||
          static_cast<std::uint32_t>(keys[index + 1] >> 32) != slab) &&
@@ -644,31 +715,98 @@ __global__ void extract_transitions_kernel(
   }
 }
 
-__global__ void build_intervals_and_horizontal_kernel(
-    const Transition *transitions, std::uint64_t transition_count,
-    const std::int64_t *xs, StripInterval *intervals,
-    DirectedSegmentI64 *horizontal, std::uint32_t *status)
+__global__ void build_intervals_kernel(
+    const PackedTransition *transitions, std::uint64_t transition_count,
+    std::int64_t y_base, StripInterval *intervals,
+    std::uint32_t *status)
 {
   for (std::uint64_t pair =
            static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
            threadIdx.x;
        pair < transition_count / 2;
        pair += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
-    const Transition first = transitions[pair * 2];
-    const Transition second = transitions[pair * 2 + 1];
-    if (first.kind != 1 || second.kind != -1 ||
-        first.slab != second.slab || first.y >= second.y) {
+    const PackedTransition first = transitions[pair * 2];
+    const PackedTransition second = transitions[pair * 2 + 1];
+    const bool first_end = (first >> 63) != 0;
+    const bool second_end = (second >> 63) != 0;
+    const std::uint32_t first_slab =
+        static_cast<std::uint32_t>((first >> 32) & UINT64_C(0x7fffffff));
+    const std::uint32_t second_slab =
+        static_cast<std::uint32_t>((second >> 32) & UINT64_C(0x7fffffff));
+    const std::int64_t first_y = unpack_event_y(first, y_base);
+    const std::int64_t second_y = unpack_event_y(second, y_base);
+    if (first_end || !second_end || first_slab != second_slab ||
+        first_y >= second_y) {
       atomicOr(status,
                static_cast<std::uint32_t>(kStatusTransitionInvariant));
       continue;
     }
-    intervals[pair] = {first.y, second.y, first.slab, 0};
-    horizontal[pair * 2] = {
-        first.y, xs[first.slab], xs[first.slab + 1], -1,
-        SegmentAxis::horizontal};
-    horizontal[pair * 2 + 1] = {
-        second.y, xs[first.slab], xs[first.slab + 1], 1,
-        SegmentAxis::horizontal};
+    intervals[pair] = {first_y, second_y, first_slab, 0};
+  }
+}
+
+__global__ void make_horizontal_keys_kernel(
+    PackedTransition *transitions, std::uint64_t transition_count)
+{
+  for (std::uint64_t index =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       index < transition_count;
+       index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const PackedTransition transition = transitions[index];
+    const std::uint64_t side = transition >> 63;
+    const std::uint32_t slab = static_cast<std::uint32_t>(
+        (transition >> 32) & UINT64_C(0x7fffffff));
+    const std::uint32_t y_offset =
+        static_cast<std::uint32_t>(transition);
+    transitions[index] =
+        (side << 63) | (static_cast<std::uint64_t>(y_offset) << 31) |
+        slab;
+  }
+}
+
+__global__ void mark_horizontal_groups_kernel(
+    const std::uint64_t *keys, std::uint64_t key_count,
+    std::uint32_t *groups)
+{
+  for (std::uint64_t index =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       index < key_count;
+       index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    if (!index) {
+      groups[index] = 1;
+      continue;
+    }
+    const std::uint64_t previous = keys[index - 1];
+    const std::uint64_t current = keys[index];
+    const bool same_line = (previous >> 31) == (current >> 31);
+    const std::uint32_t previous_slab =
+        static_cast<std::uint32_t>(previous & UINT64_C(0x7fffffff));
+    const std::uint32_t current_slab =
+        static_cast<std::uint32_t>(current & UINT64_C(0x7fffffff));
+    groups[index] =
+        !(same_line && current_slab == previous_slab + 1);
+  }
+}
+
+__global__ void horizontal_runs_to_segments_kernel(
+    const HorizontalRun *runs, std::uint64_t run_count,
+    std::int64_t y_base, const std::int64_t *xs,
+    DirectedSegmentI64 *segments)
+{
+  for (std::uint64_t index =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       index < run_count;
+       index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const HorizontalRun run = runs[index];
+    const std::int32_t side = (run.line >> 32) ? 1 : -1;
+    const std::uint32_t y_offset =
+        static_cast<std::uint32_t>(run.line);
+    segments[index] = {
+        y_base + y_offset, xs[run.first_slab], xs[run.last_slab],
+        side, SegmentAxis::horizontal};
   }
 }
 
@@ -950,6 +1088,7 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
     }
 
     cuda_require(cudaSetDevice(device), "cudaSetDevice");
+    sample_device_memory(&output);
     thrust::device_vector<std::uint32_t> status(1, 0);
 
     const auto h2d_begin = Clock::now();
@@ -992,7 +1131,7 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
     }
     output.x_slabs = x_count - 1;
     if (output.x_slabs > limits.max_x_slabs ||
-        output.x_slabs > std::numeric_limits<std::uint32_t>::max()) {
+        output.x_slabs > UINT64_C(0x7fffffff)) {
       output.fallback = true;
       output.message = "x-slab capacity";
       return;
@@ -1065,6 +1204,7 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
     thrust::sort_by_key(
         thrust::device, event_keys.begin(), event_keys.end(),
         event_deltas.begin());
+    sample_device_memory(&output);
     release_device_vector(&device_rectangles);
     release_device_vector(&membership_counts);
     release_device_vector(&membership_offsets);
@@ -1076,6 +1216,7 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
         event_deltas.begin(), unique_event_keys.begin(),
         unique_event_deltas.begin(), thrust::equal_to<PackedEventKey>{},
         thrust::plus<std::int32_t>{});
+    sample_device_memory(&output);
     std::uint64_t unique_event_count =
         reduced_events.first - unique_event_keys.begin();
     release_device_vector(&event_keys);
@@ -1106,10 +1247,11 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
         thrust::equal_to<std::uint32_t>{},
         thrust::plus<std::int32_t>{});
 
-    thrust::device_vector<Transition> transitions(unique_event_count);
-    extract_transitions_kernel<<<launch_blocks(unique_event_count), kThreads>>>(
+    thrust::device_vector<PackedTransition> transitions(unique_event_count);
+    extract_packed_transitions_kernel<<<
+        launch_blocks(unique_event_count), kThreads>>>(
         thrust::raw_pointer_cast(unique_event_keys.data()),
-        thrust::raw_pointer_cast(coverage.data()), unique_event_count, y_base,
+        thrust::raw_pointer_cast(coverage.data()), unique_event_count,
         thrust::raw_pointer_cast(transitions.data()),
         thrust::raw_pointer_cast(status.data()));
     cuda_require(cudaGetLastError(), "extract strip transitions");
@@ -1129,26 +1271,84 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
       return;
     }
     output.strip_intervals = transition_count / 2;
-    std::uint64_t horizontal_count = transition_count;
-    if (horizontal_count > limits.max_segments) {
+    if (transition_count > std::numeric_limits<std::uint32_t>::max() ||
+        output.strip_intervals >
+            std::numeric_limits<std::uint32_t>::max()) {
       output.fallback = true;
-      output.message = "strip-output capacity";
+      output.message = "transition index capacity";
       return;
     }
     thrust::device_vector<StripInterval> intervals(
         output.strip_intervals);
-    thrust::device_vector<DirectedSegmentI64> horizontal(
-        horizontal_count);
     if (output.strip_intervals) {
-      build_intervals_and_horizontal_kernel<<<
+      build_intervals_kernel<<<
           launch_blocks(output.strip_intervals), kThreads>>>(
           thrust::raw_pointer_cast(transitions.data()), transition_count,
-          thrust::raw_pointer_cast(xs.data()),
+          y_base,
           thrust::raw_pointer_cast(intervals.data()),
-          thrust::raw_pointer_cast(horizontal.data()),
           thrust::raw_pointer_cast(status.data()));
       cuda_require(cudaGetLastError(), "build strip intervals");
     }
+
+    make_horizontal_keys_kernel<<<
+        launch_blocks(transition_count), kThreads>>>(
+        thrust::raw_pointer_cast(transitions.data()), transition_count);
+    cuda_require(cudaGetLastError(), "pack horizontal transition keys");
+    thrust::sort(
+        thrust::device, transitions.begin(), transitions.end());
+    thrust::device_vector<std::uint32_t> horizontal_groups(
+        transition_count);
+    mark_horizontal_groups_kernel<<<
+        launch_blocks(transition_count), kThreads>>>(
+        thrust::raw_pointer_cast(transitions.data()), transition_count,
+        thrust::raw_pointer_cast(horizontal_groups.data()));
+    cuda_require(cudaGetLastError(), "mark horizontal groups");
+    thrust::inclusive_scan(
+        thrust::device, horizontal_groups.begin(),
+        horizontal_groups.end(), horizontal_groups.begin());
+    std::uint32_t horizontal_count_u32 = 0;
+    cuda_require(
+        cudaMemcpy(
+            &horizontal_count_u32,
+            thrust::raw_pointer_cast(horizontal_groups.data()) +
+                transition_count - 1,
+            sizeof(horizontal_count_u32), cudaMemcpyDeviceToHost),
+        "horizontal group count D2H");
+    const std::uint64_t horizontal_count = horizontal_count_u32;
+    if (horizontal_count > limits.max_segments) {
+      output.fallback = true;
+      output.message = "horizontal segment capacity";
+      return;
+    }
+    thrust::device_vector<std::uint32_t> compact_group_ids(
+        horizontal_count);
+    thrust::device_vector<HorizontalRun> horizontal_runs(
+        horizontal_count);
+    const auto run_values = thrust::make_transform_iterator(
+        transitions.begin(), HorizontalRunFromKey{});
+    const auto horizontal_reduce_end = thrust::reduce_by_key(
+        thrust::device, horizontal_groups.begin(),
+        horizontal_groups.end(), run_values, compact_group_ids.begin(),
+        horizontal_runs.begin(), thrust::equal_to<std::uint32_t>{},
+        HorizontalRunMerge{});
+    if (static_cast<std::uint64_t>(
+            horizontal_reduce_end.second - horizontal_runs.begin()) !=
+        horizontal_count) {
+      output.fallback = true;
+      output.message = "horizontal group reduction mismatch";
+      return;
+    }
+    thrust::device_vector<DirectedSegmentI64> horizontal(
+        horizontal_count);
+    if (horizontal_count) {
+      horizontal_runs_to_segments_kernel<<<
+          launch_blocks(horizontal_count), kThreads>>>(
+          thrust::raw_pointer_cast(horizontal_runs.data()),
+          horizontal_count, y_base, thrust::raw_pointer_cast(xs.data()),
+          thrust::raw_pointer_cast(horizontal.data()));
+      cuda_require(cudaGetLastError(), "emit canonical horizontal segments");
+    }
+    sample_device_memory(&output);
     cuda_require(cudaDeviceSynchronize(), "strip sweep synchronize");
     const std::uint32_t strip_status = copy_device_status(status);
     if (strip_status) {
@@ -1157,6 +1357,9 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
       return;
     }
     release_device_vector(&transitions);
+    release_device_vector(&horizontal_groups);
+    release_device_vector(&compact_group_ids);
+    release_device_vector(&horizontal_runs);
     output.strip_scan_ms = elapsed_ms(strip_begin, Clock::now());
 
     const auto boundary_begin = Clock::now();
@@ -1206,6 +1409,13 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
                 boundary_count - 1,
             sizeof(final_vertical_count), cudaMemcpyDeviceToHost),
         "last vertical count D2H");
+    if (final_vertical_count >
+        std::numeric_limits<std::uint64_t>::max() -
+            final_vertical_offset) {
+      output.fallback = true;
+      output.message = "vertical segment count overflow";
+      return;
+    }
     const std::uint64_t vertical_count =
         final_vertical_offset + final_vertical_count;
     if (vertical_count > limits.max_segments - horizontal_count) {
@@ -1227,6 +1437,9 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
           thrust::raw_pointer_cast(status.data()));
       cuda_require(cudaGetLastError(), "emit adjacent-slab vertical XOR");
     }
+    sample_device_memory(&output);
+    thrust::sort(
+        thrust::device, vertical.begin(), vertical.end(), SegmentLess{});
     cuda_require(cudaDeviceSynchronize(), "vertical XOR synchronize");
     const std::uint32_t xor_status = copy_device_status(status);
     if (xor_status) {
@@ -1241,33 +1454,26 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
     release_device_vector(&vertical_offsets);
     release_device_vector(&xs);
 
-    std::uint64_t raw_segment_count = 0;
+    std::uint64_t canonical_count = 0;
     if (horizontal_count >
             std::numeric_limits<std::uint64_t>::max() - vertical_count) {
       output.fallback = true;
-      output.message = "raw segment count overflow";
+      output.message = "canonical segment count overflow";
       return;
     }
-    raw_segment_count = horizontal_count + vertical_count;
-    output.raw_segments = raw_segment_count;
-    if (raw_segment_count > limits.max_segments) {
+    canonical_count = horizontal_count + vertical_count;
+    if (canonical_count > limits.max_segments) {
       output.fallback = true;
       output.message = "segment capacity";
       return;
     }
-
-    thrust::device_vector<DirectedSegmentI64> raw_segments(
-        raw_segment_count);
-    thrust::copy(
-        thrust::device, horizontal.begin(), horizontal.end(),
-        raw_segments.begin());
-    thrust::copy(
-        thrust::device, vertical.begin(), vertical.end(),
-        raw_segments.begin() + horizontal_count);
-    release_device_vector(&horizontal);
-    release_device_vector(&vertical);
-    const std::uint64_t canonical_count =
-        canonicalize_device_segments(&raw_segments);
+    if (transition_count >
+        std::numeric_limits<std::uint64_t>::max() - vertical_count) {
+      output.fallback = true;
+      output.message = "raw segment count overflow";
+      return;
+    }
+    output.raw_segments = transition_count + vertical_count;
     cuda_require(cudaDeviceSynchronize(), "boundary synchronize");
     const std::uint32_t boundary_status = copy_device_status(status);
     if (boundary_status) {
@@ -1279,21 +1485,56 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
 
     const auto d2h_begin = Clock::now();
     output.segments.resize(canonical_count);
-    if (canonical_count) {
+    if (horizontal_count) {
       cuda_require(
           cudaMemcpy(
               output.segments.data(),
-              thrust::raw_pointer_cast(raw_segments.data()),
-              canonical_count * sizeof(DirectedSegmentI64),
+              thrust::raw_pointer_cast(horizontal.data()),
+              horizontal_count * sizeof(DirectedSegmentI64),
               cudaMemcpyDeviceToHost),
-          "boundary D2H");
+          "horizontal boundary D2H");
+    }
+    if (vertical_count) {
+      cuda_require(
+          cudaMemcpy(
+              output.segments.data() + horizontal_count,
+              thrust::raw_pointer_cast(vertical.data()),
+              vertical_count * sizeof(DirectedSegmentI64),
+              cudaMemcpyDeviceToHost),
+          "vertical boundary D2H");
     }
     cuda_require(cudaDeviceSynchronize(), "boundary D2H synchronize");
+    if (!std::is_sorted(
+            output.segments.begin(), output.segments.end(),
+            SegmentLess{})) {
+      output.fallback = true;
+      output.message = "noncanonical boundary order";
+      output.segments.clear();
+      return;
+    }
+    for (std::size_t index = 1; index < output.segments.size(); ++index) {
+      const DirectedSegmentI64 &previous = output.segments[index - 1];
+      const DirectedSegmentI64 &current = output.segments[index];
+      if (same_segment_line(previous, current) &&
+          current.lo <= previous.hi) {
+        output.fallback = true;
+        output.message = "nonmaximal canonical boundary";
+        output.segments.clear();
+        return;
+      }
+    }
     output.d2h_ms = elapsed_ms(d2h_begin, Clock::now());
     output.digest = digest_segments(output.segments);
   };
 
-  pipeline();
+  try {
+    pipeline();
+  } catch (const std::exception &error) {
+    output.fallback = true;
+    output.message = std::string("CUDA pipeline exception: ") + error.what();
+    output.segments.clear();
+    (void)cudaGetLastError();
+  }
   /*
    * All device_vector destructors above run before total_ms is sampled because
    * they are scoped inside the pipeline lambda.  This intentionally charges
@@ -1587,7 +1828,12 @@ void print_gpu_timing(std::uint32_t run, const UnionOutput &output)
             << " memberships=" << output.memberships
             << " strips=" << output.strip_intervals
             << " raw_segments=" << output.raw_segments
-            << " segments=" << output.segments.size() << "\n";
+            << " segments=" << output.segments.size()
+            << " sampled_live_allocation_delta_mib=" << std::setprecision(1)
+            << (output.device_free_begin_bytes -
+                output.device_free_low_bytes) /
+                   (1024.0 * 1024.0)
+            << std::setprecision(3) << "\n";
 }
 
 void run_benchmark(std::uint32_t dimension, std::uint32_t repeat,
@@ -1640,6 +1886,226 @@ void run_benchmark(std::uint32_t dimension, std::uint32_t repeat,
             << " digest=0x" << std::hex << cpu.digest << std::dec << "\n";
 }
 
+bool transform_production_rectangle(
+    const m2prod::ResolvedContextI64 &context,
+    const m2prod::RectTemplateI64 &source,
+    std::uint64_t context_token, RectI64 *destination)
+{
+  if (context.transform >= 8) return false;
+  static constexpr int matrix[8][4] = {
+      {1, 0, 0, 1}, {0, -1, 1, 0}, {-1, 0, 0, -1},
+      {0, 1, -1, 0}, {1, 0, 0, -1}, {0, 1, 1, 0},
+      {-1, 0, 0, 1}, {0, -1, -1, 0}};
+  const int *transform = matrix[context.transform];
+  const std::int64_t xs[4] = {
+      source.left, source.left, source.right, source.right};
+  const std::int64_t ys[4] = {
+      source.bottom, source.top, source.bottom, source.top};
+  RectI64 result = {
+      INT64_MAX, INT64_MAX, INT64_MIN, INT64_MIN,
+      source.source_token, context_token};
+  for (unsigned int corner = 0; corner < 4; ++corner) {
+    const __int128 x =
+        static_cast<__int128>(transform[0]) * xs[corner] +
+        static_cast<__int128>(transform[1]) * ys[corner] + context.tx;
+    const __int128 y =
+        static_cast<__int128>(transform[2]) * xs[corner] +
+        static_cast<__int128>(transform[3]) * ys[corner] + context.ty;
+    if (x < std::numeric_limits<std::int64_t>::min() ||
+        x > std::numeric_limits<std::int64_t>::max() ||
+        y < std::numeric_limits<std::int64_t>::min() ||
+        y > std::numeric_limits<std::int64_t>::max()) {
+      return false;
+    }
+    const std::int64_t xx = static_cast<std::int64_t>(x);
+    const std::int64_t yy = static_cast<std::int64_t>(y);
+    result.left = std::min(result.left, xx);
+    result.bottom = std::min(result.bottom, yy);
+    result.right = std::max(result.right, xx);
+    result.top = std::max(result.top, yy);
+  }
+  if (!valid_rectangle(result)) return false;
+  *destination = result;
+  return true;
+}
+
+std::vector<RectI64> expand_production_rectangles(
+    const m2prod::CompactScene &scene, double *elapsed)
+{
+  const auto begin = Clock::now();
+  if (scene.flat_rectangles != kProductionM2FlatRectangles ||
+      scene.rectangle_offsets.size() != scene.m2_contexts.size()) {
+    throw std::runtime_error(
+        "production compact-scene rectangle census is not qualified");
+  }
+  std::vector<RectI64> rectangles(scene.flat_rectangles);
+  std::atomic<std::uint64_t> next{0};
+  std::atomic<std::uint32_t> failed{0};
+  const unsigned int detected =
+      std::max(1u, std::thread::hardware_concurrency());
+  const unsigned int worker_count = std::min(32u, detected);
+  constexpr std::uint64_t chunk = 64;
+  std::vector<std::thread> workers;
+  workers.reserve(worker_count);
+  for (unsigned int worker = 0; worker < worker_count; ++worker) {
+    workers.emplace_back([&]() {
+      while (!failed.load(std::memory_order_relaxed)) {
+        const std::uint64_t first =
+            next.fetch_add(chunk, std::memory_order_relaxed);
+        if (first >= scene.m2_contexts.size()) return;
+        const std::uint64_t last = std::min<std::uint64_t>(
+            first + chunk, scene.m2_contexts.size());
+        for (std::uint64_t list_id = first; list_id < last; ++list_id) {
+          const std::uint32_t context_id = scene.m2_contexts[list_id];
+          if (context_id >= scene.contexts.size()) {
+            failed.store(1, std::memory_order_relaxed);
+            return;
+          }
+          const m2prod::ResolvedContextI64 &context =
+              scene.contexts[context_id];
+          if (context.cell >= scene.cells.size()) {
+            failed.store(1, std::memory_order_relaxed);
+            return;
+          }
+          const m2prod::CellTemplate &cell = scene.cells[context.cell];
+          const std::uint64_t output_begin =
+              scene.rectangle_offsets[list_id];
+          if (cell.rectangle_begin + cell.rectangle_count >
+                  scene.rectangles.size() ||
+              output_begin + cell.rectangle_count > rectangles.size()) {
+            failed.store(1, std::memory_order_relaxed);
+            return;
+          }
+          for (std::uint32_t local = 0;
+               local < cell.rectangle_count; ++local) {
+            if (!transform_production_rectangle(
+                    context,
+                    scene.rectangles[cell.rectangle_begin + local],
+                    context_id, &rectangles[output_begin + local])) {
+              failed.store(1, std::memory_order_relaxed);
+              return;
+            }
+          }
+        }
+      }
+    });
+  }
+  for (auto &worker : workers) worker.join();
+  if (failed.load(std::memory_order_relaxed)) {
+    throw std::runtime_error(
+        "production host hierarchy expansion failed exact qualification");
+  }
+  *elapsed = elapsed_ms(begin, Clock::now());
+  return rectangles;
+}
+
+void compare_production_boundary(
+    const m2oracle::BoundaryOracle &oracle, const UnionOutput &candidate)
+{
+  if (candidate.fallback) {
+    throw std::runtime_error(
+        "production CUDA union fell back: " + candidate.message);
+  }
+  if (candidate.segments.size() != kProductionM2BoundarySegments ||
+      oracle.segments.size() != kProductionM2BoundarySegments ||
+      candidate.digest != kProductionM2BoundaryFnv64 ||
+      oracle.boundary_fnv64 != kProductionM2BoundaryFnv64) {
+    std::ostringstream stream;
+    stream << "production boundary census/digest mismatch candidate_count="
+           << candidate.segments.size() << " oracle_count="
+           << oracle.segments.size() << " candidate_fnv="
+           << candidate.digest << " oracle_fnv=" << oracle.boundary_fnv64;
+    throw std::runtime_error(stream.str());
+  }
+  for (std::size_t index = 0; index < candidate.segments.size(); ++index) {
+    const DirectedSegmentI64 &first = candidate.segments[index];
+    const m2oracle::DirectedSegmentI64 &second = oracle.segments[index];
+    if (first.fixed != second.fixed || first.lo != second.lo ||
+        first.hi != second.hi || first.side != second.side ||
+        static_cast<std::uint32_t>(first.axis) !=
+            static_cast<std::uint32_t>(second.axis)) {
+      throw std::runtime_error(
+          "production boundary first differs at segment " +
+          std::to_string(index));
+    }
+  }
+}
+
+void run_production_m2(const std::string &kact_path,
+                       const std::string &oracle_path,
+                       std::uint32_t repeat, int device)
+{
+  if (!repeat)
+    throw std::runtime_error("production repeat count must be nonzero");
+  const auto all_begin = Clock::now();
+  const auto load_begin = Clock::now();
+  m2prod::LoadOptions load_options;
+  load_options.expected_scene_sha256 = kProductionM2SceneSha256;
+  load_options.expected_flat_polygons = kProductionM2FlatPolygons;
+  load_options.expected_flat_rectangles = kProductionM2FlatRectangles;
+  const m2prod::CompactScene scene =
+      m2prod::load_kact_templates(kact_path, load_options);
+  const double load_ms = elapsed_ms(load_begin, Clock::now());
+
+  double host_expand_ms = 0.0;
+  const std::vector<RectI64> rectangles =
+      expand_production_rectangles(scene, &host_expand_ms);
+
+  const auto oracle_begin = Clock::now();
+  m2oracle::LoadOptions oracle_options;
+  oracle_options.expected_file_sha256 =
+      kProductionM2OracleFileSha256;
+  oracle_options.expected_scene_sha256 =
+      kProductionM2OracleSceneSha256;
+  oracle_options.expected_boundary_sha256 =
+      kProductionM2BoundarySha256;
+  const m2oracle::BoundaryOracle oracle =
+      m2oracle::load_cpu_merged_boundary(oracle_path, oracle_options);
+  const double oracle_ms = elapsed_ms(oracle_begin, Clock::now());
+
+  Limits limits;
+  limits.max_memberships = UINT64_C(100000000);
+  limits.max_events = UINT64_C(200000000);
+  limits.max_segments = UINT64_C(8000000);
+  limits.max_slabs_per_rectangle = 64;
+
+  std::vector<double> warm_times;
+  double cold_time = 0.0;
+  UnionOutput candidate;
+  for (std::uint32_t run = 0; run < repeat; ++run) {
+    candidate = gpu_union(rectangles, limits, device);
+    compare_production_boundary(oracle, candidate);
+    print_gpu_timing(run, candidate);
+    if (run)
+      warm_times.push_back(candidate.total_ms);
+    else
+      cold_time = candidate.total_ms;
+  }
+  const double warm_median =
+      warm_times.empty() ? cold_time : median(warm_times);
+  const double pipeline_ms = load_ms + host_expand_ms + warm_median;
+  std::cout
+      << "M2_MANHATTAN_PRODUCTION_UNION PASS"
+      << " rectangles=" << rectangles.size()
+      << " memberships=" << candidate.memberships
+      << " strips=" << candidate.strip_intervals
+      << " segments=" << candidate.segments.size()
+      << " boundary_fnv64=" << candidate.digest
+      << " load_ms=" << std::fixed << std::setprecision(3) << load_ms
+      << " host_expand_ms=" << host_expand_ms
+      << " oracle_ms=" << oracle_ms
+      << " cold_gpu_ms=" << cold_time
+      << " warm_gpu_median_ms=" << warm_median
+      << " charged_host_roundtrip_pipeline_ms=" << pipeline_ms
+      << " sampled_live_allocation_delta_mib="
+      << std::setprecision(1)
+      << (candidate.device_free_begin_bytes -
+          candidate.device_free_low_bytes) /
+             (1024.0 * 1024.0)
+      << " verification_total_ms=" << std::setprecision(3)
+      << elapsed_ms(all_begin, Clock::now()) << "\n";
+}
+
 std::uint32_t parse_u32(const char *value, const char *option)
 {
   char *end = nullptr;
@@ -1655,6 +2121,8 @@ void print_help(const char *program)
       << "Usage: " << program << " [options]\n"
       << "  --self-test              run exact directed/random/fallback gates\n"
       << "  --benchmark-grid N       union an N-by-N touching rectangle grid\n"
+      << "  --production-m2-kact P   qualified raw hierarchical M2 capture\n"
+      << "  --production-m2-oracle P qualified CPU-merged KM1WS oracle\n"
       << "  --repeat N               benchmark process-local runs (default 5)\n"
       << "  --device N               CUDA device (default 0)\n"
       << "  --help                   show this text\n";
@@ -1669,6 +2137,8 @@ int main(int argc, char **argv)
     std::uint32_t benchmark_grid = 0;
     std::uint32_t repeat = 5;
     int device = 0;
+    std::string production_kact;
+    std::string production_oracle;
     for (int index = 1; index < argc; ++index) {
       const std::string option = argv[index];
       if (option == "--self-test") {
@@ -1677,6 +2147,12 @@ int main(int argc, char **argv)
         benchmark_grid = parse_u32(argv[++index], "--benchmark-grid");
       } else if (option == "--repeat" && index + 1 < argc) {
         repeat = parse_u32(argv[++index], "--repeat");
+      } else if (option == "--production-m2-kact" &&
+                 index + 1 < argc) {
+        production_kact = argv[++index];
+      } else if (option == "--production-m2-oracle" &&
+                 index + 1 < argc) {
+        production_oracle = argv[++index];
       } else if (option == "--device" && index + 1 < argc) {
         device = static_cast<int>(parse_u32(argv[++index], "--device"));
       } else if (option == "--help") {
@@ -1688,7 +2164,15 @@ int main(int argc, char **argv)
     }
     if (self_test) run_self_test(device);
     if (benchmark_grid) run_benchmark(benchmark_grid, repeat, device);
-    if (!self_test && !benchmark_grid)
+    if (production_kact.empty() != production_oracle.empty()) {
+      throw std::runtime_error(
+          "production M2 requires both KACT and KM1WS paths");
+    }
+    if (!production_kact.empty()) {
+      run_production_m2(
+          production_kact, production_oracle, repeat, device);
+    }
+    if (!self_test && !benchmark_grid && production_kact.empty())
       throw std::runtime_error("no action requested");
     return 0;
   } catch (const std::exception &error) {

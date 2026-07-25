@@ -1986,6 +1986,32 @@ not just wall time.
               silently applying four-neighbour component labels.  Commit
               `ab8ed5d`.
 
+            - [x] **Prove the exact global M2 Manhattan-union replacement
+              candidate:** the standalone integer CUDA pipeline expanded all
+              568,632 qualified hierarchy contexts into 22,946,444 exact
+              rectangles, processed 92,386,704 x-slab memberships, and matched
+              every one of the independent CPU-merged oracle's 4,385,384
+              canonical directed boundary segments on six consecutive calls.
+              The RTX 3080 warm median was 580.634 ms for the complete union,
+              including rectangle H2D, all sort/scan/compaction work, boundary
+              D2H, allocation, and teardown.  Standalone KACT validation/load
+              plus 32-thread host expansion raised the conservative warm
+              host-roundtrip pipeline to 1.707380 s; the 5.978154-second
+              independent-oracle load/validation is qualification-only.  The
+              complete workload fit on the 10-GiB card; explicit phase samples
+              saw a 4,234-MiB live-allocation delta, not an allocator high-water
+              mark.  Relative to the separately measured 46.331706-second
+              native merge stage, the conservative warm pipeline models
+              **44.624326 real seconds removed / 96.315% less stage time**.
+              That is a like-for-like stage opportunity, not a measured
+              whole-run saving, and the wider 48.617 CPU-second residual
+              remains an invalid denominator.  This closes the exact
+              standalone proof, not the parent service item: a live seam must
+              either retain exact component identity or conservatively test
+              all properly oriented boundary pairs and fall back on any hit,
+              guard unsupported kissing topology, and show same-process
+              KLayout wall reduction.
+
           Cache immutable merged M1/M2 geometry (or an equivalent canonical
           raw-layer scene), then the shared 273-cell/849,265-context hierarchy,
           cell-local layer templates, and device indexes.  Bind every reuse to

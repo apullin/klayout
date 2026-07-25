@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.24)
 
 project(klayout_cuda_spatial_replay LANGUAGES CXX CUDA)
 
+find_package(Threads REQUIRED)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
@@ -235,6 +237,12 @@ target_include_directories(m2_merged_boundary_oracle PRIVATE
 )
 target_compile_options(m2_merged_boundary_oracle PRIVATE
   -O3 -Wall -Wextra
+)
+
+target_link_libraries(manhattan_union_replay PRIVATE
+  m2_manhattan_production_loader
+  m2_merged_boundary_oracle
+  Threads::Threads
 )
 
 add_executable(m2_merged_boundary_oracle_cli

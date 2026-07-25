@@ -23,7 +23,9 @@ The exact integer rectangle-union feasibility harness is documented in
 [`MANHATTAN_UNION_GPU.md`](MANHATTAN_UNION_GPU.md).  It moves the seam farther
 upstream than the rule-specific islands: expanded Manhattan rectangles are
 sorted and scan-converted on the GPU into exact directed boundary segments,
-without floating point or a dense pixel raster.
+without floating point or a dense pixel raster.  Its qualified production M2
+gate compares all 4,385,384 output segments against an independently decoded
+CPU-merged boundary oracle.
 
 ## KLayout-pointer-free record contract
 
