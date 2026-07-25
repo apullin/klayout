@@ -1,10 +1,10 @@
 # Raw-M2 live union seam: host ABI scaffold
 
-This commit is the fail-closed **host ABI/loader scaffold only**.  It does not
-export the production backend entry point, build a raw scene from a live
-`Region`, stitch a backend boundary into a live flat region, expose a GSI
-method, or rewrite the deck.  Therefore it does not complete or cross off the
-live M2 transaction.
+This implementation contains the fail-closed host ABI/loader scaffold and the
+qualified compact raw-M2 scene serializer.  It does not yet export the
+production backend entry point, stitch a backend boundary into a live flat
+region, expose a GSI method, or rewrite the deck.  Therefore it does not
+complete or cross off the live M2 transaction.
 
 ## Status
 
@@ -20,7 +20,7 @@ live M2 transaction.
   count, and throwing host-copy paths against the real loader wrapper.
 - [ ] Implement and export the production CUDA union entry and release
   functions.
-- [ ] Build the qualified compact scene from raw live M2 before
+- [x] Build the qualified compact scene from raw live M2 before
   `merged_deep_layer()`.
 - [ ] Stitch the validated boundary, run the complete stock flat M2 suffix, and
   return one atomic clean decision.
@@ -104,13 +104,12 @@ a live end-to-end claim.
 The request is accepted only for the complete qualified option mask, ABI and
 record sizes, 2000 DBU/micron, nonempty bounded arrays, strictly increasing
 M2-context IDs, checked byte products, and explicit capacity limits.  The
-future live builder must additionally enforce the proven raw-scene rules:
-FreePDK45 live M2 layer 13/0 (the offline capture remaps its logical M2 slot
-to 101/0), same store/layout/top layer, no breakout, no properties, supported
-orthogonal unit transforms, clockwise Manhattan contours, structural spans,
-coordinate safety, census conservation, and a canonical scene digest.  The
-live VIA2 operand is layer 14/0; its offline certificate capture similarly
-uses a remapped slot and must not redefine the live layer contract.
+live builder additionally enforces the proven raw-scene rules: FreePDK45
+physical M2 layer 13/0, same store/layout/top layer, no breakout, no
+properties, supported orthogonal unit transforms, clockwise Manhattan
+contours, structural spans, coordinate safety, census conservation, and a
+canonical scene digest.  The live VIA2 operand is physical layer 14/0;
+offline capture/remap slots 101/0 and 102/0 are not live operands.
 
 The loader returns `Complete` only after all of these result checks:
 

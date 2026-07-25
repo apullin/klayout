@@ -150,6 +150,40 @@ struct DB_PUBLIC CudaM1WidthSpaceScene
 };
 
 /**
+ * Exact compact serialization of the supplied raw physical M2 DeepLayer.
+ *
+ * This is intentionally a distinct type and digest domain from
+ * CudaM1WidthSpaceScene: no merged-input assertion or width/space profile is
+ * encoded.  The records are the shared pointer-free Manhattan hierarchy ABI
+ * records above, but they describe the DeepLayer exactly as supplied.
+ */
+struct DB_PUBLIC CudaM2RawManhattanScene
+{
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  uint32_t root_cell;
+  uint32_t reserved;
+  uint64_t flat_polygon_count;
+  uint64_t flat_edge_count;
+  int64_t scene_left;
+  int64_t scene_bottom;
+  int64_t scene_right;
+  int64_t scene_top;
+
+  std::vector<CudaM1WidthSpaceContext> contexts;
+  std::vector<uint32_t> metal_contexts;
+  std::vector<uint64_t> context_polygon_offsets;
+  std::vector<uint64_t> context_edge_offsets;
+  std::vector<CudaM1WidthSpaceCell> cells;
+  std::vector<CudaM1WidthSpacePolygon> polygons;
+  std::vector<CudaM1WidthSpaceEdge> edges;
+  std::array<uint8_t, 32> digest;
+
+  CudaM2RawManhattanScene ();
+  void swap (CudaM2RawManhattanScene &other) noexcept;
+};
+
+/**
  * Compute the canonical digest of a structurally valid scene.
  *
  * Fields are hashed explicitly in little-endian form, so padding and host
@@ -158,6 +192,13 @@ struct DB_PUBLIC CudaM1WidthSpaceScene
  */
 DB_PUBLIC bool cuda_m1_width_space_scene_digest (
   const CudaM1WidthSpaceScene &scene, std::array<uint8_t, 32> &digest);
+
+/**
+ * Compute the canonical KM2RAW01 digest of a structurally valid raw scene.
+ */
+DB_PUBLIC bool cuda_m2_raw_manhattan_scene_digest (
+  const CudaM2RawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest);
 
 /**
  * Build the narrowly qualified merged-M1 scene.
@@ -176,6 +217,21 @@ DB_PUBLIC bool cuda_m1_width_space_build_scene (
   const CudaM1WidthSpaceBuildSpec &spec,
   const CudaM1WidthSpaceSceneLimits &limits,
   CudaM1WidthSpaceScene &scene,
+  std::string *decline_reason = 0);
+
+/**
+ * Serialize the supplied raw physical FreePDK45 M2 layer verbatim.
+ *
+ * The caller must pass DeepRegion::deep_layer(), never merged_deep_layer().
+ * This builder does not and cannot infer a merged-semantics claim.  It
+ * requires physical layer 13/0, 0.5-nm DBU, no breakout cells or properties,
+ * supported orthogonal hierarchy, and simple clockwise Manhattan contours.
+ * On every decline "scene" is left unchanged.
+ */
+DB_PUBLIC bool cuda_m2_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_metal2,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaM2RawManhattanScene &scene,
   std::string *decline_reason = 0);
 
 /**
