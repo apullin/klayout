@@ -117,8 +117,9 @@ The loader returns `Complete` only after all of these result checks:
 - exact ABI size, opcode/options/profile/root/scene-digest echo;
 - exact input censuses and zero fallback/device flags;
 - complete disposition and a nonempty boundary;
-- bounded, internally consistent rectangle/slab/membership/event/strip/
-  segment counters;
+- bounded, internally consistent rectangle/slab/membership/event/strip/raw-
+  segment/canonical-segment counters, with independent raw and canonical
+  capacities;
 - a successful host copy;
 - valid axis, side, and positive interval for every segment;
 - strict `(axis, side, fixed, lo, hi)` order;

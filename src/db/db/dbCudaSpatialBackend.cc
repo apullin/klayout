@@ -283,7 +283,8 @@ bool qualified_m2_union_request (
     request.scene_bottom < request.scene_top &&
     request.max_contexts && request.max_rectangles &&
     request.max_x_slabs && request.max_memberships &&
-    request.max_events && request.max_segments &&
+    request.max_events && request.max_raw_segments &&
+    request.max_segments &&
     request.max_slabs_per_rectangle &&
     request.context_count <= request.max_contexts &&
     request.context_count <= std::numeric_limits<uint32_t>::max () &&
@@ -2293,7 +2294,7 @@ CudaM2UnionAttempt cuda_spatial_try_m2_union (
         result.strip_interval_count &&
         result.strip_interval_count <= result.membership_count &&
         result.raw_segment_count >= result.segment_count &&
-        result.raw_segment_count <= request.max_segments;
+        result.raw_segment_count <= request.max_raw_segments;
       if (! counters_match) {
         attempt.disposition = CudaM2UnionAttempt::InvalidResult;
         attempt.message =

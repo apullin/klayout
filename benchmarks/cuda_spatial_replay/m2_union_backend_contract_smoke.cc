@@ -142,6 +142,7 @@ klayout_cuda_spatial_m2_union_request_v1 make_request (
   request.max_x_slabs = 4;
   request.max_memberships = 16;
   request.max_events = 16;
+  request.max_raw_segments = 16;
   request.max_segments = 8;
   request.max_slabs_per_rectangle = 4;
   for (unsigned int index = 0; index < 32; ++index) {
@@ -156,6 +157,7 @@ klayout_cuda_spatial_m2_union_request_v1 make_request (
     } else {
       request.max_segments = max_size + 1;
     }
+    request.max_raw_segments = request.max_segments;
   }
   return request;
 }
