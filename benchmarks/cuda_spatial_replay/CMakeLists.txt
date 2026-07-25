@@ -226,3 +226,36 @@ target_link_libraries(m2_manhattan_production_loader_smoke PRIVATE
 set_target_properties(m2_manhattan_production_loader_smoke PROPERTIES
   LINKER_LANGUAGE CUDA
 )
+
+add_library(m2_merged_boundary_oracle STATIC
+  m2_merged_boundary_oracle.cc
+)
+target_include_directories(m2_merged_boundary_oracle PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+target_compile_options(m2_merged_boundary_oracle PRIVATE
+  -O3 -Wall -Wextra
+)
+
+add_executable(m2_merged_boundary_oracle_cli
+  m2_merged_boundary_oracle_main.cc
+)
+target_link_libraries(m2_merged_boundary_oracle_cli PRIVATE
+  m2_merged_boundary_oracle
+)
+target_include_directories(m2_merged_boundary_oracle_cli PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+target_compile_options(m2_merged_boundary_oracle_cli PRIVATE
+  -O3 -Wall -Wextra
+)
+
+add_executable(m2_merged_boundary_oracle_test
+  m2_merged_boundary_oracle_test.cc
+)
+target_link_libraries(m2_merged_boundary_oracle_test PRIVATE
+  m2_merged_boundary_oracle
+)
+target_compile_options(m2_merged_boundary_oracle_test PRIVATE
+  -O3 -Wall -Wextra
+)
