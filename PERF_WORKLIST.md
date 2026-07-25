@@ -1821,7 +1821,7 @@ not just wall time.
             96.111 s, hiding the focused saving under the next pole and normal
             run variation.  Evidence:
             `cuda-runs/klayout-balanced-full-cuda-gate.jXRiJY`.
-        - [ ] **Fuse POLY.3 and POLY.4 into one exact terminal-empty CUDA
+        - [x] **Fuse POLY.3 and POLY.4 into one exact terminal-empty CUDA
           transaction:** upload the shared derived gate once and evaluate the
           110/140-DBU projection-enclosure profiles atomically.  The certificate
           must reproduce normalized edge-pair-to-polygon plus
@@ -1867,6 +1867,20 @@ not just wall time.
             exact Manhattan-primary decomposition.  The existing aggregate
             CUDA ABI/oracle and VIA1-stack smokes also pass.  No
             production/full wall time is booked by this integrity milestone.
+          - [x] **Qualify the live production-owner transaction and both
+            fail-closed paths:** the same generated deck and loaded runtime
+            measured the isolated `m1_enclosure` owner at **89.66 s control
+            versus 66.74 s CUDA**, removing **22.92 wall-seconds / 25.56%**
+            (`N=1` accepted paired A/B; not a full-launcher result).  The live
+            transaction itself charged 1.302 s of host lowering plus 0.711 s
+            in the backend.  Injected Ruby-exception and forced backend-capacity
+            lanes completed in 89.85 s and 90.45 s, respectively, and all four
+            canonical reports had SHA-256
+            `d056b808e6f2134e60286e35247a92e3a2f6d2eaa26b463fd572aa7e0652146d`.
+            The default deck remains byte-identical; exact source mutation,
+            runtime-closure, device-smoke, loaded-DSO, transaction-census, and
+            fallback-disposition gates pass.  Evidence:
+            `.scratchpad/cuda-runs/klayout-poly34-production-owner.k2jgeV`.
         - [ ] **Reuse the cumulative M3 prefix for the M4 antenna check:** the
           current owner spends roughly 78.33 aggregate CPU-seconds extracting
           and evaluating M3, then rebuilding almost the entire graph for M4
