@@ -12,6 +12,8 @@
 #include "active3_scene_island.cu"
 #undef main
 
+#include "m2_manhattan_production_loader.h"
+
 #include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
 #include <thrust/extrema.h>
@@ -89,6 +91,7 @@ struct M2CensusCompactScene {
 struct M2CensusOptions {
   std::string path;
   std::string expected_scene_sha256;
+  std::string expected_world_rect_sha256;
   bool verify_expanded_host = false;
   std::uint64_t expected_flat_polygons = 0;
   std::uint64_t expected_flat_rectangles = 0;
@@ -157,6 +160,29 @@ M2CensusOptions m2_parse_options(int argc, char **argv) {
         take("--max-endpoints", &options.max_endpoints)) {
       continue;
     }
+    const std::string world_sha_prefix =
+        "--expect-world-rect-sha256=";
+    if (argument.rfind(world_sha_prefix, 0) == 0) {
+      options.expected_world_rect_sha256 =
+          argument.substr(world_sha_prefix.size());
+      if (options.expected_world_rect_sha256.size() != 64 ||
+          !std::all_of(options.expected_world_rect_sha256.begin(),
+                       options.expected_world_rect_sha256.end(),
+                       [](unsigned char character) {
+                         return std::isxdigit(character) != 0;
+                       })) {
+        throw SceneError(
+            "--expect-world-rect-sha256 requires exactly 64 hex digits");
+      }
+      std::transform(options.expected_world_rect_sha256.begin(),
+                     options.expected_world_rect_sha256.end(),
+                     options.expected_world_rect_sha256.begin(),
+                     [](unsigned char character) {
+                       return static_cast<char>(std::tolower(character));
+                     });
+      options.verify_expanded_host = true;
+      continue;
+    }
     const std::string sha_prefix = "--expect-scene-sha256=";
     if (argument.rfind(sha_prefix, 0) == 0) {
       options.expected_scene_sha256 =
@@ -195,6 +221,7 @@ M2CensusOptions m2_parse_options(int argc, char **argv) {
         "usage: m2_manhattan_production_census "
         "--expect-scene-sha256=HEX [--expect-flat-polygons=N] "
         "[--expect-flat-rectangles=N] [--verify-expanded-host] "
+        "[--expect-world-rect-sha256=HEX] "
         "[capacity options] SCENE.kact");
   }
   return options;
@@ -605,6 +632,7 @@ std::uint32_t m2_launch_blocks(std::uint64_t count) {
 int m2_run_census(const M2CensusOptions &options,
                   Clock::time_point total_begin) {
   M2CensusTiming timing;
+  std::string world_rect_sha256 = "not-computed";
   auto begin = Clock::now();
   LoadedScene scene = load_and_validate(options.path);
   timing.load_validate_ms = milliseconds(begin, Clock::now());
@@ -733,6 +761,18 @@ int m2_run_census(const M2CensusOptions &options,
     if (compared != compact.flat_rectangles) {
       throw SceneError("host M2 rectangle oracle count mismatch");
     }
+    Sha256 world_sha;
+    world_sha.update(
+        reinterpret_cast<const std::uint8_t *>(host_rectangles.data()),
+        host_rectangles.size() * sizeof(M2CensusRect));
+    const auto world_digest = world_sha.finish();
+    world_rect_sha256 =
+        hex_digest(world_digest.data(), world_digest.size());
+    if (!options.expected_world_rect_sha256.empty() &&
+        world_rect_sha256 != options.expected_world_rect_sha256) {
+      throw SceneError(
+          "expanded world-rectangle SHA-256 disagrees with expectation");
+    }
     timing.host_verify_ms = milliseconds(begin, Clock::now());
   }
 
@@ -832,6 +872,12 @@ int m2_run_census(const M2CensusOptions &options,
             << " rectangles_over_65535_slabs="
             << counters.span_over_65535
             << " device_flags=" << host_status << "\n";
+  std::cout << "WORLD_RECT_STREAM"
+            << " record_bytes=" << sizeof(M2CensusRect)
+            << " records=" << compact.flat_rectangles
+            << " bytes="
+            << compact.flat_rectangles * sizeof(M2CensusRect)
+            << " sha256=" << world_rect_sha256 << "\n";
   std::cout << std::fixed << std::setprecision(3)
             << "TIMING_MS"
             << " load_validate=" << timing.load_validate_ms
@@ -854,6 +900,81 @@ int m2_run_census(const M2CensusOptions &options,
 
 }  // namespace
 
+namespace klayout_cuda {
+namespace m2_production {
+
+CompactScene load_kact_templates(const std::string &path,
+                                 const LoadOptions &options) {
+  if (options.expected_scene_sha256.size() != 64 ||
+      !std::all_of(options.expected_scene_sha256.begin(),
+                   options.expected_scene_sha256.end(),
+                   [](unsigned char character) {
+                     return std::isxdigit(character) != 0;
+                   }) ||
+      !options.max_contexts || !options.max_rectangles) {
+    throw SceneError("invalid production M2 loader qualification/options");
+  }
+  std::string expected_digest = options.expected_scene_sha256;
+  std::transform(expected_digest.begin(), expected_digest.end(),
+                 expected_digest.begin(),
+                 [](unsigned char character) {
+                   return static_cast<char>(std::tolower(character));
+                 });
+
+  LoadedScene scene = load_and_validate(path);
+  if (hex_digest(scene.header.scene_sha256, 32) != expected_digest) {
+    throw SceneError("scene SHA-256 does not match explicit expectation");
+  }
+  if (scene.header.well_layer != kQualifiedM2Layer ||
+      scene.header.well_datatype != kQualifiedM2Datatype) {
+    throw SceneError("logical slot 0 is not qualified M2 layer 101/0");
+  }
+  LoweredScene hierarchy =
+      lower_hierarchy(scene, options.max_contexts);
+  M2CensusCompactScene source =
+      m2_lower_scene(scene, hierarchy, options.max_rectangles);
+  if (options.expected_flat_polygons &&
+      source.flat_polygons != options.expected_flat_polygons) {
+    throw SceneError("flat M2 polygon census disagrees with expectation");
+  }
+  if (options.expected_flat_rectangles &&
+      source.flat_rectangles != options.expected_flat_rectangles) {
+    throw SceneError("flat M2 rectangle census disagrees with expectation");
+  }
+
+  CompactScene result;
+  result.contexts.reserve(source.contexts.size());
+  for (const ContextGpu &context : source.contexts) {
+    result.contexts.push_back(
+        {context.cell, context.transform, context.tx, context.ty});
+  }
+  result.m2_contexts = std::move(source.m2_contexts);
+  result.rectangle_offsets = std::move(source.rectangle_offsets);
+  result.cells.reserve(source.cells.size());
+  for (const M2CensusCell &cell : source.cells) {
+    result.cells.push_back(
+        {cell.rectangle_begin, cell.rectangle_count, cell.polygon_count,
+         cell.l_shape_count, cell.reserved});
+  }
+  result.rectangles.reserve(source.rectangles.size());
+  for (const M2CensusRectTemplate &rectangle : source.rectangles) {
+    result.rectangles.push_back(
+        {rectangle.left, rectangle.bottom, rectangle.right, rectangle.top,
+         rectangle.source_polygon});
+  }
+  result.scene_sha256 = expected_digest;
+  result.flat_polygons = source.flat_polygons;
+  result.flat_l_shapes = source.flat_l_shapes;
+  result.flat_rectangles = source.flat_rectangles;
+  result.local_polygons = source.local_polygons;
+  result.local_l_shapes = source.local_l_shapes;
+  return result;
+}
+
+}  // namespace m2_production
+}  // namespace klayout_cuda
+
+#ifndef KLAYOUT_M2_PRODUCTION_LOADER_NO_MAIN
 int main(int argc, char **argv) {
   const Clock::time_point total_begin = Clock::now();
   try {
@@ -864,3 +985,4 @@ int main(int argc, char **argv) {
     return 2;
   }
 }
+#endif

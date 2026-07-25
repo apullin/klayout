@@ -6,6 +6,12 @@ Manhattan-union replay. It does not claim that the downstream union is correct.
 It establishes the exact production rectangle stream and measures the global
 coordinate-compressed x-slab workload on the GPU.
 
+`m2_manhattan_production_loader.h` is the reusable seam. Its static library
+returns only 24-byte resolved contexts, local 40-byte rectangle templates,
+per-cell spans, canonical M2-context indices, and device output offsets. A CUDA
+consumer can therefore expand directly into its resident `RectI64` buffer
+without materializing or transferring the 1.026-GiB world stream on the host.
+
 The bridge reuses the complete `KACTSCN1` digest, section, record, contour,
 bbox, hierarchy, transform, overflow, and reachability validation from
 `active3_scene_island.cu`. It additionally requires:
@@ -56,6 +62,14 @@ maximum slabs/rectangle      43
 rectangles over 4096 slabs    0
 ```
 
+The canonical world-coordinate stream is pinned independently:
+
+```text
+record ABI bytes  48
+stream bytes      1101429312
+stream SHA-256    f9a3a3d4bbdadc80531c341361eb4f0dfc18538a5ada303ac909da86cea1c767
+```
+
 Thus the exact one-decomposition stream has only 468 more rectangles than
 polygons. The old 22,947,380-box VIA-stack census is 936 boxes larger, exactly
 two redundant boxes for each of the 468 flat L occurrences.
@@ -75,8 +89,10 @@ X sort/unique     14.25 ms
 membership count   3.32 ms
 ```
 
-The one-time full 1.026-GiB D2H coordinate oracle took about 1.25 seconds and
-is not part of that charged GPU timing.
+The one-time full 1.026-GiB D2H coordinate-by-coordinate oracle took about
+1.25 seconds. Computing the reference SHA-256 with the deliberately local
+portable implementation adds about 4.55 seconds. Neither is part of the
+charged GPU timing or the resident production path.
 
 ## Build and run
 
@@ -95,6 +111,16 @@ TMPDIR="$PWD/.scratch-tmp" cmake --build .scratch-build \
   --expect-scene-sha256=dd239a45408a046eece0ca1e4c8759ea4b8539e6b7a51599c2ac9a2996a86bd2 \
   --expect-flat-polygons=22945976 \
   --expect-flat-rectangles=22946444 \
-  --verify-expanded-host \
+  --expect-world-rect-sha256=f9a3a3d4bbdadc80531c341361eb4f0dfc18538a5ada303ac909da86cea1c767 \
   /path/to/m2-via1-x2.kact
+```
+
+The reusable loader has an independent link/symbol/census smoke target:
+
+```sh
+cmake --build .scratch-build \
+  --target m2_manhattan_production_loader_smoke
+.scratch-build/m2_manhattan_production_loader_smoke \
+  /path/to/m2-via1-x2.kact \
+  dd239a45408a046eece0ca1e4c8759ea4b8539e6b7a51599c2ac9a2996a86bd2
 ```

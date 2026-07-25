@@ -189,3 +189,28 @@ set_target_properties(m2_manhattan_production_census PROPERTIES
   CUDA_SEPARABLE_COMPILATION OFF
   CUDA_RESOLVE_DEVICE_SYMBOLS OFF
 )
+
+add_library(m2_manhattan_production_loader STATIC
+  m2_manhattan_production_census.cu
+)
+target_compile_definitions(m2_manhattan_production_loader PRIVATE
+  KLAYOUT_M2_PRODUCTION_LOADER_NO_MAIN
+)
+target_compile_options(m2_manhattan_production_loader PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(m2_manhattan_production_loader PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+)
+
+add_executable(m2_manhattan_production_loader_smoke
+  m2_manhattan_production_loader_smoke.cc
+)
+target_link_libraries(m2_manhattan_production_loader_smoke PRIVATE
+  m2_manhattan_production_loader
+)
+set_target_properties(m2_manhattan_production_loader_smoke PROPERTIES
+  LINKER_LANGUAGE CUDA
+)
