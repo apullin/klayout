@@ -258,6 +258,27 @@ Useful integrity counters are input/output area, bbox, context census,
 interval-work census, boundary-side conservation, and deterministic payload
 digest.  All arithmetic and allocation products must be checked before launch.
 
+### Resident morphology milestone status
+
+- [x] Extract exact strip erosion/dilation into an independently linkable
+  `m2_resident_morphology_gpu.cu` module.
+- [x] Consume the union core's explicit CUDA stream and resident strip views;
+  do not compile or include an executable `.cu` source.
+- [x] Preserve the 2B universal work cap and require an explicit pinned-scene
+  qualification for the 8B production-local cap.
+- [x] Pass 248 exact differential cases and four signed x-limit guards.
+- [x] Match all 4,254,384 production F90 golden edges.
+- [x] Reproduce eight long edges, 28 exact space pairs, zero hits/uncertainty,
+  and an empty F270 erosion.
+- [ ] Wire the module through the production DSO adapter and raw live M2 owner.
+- [ ] Add the separate M2.1/M2.2 and M2.4 certificates to one atomic live
+  transaction.
+- [ ] Run an exact live deck A/B and book a whole-launcher timing.
+
+See `M2_RESIDENT_MORPHOLOGY_GPU.md` for the checked API, production identities,
+and charged measurements.  Completed and remaining items stay visible here so
+later integration work does not erase the qualification history.
+
 ## Flat stock-morphology bridge
 
 There is a useful interim bridge if the resident F90 kernels take longer to
