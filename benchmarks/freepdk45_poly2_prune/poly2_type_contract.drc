@@ -1,0 +1,24 @@
+# Runtime contract behind the FreePDK45 POLY.2 prune.
+#
+# Region#separation must produce an EdgePairs DRCLayer.  polygons? accepts
+# only Region-backed DRCLayers, so the historical guarded output is
+# unreachable for every geometry, including a nonempty separation result.
+
+source($input, $topcell || "TOP")
+verbose(true)
+first = polygons(1, 0)
+second = polygons(2, 0)
+separated = first.separation(second, 140.dbu, projection)
+
+raise("separation no longer returns an EdgePairs layer") unless separated.edge_pairs?
+raise("separation unexpectedly reports a polygon layer") if separated.polygons?
+
+dead_branch_entered = false
+if separated.polygons?
+  dead_branch_entered = true
+  separated.polygons.without_area(0).output("POLY.2", "unreachable")
+end
+raise("the historical POLY.2 branch became reachable") if dead_branch_entered
+
+separated.forget
+info("POLY2_TYPE_CONTRACT PASS separation=EdgePairs polygons=false branch=unreachable")
