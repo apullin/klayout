@@ -956,6 +956,183 @@ klayout_cuda_spatial_run_m2_width_space_empty_v1 (
   struct klayout_cuda_spatial_m1_width_space_result_v1 *result);
 
 /*
+ * Optional exact raw-M2 Manhattan-union boundary.
+ *
+ * This is an additive capability.  It deliberately does not reuse the
+ * METAL2.1/.2 request: that request asserts an already-merged input, while
+ * this entry point consumes the compact raw hierarchy before KLayout calls
+ * merged_deep_layer().  The caller-owned arrays use the same pointer-free
+ * record layouts as CudaM1WidthSpaceScene.  A backend expands the hierarchy
+ * and orthogonal contours, unions their material exactly, and returns a
+ * canonical directed boundary.
+ *
+ * Result segments are backend-owned until the dedicated release function is
+ * called.  A host may consume them only after validating the complete proof
+ * echo, capacities, canonical order, maximal collinear intervals, and digest.
+ * Missing symbols, a non-COMPLETE disposition, malformed topology, or any
+ * validation failure selects the untouched CPU rule block.
+ */
+enum klayout_cuda_spatial_m2_union_opcode
+{
+  KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY = 1
+};
+
+enum klayout_cuda_spatial_m2_union_option_flag
+{
+  KLAYOUT_CUDA_SPATIAL_M2_UNION_RAW_HIERARCHY = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_M2_UNION_SAME_STORE_LAYOUT_TOP_LAYER = 1u << 1,
+  KLAYOUT_CUDA_SPATIAL_M2_UNION_NO_BREAKOUT = 1u << 2,
+  KLAYOUT_CUDA_SPATIAL_M2_UNION_ORTHOGONAL_UNIT_TRANSFORMS = 1u << 3,
+  KLAYOUT_CUDA_SPATIAL_M2_UNION_NO_PROPERTIES = 1u << 4,
+  KLAYOUT_CUDA_SPATIAL_M2_UNION_CLOCKWISE_MANHATTAN_CONTOURS = 1u << 5,
+  KLAYOUT_CUDA_SPATIAL_M2_UNION_EXACT_INTEGER_SET_UNION = 1u << 6,
+  KLAYOUT_CUDA_SPATIAL_M2_UNION_CANONICAL_DIRECTED_BOUNDARY = 1u << 7
+};
+
+#define KLAYOUT_CUDA_SPATIAL_M2_UNION_QUALIFIED_OPTIONS \
+  ((1u << 8) - 1u)
+
+enum klayout_cuda_spatial_m2_union_disposition
+{
+  KLAYOUT_CUDA_SPATIAL_M2_UNION_COMPLETE = 0,
+  KLAYOUT_CUDA_SPATIAL_M2_UNION_UNCERTAIN = 1
+};
+
+enum klayout_cuda_spatial_m2_union_axis
+{
+  KLAYOUT_CUDA_SPATIAL_M2_UNION_HORIZONTAL = 0,
+  KLAYOUT_CUDA_SPATIAL_M2_UNION_VERTICAL = 1
+};
+
+/*
+ * A horizontal segment has y=fixed and x in [lo, hi); a vertical segment has
+ * x=fixed and y in [lo, hi).  side is the outward-normal sign along the
+ * fixed/perpendicular axis (-1 or +1).  Canonical order is
+ * (axis, side, fixed, lo, hi), with touching or overlapping intervals on one
+ * line already coalesced.
+ */
+struct klayout_cuda_spatial_m2_union_segment_v1
+{
+  int64_t fixed;
+  int64_t lo;
+  int64_t hi;
+  int32_t side;
+  uint32_t axis;
+};
+
+struct klayout_cuda_spatial_m2_union_request_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  uint32_t root_cell;
+  int32_t device;
+
+  const void *contexts;
+  uint64_t context_count;
+  uint32_t context_record_bytes;
+  uint32_t context_reserved;
+  const uint32_t *metal_contexts;
+  uint64_t metal_context_count;
+  const uint64_t *context_polygon_offsets;
+  uint64_t context_polygon_offset_count;
+  const uint64_t *context_edge_offsets;
+  uint64_t context_edge_offset_count;
+  const void *cells;
+  uint64_t cell_count;
+  uint32_t cell_record_bytes;
+  uint32_t cell_reserved;
+  const void *polygons;
+  uint64_t polygon_count;
+  uint32_t polygon_record_bytes;
+  uint32_t polygon_reserved;
+  const void *edges;
+  uint64_t edge_count;
+  uint32_t edge_record_bytes;
+  uint32_t edge_reserved;
+
+  uint64_t flat_polygon_count;
+  uint64_t flat_edge_count;
+  int64_t scene_left;
+  int64_t scene_bottom;
+  int64_t scene_right;
+  int64_t scene_top;
+
+  uint64_t max_contexts;
+  uint64_t max_rectangles;
+  uint64_t max_x_slabs;
+  uint64_t max_memberships;
+  uint64_t max_events;
+  uint64_t max_segments;
+  uint32_t max_slabs_per_rectangle;
+  uint32_t reserved0;
+  uint8_t scene_digest[32];
+  uint64_t reserved1[2];
+};
+
+struct klayout_cuda_spatial_m2_union_result_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t status;
+  uint32_t fallback_flags;
+  uint32_t disposition;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  uint32_t root_cell;
+  uint32_t device_flags;
+  uint32_t segment_record_bytes;
+  uint8_t scene_digest[32];
+
+  const struct klayout_cuda_spatial_m2_union_segment_v1 *segments;
+  uint64_t segment_count;
+  uint64_t context_count;
+  uint64_t metal_context_count;
+  uint64_t cell_count;
+  uint64_t polygon_count;
+  uint64_t edge_count;
+  uint64_t flat_polygon_count;
+  uint64_t flat_edge_count;
+  uint64_t rectangle_count;
+  uint64_t x_slab_count;
+  uint64_t membership_count;
+  uint64_t event_count;
+  uint64_t strip_interval_count;
+  uint64_t raw_segment_count;
+  uint64_t boundary_fnv64;
+
+  uint64_t setup_ns;
+  uint64_t h2d_ns;
+  uint64_t rectangle_expand_ns;
+  uint64_t x_membership_ns;
+  uint64_t strip_scan_ns;
+  uint64_t boundary_ns;
+  uint64_t d2h_ns;
+  uint64_t total_ns;
+  uint64_t reserved0[2];
+  char message[192];
+};
+
+typedef int (*klayout_cuda_spatial_run_m2_union_boundary_v1_func) (
+  const struct klayout_cuda_spatial_m2_union_request_v1 *,
+  struct klayout_cuda_spatial_m2_union_result_v1 *);
+typedef void (*klayout_cuda_spatial_release_m2_union_boundary_v1_func) (
+  struct klayout_cuda_spatial_m2_union_result_v1 *);
+
+KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_m2_union_boundary_v1 (
+  const struct klayout_cuda_spatial_m2_union_request_v1 *request,
+  struct klayout_cuda_spatial_m2_union_result_v1 *result);
+KLAYOUT_CUDA_SPATIAL_EXPORT void
+klayout_cuda_spatial_release_m2_union_boundary_v1 (
+  struct klayout_cuda_spatial_m2_union_result_v1 *result);
+
+/*
  * Optional atomic FreePDK45 POLY.3/POLY.4 terminal-empty certificate.
  *
  * The caller supplies three exact merged hierarchical domains: POLY, ACTIVE

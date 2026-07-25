@@ -11,6 +11,7 @@ SOURCES = \
   dbCompoundOperationTests.cc \
   dbCudaImplant12Tests.cc \
   dbCudaM1WidthSpaceTests.cc \
+  dbCudaM2UnionContractTests.cc \
   dbEdgeNeighborhoodTests.cc \
   dbFillToolTests.cc \
   dbLibraryTests.cc \

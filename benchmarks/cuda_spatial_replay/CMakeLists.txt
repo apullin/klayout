@@ -96,6 +96,36 @@ set_target_properties(klayout_cuda_spatial_legacy_m1_backend PROPERTIES
   CXX_VISIBILITY_PRESET hidden
 )
 
+foreach(M2_UNION_FAKE_VARIANT IN ITEMS full run_only release_only)
+  add_library(m2_union_contract_backend_${M2_UNION_FAKE_VARIANT} SHARED
+    m2_union_contract_fake_backend.cc
+  )
+  target_include_directories(
+    m2_union_contract_backend_${M2_UNION_FAKE_VARIANT} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+  )
+  target_compile_definitions(
+    m2_union_contract_backend_${M2_UNION_FAKE_VARIANT} PRIVATE
+    KLAYOUT_CUDA_SPATIAL_BACKEND_BUILD
+  )
+  set_target_properties(
+    m2_union_contract_backend_${M2_UNION_FAKE_VARIANT} PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+  )
+endforeach()
+target_compile_definitions(m2_union_contract_backend_full PRIVATE
+  KLAYOUT_M2_UNION_FAKE_WITH_RUN=1
+  KLAYOUT_M2_UNION_FAKE_WITH_RELEASE=1
+)
+target_compile_definitions(m2_union_contract_backend_run_only PRIVATE
+  KLAYOUT_M2_UNION_FAKE_WITH_RUN=1
+  KLAYOUT_M2_UNION_FAKE_WITH_RELEASE=0
+)
+target_compile_definitions(m2_union_contract_backend_release_only PRIVATE
+  KLAYOUT_M2_UNION_FAKE_WITH_RUN=0
+  KLAYOUT_M2_UNION_FAKE_WITH_RELEASE=1
+)
+
 add_executable(m2_backend_capability_smoke
   m2_backend_capability_smoke.cc
 )
@@ -322,3 +352,74 @@ target_link_libraries(m2_merged_boundary_oracle_test PRIVATE
 target_compile_options(m2_merged_boundary_oracle_test PRIVATE
   -O3 -Wall -Wextra
 )
+
+# This loader-level test compiles the modified host wrapper itself and links
+# its existing digest/log dependencies from a qmake KLayout build.  The fake
+# DSOs above need no CUDA device and deliberately exercise malformed output
+# and missing-capability paths.
+if(KLAYOUT_QMAKE_BUILD_DIR)
+  add_executable(m2_union_backend_contract_smoke
+    m2_union_backend_contract_smoke.cc
+    ../../src/db/db/dbCudaSpatialBackend.cc
+  )
+  target_include_directories(m2_union_backend_contract_smoke PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/tl/tl
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/gsi/gsi
+  )
+  target_compile_options(m2_union_backend_contract_smoke PRIVATE
+    -O2 -Wall -Wextra
+  )
+  target_link_libraries(m2_union_backend_contract_smoke PRIVATE
+    "${KLAYOUT_DB_LIBRARY}"
+    "${KLAYOUT_TL_LIBRARY}"
+    "${KLAYOUT_GSI_LIBRARY}"
+    Threads::Threads
+    ${CMAKE_DL_LIBS}
+  )
+  set_target_properties(m2_union_backend_contract_smoke PROPERTIES
+    BUILD_RPATH "${KLAYOUT_QMAKE_BUILD_DIR}"
+  )
+
+  add_custom_target(m2_union_backend_contract_gate
+    COMMAND m2_union_backend_contract_smoke
+      $<TARGET_FILE:m2_union_contract_backend_run_only>
+      capability unavailable
+    COMMAND m2_union_backend_contract_smoke
+      $<TARGET_FILE:m2_union_contract_backend_release_only>
+      capability unavailable
+    COMMAND m2_union_backend_contract_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      ok complete
+    COMMAND m2_union_backend_contract_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      side_order complete
+    COMMAND m2_union_backend_contract_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      fallback fallback
+    COMMAND m2_union_backend_contract_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      backend_throw error
+    COMMAND m2_union_backend_contract_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      bad_echo invalid
+    COMMAND m2_union_backend_contract_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      bad_order invalid
+    COMMAND m2_union_backend_contract_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      bad_digest invalid
+    COMMAND m2_union_backend_contract_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      bad_count invalid
+    COMMAND m2_union_backend_contract_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      copy_throw error
+    DEPENDS
+      m2_union_backend_contract_smoke
+      m2_union_contract_backend_full
+      m2_union_contract_backend_run_only
+      m2_union_contract_backend_release_only
+    VERBATIM
+  )
+endif()

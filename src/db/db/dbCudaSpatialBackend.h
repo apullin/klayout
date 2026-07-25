@@ -123,6 +123,41 @@ struct DB_PUBLIC CudaM1WidthSpaceAttempt
   std::string message;
 };
 
+struct DB_PUBLIC CudaM2UnionAttempt
+{
+  enum Disposition
+  {
+    Disabled,
+    Complete,
+    BackendFallback,
+    BackendError,
+    InvalidResult
+  };
+
+  CudaM2UnionAttempt ();
+
+  Disposition disposition;
+  uint32_t fallback_flags;
+  uint32_t device_flags;
+  uint64_t context_count;
+  uint64_t metal_context_count;
+  uint64_t cell_count;
+  uint64_t polygon_count;
+  uint64_t edge_count;
+  uint64_t flat_polygon_count;
+  uint64_t flat_edge_count;
+  uint64_t rectangle_count;
+  uint64_t x_slab_count;
+  uint64_t membership_count;
+  uint64_t event_count;
+  uint64_t strip_interval_count;
+  uint64_t raw_segment_count;
+  uint64_t boundary_fnv64;
+  uint64_t total_ns;
+  std::string message;
+  std::vector<klayout_cuda_spatial_m2_union_segment_v1> segments;
+};
+
 struct DB_PUBLIC CudaPoly34Attempt
 {
   enum Disposition
@@ -358,6 +393,30 @@ DB_PUBLIC bool cuda_spatial_m1_width_space_requested ();
 
 /** Return true only when the independent M2 width/space opt-in and symbol exist. */
 DB_PUBLIC bool cuda_spatial_m2_width_space_requested ();
+
+/**
+ * Invoke the optional exact raw-M2 Manhattan-union boundary.
+ *
+ * Complete is usable only after this wrapper has validated the complete proof
+ * echo, copied and released the backend-owned output, and established
+ * canonical maximal segment order plus the echoed FNV-1a digest.
+ */
+DB_PUBLIC CudaM2UnionAttempt cuda_spatial_try_m2_union (
+  const klayout_cuda_spatial_m2_union_request_v1 &request);
+
+/** Return true only when the M2-rules opt-in and both union symbols exist. */
+DB_PUBLIC bool cuda_spatial_m2_union_requested ();
+
+/**
+ * Validate the proven canonical segment contract and FNV-1a digest.
+ *
+ * This small public helper keeps loader validation and focused unit tests on
+ * the identical (axis, side, fixed, lo, hi) ordering rule.
+ */
+DB_PUBLIC bool cuda_spatial_validate_m2_union_boundary (
+  const klayout_cuda_spatial_m2_union_segment_v1 *segments,
+  uint64_t segment_count, uint64_t expected_fnv64,
+  std::string *error = 0);
 
 /**
  * Invoke the optional atomic POLY.3/POLY.4 terminal-empty certificate.
