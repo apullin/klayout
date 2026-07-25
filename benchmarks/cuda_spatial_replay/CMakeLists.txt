@@ -191,6 +191,25 @@ target_link_libraries(m2_union_production_backend_smoke PRIVATE
   klayout_cuda_spatial_backend
 )
 
+add_executable(m2_union_production_backend_gate
+  m2_union_production_backend_gate.cu
+)
+target_include_directories(m2_union_production_backend_gate PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+target_compile_options(m2_union_production_backend_gate PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(m2_union_production_backend_gate PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+)
+target_link_libraries(m2_union_production_backend_gate PRIVATE
+  klayout_cuda_spatial_backend
+  m2_merged_boundary_oracle
+)
+
 add_executable(active3_exact_predicate_test
   active3_exact_predicate.cu
   active3_exact_predicate_test.cc
