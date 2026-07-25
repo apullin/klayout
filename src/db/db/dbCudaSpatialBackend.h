@@ -124,6 +124,45 @@ struct DB_PUBLIC CudaContact4ActiveUnionAttempt
   std::string message;
 };
 
+struct DB_PUBLIC CudaActive3WellUnionAttempt
+{
+  enum Disposition
+  {
+    Disabled,
+    CertifiedEmpty,
+    RawHits,
+    BackendFallback,
+    BackendError,
+    InvalidResult
+  };
+
+  CudaActive3WellUnionAttempt ();
+
+  Disposition disposition;
+  uint32_t fallback_flags;
+  uint32_t device_flags;
+  uint64_t well_context_count;
+  uint64_t active_context_count;
+  uint64_t flat_well_polygon_count;
+  uint64_t flat_well_edge_count;
+  uint64_t flat_active_polygon_count;
+  uint64_t flat_active_edge_count;
+  uint64_t rectangle_count;
+  uint64_t x_slab_count;
+  uint64_t union_membership_count;
+  uint64_t strip_interval_count;
+  uint64_t boundary_segment_count;
+  uint64_t grid_cell_count;
+  uint64_t active_membership_count;
+  uint64_t active_cell_visit_count;
+  uint64_t member_visit_count;
+  uint64_t candidate_pair_count;
+  uint64_t raw_hit_count;
+  uint64_t uncertain_count;
+  uint64_t total_ns;
+  std::string message;
+};
+
 struct DB_PUBLIC CudaM1WidthSpaceAttempt
 {
   enum Disposition
@@ -507,6 +546,26 @@ DB_PUBLIC bool cuda_spatial_contact4_active_union_requested ();
 DB_PUBLIC bool cuda_spatial_validate_contact4_active_union_result (
   const klayout_cuda_spatial_contact4_active_union_request_v1 &request,
   const klayout_cuda_spatial_contact4_active_union_result_v1 &result,
+  int backend_status, std::string *error = 0);
+
+/**
+ * Invoke the exact resident raw-(NWELL union PWELL) / ACTIVE.3 certificate.
+ *
+ * Only CertifiedEmpty is consumable.  The combined WELL scene is unioned
+ * exactly and its resident boundary is checked against complete raw ACTIVE;
+ * all other outcomes retain the historical CPU path.
+ */
+DB_PUBLIC CudaActive3WellUnionAttempt
+cuda_spatial_try_active3_well_union_empty (
+  const klayout_cuda_spatial_active3_well_union_request_v1 &request);
+
+/** Return true only when the independent opt-in and dedicated symbol exist. */
+DB_PUBLIC bool cuda_spatial_active3_well_union_requested ();
+
+/** Strict request-echo/capacity/disposition validator shared with tests. */
+DB_PUBLIC bool cuda_spatial_validate_active3_well_union_result (
+  const klayout_cuda_spatial_active3_well_union_request_v1 &request,
+  const klayout_cuda_spatial_active3_well_union_result_v1 &result,
   int backend_status, std::string *error = 0);
 
 /**

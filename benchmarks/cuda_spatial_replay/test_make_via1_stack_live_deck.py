@@ -570,6 +570,58 @@ class Active3RawWellsTransformTest(unittest.TestCase):
         )
 
 
+class Active3ExactWellUnionTransformTest(unittest.TestCase):
+    def test_transaction_is_deterministic_exact_and_fail_closed(self) -> None:
+        source = f"before\n{ACTIVE3_SOURCE_BLOCK}\nafter\n"
+        first = generator.add_active3_well_union(source)
+        second = generator.add_active3_well_union(source)
+
+        self.assertEqual(first, second)
+        self.assertTrue(first.startswith("before\n"))
+        self.assertTrue(first.endswith("\nafter\n"))
+        self.assertEqual(
+            first.count(
+                'active3_well_union_request = '
+                'ENV["KLAYOUT_CUDA_ACTIVE3_WELL_UNION"].to_s'
+            ),
+            1,
+        )
+        self.assertIn(
+            "nwell.respond_to?(:cuda_active3_well_union_clean?)", first
+        )
+        self.assertIn(
+            "nwell.cuda_active3_well_union_clean?(pwell, active)", first
+        )
+        self.assertIn(
+            "rescue StandardError =&gt; active3_well_union_error", first
+        )
+        self.assertEqual(first.count(ACTIVE3_WELL), 1)
+        self.assertEqual(first.count(ACTIVE3_RULE), 1)
+        clean_branch = first.split(
+            "\nif active3_well_union_clean\n", 1
+        )[1].split("\nelse", 1)[0]
+        self.assertNotIn("nwell.or(pwell)", clean_branch)
+        self.assertNotIn("well.enclosing", clean_branch)
+        self.assertIn("active3_well_union_empty.output", clean_branch)
+
+    def test_owner_retains_all_other_well_consumers(self) -> None:
+        transformed = generator.add_active3_well_union(ACTIVE3_SOURCE_BLOCK)
+        owner = next(
+            line
+            for line in transformed.splitlines()
+            if line.startswith("active3_well_union_owner =")
+        )
+        for required in (
+            "active3_well_union_requested",
+            "DRC",
+            "run_active3",
+            "!run_well",
+            "!run_active4",
+            "!(OFFGRID &amp;&amp; run_grid)",
+        ):
+            self.assertIn(required, owner)
+
+
 class CombinedM2PolyTransformTest(unittest.TestCase):
     def test_combined_transform_is_deterministic_and_preserves_both(self) -> None:
         source = f"before\n{M2_OWNER_BLOCK}\n{POLY34_SOURCE_BLOCK}\nafter\n"

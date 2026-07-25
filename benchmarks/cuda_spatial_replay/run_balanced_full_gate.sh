@@ -11,6 +11,7 @@ Usage:
     [--split-lower-antenna] [--split-upper-antenna] \
     [--split-implant-contact] [--split-active12] \
     [--without-contact4] \
+    [--with-active3-well-union|--without-active3-well-union] \
     [--with-contact4-active-union|--without-contact4-active-union] \
     [--with-m2-rules|--without-m2-rules] \
     [--with-m2-width-space|--without-m2-width-space] \
@@ -37,6 +38,13 @@ provenance are checked before success.
 
 --without-contact4 retains every other qualified CUDA transaction and exists
 only to produce a same-binary CONTACT.4-off performance control.
+
+--with-active3-well-union and --without-active3-well-union generate the same
+exact resident NWELL/PWELL-union ACTIVE.3 transaction deck, then toggle only
+its runtime environment.  COMPLETE with zero hits and zero uncertainty is the
+sole bypass; every decline executes the literal historical WELL union and
+ACTIVE.3 expression.  The default omits this deck rewrite for compatibility
+with historical gates.
 
 --with-contact4-active-union and --without-contact4-active-union retain the
 same fused-capable binary, backend, and deck while toggling only the exact
@@ -101,6 +109,7 @@ python=${PYTHON:-python3}
 timeout_seconds=900
 keep_work=0
 contact4=1
+active3_well_union=-1
 contact4_active_union=-1
 implant12=-1
 m2_rules=-1
@@ -187,6 +196,18 @@ while (($#)); do
       ;;
     --without-contact4)
       contact4=0
+      shift
+      ;;
+    --with-active3-well-union)
+      ((active3_well_union == -1)) ||
+        die "choose exactly one ACTIVE.3 WELL-union runtime mode"
+      active3_well_union=1
+      shift
+      ;;
+    --without-active3-well-union)
+      ((active3_well_union == -1)) ||
+        die "choose exactly one ACTIVE.3 WELL-union runtime mode"
+      active3_well_union=0
       shift
       ;;
     --with-contact4-active-union)
@@ -396,9 +417,19 @@ if ((contact4_active_union >= 0)); then
     "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_TELEMETRY=1"
   )
 fi
+active3_well_union_generator_args=()
+active3_well_union_env=()
+if ((active3_well_union >= 0)); then
+  active3_well_union_generator_args=(--active3-well-union)
+  active3_well_union_env=(
+    "KLAYOUT_CUDA_ACTIVE3_WELL_UNION=${active3_well_union}"
+    "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_TELEMETRY=1"
+  )
+fi
 run_transform "live CUDA deck generation" \
   "${python}" "${deck_generator}" \
     --input "${source_deck}" --output "${generator_deck}" --m1-contact \
+    "${active3_well_union_generator_args[@]}" \
     "${m2_rules_generator_args[@]}" \
     "${implant12_generator_args[@]}" \
     "${poly34_generator_args[@]}"
@@ -531,6 +562,7 @@ set +e
       "LD_LIBRARY_PATH=${runtime_ld_library_path}" \
       KLAYOUT_CUDA_ACTIVE3=1 \
       KLAYOUT_CUDA_ACTIVE3_TELEMETRY=1 \
+      "${active3_well_union_env[@]}" \
       KLAYOUT_CUDA_M1_WIDTH_SPACE=1 \
       KLAYOUT_CUDA_M1_WIDTH_SPACE_TELEMETRY=1 \
       "${m2_rules_env[@]}" \
@@ -597,9 +629,27 @@ require_telemetry() {
     die "missing ${label} telemetry"
 }
 
-require_telemetry \
-  "CUDA ACTIVE.3 empty certificate: outcome=certified-empty" \
-  "ACTIVE.3 certified-empty"
+if ((active3_well_union == 1)); then
+  require_telemetry \
+    "CUDA ACTIVE.3 exact resident WELL-union certificate: outcome=certified-empty" \
+    "exact resident WELL-union ACTIVE.3 certified-empty"
+  require_telemetry \
+    "CUDA ACTIVE.3 exact WELL-union live lowering:" \
+    "exact resident WELL-union ACTIVE.3 live lowering"
+  if grep -R -Fq --include='*.log' -- \
+       "CUDA ACTIVE.3 empty certificate:" "${shard_dir}"; then
+    die "exact ACTIVE.3 WELL-union candidate unexpectedly invoked fallback"
+  fi
+else
+  require_telemetry \
+    "CUDA ACTIVE.3 empty certificate: outcome=certified-empty" \
+    "ACTIVE.3 certified-empty"
+  if ((active3_well_union == 0)) &&
+     grep -R -Fq --include='*.log' -- \
+       "CUDA ACTIVE.3 exact" "${shard_dir}"; then
+    die "ACTIVE.3 WELL-union-off control unexpectedly invoked the exact path"
+  fi
+fi
 require_telemetry \
   "CUDA M1 width/space empty certificate: outcome=certified-empty" \
   "M1 width/space certified-empty"
@@ -693,7 +743,7 @@ if ! cmp -s -- "${reference_canonical}" "${report_canonical}"; then
 fi
 
 grep -R -nE --include='*.log' -- \
-  'CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M2 width/space empty certificate:|CUDA M2 width/space live lowering:|CUDA M2 exact union boundary:|CUDA M2 live flat operands:|CUDA M2 rules transaction:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA CONTACT\.4 fused ACTIVE-union empty certificate:|CUDA CONTACT\.4 fused ACTIVE-union live lowering:|CUDA CONTACT\.4 empty certificate:|CUDA CONTACT\.4 live lowering:|CUDA IMPLANT\.1/\.2 transaction:|CUDA IMPLANT\.1/\.2 empty certificate:|CUDA IMPLANT\.1/\.2 live lowering:|CUDA POLY\.3/\.4 transaction:|CUDA POLY\.3/\.4 live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_EDGE_CERT ' \
+  'CUDA ACTIVE\.3 exact resident WELL-union certificate:|CUDA ACTIVE\.3 exact WELL-union live lowering:|CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M2 width/space empty certificate:|CUDA M2 width/space live lowering:|CUDA M2 exact union boundary:|CUDA M2 live flat operands:|CUDA M2 rules transaction:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA CONTACT\.4 fused ACTIVE-union empty certificate:|CUDA CONTACT\.4 fused ACTIVE-union live lowering:|CUDA CONTACT\.4 empty certificate:|CUDA CONTACT\.4 live lowering:|CUDA IMPLANT\.1/\.2 transaction:|CUDA IMPLANT\.1/\.2 empty certificate:|CUDA IMPLANT\.1/\.2 live lowering:|CUDA POLY\.3/\.4 transaction:|CUDA POLY\.3/\.4 live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_EDGE_CERT ' \
   "${shard_dir}" >"${work}/cuda-telemetry.txt"
 
 grep -E \
@@ -735,4 +785,4 @@ cat -- "${work}/launcher-summary.txt"
 cat -- "${work}/canonical-report-sha256.txt"
 cat -- "${work}/cuda-telemetry.txt"
 echo \
-  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} contact4_active_union=${contact4_active_union} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} poly34=${poly34} prune_poly2=${prune_poly2} split_lower_antenna=${split_lower_antenna} split_upper_antenna=${split_upper_antenna} split_implant_contact=${split_implant_contact} split_active12=${split_active12}"
+  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} active3_well_union=${active3_well_union} contact4_active_union=${contact4_active_union} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} poly34=${poly34} prune_poly2=${prune_poly2} split_lower_antenna=${split_lower_antenna} split_upper_antenna=${split_upper_antenna} split_implant_contact=${split_implant_contact} split_active12=${split_active12}"

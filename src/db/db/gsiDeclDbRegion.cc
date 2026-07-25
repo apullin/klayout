@@ -1758,6 +1758,50 @@ static bool cuda_active3_raw_wells_clean (
   }
 }
 
+static bool cuda_active3_well_union_clean (
+  const db::Region *nwell, const db::Region *pwell,
+  const db::Region *active)
+{
+  if (! db::cuda_spatial_active3_well_union_requested ()) {
+    return false;
+  }
+  const db::DeepRegion *deep_nwell =
+    dynamic_cast<const db::DeepRegion *> (nwell->delegate ());
+  const db::DeepRegion *deep_pwell =
+    dynamic_cast<const db::DeepRegion *> (pwell->delegate ());
+  const db::DeepRegion *deep_active =
+    dynamic_cast<const db::DeepRegion *> (active->delegate ());
+  if (! deep_nwell || ! deep_pwell || ! deep_active ||
+      ! nwell->merged_semantics () || ! pwell->merged_semantics () ||
+      ! active->merged_semantics ()) {
+    return false;
+  }
+
+  const db::DeepLayer &raw_nwell = deep_nwell->deep_layer ();
+  const db::DeepLayer &raw_pwell = deep_pwell->deep_layer ();
+  const db::DeepLayer &raw_active = deep_active->deep_layer ();
+  if (raw_nwell.layer () >= raw_nwell.layout ().layers () ||
+      raw_pwell.layer () >= raw_pwell.layout ().layers () ||
+      raw_active.layer () >= raw_active.layout ().layers () ||
+      ! raw_nwell.layout ().get_properties (raw_nwell.layer ()).log_equal (
+          db::LayerProperties (3, 0)) ||
+      ! raw_pwell.layout ().get_properties (raw_pwell.layer ()).log_equal (
+          db::LayerProperties (2, 0)) ||
+      ! raw_active.layout ().get_properties (raw_active.layer ()).log_equal (
+          db::LayerProperties (1, 0))) {
+    return false;
+  }
+
+  try {
+    return db::cuda_active3_well_union_try_empty (
+      raw_nwell, raw_pwell, raw_active);
+  } catch (...) {
+    // This speculative exact certificate may never bypass CPU fallback on an
+    // exception.
+    return false;
+  }
+}
+
 static bool cuda_implant12_clean (
   const db::Region *implant, const db::Region *gate,
   const db::Region *contact)
@@ -4899,6 +4943,17 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "PWELL, and ACTIVE contours. True means their qualified raw superset has "
     "no ACTIVE.3 hit. False requires the unchanged WELL union and historical "
     "ACTIVE.3 expression.\n"
+  ) +
+  method_ext (
+    "cuda_active3_well_union_clean?", &cuda_active3_well_union_clean,
+    gsi::arg ("pwell"), gsi::arg ("active"),
+    "@brief Tries exact resident WELL union followed by ACTIVE.3\n"
+    "\n"
+    "This internal default-off hook serializes physical NWELL and PWELL into "
+    "one digest-bound hierarchy, forms their exact integer-set union on the "
+    "selected device, and checks its resident boundary against complete raw "
+    "ACTIVE. True is the sole zero-hit certificate; false requires the "
+    "unchanged WELL union and historical ACTIVE.3 expression.\n"
   ) +
   method_ext (
     "cuda_implant12_clean?", &cuda_implant12_clean,

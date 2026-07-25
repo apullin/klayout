@@ -613,3 +613,108 @@ TEST(11_AllRawDomainsFailClosedAtRealCapacityBoundaries)
       reason.find ("configured capacity") != std::string::npos, true);
   }
 }
+
+TEST(12_CombinedRawWellSceneIsDeterministicAndDomainBound)
+{
+  db::DeepShapeStore store ("TOP", 0.0005);
+  db::Region nwell_seed;
+  nwell_seed.insert (db::Box (0, 0, 200, 100));
+  db::DeepLayer nwell = store.create_from_flat (nwell_seed, false);
+  db::DeepLayer pwell = nwell.derived ();
+  pwell.initial_cell ().shapes (pwell.layer ()).insert (
+    db::Box (300, 0, 500, 150));
+  mark_physical (nwell, 3, 0);
+  mark_physical (pwell, 2, 0);
+
+  db::CudaRawManhattanScene scene;
+  std::string reason;
+  EXPECT_EQ (
+    db::cuda_well_union_raw_manhattan_build_scene (
+      nwell, pwell, db::CudaM1WidthSpaceSceneLimits (), scene, &reason),
+    true);
+  EXPECT_EQ (reason, "");
+  EXPECT_EQ (scene.cells.size (), size_t (1));
+  EXPECT_EQ (scene.contexts.size (), size_t (1));
+  EXPECT_EQ (scene.polygons.size (), size_t (2));
+  EXPECT_EQ (scene.edges.size (), size_t (8));
+  EXPECT_EQ (scene.flat_polygon_count, uint64_t (2));
+  EXPECT_EQ (scene.flat_edge_count, uint64_t (8));
+  EXPECT_EQ (scene.polygons [0].polygon_id, uint32_t (0));
+  EXPECT_EQ (scene.polygons [0].left, int64_t (0));
+  EXPECT_EQ (scene.polygons [0].right, int64_t (200));
+  EXPECT_EQ (scene.polygons [1].polygon_id, uint32_t (1));
+  EXPECT_EQ (scene.polygons [1].left, int64_t (300));
+  EXPECT_EQ (scene.polygons [1].right, int64_t (500));
+
+  std::array<uint8_t, 32> recomputed;
+  EXPECT_EQ (
+    db::cuda_well_union_raw_manhattan_scene_digest (
+      scene, recomputed),
+    true);
+  EXPECT_EQ (recomputed == scene.digest, true);
+  std::array<uint8_t, 32> active_domain;
+  EXPECT_EQ (
+    db::cuda_active_raw_manhattan_scene_digest (
+      scene, active_domain),
+    true);
+  EXPECT_EQ (active_domain == scene.digest, false);
+
+  db::CudaRawManhattanScene repeated;
+  EXPECT_EQ (
+    db::cuda_well_union_raw_manhattan_build_scene (
+      nwell, pwell, db::CudaM1WidthSpaceSceneLimits (), repeated, 0),
+    true);
+  EXPECT_EQ (same_geometry (scene, repeated), true);
+  EXPECT_EQ (scene.digest == repeated.digest, true);
+}
+
+TEST(13_CombinedRawWellSceneDeclinesAtomically)
+{
+  db::DeepShapeStore store ("TOP", 0.0005);
+  db::Region seed;
+  seed.insert (db::Box (0, 0, 200, 100));
+  db::DeepLayer nwell = store.create_from_flat (seed, false);
+  db::DeepLayer pwell = nwell.derived ();
+  pwell.initial_cell ().shapes (pwell.layer ()).insert (
+    db::Box (300, 0, 500, 150));
+  mark_physical (nwell, 3, 0);
+  mark_physical (pwell, 2, 0);
+
+  db::CudaRawManhattanScene sentinel;
+  sentinel.flat_polygon_count = 17;
+  std::string reason;
+
+  mark_physical (pwell, 4, 0);
+  EXPECT_EQ (
+    db::cuda_well_union_raw_manhattan_build_scene (
+      nwell, pwell, db::CudaM1WidthSpaceSceneLimits (),
+      sentinel, &reason),
+    false);
+  EXPECT_EQ (sentinel.flat_polygon_count, uint64_t (17));
+  EXPECT_EQ (reason.find ("PWELL") != std::string::npos, true);
+  mark_physical (pwell, 2, 0);
+
+  db::DeepShapeStore other_store ("TOP", 0.0005);
+  db::DeepLayer other_pwell =
+    other_store.create_from_flat (seed, false);
+  mark_physical (other_pwell, 2, 0);
+  EXPECT_EQ (
+    db::cuda_well_union_raw_manhattan_build_scene (
+      nwell, other_pwell, db::CudaM1WidthSpaceSceneLimits (),
+      sentinel, &reason),
+    false);
+  EXPECT_EQ (sentinel.flat_polygon_count, uint64_t (17));
+  EXPECT_EQ (
+    reason.find ("hierarchy") != std::string::npos, true);
+
+  store.add_breakout_cell (
+    nwell.layout_index (), nwell.initial_cell ().cell_index ());
+  EXPECT_EQ (
+    db::cuda_well_union_raw_manhattan_build_scene (
+      nwell, pwell, db::CudaM1WidthSpaceSceneLimits (),
+      sentinel, &reason),
+    false);
+  EXPECT_EQ (sentinel.flat_polygon_count, uint64_t (17));
+  EXPECT_EQ (
+    reason.find ("breakout") != std::string::npos, true);
+}

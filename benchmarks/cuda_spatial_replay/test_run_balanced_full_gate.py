@@ -167,6 +167,7 @@ class BalancedFullGateStaticTest(unittest.TestCase):
             "--split-upper-antenna",
             "--split-implant-contact",
             "--split-active12",
+            "--with-active3-well-union",
             "--with-contact4-active-union",
             "--with-m2-rules",
             "--with-m2-width-space",
@@ -175,6 +176,27 @@ class BalancedFullGateStaticTest(unittest.TestCase):
             "--prune-poly2",
         ):
             self.assertIn(option, completed.stderr)
+
+    def test_active3_well_union_control_and_candidate_share_one_deck(
+        self,
+    ) -> None:
+        self.assertIn(
+            'active3_well_union_generator_args=(--active3-well-union)',
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_CUDA_ACTIVE3_WELL_UNION=${active3_well_union}"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_CUDA_ACTIVE3_WELL_UNION_TELEMETRY=1"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            "CUDA ACTIVE.3 exact resident WELL-union certificate:"
+            " outcome=certified-empty",
+            self.launcher_text,
+        )
 
     def run_preflight(self, *options: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(

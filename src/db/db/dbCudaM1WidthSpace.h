@@ -226,6 +226,15 @@ DB_PUBLIC bool cuda_contact_raw_manhattan_scene_digest (
   std::array<uint8_t, 32> &digest);
 
 /**
+ * Compute the canonical KWRWL001 digest of one combined raw-NWELL/PWELL
+ * scene.  The scene contains both physical layers in deterministic
+ * NWELL-then-PWELL order within every source cell.
+ */
+DB_PUBLIC bool cuda_well_union_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest);
+
+/**
  * Build the narrowly qualified merged-M1 scene.
  *
  * The two logical sources must be the identical DeepLayer (same store,
@@ -281,6 +290,23 @@ DB_PUBLIC bool cuda_active_raw_manhattan_build_scene (
  */
 DB_PUBLIC bool cuda_contact_raw_manhattan_build_scene (
   const db::DeepLayer &raw_contact,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason = 0);
+
+/**
+ * Serialize physical FreePDK45 NWELL 3/0 and PWELL 2/0 into one raw scene.
+ *
+ * Both operands must share the identical store, layout, layout index and top
+ * cell, have no breakout cells, and use distinct internal layers.  Each cell
+ * record concatenates NWELL polygons followed by PWELL polygons so the
+ * backend can form their exact integer-set union in one resident pass.
+ * Success publishes a KWRWL001 digest.  On every decline "scene" is left
+ * unchanged.
+ */
+DB_PUBLIC bool cuda_well_union_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_nwell,
+  const db::DeepLayer &raw_pwell,
   const CudaM1WidthSpaceSceneLimits &limits,
   CudaRawManhattanScene &scene,
   std::string *decline_reason = 0);

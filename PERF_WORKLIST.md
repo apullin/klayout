@@ -2574,7 +2574,7 @@ not just wall time.
         repeated production composition all pass.  Evidence:
         `.scratchpad/cuda-runs/composed-14-owner-full.E4XEQ8`.
 
-      - [ ] **Replace the rejected raw-WELL probe with an exact resident
+      - [x] **Replace the rejected raw-WELL probe with an exact resident
         `NWELL.or(PWELL)` -> ACTIVE.3 transaction:** serialize physical
         NWELL 3/0 and PWELL 2/0 into one digest-bound scene, form their exact
         integer-set union on-device, retain the canonical material boundary,
@@ -2585,6 +2585,50 @@ not just wall time.
         CPU union and rule.  This is the valid attack on the roughly
         10.5-second WELL-union charge; do not cascade the slower conservative
         raw-WELL probe ahead of it.
+
+        The dedicated additive ABI is default-off and digest-binds both WELL
+        layers, ACTIVE, hierarchy, DBU, rule, backend, and result echoes.
+        Focused production A/B with a 16,384-slab exact capacity preserved
+        report SHA-256
+        `dcb523186aee3f6485be2114f89923ac9876d0885de90b8b6a244fc50e12cad8`
+        and cut the owner transaction from 12.71 s to 6.60 s:
+        **6.11 real seconds / 48.1% less focused wall**.  Deliberately smaller
+        4,096- and 8,192-slab caps both declined safely to the canonical CPU
+        path.  The first 14-owner full-production gate preserved canonical
+        merged-report SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`
+        and took 63.85 s, **1.79 real seconds / 2.73% less full-launch wall**
+        than the preceding accepted 65.64-second composition.  That latter
+        comparison is an `N=1` cross-run observation, not yet an accepted
+        statistical whole-run claim.  Exact production telemetry covered
+        6,637,536 WELL polygons, 98,754,896 ACTIVE edges, 174,739,004 exact
+        candidates, and zero hits or uncertainty without geometry D2H.
+        Evidence:
+        `.scratchpad/cuda-runs/active3-well-union-focused.lsOHyo`,
+        `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.Nvr8tg`, and
+        `.scratchpad/cuda-runs/composed-14-owner-full.GD4Env`.
+
+      - [ ] **Reassociate the antenna diode algebra small-first, with exact
+        differential gates:** Ruby parses the current
+        `nplus & active - nwell` as `nplus & (active - nwell)`.  For ordinary
+        property-free regions, test the equivalent
+        `(nplus & active) - nwell` behind an opt-in deck transform.  Current
+        antenna owners each spend about 11.2--11.4 s materializing the
+        11.29-million-polygon `active - nwell` intermediate before the
+        roughly 7-second NPLUS intersection; the small-first form may remove
+        5--9 owner seconds.  Require hierarchical/nonempty diode equality,
+        canonical full reports, and an alternating repeated cohort; leave the
+        source deck byte-identical by default.
+
+      - [ ] **Port the exact resident morphology transaction from M2 to raw
+        M1 for `m1_via_class`:** M1.5-.9 use the same F90/F270 morphology
+        grammar already proved for M2.5-.9.  Bind a distinct raw-M1 digest
+        domain and return only the exact scalar disposition through a
+        default-off ABI.  Raw M1 is larger (about 41.1 million rectangles),
+        so qualify memory/capacity and fail-closed fallback explicitly.  The
+        current 14-owner roof is `m1_via_class` at 58.83 s, immediately above
+        antenna at about 57.1 s; this port and the small-first antenna change
+        should be composed because either alone quickly exposes the other.
 
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the

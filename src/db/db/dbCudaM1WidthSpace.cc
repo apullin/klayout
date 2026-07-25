@@ -88,6 +88,11 @@ const RawManhattanProfile raw_contact_profile = {
   { 'K', 'C', 'R', 'A', 'W', '0', '0', '1' }
 };
 
+const RawManhattanProfile raw_well_union_profile = {
+  3, 0, "combined raw WELL",
+  { 'K', 'W', 'R', 'W', 'L', '0', '0', '1' }
+};
+
 class M1WidthSpaceDecline
   : public std::runtime_error
 {
@@ -395,6 +400,56 @@ void append_cell_layer (
       edge_count > std::numeric_limits<uint32_t>::max ()) {
     throw M1WidthSpaceDecline (
       "per-cell Manhattan polygon or edge count exceeds uint32");
+  }
+  record.polygon_count = uint32_t (polygon_count);
+  record.edge_count = uint32_t (edge_count);
+}
+
+template <class Scene>
+void append_cell_layer_pair (
+  const db::Cell &cell, unsigned int first_layer,
+  unsigned int second_layer, uint64_t source_cell_index,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  Scene &scene, CudaM1WidthSpaceCell &record,
+  cuda_manhattan_contour::TranslationValidationCache<
+    CudaM1WidthSpaceEdge> &contour_cache)
+{
+  record.source_cell_index = source_cell_index;
+  record.polygon_begin =
+    vector_size_u64 (scene.polygons.size (), "cell polygon begin");
+  record.edge_begin =
+    vector_size_u64 (scene.edges.size (), "cell edge begin");
+
+  uint32_t polygon_id = 0;
+  const unsigned int layers [2] = { first_layer, second_layer };
+  for (size_t layer_index = 0; layer_index < 2; ++layer_index) {
+    const db::Shapes &shapes = cell.shapes (layers [layer_index]);
+    for (db::Shapes::shape_iterator shape =
+           shapes.begin (db::ShapeIterator::All);
+         ! shape.at_end (); ++shape) {
+      if (shape->is_text ()) {
+        continue;
+      }
+      if (polygon_id == std::numeric_limits<uint32_t>::max ()) {
+        throw M1WidthSpaceDecline (
+          "per-cell combined raw-WELL polygon count exceeds uint32");
+      }
+      append_polygon (
+        *shape, polygon_id, limits, scene, contour_cache);
+      ++polygon_id;
+    }
+  }
+
+  const uint64_t polygon_count =
+    vector_size_u64 (scene.polygons.size (), "stored polygon count") -
+    record.polygon_begin;
+  const uint64_t edge_count =
+    vector_size_u64 (scene.edges.size (), "stored edge count") -
+    record.edge_begin;
+  if (polygon_count > std::numeric_limits<uint32_t>::max () ||
+      edge_count > std::numeric_limits<uint32_t>::max ()) {
+    throw M1WidthSpaceDecline (
+      "per-cell combined raw-WELL polygon or edge count exceeds uint32");
   }
   record.polygon_count = uint32_t (polygon_count);
   record.edge_count = uint32_t (edge_count);
@@ -776,6 +831,30 @@ void validate_raw_manhattan_input (
   }
 }
 
+void validate_raw_well_union_inputs (
+  const db::DeepLayer &raw_nwell,
+  const db::DeepLayer &raw_pwell,
+  const CudaM1WidthSpaceSceneLimits &limits)
+{
+  validate_raw_manhattan_input (
+    raw_nwell, limits, raw_well_union_profile);
+  static const RawManhattanProfile raw_pwell_profile = {
+    2, 0, "raw PWELL",
+    { 'K', 'W', 'R', 'W', 'L', '0', '0', '1' }
+  };
+  validate_raw_manhattan_input (
+    raw_pwell, limits, raw_pwell_profile);
+  if (raw_nwell.store () != raw_pwell.store () ||
+      &raw_nwell.layout () != &raw_pwell.layout () ||
+      raw_nwell.layout_index () != raw_pwell.layout_index () ||
+      raw_nwell.initial_cell ().cell_index () !=
+        raw_pwell.initial_cell ().cell_index () ||
+      raw_nwell.layer () == raw_pwell.layer ()) {
+    throw M1WidthSpaceDecline (
+      "raw NWELL and PWELL do not share one distinct-layer hierarchy");
+  }
+}
+
 template <class Scene>
 Scene serialize_layer_scene (
   const db::DeepLayer &metal1,
@@ -827,6 +906,67 @@ Scene serialize_layer_scene (
     std::memset (&record, 0, sizeof (record));
     append_cell_layer (
       cell, metal1.layer (), uint64_t (*source),
+      limits, scene, record, contour_cache);
+    scene.cells [cell_id] = record;
+  }
+
+  expand_contexts (
+    root->second, templates, limits.max_contexts, scene.contexts);
+  derive_context_lists_and_bounds (limits, scene);
+  return scene;
+}
+
+CudaRawManhattanScene serialize_layer_pair_scene (
+  const db::DeepLayer &first, const db::DeepLayer &second,
+  const CudaM1WidthSpaceSceneLimits &limits)
+{
+  const db::Layout &layout = first.layout ();
+  const db::cell_index_type top = first.initial_cell ().cell_index ();
+  std::set<db::cell_index_type> reachable;
+  reachable.insert (top);
+  first.initial_cell ().collect_called_cells (reachable);
+  if (reachable.empty () ||
+      reachable.size () > std::numeric_limits<uint32_t>::max () ||
+      reachable.size () > limits.max_cells) {
+    throw M1WidthSpaceDecline (
+      "reachable combined raw-WELL hierarchy has an invalid or "
+      "over-capacity cell count");
+  }
+
+  std::map<db::cell_index_type, uint32_t> dense_cells;
+  uint32_t dense = 0;
+  for (std::set<db::cell_index_type>::const_iterator cell =
+         reachable.begin (); cell != reachable.end (); ++cell, ++dense) {
+    dense_cells.insert (std::make_pair (*cell, dense));
+  }
+  const std::map<db::cell_index_type, uint32_t>::const_iterator root =
+    dense_cells.find (top);
+  if (root == dense_cells.end ()) {
+    throw M1WidthSpaceDecline (
+      "initial cell is absent from the combined raw-WELL hierarchy census");
+  }
+
+  CudaRawManhattanScene scene;
+  cuda_manhattan_contour::TranslationValidationCache<
+    CudaM1WidthSpaceEdge> contour_cache;
+  scene.root_cell = root->second;
+  scene.cells.resize (reachable.size ());
+  std::vector<CellTemplate> templates (reachable.size ());
+
+  for (std::set<db::cell_index_type>::const_iterator source =
+         reachable.begin (); source != reachable.end (); ++source) {
+    const uint32_t cell_id = dense_cells.find (*source)->second;
+    const db::Cell &cell = layout.cell (*source);
+    for (db::Cell::const_iterator instance = cell.begin ();
+         ! instance.at_end (); ++instance) {
+      templates [cell_id].instances.push_back (
+        make_instance (*instance, dense_cells));
+    }
+
+    CudaM1WidthSpaceCell record;
+    std::memset (&record, 0, sizeof (record));
+    append_cell_layer_pair (
+      cell, first.layer (), second.layer (), uint64_t (*source),
       limits, scene, record, contour_cache);
     scene.cells [cell_id] = record;
   }
@@ -1353,6 +1493,18 @@ bool cuda_contact_raw_manhattan_scene_digest (
   }
 }
 
+bool cuda_well_union_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest)
+{
+  try {
+    return raw_manhattan_scene_digest (
+      scene, raw_well_union_profile, digest);
+  } catch (...) {
+    return false;
+  }
+}
+
 bool cuda_m1_width_space_build_scene (
   const db::DeepLayer &width_metal1,
   const db::DeepLayer &spacing_metal1,
@@ -1411,6 +1563,38 @@ bool cuda_contact_raw_manhattan_build_scene (
 {
   return build_raw_manhattan_scene (
     raw_contact, limits, raw_contact_profile, scene, decline_reason);
+}
+
+bool cuda_well_union_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_nwell,
+  const db::DeepLayer &raw_pwell,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason)
+{
+  try {
+    validate_raw_well_union_inputs (
+      raw_nwell, raw_pwell, limits);
+    CudaRawManhattanScene candidate =
+      serialize_layer_pair_scene (
+        raw_nwell, raw_pwell, limits);
+    std::array<uint8_t, 32> digest;
+    if (! cuda_well_union_raw_manhattan_scene_digest (
+          candidate, digest)) {
+      throw M1WidthSpaceDecline (
+        "serialized combined raw-WELL scene failed structural digest "
+        "validation");
+    }
+    candidate.digest = digest;
+    scene.swap (candidate);
+    set_reason (decline_reason, "");
+    return true;
+  } catch (const std::exception &ex) {
+    set_reason (decline_reason, ex.what ());
+  } catch (...) {
+    set_reason (decline_reason, "unknown exception");
+  }
+  return false;
 }
 
 bool cuda_m1_width_space_try_empty (

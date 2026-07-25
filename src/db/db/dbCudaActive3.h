@@ -48,6 +48,19 @@ DB_PUBLIC bool cuda_active3_raw_wells_try_empty (
   const db::DeepLayer &raw_active);
 
 /**
+ * Try exact raw-(NWELL union PWELL) followed by ACTIVE.3 on one device.
+ *
+ * Unlike the retained raw-WELL superset experiment, this path forms the exact
+ * WELL integer set before applying the exact ACTIVE.3 predicate to complete
+ * raw ACTIVE.  True is returned only for a fully echoed, zero-hit,
+ * zero-uncertainty resident certificate.  False preserves the historical
+ * WELL union and CPU rule.
+ */
+DB_PUBLIC bool cuda_active3_well_union_try_empty (
+  const db::DeepLayer &raw_nwell, const db::DeepLayer &raw_pwell,
+  const db::DeepLayer &raw_active);
+
+/**
  * Try the narrowly qualified live CONTACT.4 empty certificate.
  *
  * The primary is merged FreePDK45 GDS layer 1/0 (ACTIVE) and the secondary is

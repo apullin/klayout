@@ -29,7 +29,12 @@ enum class ContactDirectionContract : std::uint32_t
   // material-on-right (clockwise hull) order.  Simplicity is a required
   // caller/live-serializer contract; this consumer independently rechecks
   // every edge, contour continuity/closure, and winding before device work.
-  validated_material_on_right_contours = UINT32_C(0x43345231)
+  validated_material_on_right_contours = UINT32_C(0x43345231),
+  // The indexed secondary consists of complete raw ACTIVE contours while the
+  // resident union boundary is exact WELL.  This selects the qualified
+  // ACTIVE.3 distance and preserves EdgePair{well, active} predicate order.
+  validated_active3_secondary_material_on_right_contours =
+      UINT32_C(0x41335231)
 };
 
 struct Limits

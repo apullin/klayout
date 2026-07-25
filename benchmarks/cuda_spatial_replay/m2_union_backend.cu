@@ -71,6 +71,14 @@ using Contact4Request =
     klayout_cuda_spatial_contact4_active_union_request_v1;
 using Contact4Result =
     klayout_cuda_spatial_contact4_active_union_result_v1;
+using Active3WellScene =
+    klayout_cuda_spatial_active3_well_union_scene_v1;
+using Active3WellSceneEcho =
+    klayout_cuda_spatial_active3_well_union_scene_echo_v1;
+using Active3WellRequest =
+    klayout_cuda_spatial_active3_well_union_request_v1;
+using Active3WellResult =
+    klayout_cuda_spatial_active3_well_union_result_v1;
 using Clock = std::chrono::steady_clock;
 
 static_assert(std::is_trivially_copyable<Context>::value,
@@ -96,6 +104,10 @@ static_assert(sizeof(Contact4Request) == 760,
               "unexpected CONTACT4 request ABI padding");
 static_assert(sizeof(Contact4Result) == 944,
               "unexpected CONTACT4 result ABI padding");
+static_assert(sizeof(Active3WellRequest) == 776,
+              "unexpected ACTIVE3 WELL-union request ABI padding");
+static_assert(sizeof(Active3WellResult) == 960,
+              "unexpected ACTIVE3 WELL-union result ABI padding");
 static_assert(sizeof(a3::DirectedEdge) == sizeof(Edge),
               "CONTACT4 and raw-scene edge layouts diverged");
 static_assert(sizeof(mu::DirectedSegmentI64) == sizeof(Segment),
@@ -116,6 +128,8 @@ constexpr char kActiveRawDigestMagic[8] =
     {'K', 'A', 'R', 'A', 'W', '0', '0', '1'};
 constexpr char kContactRawDigestMagic[8] =
     {'K', 'C', 'R', 'A', 'W', '0', '0', '1'};
+constexpr char kWellUnionRawDigestMagic[8] =
+    {'K', 'W', 'R', 'W', 'L', '0', '0', '1'};
 constexpr std::array<std::uint8_t, 32>
     kQualifiedCompactM2SceneDigest = {
         0x66, 0xec, 0x73, 0xea, 0xf6, 0x86, 0xc6, 0xf6,
@@ -398,6 +412,13 @@ void set_message(Contact4Result *result, const char *message)
       message ? message : "");
 }
 
+void set_message(Active3WellResult *result, const char *message)
+{
+  std::snprintf(
+      result->message, sizeof(result->message), "%s",
+      message ? message : "");
+}
+
 bool coordinate_qualified(std::int64_t value)
 {
   return value >= -kCoordinateLimit && value <= kCoordinateLimit;
@@ -644,6 +665,63 @@ Request scene_as_union_request(
   return adapted;
 }
 
+Request active3_scene_as_union_request(
+    const Active3WellScene &scene,
+    const Active3WellRequest &request)
+{
+  Request adapted{};
+  adapted.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  adapted.struct_size = sizeof(adapted);
+  adapted.opcode =
+      KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY;
+  adapted.option_flags =
+      KLAYOUT_CUDA_SPATIAL_M2_UNION_QUALIFIED_OPTIONS;
+  adapted.format_version = scene.format_version;
+  adapted.dbu_per_micron = scene.dbu_per_micron;
+  adapted.root_cell = scene.root_cell;
+  adapted.device = request.device;
+  adapted.contexts = scene.contexts;
+  adapted.context_count = scene.context_count;
+  adapted.context_record_bytes = scene.context_record_bytes;
+  adapted.metal_contexts = scene.layer_contexts;
+  adapted.metal_context_count = scene.layer_context_count;
+  adapted.context_polygon_offsets =
+      scene.context_polygon_offsets;
+  adapted.context_polygon_offset_count =
+      scene.context_polygon_offset_count;
+  adapted.context_edge_offsets = scene.context_edge_offsets;
+  adapted.context_edge_offset_count =
+      scene.context_edge_offset_count;
+  adapted.cells = scene.cells;
+  adapted.cell_count = scene.cell_count;
+  adapted.cell_record_bytes = scene.cell_record_bytes;
+  adapted.polygons = scene.polygons;
+  adapted.polygon_count = scene.polygon_count;
+  adapted.polygon_record_bytes = scene.polygon_record_bytes;
+  adapted.edges = scene.edges;
+  adapted.edge_count = scene.edge_count;
+  adapted.edge_record_bytes = scene.edge_record_bytes;
+  adapted.flat_polygon_count = scene.flat_polygon_count;
+  adapted.flat_edge_count = scene.flat_edge_count;
+  adapted.scene_left = scene.scene_left;
+  adapted.scene_bottom = scene.scene_bottom;
+  adapted.scene_right = scene.scene_right;
+  adapted.scene_top = scene.scene_top;
+  adapted.max_contexts = request.max_contexts;
+  adapted.max_rectangles = request.max_rectangles;
+  adapted.max_x_slabs = request.max_x_slabs;
+  adapted.max_memberships = request.max_union_memberships;
+  adapted.max_events = request.max_events;
+  adapted.max_raw_segments = request.max_raw_segments;
+  adapted.max_segments = request.max_boundary_segments;
+  adapted.max_slabs_per_rectangle =
+      request.max_slabs_per_rectangle;
+  std::copy(
+      scene.scene_digest, scene.scene_digest + 32,
+      adapted.scene_digest);
+  return adapted;
+}
+
 bool exact_bytes(
     const std::uint8_t *bytes, const char (&expected)[8])
 {
@@ -671,6 +749,30 @@ bool valid_contact4_scene_descriptor(
   // Raise only the two cap-dependent fields for this pointer/record-shape
   // precheck; validate_and_lower receives the original limits and emits the
   // checked capacity decline before any large allocation.
+  structural.max_rectangles = std::max(
+      structural.max_rectangles, structural.flat_polygon_count);
+  structural.max_memberships = std::max(
+      structural.max_memberships, structural.edge_count);
+  return valid_basic_request(structural);
+}
+
+bool valid_active3_well_scene_descriptor(
+    const Active3WellScene &scene, std::uint32_t role,
+    std::uint32_t layer, const char (&digest_magic)[8],
+    const Active3WellRequest &request)
+{
+  if (scene.struct_size != sizeof(scene) ||
+      scene.role != role || scene.format_version != 1 ||
+      scene.dbu_per_micron != 2000 || scene.layer != layer ||
+      scene.datatype != 0 || scene.reserved0 ||
+      scene.context_reserved || scene.cell_reserved ||
+      scene.polygon_reserved || scene.edge_reserved ||
+      scene.reserved1[0] || scene.reserved1[1] ||
+      !exact_bytes(scene.digest_domain, digest_magic)) {
+    return false;
+  }
+  Request structural =
+      active3_scene_as_union_request(scene, request);
   structural.max_rectangles = std::max(
       structural.max_rectangles, structural.flat_polygon_count);
   structural.max_memberships = std::max(
@@ -726,6 +828,64 @@ bool valid_contact4_request(const Contact4Request &request)
       request.contact.flat_edge_count >
           request.max_contact_edges ||
       request.contact.flat_edge_count >
+          std::numeric_limits<std::uint32_t>::max()) {
+    return false;
+  }
+  return true;
+}
+
+bool valid_active3_well_request(
+    const Active3WellRequest &request)
+{
+  if (request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      request.struct_size != sizeof(request) ||
+      request.opcode !=
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_EMPTY ||
+      request.option_flags !=
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_QUALIFIED_OPTIONS ||
+      request.format_version != 1 ||
+      request.dbu_per_micron != 2000 || request.device < 0 ||
+      request.reserved0 || request.distance != 110 ||
+      request.grid_cell_size != 2000 ||
+      request.secondary_well_layer != 2 ||
+      request.secondary_well_datatype != 0 ||
+      request.layer_reserved ||
+      !request.max_contexts || !request.max_rectangles ||
+      !request.max_x_slabs || !request.max_union_memberships ||
+      !request.max_events || !request.max_raw_segments ||
+      !request.max_boundary_segments ||
+      !request.max_slabs_per_rectangle ||
+      request.union_reserved || !request.max_active_edges ||
+      !request.max_grid_cells ||
+      !request.max_active_memberships ||
+      !request.max_active_cell_visits ||
+      !request.max_member_visits || !request.max_pair_work ||
+      !request.max_cells_per_active_edge ||
+      !request.max_cells_per_well_edge ||
+      request.reserved1[0] || request.reserved1[1] ||
+      request.reserved1[2] || request.reserved1[3]) {
+    return false;
+  }
+  if (!valid_active3_well_scene_descriptor(
+          request.wells,
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_WELLS_ROLE, 3,
+          kWellUnionRawDigestMagic, request) ||
+      !valid_active3_well_scene_descriptor(
+          request.active,
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_ACTIVE_ROLE, 1,
+          kActiveRawDigestMagic, request) ||
+      request.wells.format_version != request.format_version ||
+      request.active.format_version != request.format_version ||
+      request.wells.dbu_per_micron != request.dbu_per_micron ||
+      request.active.dbu_per_micron != request.dbu_per_micron ||
+      request.wells.root_cell != request.active.root_cell ||
+      request.wells.context_count != request.active.context_count ||
+      request.wells.cell_count != request.active.cell_count ||
+      request.wells.context_count > request.max_contexts ||
+      request.active.context_count > request.max_contexts ||
+      request.active.flat_edge_count >
+          request.max_active_edges ||
+      request.active.flat_edge_count >
           std::numeric_limits<std::uint32_t>::max()) {
     return false;
   }
@@ -851,6 +1011,41 @@ void validate_shared_contact4_hierarchy(
     if (first.source_cell_index != second.source_cell_index) {
       malformed(
           "ACTIVE and CONTACT source-cell identities differ");
+    }
+  }
+}
+
+void validate_shared_active3_hierarchy(
+    const Request &wells, const Request &active)
+{
+  if (wells.root_cell != active.root_cell ||
+      wells.context_count != active.context_count ||
+      wells.cell_count != active.cell_count) {
+    malformed(
+        "combined WELL and ACTIVE do not share one hierarchy identity");
+  }
+  for (std::uint64_t index = 0;
+       index < wells.context_count; ++index) {
+    const Context first = load_record<Context>(
+        wells.contexts, index, wells.context_record_bytes);
+    const Context second = load_record<Context>(
+        active.contexts, index, active.context_record_bytes);
+    if (first.tx != second.tx || first.ty != second.ty ||
+        first.cell_id != second.cell_id ||
+        first.transform_code != second.transform_code) {
+      malformed(
+          "combined WELL and ACTIVE context hierarchies differ");
+    }
+  }
+  for (std::uint64_t index = 0;
+       index < wells.cell_count; ++index) {
+    const Cell first = load_record<Cell>(
+        wells.cells, index, wells.cell_record_bytes);
+    const Cell second = load_record<Cell>(
+        active.cells, index, active.cell_record_bytes);
+    if (first.source_cell_index != second.source_cell_index) {
+      malformed(
+          "combined WELL and ACTIVE source-cell identities differ");
     }
   }
 }
@@ -2378,6 +2573,140 @@ mu::ResidentBoundaryHook make_contact4_active_union_hook(
   return hook;
 }
 
+struct Active3WellCallbackContext
+{
+  const Request *active = nullptr;
+  const Active3WellRequest *outer = nullptr;
+  bool invoked = false;
+  std::uint32_t expansion_status = 0;
+  std::uint64_t active_h2d_ns = 0;
+  std::uint64_t active_expand_ns = 0;
+  std::uint64_t device_total_bytes = 0;
+  std::uint64_t callback_free_begin_bytes = 0;
+  std::uint64_t callback_free_low_bytes = 0;
+  c4::DeviceResidentContext resident;
+};
+
+void consume_active3_well_union_boundary(
+    cudaStream_t stream,
+    const mu::DirectedSegmentI64 *horizontal,
+    std::uint64_t horizontal_count,
+    const mu::DirectedSegmentI64 *vertical,
+    std::uint64_t vertical_count, void *opaque)
+{
+  Active3WellCallbackContext *context =
+      static_cast<Active3WellCallbackContext *>(opaque);
+  if (!context || context->invoked || !context->active ||
+      !context->outer) {
+    throw std::runtime_error(
+        "ACTIVE3 WELL-union boundary callback contract");
+  }
+  context->invoked = true;
+  if (stream != nullptr) {
+    throw std::runtime_error(
+        "ACTIVE3 WELL-union callback requires the default stream");
+  }
+
+  std::size_t callback_free_begin = 0;
+  std::size_t device_total = 0;
+  cuda_require(
+      cudaMemGetInfo(&callback_free_begin, &device_total),
+      "ACTIVE3 WELL-union callback-entry cudaMemGetInfo");
+  context->device_total_bytes = device_total;
+  context->callback_free_begin_bytes = callback_free_begin;
+  context->callback_free_low_bytes = callback_free_begin;
+
+  ExpandedContacts expanded =
+      expand_contact_edges_resident(*context->active);
+  context->expansion_status = expanded.status;
+  context->active_h2d_ns = expanded.h2d_ns;
+  context->active_expand_ns = expanded.expand_ns;
+  if (expanded.device_total_bytes != context->device_total_bytes ||
+      !expanded.free_low_bytes) {
+    throw std::runtime_error(
+        "raw ACTIVE memory telemetry identity mismatch");
+  }
+  context->callback_free_low_bytes = std::min(
+      context->callback_free_low_bytes, expanded.free_low_bytes);
+  if (expanded.status) {
+    throw std::runtime_error(
+        "raw ACTIVE device expansion failed its exact gate");
+  }
+
+  c4::DeviceRequest &device_request =
+      context->resident.request;
+  device_request.contacts.device_edges =
+      thrust::raw_pointer_cast(expanded.edges.data());
+  device_request.contacts.count =
+      context->active->flat_edge_count;
+  device_request.contacts.bounds = c4::ContactBounds{
+      context->active->scene_left,
+      context->active->scene_bottom,
+      context->active->scene_right,
+      context->active->scene_top};
+  device_request.distance = context->outer->distance;
+  device_request.grid_cell_size =
+      context->outer->grid_cell_size;
+  device_request.device = context->outer->device;
+  device_request.contact_direction_contract =
+      c4::ContactDirectionContract::
+          validated_active3_secondary_material_on_right_contours;
+  device_request.limits.max_contact_edges =
+      context->outer->max_active_edges;
+  device_request.limits.max_grid_cells =
+      context->outer->max_grid_cells;
+  device_request.limits.max_memberships =
+      context->outer->max_active_memberships;
+  device_request.limits.max_boundary_cell_visits =
+      context->outer->max_active_cell_visits;
+  device_request.limits.max_member_visits =
+      context->outer->max_member_visits;
+  device_request.limits.max_pair_work =
+      context->outer->max_pair_work;
+  device_request.limits.max_cells_per_contact_edge =
+      context->outer->max_cells_per_active_edge;
+  device_request.limits.max_cells_per_boundary_edge =
+      context->outer->max_cells_per_well_edge;
+
+  const auto reconcile_memory = [context]() {
+    c4::Result &result = context->resident.result;
+    if (!result.device_total_bytes) return;
+    if (result.device_total_bytes != context->device_total_bytes ||
+        !result.callback_free_begin_bytes ||
+        !result.callback_free_low_bytes) {
+      throw std::runtime_error(
+          "ACTIVE3 WELL-union resident memory telemetry mismatch");
+    }
+    result.callback_free_begin_bytes =
+        context->callback_free_begin_bytes;
+    result.callback_free_low_bytes = std::min(
+        context->callback_free_low_bytes,
+        result.callback_free_low_bytes);
+    result.callback_incremental_peak_bytes =
+        result.callback_free_begin_bytes -
+        result.callback_free_low_bytes;
+  };
+  try {
+    c4::consume_device_boundary_hook(
+        stream, horizontal, horizontal_count, vertical,
+        vertical_count, &context->resident);
+  } catch (...) {
+    reconcile_memory();
+    throw;
+  }
+  reconcile_memory();
+}
+
+mu::ResidentBoundaryHook make_active3_well_union_hook(
+    Active3WellCallbackContext *context)
+{
+  mu::ResidentBoundaryHook hook;
+  hook.consume = &consume_active3_well_union_boundary;
+  hook.context = context;
+  hook.stop_before_d2h = true;
+  return hook;
+}
+
 void echo_contact4_scene(
     const Contact4Scene &source, Contact4SceneEcho *echo)
 {
@@ -2480,6 +2809,79 @@ void copy_contact4_pipeline_result(
   result->query_ns = milliseconds_to_ns(contact.query_ms);
   result->d2h_ns =
       milliseconds_to_ns(output.d2h_ms + contact.d2h_ms);
+}
+
+void echo_active3_well_request(
+    const Active3WellRequest &request,
+    Active3WellResult *result)
+{
+  result->opcode = request.opcode;
+  result->option_flags = request.option_flags;
+  result->format_version = request.format_version;
+  result->dbu_per_micron = request.dbu_per_micron;
+  result->device = request.device;
+  result->distance = request.distance;
+  result->grid_cell_size = request.grid_cell_size;
+  result->secondary_well_layer =
+      request.secondary_well_layer;
+  result->secondary_well_datatype =
+      request.secondary_well_datatype;
+  echo_contact4_scene(request.wells, &result->wells);
+  echo_contact4_scene(request.active, &result->active);
+}
+
+void copy_active3_well_pipeline_result(
+    const mu::GpuUnionOutput &output,
+    const Active3WellCallbackContext &callback,
+    Active3WellResult *result)
+{
+  const c4::Result &active = callback.resident.result;
+  result->rectangle_count = output.rectangle_count;
+  result->x_slab_count = output.x_slabs;
+  result->union_membership_count = output.memberships;
+  result->event_count = output.event_count;
+  result->strip_interval_count = output.strip_intervals;
+  result->raw_segment_count = output.raw_segments;
+  result->boundary_segment_count = active.boundary_segments;
+  result->active_expanded_edge_count = active.contact_edges;
+  result->grid_cell_count = active.grid_cells;
+  result->active_membership_count = active.memberships;
+  result->active_cell_visit_count =
+      active.boundary_cell_visits;
+  result->member_visit_count = active.member_visits;
+  result->candidate_pair_count = active.candidate_pairs;
+  result->raw_hit_count = active.hits;
+  result->uncertain_count = active.uncertain;
+  result->device_flags = active.device_flags;
+  result->device_total_bytes = std::max(
+      output.device_total_bytes, active.device_total_bytes);
+  result->union_free_begin_bytes =
+      output.device_free_begin_bytes;
+  result->union_free_low_bytes = output.device_free_low_bytes;
+  result->callback_free_begin_bytes =
+      active.callback_free_begin_bytes;
+  result->callback_free_low_bytes =
+      active.callback_free_low_bytes;
+  result->post_scan_free_bytes = active.post_scan_free_bytes;
+  result->callback_incremental_peak_bytes =
+      active.callback_incremental_peak_bytes;
+  result->x_membership_ns =
+      milliseconds_to_ns(output.x_membership_ms);
+  result->strip_scan_ns =
+      milliseconds_to_ns(output.strip_scan_ms);
+  result->boundary_ns =
+      milliseconds_to_ns(output.boundary_ms);
+  result->active_h2d_ns = callback.active_h2d_ns;
+  result->active_expand_ns = callback.active_expand_ns;
+  result->active_preflight_ns =
+      milliseconds_to_ns(active.boundary_preflight_ms);
+  result->grid_count_ns =
+      milliseconds_to_ns(active.grid_count_ms);
+  result->grid_build_ns =
+      milliseconds_to_ns(active.grid_build_ms);
+  result->query_ns = milliseconds_to_ns(active.query_ms);
+  result->d2h_ns =
+      milliseconds_to_ns(output.d2h_ms + active.d2h_ms);
 }
 
 int run_contact4_active_union_request(
@@ -2646,6 +3048,176 @@ int run_contact4_active_union_request(
   }
   result->disposition =
       KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_UNCERTAIN;
+  result->total_ns = elapsed_ns(total_begin, Clock::now());
+  return result->status;
+}
+
+int run_active3_well_union_request(
+    const Active3WellRequest *request,
+    Active3WellResult *result)
+{
+  if (!result) return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  std::memset(result, 0, sizeof(*result));
+  result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  result->struct_size = sizeof(*result);
+  result->status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  result->fallback_flags =
+      KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+  result->disposition =
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_UNCERTAIN;
+  if (!request || !valid_active3_well_request(*request)) {
+    set_message(
+        result,
+        "unsupported or malformed ACTIVE3 WELL-union request");
+    return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  }
+  echo_active3_well_request(*request, result);
+
+  const auto total_begin = Clock::now();
+  try {
+    std::lock_guard<std::mutex> lock(pipeline_mutex());
+    const auto setup_begin = Clock::now();
+    const Request wells =
+        active3_scene_as_union_request(
+            request->wells, *request);
+    Request active =
+        active3_scene_as_union_request(
+            request->active, *request);
+    // ACTIVE is digest/topology validated but is expanded directly as
+    // directed edges in the resident callback, not decomposed into union
+    // rectangles.
+    active.max_rectangles = active.flat_edge_count;
+    validate_shared_active3_hierarchy(wells, active);
+    const LoweredScene wells_lowered =
+        validate_and_lower(wells, kWellUnionRawDigestMagic);
+    validate_without_lowering(active, kActiveRawDigestMagic);
+    result->setup_ns = elapsed_ns(setup_begin, Clock::now());
+
+    ExpandedRectangles expanded_wells =
+        expand_rectangles_resident(wells, wells_lowered);
+    result->wells_h2d_ns = expanded_wells.h2d_ns;
+    result->wells_expand_ns = expanded_wells.expand_ns;
+    if (expanded_wells.status) {
+      result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      result->fallback_flags =
+          expanded_wells.status & kExpandTransformOverflow
+              ? KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW
+              : KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+      set_message(
+          result,
+          "combined raw WELL device expansion failed its exact gate");
+      result->total_ns = elapsed_ns(total_begin, Clock::now());
+      return KLAYOUT_CUDA_SPATIAL_FALLBACK;
+    }
+
+    mu::GpuUnionLimits limits;
+    limits.max_rectangles = request->max_rectangles;
+    limits.max_x_slabs = request->max_x_slabs;
+    limits.max_memberships = request->max_union_memberships;
+    limits.max_events = request->max_events;
+    limits.max_raw_segments = request->max_raw_segments;
+    limits.max_segments = request->max_boundary_segments;
+    limits.max_slabs_per_rectangle =
+        request->max_slabs_per_rectangle;
+
+    Active3WellCallbackContext callback;
+    callback.active = &active;
+    callback.outer = request;
+    const mu::ResidentBoundaryHook hook =
+        make_active3_well_union_hook(&callback);
+    const double input_prepare_ms =
+        static_cast<double>(
+            result->wells_h2d_ns + result->wells_expand_ns) /
+        1000000.0;
+    const mu::GpuUnionOutput output = mu::gpu_union_resident(
+        std::move(expanded_wells.rectangles),
+        wells.scene_bottom, wells.scene_top, limits,
+        request->device, input_prepare_ms, nullptr, &hook);
+    copy_active3_well_pipeline_result(
+        output, callback, result);
+
+    if (output.fallback) {
+      if (callback.resident.result.hits &&
+          !callback.resident.result.uncertain &&
+          !callback.resident.result.device_flags) {
+        result->status = KLAYOUT_CUDA_SPATIAL_OK;
+        result->fallback_flags =
+            KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE;
+        result->disposition =
+            KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_RAW_HITS;
+        set_message(
+            result,
+            "exact WELL union has ACTIVE3 hits");
+        result->total_ns = elapsed_ns(total_begin, Clock::now());
+        return KLAYOUT_CUDA_SPATIAL_OK;
+      }
+      result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      result->fallback_flags =
+          callback.expansion_status & kExpandTransformOverflow
+              ? static_cast<std::uint32_t>(
+                    KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW)
+              : fallback_flags_for_union(output);
+      set_message(result, output.message.c_str());
+      result->total_ns = elapsed_ns(total_begin, Clock::now());
+      return KLAYOUT_CUDA_SPATIAL_FALLBACK;
+    }
+
+    const c4::Result &active_result =
+        callback.resident.result;
+    if (!callback.invoked || !callback.resident.invoked ||
+        !output.resident_boundary_consumer_completed ||
+        !output.segments.empty() || output.d2h_ms != 0.0 ||
+        !active_result.certified_empty ||
+        active_result.contact_edges !=
+            request->active.flat_edge_count ||
+        !active_result.boundary_segments ||
+        active_result.hits || active_result.uncertain ||
+        active_result.device_flags ||
+        active_result.grid_cells > request->max_grid_cells ||
+        active_result.memberships >
+            request->max_active_memberships ||
+        active_result.boundary_cell_visits >
+            request->max_active_cell_visits ||
+        active_result.member_visits >
+            request->max_member_visits ||
+        active_result.candidate_pairs >
+            request->max_pair_work) {
+      throw std::runtime_error(
+          "ACTIVE3 WELL-union completion invariant failed");
+    }
+
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE;
+    result->disposition =
+        KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_COMPLETE;
+    result->status = KLAYOUT_CUDA_SPATIAL_OK;
+    set_message(
+        result,
+        "complete resident exact-WELL-union ACTIVE3 empty certificate");
+    result->total_ns = elapsed_ns(total_begin, Clock::now());
+    return KLAYOUT_CUDA_SPATIAL_OK;
+  } catch (const M2Decline &decline) {
+    result->fallback_flags = decline.fallback_flags();
+    result->status =
+        decline.kind() == DeclineKind::bad_argument
+            ? KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT
+            : KLAYOUT_CUDA_SPATIAL_FALLBACK;
+    set_message(result, decline.what());
+  } catch (const std::exception &error) {
+    result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    set_message(result, error.what());
+  } catch (...) {
+    result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    set_message(
+        result,
+        "unknown resident WELL-union ACTIVE3 exception");
+  }
+  result->disposition =
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_UNCERTAIN;
   result->total_ns = elapsed_ns(total_begin, Clock::now());
   return result->status;
 }
@@ -2909,6 +3481,31 @@ klayout_cuda_spatial_run_contact4_active_union_empty_v1(
       set_message(
           result,
           "exception escaped resident ACTIVE-union CONTACT4 boundary");
+    }
+    return KLAYOUT_CUDA_SPATIAL_ERROR;
+  }
+}
+
+extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_active3_well_union_empty_v1(
+    const klayout_cuda_spatial_active3_well_union_request_v1 *request,
+    klayout_cuda_spatial_active3_well_union_result_v1 *result)
+{
+  try {
+    return run_active3_well_union_request(request, result);
+  } catch (...) {
+    if (result) {
+      std::memset(result, 0, sizeof(*result));
+      result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+      result->struct_size = sizeof(*result);
+      result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+      result->fallback_flags =
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+      result->disposition =
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_UNCERTAIN;
+      set_message(
+          result,
+          "exception escaped resident exact-WELL-union ACTIVE3 boundary");
     }
     return KLAYOUT_CUDA_SPATIAL_ERROR;
   }

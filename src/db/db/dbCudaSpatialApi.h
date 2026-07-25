@@ -1922,6 +1922,202 @@ klayout_cuda_spatial_run_contact4_active_union_empty_v1 (
   const struct klayout_cuda_spatial_contact4_active_union_request_v1 *request,
   struct klayout_cuda_spatial_contact4_active_union_result_v1 *result);
 
+/*
+ * Optional exact raw-(NWELL union PWELL) / ACTIVE.3 empty certificate.
+ *
+ * This is intentionally a distinct additive ABI and symbol.  "wells" is one
+ * deterministic KWRWL001 scene containing physical NWELL 3/0 followed by
+ * PWELL 2/0 in every source cell.  The backend expands and unions that scene
+ * exactly, retains its canonical boundary on-device, expands the complete raw
+ * ACTIVE 1/0 hierarchy on the same device, and applies the exact ACTIVE.3
+ * predicate with the WELL boundary as the first operand.  No geometry is
+ * published to the host.
+ *
+ * COMPLETE is the sole consumable outcome.  Hits, uncertainty, capacity
+ * declines, malformed echoes, loader failures, and CUDA errors all require
+ * the unchanged CPU WELL union and ACTIVE.3 expression.
+ */
+#define KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_WELLS_DIGEST_DOMAIN \
+  "KWRWL001"
+#define KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_ACTIVE_DIGEST_DOMAIN \
+  "KARAW001"
+#define KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_DIGEST_DOMAIN_BYTES 8u
+
+enum klayout_cuda_spatial_active3_well_union_opcode
+{
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_EMPTY = 1
+};
+
+enum klayout_cuda_spatial_active3_well_union_role
+{
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_WELLS_ROLE = 1,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_ACTIVE_ROLE = 2
+};
+
+enum klayout_cuda_spatial_active3_well_union_option_flag
+{
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_RAW_WELLS_HIERARCHY = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_RAW_ACTIVE_HIERARCHY = 1u << 1,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_PHYSICAL_NWELL_PWELL = 1u << 2,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_PHYSICAL_ACTIVE = 1u << 3,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_SAME_STORE_LAYOUT_TOP = 1u << 4,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_NO_BREAKOUT = 1u << 5,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_ORTHOGONAL_UNIT_TRANSFORMS =
+    1u << 6,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_NO_PROPERTIES = 1u << 7,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_CLOCKWISE_MANHATTAN_CONTOURS =
+    1u << 8,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_EXACT_INTEGER_SET_UNION = 1u << 9,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_CANONICAL_WELL_BOUNDARY = 1u << 10,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_ACTIVE_INDEXED_SECONDARY = 1u << 11,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_OVERLAP_RELATION = 1u << 12,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_DIFFERENT_POLYGONS = 1u << 13,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_EUCLIDIAN = 1u << 14,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_IGNORE_ANGLE_90 = 1u << 15,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_WHOLE_EDGES_FALSE = 1u << 16,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_PROJECTION_DEFAULTS = 1u << 17,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_SHIELDED = 1u << 18,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_NO_FILTERS_OR_NEGATIVE = 1u << 19,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_INCLUDE_TOUCHING = 1u << 20,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_DEFAULT_STREAM = 1u << 21
+};
+
+#define KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_QUALIFIED_OPTIONS \
+  ((1u << 22) - 1u)
+
+enum klayout_cuda_spatial_active3_well_union_disposition
+{
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_COMPLETE = 0,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_RAW_HITS = 1,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_UNCERTAIN = 2
+};
+
+/*
+ * The pointer-bearing scene descriptor and pointer-free echo deliberately
+ * reuse the already stable raw-Manhattan layouts.  The new role, physical
+ * layer, digest domain, request, result, and entry point remain independent.
+ */
+typedef struct klayout_cuda_spatial_contact4_active_union_scene_v1
+  klayout_cuda_spatial_active3_well_union_scene_v1;
+typedef struct klayout_cuda_spatial_contact4_active_union_scene_echo_v1
+  klayout_cuda_spatial_active3_well_union_scene_echo_v1;
+
+struct klayout_cuda_spatial_active3_well_union_request_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  int32_t device;
+  uint32_t reserved0;
+  int64_t distance;
+  int64_t grid_cell_size;
+  uint32_t secondary_well_layer;
+  uint32_t secondary_well_datatype;
+  uint64_t layer_reserved;
+
+  klayout_cuda_spatial_active3_well_union_scene_v1 wells;
+  klayout_cuda_spatial_active3_well_union_scene_v1 active;
+
+  uint64_t max_contexts;
+  uint64_t max_rectangles;
+  uint64_t max_x_slabs;
+  uint64_t max_union_memberships;
+  uint64_t max_events;
+  uint64_t max_raw_segments;
+  uint64_t max_boundary_segments;
+  uint32_t max_slabs_per_rectangle;
+  uint32_t union_reserved;
+
+  uint64_t max_active_edges;
+  uint64_t max_grid_cells;
+  uint64_t max_active_memberships;
+  uint64_t max_active_cell_visits;
+  uint64_t max_member_visits;
+  uint64_t max_pair_work;
+  uint32_t max_cells_per_active_edge;
+  uint32_t max_cells_per_well_edge;
+  uint64_t reserved1[4];
+};
+
+struct klayout_cuda_spatial_active3_well_union_result_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t status;
+  uint32_t fallback_flags;
+  uint32_t disposition;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  int32_t device;
+  uint32_t device_flags;
+  uint32_t reserved0;
+  int64_t distance;
+  int64_t grid_cell_size;
+  uint32_t secondary_well_layer;
+  uint32_t secondary_well_datatype;
+  uint64_t layer_reserved;
+
+  klayout_cuda_spatial_active3_well_union_scene_echo_v1 wells;
+  klayout_cuda_spatial_active3_well_union_scene_echo_v1 active;
+
+  uint64_t rectangle_count;
+  uint64_t x_slab_count;
+  uint64_t union_membership_count;
+  uint64_t event_count;
+  uint64_t strip_interval_count;
+  uint64_t raw_segment_count;
+  uint64_t boundary_segment_count;
+
+  uint64_t active_expanded_edge_count;
+  uint64_t grid_cell_count;
+  uint64_t active_membership_count;
+  uint64_t active_cell_visit_count;
+  uint64_t member_visit_count;
+  uint64_t candidate_pair_count;
+  uint64_t raw_hit_count;
+  uint64_t uncertain_count;
+
+  uint64_t device_total_bytes;
+  uint64_t union_free_begin_bytes;
+  uint64_t union_free_low_bytes;
+  uint64_t callback_free_begin_bytes;
+  uint64_t callback_free_low_bytes;
+  uint64_t post_scan_free_bytes;
+  uint64_t callback_incremental_peak_bytes;
+
+  uint64_t setup_ns;
+  uint64_t wells_h2d_ns;
+  uint64_t wells_expand_ns;
+  uint64_t x_membership_ns;
+  uint64_t strip_scan_ns;
+  uint64_t boundary_ns;
+  uint64_t active_h2d_ns;
+  uint64_t active_expand_ns;
+  uint64_t active_preflight_ns;
+  uint64_t grid_count_ns;
+  uint64_t grid_build_ns;
+  uint64_t query_ns;
+  uint64_t d2h_ns;
+  uint64_t total_ns;
+  uint64_t reserved1[2];
+  char message[192];
+};
+
+typedef int
+(*klayout_cuda_spatial_run_active3_well_union_empty_v1_func) (
+  const struct klayout_cuda_spatial_active3_well_union_request_v1 *,
+  struct klayout_cuda_spatial_active3_well_union_result_v1 *);
+
+KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_active3_well_union_empty_v1 (
+  const struct klayout_cuda_spatial_active3_well_union_request_v1 *request,
+  struct klayout_cuda_spatial_active3_well_union_result_v1 *result);
+
 #ifdef __cplusplus
 }
 #endif

@@ -628,18 +628,27 @@ void validate_common_request(
     c4::ContactDirectionContract direction_contract,
     const c4::Limits &limits)
 {
-  if (direction_contract !=
+  const bool contact4 =
+      direction_contract ==
       c4::ContactDirectionContract::
-          validated_material_on_right_contours) {
+          validated_material_on_right_contours;
+  const bool active3 =
+      direction_contract ==
+      c4::ContactDirectionContract::
+          validated_active3_secondary_material_on_right_contours;
+  if ((!contact4 && !active3) ||
+      (contact4 &&
+       distance !=
+           a3::kContact4QualifiedSceneCoordinateDistance) ||
+      (active3 &&
+       distance != a3::kQualifiedSceneCoordinateDistance)) {
     throw std::runtime_error(
-        "resident CONTACT.4 direction contract declined");
+        "resident relation direction/distance contract declined");
   }
   if (!contact_count ||
       contact_count > limits.max_contact_edges ||
       contact_count > UINT32_MAX ||
       !boundary_count ||
-      distance !=
-          a3::kContact4QualifiedSceneCoordinateDistance ||
       grid_cell_size <= 0 ||
       device < 0 ||
       !limits.max_grid_cells ||

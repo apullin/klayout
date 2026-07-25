@@ -472,6 +472,53 @@ end""",
     )
 
 
+def add_active3_well_union(text: str) -> str:
+    text = replace_once(
+        text,
+        """well = nwell.or(pwell) if need_well""",
+        """# BEGIN KLAYOUT CUDA ACTIVE3 EXACT WELL UNION TRANSACTION
+# This transaction bypasses WELL construction only after an exact resident
+# NWELL/PWELL union and complete ACTIVE.3 zero-hit certificate.  Every missing
+# method, exception, bounded decline, hit, or uncertainty executes the literal
+# source union and rule.
+active3_well_union_request = ENV["KLAYOUT_CUDA_ACTIVE3_WELL_UNION"].to_s
+active3_well_union_requested = !active3_well_union_request.empty? &amp;&amp; active3_well_union_request != "0" &amp;&amp; active3_well_union_request != "false" &amp;&amp; active3_well_union_request != "off"
+active3_well_union_owner = active3_well_union_requested &amp;&amp; DRC &amp;&amp; run_active3 &amp;&amp; !run_well &amp;&amp; !run_active4 &amp;&amp; !(OFFGRID &amp;&amp; run_grid)
+active3_well_union_clean = false
+active3_well_union_reason = "not-owner"
+if active3_well_union_owner
+  active3_well_union_reason = "method-unavailable"
+  begin
+    if nwell.respond_to?(:cuda_active3_well_union_clean?)
+      active3_well_union_clean = nwell.cuda_active3_well_union_clean?(pwell, active)
+      active3_well_union_reason = active3_well_union_clean ? "certified-empty" : "certificate-declined"
+    end
+  rescue StandardError =&gt; active3_well_union_error
+    active3_well_union_clean = false
+    active3_well_union_reason = "exception:#{active3_well_union_error.class}"
+  end
+end
+active3_well_union_empty = polygon_layer if active3_well_union_clean
+info("CUDA ACTIVE.3 exact WELL-union transaction: #{active3_well_union_clean ? 'certified-empty' : 'full-cpu-fallback'} reason=#{active3_well_union_reason}") if active3_well_union_owner
+
+unless active3_well_union_clean
+  well = nwell.or(pwell) if need_well
+end
+# END KLAYOUT CUDA ACTIVE3 EXACT WELL UNION TRANSACTION""",
+        "ACTIVE.3 exact WELL-union transaction",
+    )
+    return replace_once(
+        text,
+        """well.enclosing(active, 55.nm, euclidian).output("ACTIVE.3", "ACTIVE.3 : Minimum enclosure/spacing of nwell/pwell to active: 55nm")""",
+        """if active3_well_union_clean
+  active3_well_union_empty.output("ACTIVE.3", "ACTIVE.3 : Minimum enclosure/spacing of nwell/pwell to active: 55nm")
+else
+  well.enclosing(active, 55.nm, euclidian).output("ACTIVE.3", "ACTIVE.3 : Minimum enclosure/spacing of nwell/pwell to active: 55nm")
+end""",
+        "ACTIVE.3 exact WELL-union output transaction",
+    )
+
+
 def inject_poly34_ruby_exception(text: str) -> str:
     return replace_once(
         text,
@@ -511,6 +558,11 @@ def main() -> int:
         help="also try ACTIVE.3 before constructing the WELL union",
     )
     parser.add_argument(
+        "--active3-well-union",
+        action="store_true",
+        help="also try exact resident WELL union followed by ACTIVE.3",
+    )
+    parser.add_argument(
         "--inject-poly34-ruby-exception",
         action="store_true",
         help="gate-only: replace the qualified POLY.3/.4 hook with an exception",
@@ -518,11 +570,17 @@ def main() -> int:
     args = parser.parse_args()
     if args.inject_poly34_ruby_exception and not args.poly34:
         parser.error("--inject-poly34-ruby-exception requires --poly34")
+    if args.active3_raw_wells and args.active3_well_union:
+        parser.error(
+            "--active3-raw-wells and --active3-well-union are alternatives"
+        )
 
     source = args.input.read_text(encoding="utf-8")
     output = transform(source)
     if args.active3_raw_wells:
         output = add_active3_raw_wells(output)
+    if args.active3_well_union:
+        output = add_active3_well_union(output)
     if args.m2_rules:
         output = add_m2_rules(output)
     if args.implant12:

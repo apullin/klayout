@@ -79,6 +79,21 @@ const uint64_t contact4_union_max_pair_work = UINT64_C (1200000000);
 const uint64_t contact4_union_max_flat_edges = UINT64_C (128000000);
 const uint32_t contact4_union_max_slabs_per_rectangle = 4096;
 const uint32_t contact4_union_max_cells_per_edge = 4096;
+const uint64_t active3_well_union_max_active_edges =
+  UINT64_C (128000000);
+const uint64_t active3_well_union_max_active_memberships =
+  UINT64_C (300000000);
+const uint64_t active3_well_union_max_active_cell_visits =
+  UINT64_C (200000000);
+const uint64_t active3_well_union_max_member_visits =
+  UINT64_C (1200000000);
+const uint64_t active3_well_union_max_pair_work =
+  UINT64_C (1200000000);
+// The qualified x2 FreePDK45 SRAM contains physical WELL rectangles spanning
+// more than 8192 exact union slabs.  Keep this independent from CONTACT.4:
+// the cap remains bounded/fail-closed, while 16384 is the measured minimum
+// that admits the production WELL scene.
+const uint32_t active3_well_union_max_slabs_per_rectangle = 16384;
 
 class Active3Decline
   : public std::runtime_error
@@ -1365,6 +1380,240 @@ static bool cuda_contact4_try_empty_impl (
                  << " outcome=cpu-fallback message=unknown exception";
       } catch (...) {
         //  Telemetry must never turn a speculative decline into an error.
+      }
+    }
+  }
+  return false;
+}
+
+bool cuda_active3_well_union_try_empty (
+  const db::DeepLayer &raw_nwell, const db::DeepLayer &raw_pwell,
+  const db::DeepLayer &raw_active)
+{
+  const bool telemetry =
+    env_enabled ("KLAYOUT_CUDA_ACTIVE3_WELL_UNION_TELEMETRY");
+  const std::chrono::steady_clock::time_point begin =
+    std::chrono::steady_clock::now ();
+  try {
+    // Capability discovery deliberately precedes hierarchy serialization.
+    if (! db::cuda_spatial_active3_well_union_requested () ||
+        ! eligible_raw_wells (raw_nwell, raw_pwell, raw_active)) {
+      return false;
+    }
+
+    CudaM1WidthSpaceSceneLimits scene_limits;
+    scene_limits.max_cells = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_CELLS",
+      scene_limits.max_cells);
+    scene_limits.max_contexts = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_CONTEXTS",
+      scene_limits.max_contexts);
+    scene_limits.max_stored_polygons = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_STORED_POLYGONS",
+      scene_limits.max_stored_polygons);
+    scene_limits.max_stored_edges = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_STORED_EDGES",
+      scene_limits.max_stored_edges);
+
+    const uint64_t max_rectangles = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_RECTANGLES",
+      contact4_union_max_rectangles);
+    scene_limits.max_flat_polygons = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_FLAT_POLYGONS",
+      contact4_union_max_rectangles);
+    scene_limits.max_flat_edges = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_FLAT_EDGES",
+      contact4_union_max_flat_edges);
+
+    const uint64_t max_x_slabs = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_X_SLABS",
+      contact4_union_max_x_slabs);
+    const uint64_t max_union_memberships = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_UNION_MEMBERSHIPS",
+      contact4_union_max_memberships);
+    const uint64_t max_events = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_EVENTS",
+      contact4_union_max_events);
+    const uint64_t max_raw_segments = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_RAW_SEGMENTS",
+      contact4_union_max_raw_segments);
+    const uint64_t max_boundary_segments = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_BOUNDARY_SEGMENTS",
+      contact4_union_max_boundary_segments);
+    const uint64_t max_slabs_per_rectangle = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_SLABS_PER_RECTANGLE",
+      active3_well_union_max_slabs_per_rectangle);
+    const uint64_t max_active_edges = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_ACTIVE_EDGES",
+      active3_well_union_max_active_edges);
+    const uint64_t max_grid_cells = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_GRID_CELLS",
+      default_max_grid_cells);
+    const uint64_t max_active_memberships = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_ACTIVE_MEMBERSHIPS",
+      active3_well_union_max_active_memberships);
+    const uint64_t max_active_cell_visits = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_ACTIVE_CELL_VISITS",
+      active3_well_union_max_active_cell_visits);
+    const uint64_t max_member_visits = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_MEMBER_VISITS",
+      active3_well_union_max_member_visits);
+    const uint64_t max_pair_work = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_PAIR_WORK",
+      active3_well_union_max_pair_work);
+    const uint64_t max_cells_per_active_edge = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_CELLS_PER_ACTIVE_EDGE",
+      contact4_union_max_cells_per_edge);
+    const uint64_t max_cells_per_well_edge = env_u64 (
+      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_CELLS_PER_WELL_EDGE",
+      contact4_union_max_cells_per_edge);
+    const uint64_t device =
+      env_u64 ("KLAYOUT_CUDA_SPATIAL_DEVICE", 0);
+
+    if (! scene_limits.max_cells || ! scene_limits.max_contexts ||
+        ! scene_limits.max_stored_polygons ||
+        ! scene_limits.max_stored_edges ||
+        ! scene_limits.max_flat_polygons ||
+        ! scene_limits.max_flat_edges || ! max_rectangles ||
+        ! max_x_slabs || ! max_union_memberships || ! max_events ||
+        ! max_raw_segments || ! max_boundary_segments ||
+        ! max_slabs_per_rectangle ||
+        max_slabs_per_rectangle >
+          std::numeric_limits<uint32_t>::max () ||
+        ! max_active_edges || ! max_grid_cells ||
+        ! max_active_memberships || ! max_active_cell_visits ||
+        ! max_member_visits || ! max_pair_work ||
+        ! max_cells_per_active_edge ||
+        max_cells_per_active_edge >
+          std::numeric_limits<uint32_t>::max () ||
+        ! max_cells_per_well_edge ||
+        max_cells_per_well_edge >
+          std::numeric_limits<uint32_t>::max () ||
+        device > uint64_t (std::numeric_limits<int32_t>::max ())) {
+      throw Active3Decline (
+        "an ACTIVE.3 WELL-union capacity or device is invalid");
+    }
+
+    CudaRawManhattanScene well_scene;
+    CudaRawManhattanScene active_scene;
+    std::string reason;
+    if (! cuda_well_union_raw_manhattan_build_scene (
+          raw_nwell, raw_pwell, scene_limits, well_scene, &reason)) {
+      throw Active3Decline (
+        reason.empty ()
+          ? "unable to serialize the combined raw-WELL scene"
+          : reason);
+    }
+    if (! cuda_active_raw_manhattan_build_scene (
+          raw_active, scene_limits, active_scene, &reason)) {
+      throw Active3Decline (
+        reason.empty ()
+          ? "unable to serialize the qualified raw ACTIVE scene"
+          : reason);
+    }
+    if (! contact4_scenes_share_hierarchy (
+          well_scene, active_scene)) {
+      throw Active3Decline (
+        "combined raw WELL and ACTIVE scenes do not share one hierarchy "
+        "identity");
+    }
+
+    klayout_cuda_spatial_active3_well_union_request_v1 request;
+    std::memset (&request, 0, sizeof (request));
+    request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+    request.struct_size = sizeof (request);
+    request.opcode =
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_EMPTY;
+    request.option_flags =
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_QUALIFIED_OPTIONS;
+    request.format_version = well_scene.format_version;
+    request.dbu_per_micron = well_scene.dbu_per_micron;
+    request.device = int32_t (device);
+    request.distance = qualified_distance;
+    request.grid_cell_size = qualified_grid_cell;
+    request.secondary_well_layer = qualified_pwell_layer;
+    request.secondary_well_datatype = qualified_active3_datatype;
+    fill_contact4_active_union_scene (
+      well_scene,
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_WELLS_ROLE,
+      qualified_nwell_layer,
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_WELLS_DIGEST_DOMAIN,
+      request.wells);
+    fill_contact4_active_union_scene (
+      active_scene,
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_ACTIVE_ROLE,
+      qualified_active_layer,
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_ACTIVE_DIGEST_DOMAIN,
+      request.active);
+    request.max_contexts = scene_limits.max_contexts;
+    request.max_rectangles = max_rectangles;
+    request.max_x_slabs = max_x_slabs;
+    request.max_union_memberships = max_union_memberships;
+    request.max_events = max_events;
+    request.max_raw_segments = max_raw_segments;
+    request.max_boundary_segments = max_boundary_segments;
+    request.max_slabs_per_rectangle =
+      uint32_t (max_slabs_per_rectangle);
+    request.max_active_edges = max_active_edges;
+    request.max_grid_cells = max_grid_cells;
+    request.max_active_memberships = max_active_memberships;
+    request.max_active_cell_visits = max_active_cell_visits;
+    request.max_member_visits = max_member_visits;
+    request.max_pair_work = max_pair_work;
+    request.max_cells_per_active_edge =
+      uint32_t (max_cells_per_active_edge);
+    request.max_cells_per_well_edge =
+      uint32_t (max_cells_per_well_edge);
+
+    const std::chrono::steady_clock::time_point call_begin =
+      std::chrono::steady_clock::now ();
+    const db::CudaActive3WellUnionAttempt attempt =
+      db::cuda_spatial_try_active3_well_union_empty (request);
+    const std::chrono::steady_clock::time_point done =
+      std::chrono::steady_clock::now ();
+    if (telemetry) {
+      tl::info << "CUDA ACTIVE.3 exact WELL-union live lowering:"
+               << " well_contexts=" << request.wells.context_count
+               << " active_contexts=" << request.active.context_count
+               << " well_stored_polygons="
+               << request.wells.polygon_count
+               << " well_flat_polygons="
+               << request.wells.flat_polygon_count
+               << " well_flat_edges=" << request.wells.flat_edge_count
+               << " active_stored_polygons="
+               << request.active.polygon_count
+               << " active_flat_polygons="
+               << request.active.flat_polygon_count
+               << " active_flat_edges="
+               << request.active.flat_edge_count
+               << " lower_ms="
+               << std::chrono::duration<double, std::milli> (
+                    call_begin - begin).count ()
+               << " call_ms="
+               << std::chrono::duration<double, std::milli> (
+                    done - call_begin).count ()
+               << " live_total_ms="
+               << std::chrono::duration<double, std::milli> (
+                    done - begin).count ();
+    }
+    return attempt.disposition ==
+      db::CudaActive3WellUnionAttempt::CertifiedEmpty;
+  } catch (const std::exception &ex) {
+    if (telemetry) {
+      try {
+        tl::info << "CUDA ACTIVE.3 exact WELL-union live lowering:"
+                 << " outcome=cpu-fallback message=" << ex.what ();
+      } catch (...) {
+        // Telemetry must never turn a speculative decline into an error.
+      }
+    }
+  } catch (...) {
+    if (telemetry) {
+      try {
+        tl::info << "CUDA ACTIVE.3 exact WELL-union live lowering:"
+                 << " outcome=cpu-fallback message=unknown exception";
+      } catch (...) {
+        // Telemetry must never turn a speculative decline into an error.
       }
     }
   }
