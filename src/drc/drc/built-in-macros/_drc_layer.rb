@@ -3660,6 +3660,34 @@ CODE
       self.data.respond_to?(:is_deep?) && self.data.is_deep?
     end
 
+    # Internal, fail-closed acceleration hook for a qualified physical
+    # FreePDK45 M2/VIA2 pair.  The receiver is pristine deep M2.  C++ checks
+    # complete backend capability before hierarchy access, constructs a true
+    # flat exact M2 union, and only then read-only materializes pristine deep
+    # VIA2 into a true flat region.  Nil means the caller must use every
+    # historical CPU rule.
+    def cuda_m2_flat_union(via2)
+      @engine._context("cuda_m2_flat_union") do
+        check_is_layer(via2)
+        requires_region
+        via2.requires_region
+        flat_metal2 = RBA::Region::new
+        flat_via2 = RBA::Region::new
+        complete = @engine._cmd(
+          self.data, :cuda_m2_flat_union, via2.data,
+          flat_metal2, flat_via2
+        )
+        if complete
+          [
+            DRCLayer::new(@engine, flat_metal2),
+            DRCLayer::new(@engine, flat_via2)
+          ]
+        else
+          nil
+        end
+      end
+    end
+
     # Internal, fail-closed acceleration hook for the qualified FreePDK45
     # M1/VIA1/M2 stack.  The receiver is VIA1.  A false result is expected and
     # means that the caller must execute all six historical CPU rules.

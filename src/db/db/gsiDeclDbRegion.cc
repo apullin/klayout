@@ -37,18 +37,27 @@
 #include "dbRegionProcessors.h"
 #include "dbCompoundOperation.h"
 #include "dbCudaImplant12.h"
+#include "dbCudaM2Rules.h"
 #include "dbCudaPoly34.h"
 #include "dbCudaSpatialBackend.h"
 #include "dbCudaVia1Stack.h"
+#include "dbFlatRegion.h"
 #include "dbLayoutToNetlist.h"
 #include "dbPropertiesRepository.h"
 #include "dbPropertiesFilter.h"
 #include "tlGlobPattern.h"
+#include "tlLog.h"
 
 #include "gsiDeclDbContainerHelpers.h"
 #include "gsiDeclDbMeasureHelpers.h"
 
+#include <chrono>
+#include <cstring>
+#include <cstdlib>
+#include <limits>
+#include <map>
 #include <memory>
+#include <stdexcept>
 #include <vector>
 #include <set>
 
@@ -1291,6 +1300,337 @@ static Container *decompose_trapezoids (const db::Region *r, int mode)
 static bool is_deep (const db::Region *region)
 {
   return dynamic_cast<const db::DeepRegion *> (region->delegate ()) != 0;
+}
+
+static bool cuda_m2_rules_telemetry_enabled ()
+{
+  const char *value = std::getenv ("KLAYOUT_CUDA_M2_RULES_TELEMETRY");
+  return value && *value && std::strcmp (value, "0") != 0 &&
+         std::strcmp (value, "false") != 0 &&
+         std::strcmp (value, "off") != 0;
+}
+
+static const char *cuda_m2_flat_union_disposition (
+  db::CudaM2FlatUnionAttempt::Disposition disposition)
+{
+  switch (disposition) {
+  case db::CudaM2FlatUnionAttempt::Disabled:
+    return "disabled";
+  case db::CudaM2FlatUnionAttempt::HostDeclined:
+    return "host-declined";
+  case db::CudaM2FlatUnionAttempt::BackendFallback:
+    return "backend-fallback";
+  case db::CudaM2FlatUnionAttempt::BackendError:
+    return "backend-error";
+  case db::CudaM2FlatUnionAttempt::InvalidResult:
+    return "invalid-result";
+  case db::CudaM2FlatUnionAttempt::TopologyDeclined:
+    return "topology-declined";
+  case db::CudaM2FlatUnionAttempt::Complete:
+    return "complete";
+  }
+  return "unknown";
+}
+
+static uint64_t cuda_m2_elapsed_ns (
+  const std::chrono::steady_clock::time_point &begin,
+  const std::chrono::steady_clock::time_point &end)
+{
+  const std::chrono::nanoseconds elapsed =
+    std::chrono::duration_cast<std::chrono::nanoseconds> (end - begin);
+  return elapsed.count () > 0 ? uint64_t (elapsed.count ()) : 0;
+}
+
+static void cuda_m2_flat_union_telemetry (
+  const db::CudaM2FlatUnionAttempt &attempt, const char *disposition,
+  uint64_t via2_materialize_ns, uint64_t bridge_live_ns,
+  const std::string &reason, uint64_t via2_polygon_count = 0,
+  uint64_t via2_property_polygon_count = 0)
+{
+  if (! cuda_m2_rules_telemetry_enabled ()) {
+    return;
+  }
+  try {
+    const double ns_to_ms = 1.0e-6;
+    tl::info
+      << "CUDA M2 live flat operands:"
+      << " disposition=" << disposition
+      << " lower_ms=" << double (attempt.lowering_ns) * ns_to_ms
+      << " backend_ms=" << double (attempt.backend_ns) * ns_to_ms
+      << " m2_materialize_ms="
+      << double (attempt.materialize_ns) * ns_to_ms
+      << " via2_materialize_ms="
+      << double (via2_materialize_ns) * ns_to_ms
+      << " union_live_ms=" << double (attempt.live_total_ns) * ns_to_ms
+      << " bridge_live_ms=" << double (bridge_live_ns) * ns_to_ms
+      << " raw_segments=" << attempt.raw_segment_count
+      << " boundary_segments=" << attempt.boundary_segment_count
+      << " contours=" << attempt.flat_stats.contour_count
+      << " vertices=" << attempt.flat_stats.vertex_count
+      << " via2_polygons=" << via2_polygon_count
+      << " via2_property_polygons=" << via2_property_polygon_count
+      << " reason=" << (reason.empty () ? "none" : reason);
+  } catch (...) {
+    //  Diagnostics must never change a fail-closed outcome.
+  }
+}
+
+static bool cuda_m2_parse_device (int32_t &device, std::string &reason)
+{
+  const char *value = std::getenv ("KLAYOUT_CUDA_SPATIAL_DEVICE");
+  if (! value || ! *value) {
+    device = 0;
+    return true;
+  }
+
+  uint64_t parsed = 0;
+  for (const char *p = value; *p; ++p) {
+    if (*p < '0' || *p > '9') {
+      reason = "KLAYOUT_CUDA_SPATIAL_DEVICE is not a nonnegative decimal integer";
+      return false;
+    }
+    const unsigned digit = unsigned (*p - '0');
+    if (parsed >
+        (uint64_t (std::numeric_limits<int32_t>::max ()) - digit) / 10) {
+      reason = "KLAYOUT_CUDA_SPATIAL_DEVICE exceeds the int32 device range";
+      return false;
+    }
+    parsed = parsed * 10 + digit;
+  }
+
+  device = int32_t (parsed);
+  return true;
+}
+
+static bool cuda_m2_flat_inputs_qualified (
+  const db::Region *metal2, const db::Region *via2,
+  const db::DeepRegion *deep_metal2, const db::DeepRegion *deep_via2,
+  std::string &reason)
+{
+  if (! deep_metal2 || ! deep_via2) {
+    reason = "M2 and VIA2 must both be pristine deep regions";
+    return false;
+  }
+  if (! metal2->merged_semantics () || ! via2->merged_semantics ()) {
+    reason = "M2 and VIA2 must retain merged DRC semantics";
+    return false;
+  }
+
+  const db::DeepLayer &m2_layer = deep_metal2->deep_layer ();
+  const db::DeepLayer &via2_layer = deep_via2->deep_layer ();
+  if (m2_layer.store () != via2_layer.store () ||
+      &m2_layer.layout () != &via2_layer.layout () ||
+      m2_layer.layout_index () != via2_layer.layout_index () ||
+      m2_layer.initial_cell ().cell_index () !=
+        via2_layer.initial_cell ().cell_index ()) {
+    reason = "M2 and VIA2 do not share one deep layout and initial cell";
+    return false;
+  }
+  if (m2_layer.breakout_cells () != 0 ||
+      via2_layer.breakout_cells () != 0) {
+    reason = "M2 or VIA2 has hierarchy breakout cells";
+    return false;
+  }
+
+  const db::Layout &layout = m2_layer.layout ();
+  if (layout.dbu () != 0.0005) {
+    reason = "M2/VIA2 scene DBU is not the qualified 0.5 nm";
+    return false;
+  }
+  if (! layout.is_valid_layer (m2_layer.layer ()) ||
+      ! layout.get_properties (m2_layer.layer ()).log_equal (
+        db::LayerProperties (13, 0))) {
+    reason = "M2 is not physical FreePDK45 layer 13/0";
+    return false;
+  }
+  if (! layout.is_valid_layer (via2_layer.layer ()) ||
+      ! layout.get_properties (via2_layer.layer ()).log_equal (
+        db::LayerProperties (14, 0))) {
+    reason = "VIA2 is not physical FreePDK45 layer 14/0";
+    return false;
+  }
+  return true;
+}
+
+static bool cuda_m2_flat_union (
+  const db::Region *metal2, const db::Region *via2,
+  db::Region *flat_metal2, db::Region *flat_via2)
+{
+  const std::chrono::steady_clock::time_point bridge_begin =
+    std::chrono::steady_clock::now ();
+  db::CudaM2FlatUnionAttempt attempt;
+
+  //  Capability must precede all input-region and hierarchy access.  In
+  //  particular, a stock host or an incomplete run/release backend does not
+  //  materialize VIA2 or even inspect either delegate.
+  if (! db::cuda_spatial_m2_union_requested ()) {
+    cuda_m2_flat_union_telemetry (
+      attempt, "capability-unavailable", 0,
+      cuda_m2_elapsed_ns (
+        bridge_begin, std::chrono::steady_clock::now ()),
+      "complete M2 union run/release capability is unavailable");
+    return false;
+  }
+
+  std::string reason;
+  uint64_t via2_polygon_count = 0;
+  uint64_t via2_property_polygon_count = 0;
+  try {
+    if (! metal2 || ! via2 || ! flat_metal2 || ! flat_via2 ||
+        metal2 == via2 || flat_metal2 == flat_via2 ||
+        flat_metal2 == metal2 || flat_metal2 == via2 ||
+        flat_via2 == metal2 || flat_via2 == via2) {
+      reason = "M2 live flat operands require distinct non-null inputs and outputs";
+      attempt.disposition = db::CudaM2FlatUnionAttempt::HostDeclined;
+      cuda_m2_flat_union_telemetry (
+        attempt, "host-declined", 0,
+        cuda_m2_elapsed_ns (
+          bridge_begin, std::chrono::steady_clock::now ()),
+        reason);
+      return false;
+    }
+
+    int32_t device = 0;
+    if (! cuda_m2_parse_device (device, reason)) {
+      attempt.disposition = db::CudaM2FlatUnionAttempt::HostDeclined;
+      cuda_m2_flat_union_telemetry (
+        attempt, "host-declined", 0,
+        cuda_m2_elapsed_ns (
+          bridge_begin, std::chrono::steady_clock::now ()),
+        reason);
+      return false;
+    }
+
+    const db::DeepRegion *deep_metal2 =
+      dynamic_cast<const db::DeepRegion *> (metal2->delegate ());
+    const db::DeepRegion *deep_via2 =
+      dynamic_cast<const db::DeepRegion *> (via2->delegate ());
+    if (! cuda_m2_flat_inputs_qualified (
+          metal2, via2, deep_metal2, deep_via2, reason)) {
+      attempt.disposition = db::CudaM2FlatUnionAttempt::HostDeclined;
+      cuda_m2_flat_union_telemetry (
+        attempt, "host-declined", 0,
+        cuda_m2_elapsed_ns (
+          bridge_begin, std::chrono::steady_clock::now ()),
+        reason);
+      return false;
+    }
+
+    db::Region candidate_metal2;
+    attempt = db::cuda_m2_raw_manhattan_try_flat_union (
+      deep_metal2->deep_layer (), candidate_metal2, device);
+    if (attempt.disposition != db::CudaM2FlatUnionAttempt::Complete) {
+      cuda_m2_flat_union_telemetry (
+        attempt, cuda_m2_flat_union_disposition (attempt.disposition), 0,
+        cuda_m2_elapsed_ns (
+          bridge_begin, std::chrono::steady_clock::now ()),
+        attempt.message);
+      return false;
+    }
+
+    //  VIA2 materialization is intentionally delayed until the exact M2
+    //  union is complete.  A const begin_unmerged() traversal already emits
+    //  owned world-space polygons and does not mutate the DeepRegion.  Copying
+    //  the DeepLayer first would duplicate the hierarchy and introduce an
+    //  unnecessary derived-layer lifetime without making this read safer.
+    //  Insert directly into standalone Shapes so Region's Shapes constructor
+    //  must create a true FlatRegion, even when VIA2 is empty.
+    const std::chrono::steady_clock::time_point via2_begin =
+      std::chrono::steady_clock::now ();
+    typedef std::map<db::properties_id_type, uint64_t> PropertyCensus;
+    PropertyCensus source_properties;
+    db::Shapes via2_shapes (false);
+    for (db::Region::const_iterator polygon =
+           via2->begin_unmerged ();
+         ! polygon.at_end (); ++polygon) {
+      if (via2_polygon_count == std::numeric_limits<uint64_t>::max () ||
+          source_properties [polygon.prop_id ()] ==
+            std::numeric_limits<uint64_t>::max ()) {
+        throw std::overflow_error (
+          "VIA2 flat materialization census overflow");
+      }
+      ++via2_polygon_count;
+      ++source_properties [polygon.prop_id ()];
+      if (polygon.prop_id () != 0) {
+        ++via2_property_polygon_count;
+      }
+      via2_shapes.insert (
+        db::PolygonWithProperties (*polygon, polygon.prop_id ()));
+    }
+    db::Region candidate_via2 (
+      via2_shapes, via2->merged_semantics (), false);
+    PropertyCensus candidate_properties;
+    uint64_t candidate_polygon_count = 0;
+    uint64_t candidate_property_polygon_count = 0;
+    for (db::Region::const_iterator polygon =
+           candidate_via2.begin_unmerged ();
+         ! polygon.at_end (); ++polygon) {
+      if (candidate_polygon_count ==
+            std::numeric_limits<uint64_t>::max () ||
+          candidate_properties [polygon.prop_id ()] ==
+            std::numeric_limits<uint64_t>::max ()) {
+        throw std::overflow_error (
+          "flat VIA2 verification census overflow");
+      }
+      ++candidate_polygon_count;
+      ++candidate_properties [polygon.prop_id ()];
+      if (polygon.prop_id () != 0) {
+        ++candidate_property_polygon_count;
+      }
+    }
+    if (dynamic_cast<const db::FlatRegion *> (
+          candidate_via2.delegate ()) == 0 ||
+        candidate_via2.merged_semantics () != via2->merged_semantics () ||
+        candidate_polygon_count != via2_polygon_count ||
+        candidate_property_polygon_count !=
+          via2_property_polygon_count ||
+        candidate_properties != source_properties) {
+      reason =
+        "VIA2 FlatRegion semantics or polygon/property census changed";
+      const uint64_t via2_ns = cuda_m2_elapsed_ns (
+        via2_begin, std::chrono::steady_clock::now ());
+      cuda_m2_flat_union_telemetry (
+        attempt, "via2-materialize-declined", via2_ns,
+        cuda_m2_elapsed_ns (
+          bridge_begin, std::chrono::steady_clock::now ()),
+        reason, via2_polygon_count, via2_property_polygon_count);
+      return false;
+    }
+    const uint64_t via2_ns = cuda_m2_elapsed_ns (
+      via2_begin, std::chrono::steady_clock::now ());
+
+    //  Publish the pair atomically only after both independent candidates
+    //  are fully owned and validated.  Every earlier outcome leaves the
+    //  caller's output Regions and both original deep operands unchanged.
+    flat_metal2->swap (candidate_metal2);
+    flat_via2->swap (candidate_via2);
+    cuda_m2_flat_union_telemetry (
+      attempt, "complete", via2_ns,
+      cuda_m2_elapsed_ns (
+        bridge_begin, std::chrono::steady_clock::now ()),
+      std::string (), via2_polygon_count,
+      via2_property_polygon_count);
+    return true;
+  } catch (const std::exception &ex) {
+    try {
+      reason = ex.what ();
+    } catch (...) {
+      reason = "exception while constructing live M2/VIA2 flat operands";
+    }
+  } catch (...) {
+    reason = "unknown exception while constructing live M2/VIA2 flat operands";
+  }
+
+  cuda_m2_flat_union_telemetry (
+    attempt,
+    attempt.disposition == db::CudaM2FlatUnionAttempt::Complete
+      ? "via2-materialize-declined"
+      : "host-declined",
+    0,
+    cuda_m2_elapsed_ns (
+      bridge_begin, std::chrono::steady_clock::now ()),
+    reason, via2_polygon_count, via2_property_polygon_count);
+  return false;
 }
 
 static bool cuda_via1_stack_clean (
@@ -4413,6 +4753,18 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "@brief Returns true if the region is a deep (hierarchical) one\n"
     "\n"
     "This method has been added in version 0.26."
+  ) +
+  method_ext (
+    "cuda_m2_flat_union", &cuda_m2_flat_union,
+    gsi::arg ("via2"), gsi::arg ("flat_metal2"),
+    gsi::arg ("flat_via2"),
+    "@brief Tries to create the optional live flat M2/VIA2 operand pair\n"
+    "\n"
+    "This internal fail-closed hook first requires the complete optional "
+    "M2 union run/release capability. It publishes two owned flat Regions "
+    "only after exact M2 union validation and delayed read-only VIA2 "
+    "materialization both complete. False leaves all inputs and outputs "
+    "untouched and requires the pristine CPU rule path.\n"
   ) +
   method_ext (
     "cuda_via1_stack_clean?", &cuda_via1_stack_clean,

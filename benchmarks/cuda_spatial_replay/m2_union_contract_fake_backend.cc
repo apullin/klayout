@@ -38,6 +38,16 @@ const Segment s_rectangle [] = {
   { 10, 0, 20, 1, KLAYOUT_CUDA_SPATIAL_M2_UNION_VERTICAL }
 };
 
+// Exact boundary for the bounded live-deck clean fixture.  This mode lets the
+// GSI/Ruby/deck gate exercise successful flat publication without requiring a
+// CUDA device; production-backend lanes remain separate.
+const Segment s_deck_clean_rectangle [] = {
+  { 0, 0, 1000, -1, KLAYOUT_CUDA_SPATIAL_M2_UNION_HORIZONTAL },
+  { 1000, 0, 1000, 1, KLAYOUT_CUDA_SPATIAL_M2_UNION_HORIZONTAL },
+  { 0, 0, 1000, -1, KLAYOUT_CUDA_SPATIAL_M2_UNION_VERTICAL },
+  { 1000, 0, 1000, 1, KLAYOUT_CUDA_SPATIAL_M2_UNION_VERTICAL }
+};
+
 const Segment s_wrong_order [] = {
   s_rectangle [1], s_rectangle [0], s_rectangle [2], s_rectangle [3]
 };
@@ -171,7 +181,12 @@ klayout_cuda_spatial_run_m2_union_boundary_v1 (
     result->segment_count = 0;
     return KLAYOUT_CUDA_SPATIAL_FALLBACK;
   }
-  if (std::strcmp (mode, "bad_echo") == 0) {
+  if (std::strcmp (mode, "deck_clean") == 0) {
+    result->segments = s_deck_clean_rectangle;
+    result->segment_count = 4;
+    result->boundary_fnv64 =
+      boundary_fnv64 (s_deck_clean_rectangle, 4);
+  } else if (std::strcmp (mode, "bad_echo") == 0) {
     ++result->root_cell;
   } else if (std::strcmp (mode, "side_order") == 0) {
     result->segments = s_side_before_fixed;
