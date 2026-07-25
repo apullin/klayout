@@ -128,7 +128,8 @@ void append_rectangle (
 }
 
 void expect_decline_unchanged (
-  tl::TestBase *_this, const std::vector<Segment> &segments)
+  tl::TestBase *_this, const std::vector<Segment> &segments,
+  const char *expected_reason = 0)
 {
   db::Region output (db::Box (100, 200, 300, 400));
   db::CudaM2FlatUnionStats stats;
@@ -149,6 +150,9 @@ void expect_decline_unchanged (
   EXPECT_EQ (stats.vertex_count, uint64_t (93));
   EXPECT_EQ (stats.max_vertices, uint64_t (94));
   EXPECT_EQ (reason.empty (), false);
+  if (expected_reason) {
+    EXPECT_EQ (reason, expected_reason);
+  }
 }
 
 } // anonymous namespace
@@ -198,7 +202,9 @@ TEST(2_TopologyAndOrientationFailClosed)
 
   std::vector<Segment> kissing = rectangle (0, 0, 10, 10);
   append_rectangle (kissing, 10, 10, 20, 20);
-  expect_decline_unchanged (_this, kissing);
+  expect_decline_unchanged (
+    _this, kissing,
+    "M2 boundary has a repeated or kissing outgoing vertex");
 
   std::vector<Segment> crossing = rectangle (0, 0, 10, 10);
   append_rectangle (crossing, 5, -5, 15, 5);
@@ -206,7 +212,9 @@ TEST(2_TopologyAndOrientationFailClosed)
 
   const std::vector<Segment> hole =
     rectangle (0, 0, 10, 20, false);
-  expect_decline_unchanged (_this, hole);
+  expect_decline_unchanged (
+    _this, hole,
+    "M2 boundary contains a hole, zero area, or nonclockwise contour");
 }
 
 TEST(3_DigestCanonicalAndCoordinateFailuresAreAtomic)
@@ -236,4 +244,93 @@ TEST(3_DigestCanonicalAndCoordinateFailuresAreAtomic)
       rectangle (left, 0, left + 10, 20);
     expect_decline_unchanged (_this, outside);
   }
+}
+
+TEST(4_NullDegenerateAndDuplicateEndpointsFailClosed)
+{
+  db::Region output (db::Box (100, 200, 300, 400));
+  db::CudaM2FlatUnionStats stats;
+  stats.segment_count = 77;
+  stats.contour_count = 78;
+  stats.vertex_count = 79;
+  stats.max_vertices = 80;
+  std::string reason;
+  EXPECT_EQ (
+    db::cuda_m2_union_boundary_to_flat_region (
+      0, 4, 0, output, &stats, &reason),
+    false);
+  EXPECT_EQ (reason, "nonempty M2 boundary has a null segment pointer");
+  EXPECT_EQ (output.count (), size_t (1));
+  EXPECT_EQ (output.bbox (), db::Box (100, 200, 300, 400));
+  EXPECT_EQ (stats.segment_count, uint64_t (77));
+  EXPECT_EQ (stats.contour_count, uint64_t (78));
+  EXPECT_EQ (stats.vertex_count, uint64_t (79));
+  EXPECT_EQ (stats.max_vertices, uint64_t (80));
+
+  std::vector<Segment> degenerate;
+  degenerate.push_back (
+    Segment {
+      0, 10, 10, -1,
+      KLAYOUT_CUDA_SPATIAL_M2_UNION_HORIZONTAL
+    });
+  expect_decline_unchanged (
+    _this, degenerate, "M2 boundary has an invalid segment");
+
+  std::vector<Segment> duplicate_incoming;
+  duplicate_incoming.push_back (
+    Segment {
+      0, 0, 10, -1,
+      KLAYOUT_CUDA_SPATIAL_M2_UNION_HORIZONTAL
+    });
+  duplicate_incoming.push_back (
+    Segment {
+      0, 0, 10, -1,
+      KLAYOUT_CUDA_SPATIAL_M2_UNION_VERTICAL
+    });
+  duplicate_incoming.push_back (
+    Segment {
+      0, 0, 10, 1,
+      KLAYOUT_CUDA_SPATIAL_M2_UNION_VERTICAL
+    });
+  std::sort (
+    duplicate_incoming.begin (), duplicate_incoming.end (),
+    segment_less);
+  expect_decline_unchanged (
+    _this, duplicate_incoming,
+    "M2 boundary has a repeated or kissing incoming vertex");
+}
+
+TEST(5_OppositeSideCollinearDegeneraciesFailClosed)
+{
+  std::vector<Segment> overlapping;
+  overlapping.push_back (
+    Segment {
+      0, 0, 10, -1,
+      KLAYOUT_CUDA_SPATIAL_M2_UNION_HORIZONTAL
+    });
+  overlapping.push_back (
+    Segment {
+      0, 0, 10, 1,
+      KLAYOUT_CUDA_SPATIAL_M2_UNION_HORIZONTAL
+    });
+  std::sort (overlapping.begin (), overlapping.end (), segment_less);
+  expect_decline_unchanged (
+    _this, overlapping,
+    "M2 boundary has a collinear overlap or point contact");
+
+  std::vector<Segment> touching;
+  touching.push_back (
+    Segment {
+      0, 0, 10, -1,
+      KLAYOUT_CUDA_SPATIAL_M2_UNION_HORIZONTAL
+    });
+  touching.push_back (
+    Segment {
+      0, 10, 20, 1,
+      KLAYOUT_CUDA_SPATIAL_M2_UNION_HORIZONTAL
+    });
+  std::sort (touching.begin (), touching.end (), segment_less);
+  expect_decline_unchanged (
+    _this, touching,
+    "M2 boundary has a repeated or kissing outgoing vertex");
 }
