@@ -1714,6 +1714,28 @@ not just wall time.
             This closes an input adapter prerequisite; it is not itself a live
             performance claim.
 
+          - [x] **Qualify the resident union-boundary CONTACT.4 consumer:**
+            the shared union core now validates the canonical device boundary
+            before exposing it to a synchronous callback and can stop before
+            boundary D2H only after that callback completes.  The bounded
+            consumer grids directed material-on-right CONTACT contours,
+            preflights boundary-cell and indexed-member work, applies the
+            exact predicate once per uniquely owned pair, and throws on every
+            hit, uncertainty, capacity, device, stream, direction, callback,
+            or invariant failure so the caller cannot mistake a partial
+            result for an empty certificate.  The live serializer remains
+            responsible for proving that each input contour is simple.
+
+            The independent replay passes 76 differential/adversarial cases:
+            1,532 GPU candidates equal 1,532 oracle candidates, including
+            negative and multi-cell grids, exact grid lines, clipping,
+            ownership, capacity, contract, and empty-union regressions.
+            `compute-sanitizer --tool memcheck` reports zero errors.  Downstream
+            M2 backend and resident-morphology consumers rebuild clean.  This
+            qualifies the reusable component only; the compact live
+            ACTIVE/CONTACT hierarchy adapter and production wall-time gate are
+            still open.
+
       - [x] **Fuse IMPLANT.1 and IMPLANT.2 as one atomic CUDA transaction:**
         rewrite only the two fixed projection-separation expressions into one
         exact batch, lower the merged implant primary plus gate and raw CONTACT

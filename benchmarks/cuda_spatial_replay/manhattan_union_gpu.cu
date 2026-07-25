@@ -57,6 +57,7 @@ using klayout_cuda::manhattan_union::DirectedSegmentI64;
 using klayout_cuda::manhattan_union::GpuUnionLimits;
 using klayout_cuda::manhattan_union::GpuUnionOutput;
 using klayout_cuda::manhattan_union::RectI64;
+using klayout_cuda::manhattan_union::ResidentBoundaryHook;
 using klayout_cuda::manhattan_union::ResidentStripHook;
 using klayout_cuda::manhattan_union::SegmentAxis;
 using klayout_cuda::manhattan_union::StripInterval;
@@ -73,6 +74,7 @@ enum DeviceStatus : std::uint32_t
   kStatusPerRectangleCapacity = 1u << 2,
   kStatusCoverageInvariant = 1u << 3,
   kStatusTransitionInvariant = 1u << 4,
+  kStatusBoundaryInvariant = 1u << 5,
 };
 
 using Limits = GpuUnionLimits;
@@ -167,6 +169,32 @@ struct SegmentLess
     return first.hi < second.hi;
   }
 };
+
+__global__ void validate_resident_boundary_kernel(
+    const DirectedSegmentI64 *segments, std::uint64_t segment_count,
+    SegmentAxis expected_axis, std::uint32_t *status)
+{
+  for (std::uint64_t index =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       index < segment_count;
+       index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const DirectedSegmentI64 current = segments[index];
+    if (current.axis != expected_axis ||
+        (current.side != -1 && current.side != 1) ||
+        current.lo >= current.hi) {
+      atomicOr(status, std::uint32_t(kStatusBoundaryInvariant));
+      continue;
+    }
+    if (!index) continue;
+    const DirectedSegmentI64 previous = segments[index - 1];
+    if (!SegmentLess{}(previous, current) ||
+        (same_segment_line(previous, current) &&
+         current.lo <= previous.hi)) {
+      atomicOr(status, std::uint32_t(kStatusBoundaryInvariant));
+    }
+  }
+}
 
 struct SegmentMerge
 {
@@ -1015,6 +1043,8 @@ std::string status_message(std::uint32_t status)
   if (status & kStatusCoverageInvariant) stream << "coverage invariant;";
   if (status & kStatusTransitionInvariant)
     stream << "transition invariant;";
+  if (status & kStatusBoundaryInvariant)
+    stream << "canonical boundary invariant;";
   return stream.str();
 }
 
@@ -1030,6 +1060,7 @@ UnionOutput gpu_union_prepared(
     std::int64_t y_high, const Limits &limits, int device,
     Clock::time_point total_begin, double input_prepare_ms,
     const ResidentStripHook *resident_hook,
+    const ResidentBoundaryHook *boundary_hook,
     RectangleFactory rectangle_factory)
 {
   UnionOutput output;
@@ -1534,7 +1565,63 @@ UnionOutput gpu_union_prepared(
       output.message = status_message(boundary_status);
       return;
     }
+
+    /*
+     * The normal host publication path independently checks canonical order
+     * after D2H.  A resident early-stop bypasses that host check, so protect
+     * the callback with the equivalent exact device invariant first.
+     */
+    if (boundary_hook && boundary_hook->consume) {
+      if (horizontal_count) {
+        validate_resident_boundary_kernel<<<
+            launch_blocks(horizontal_count), kThreads>>>(
+            thrust::raw_pointer_cast(horizontal.data()),
+            horizontal_count, SegmentAxis::horizontal,
+            thrust::raw_pointer_cast(status.data()));
+        cuda_require(
+            cudaGetLastError(),
+            "validate resident horizontal boundary");
+      }
+      if (vertical_count) {
+        validate_resident_boundary_kernel<<<
+            launch_blocks(vertical_count), kThreads>>>(
+            thrust::raw_pointer_cast(vertical.data()),
+            vertical_count, SegmentAxis::vertical,
+            thrust::raw_pointer_cast(status.data()));
+        cuda_require(
+            cudaGetLastError(),
+            "validate resident vertical boundary");
+      }
+      cuda_require(
+          cudaDeviceSynchronize(),
+          "resident boundary invariant synchronize");
+      const std::uint32_t resident_boundary_status =
+          copy_device_status(status);
+      if (resident_boundary_status) {
+        output.fallback = true;
+        output.message =
+            status_message(resident_boundary_status);
+        return;
+      }
+    }
     output.boundary_ms = elapsed_ms(boundary_begin, Clock::now());
+
+    if (boundary_hook && boundary_hook->consume) {
+      cudaStream_t stream = nullptr;
+      boundary_hook->consume(
+          stream, thrust::raw_pointer_cast(horizontal.data()),
+          horizontal_count, thrust::raw_pointer_cast(vertical.data()),
+          vertical_count, boundary_hook->context);
+      cuda_require(cudaGetLastError(), "resident boundary consumer");
+      cuda_require(
+          cudaStreamSynchronize(stream),
+          "resident boundary consumer synchronize");
+      sample_device_memory(&output);
+      output.resident_boundary_consumer_completed = true;
+      if (boundary_hook->stop_before_d2h) {
+        return;
+      }
+    }
 
     const auto d2h_begin = Clock::now();
     output.segments.resize(canonical_count);
@@ -1614,7 +1701,8 @@ UnionOutput rejected_union(
 
 UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
                       const Limits &limits, int device,
-                      const ResidentStripHook *resident_hook = nullptr)
+                      const ResidentStripHook *resident_hook = nullptr,
+                      const ResidentBoundaryHook *boundary_hook = nullptr)
 {
   const auto total_begin = Clock::now();
   if (rectangles.size() > limits.max_rectangles) {
@@ -1624,6 +1712,7 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
   if (rectangles.empty()) {
     return gpu_union_prepared(
         0, 0, 0, limits, device, total_begin, 0.0, resident_hook,
+        boundary_hook,
         []() { return PreparedDeviceRectangles{}; });
   }
 
@@ -1641,7 +1730,7 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
 
   return gpu_union_prepared(
       rectangles.size(), y_base, y_high, limits, device, total_begin,
-      0.0, resident_hook,
+      0.0, resident_hook, boundary_hook,
       [&]() {
         const auto h2d_begin = Clock::now();
         PreparedDeviceRectangles prepared;
@@ -1664,13 +1753,14 @@ UnionOutput gpu_union_resident_impl(
     thrust::device_vector<RectI64> &&rectangles,
     std::int64_t y_base, std::int64_t y_high,
     const Limits &limits, int device, double input_prepare_ms,
-    const ResidentStripHook *resident_hook)
+    const ResidentStripHook *resident_hook,
+    const ResidentBoundaryHook *boundary_hook)
 {
   const auto total_begin = Clock::now();
   const std::uint64_t rectangle_count = rectangles.size();
   return gpu_union_prepared(
       rectangle_count, y_base, y_high, limits, device, total_begin,
-      input_prepare_ms, resident_hook,
+      input_prepare_ms, resident_hook, boundary_hook,
       [&]() {
         PreparedDeviceRectangles prepared;
         prepared.rectangles = std::move(rectangles);
@@ -1697,6 +1787,65 @@ std::vector<DirectedSegmentI64> gpu_canonicalize_for_test(
   return result;
 }
 
+bool gpu_validate_resident_boundary_for_test_impl(
+    const std::vector<DirectedSegmentI64> &horizontal,
+    const std::vector<DirectedSegmentI64> &vertical,
+    int device, std::string *error)
+{
+  try {
+    cuda_require(
+        cudaSetDevice(device),
+        "resident boundary test cudaSetDevice");
+    thrust::device_vector<DirectedSegmentI64>
+        device_horizontal(horizontal.begin(), horizontal.end());
+    thrust::device_vector<DirectedSegmentI64>
+        device_vertical(vertical.begin(), vertical.end());
+    thrust::device_vector<std::uint32_t> status(1, 0);
+    if (!horizontal.empty()) {
+      validate_resident_boundary_kernel<<<
+          launch_blocks(horizontal.size()), kThreads>>>(
+          thrust::raw_pointer_cast(device_horizontal.data()),
+          horizontal.size(), SegmentAxis::horizontal,
+          thrust::raw_pointer_cast(status.data()));
+      cuda_require(
+          cudaGetLastError(),
+          "resident horizontal boundary test launch");
+    }
+    if (!vertical.empty()) {
+      validate_resident_boundary_kernel<<<
+          launch_blocks(vertical.size()), kThreads>>>(
+          thrust::raw_pointer_cast(device_vertical.data()),
+          vertical.size(), SegmentAxis::vertical,
+          thrust::raw_pointer_cast(status.data()));
+      cuda_require(
+          cudaGetLastError(),
+          "resident vertical boundary test launch");
+    }
+    cuda_require(
+        cudaDeviceSynchronize(),
+        "resident boundary test synchronize");
+    const std::uint32_t host_status =
+        copy_device_status(status);
+    if (host_status) {
+      if (error) *error = status_message(host_status);
+      return false;
+    }
+    if (error) error->clear();
+    return true;
+  } catch (const std::exception &exception) {
+    if (error) *error = exception.what();
+    (void)cudaGetLastError();
+    return false;
+  } catch (...) {
+    if (error) {
+      *error =
+          "unknown resident boundary validation exception";
+    }
+    (void)cudaGetLastError();
+    return false;
+  }
+}
+
 }  // namespace
 
 namespace klayout_cuda {
@@ -1705,9 +1854,11 @@ namespace manhattan_union {
 GpuUnionOutput gpu_union_host(
     const std::vector<RectI64> &rectangles,
     const GpuUnionLimits &limits, int device,
-    const ResidentStripHook *resident_hook)
+    const ResidentStripHook *resident_hook,
+    const ResidentBoundaryHook *boundary_hook)
 {
-  return ::gpu_union(rectangles, limits, device, resident_hook);
+  return ::gpu_union(
+      rectangles, limits, device, resident_hook, boundary_hook);
 }
 
 GpuUnionOutput gpu_union_resident(
@@ -1715,17 +1866,27 @@ GpuUnionOutput gpu_union_resident(
     std::int64_t y_base, std::int64_t y_high,
     const GpuUnionLimits &limits, int device,
     double input_prepare_ms,
-    const ResidentStripHook *resident_hook)
+    const ResidentStripHook *resident_hook,
+    const ResidentBoundaryHook *boundary_hook)
 {
   return ::gpu_union_resident_impl(
       std::move(rectangles), y_base, y_high, limits, device,
-      input_prepare_ms, resident_hook);
+      input_prepare_ms, resident_hook, boundary_hook);
 }
 
 std::vector<DirectedSegmentI64> gpu_canonicalize_segments_for_test(
     const std::vector<DirectedSegmentI64> &raw, int device)
 {
   return ::gpu_canonicalize_for_test(raw, device);
+}
+
+bool gpu_validate_resident_boundary_for_test(
+    const std::vector<DirectedSegmentI64> &horizontal,
+    const std::vector<DirectedSegmentI64> &vertical,
+    int device, std::string *error)
+{
+  return ::gpu_validate_resident_boundary_for_test_impl(
+      horizontal, vertical, device, error);
 }
 
 GpuUnionOutput cpu_union_reference_for_test(

@@ -61,6 +61,12 @@ struct StripCapture
   bool valid = false;
 };
 
+struct BoundaryCapture
+{
+  bool invoked = false;
+  std::vector<mu::DirectedSegmentI64> segments;
+};
+
 void capture_strips(
     cudaStream_t stream, const std::int64_t *device_xs,
     std::uint32_t x_slabs,
@@ -119,11 +125,62 @@ void reject_strips(
   throw std::runtime_error("intentional resident consumer rejection");
 }
 
+void capture_boundary(
+    cudaStream_t, const mu::DirectedSegmentI64 *device_horizontal,
+    std::uint64_t horizontal_count,
+    const mu::DirectedSegmentI64 *device_vertical,
+    std::uint64_t vertical_count, void *opaque)
+{
+  auto *capture = static_cast<BoundaryCapture *>(opaque);
+  capture->invoked = true;
+  capture->segments.resize(horizontal_count + vertical_count);
+  if (horizontal_count) {
+    cuda_require(
+        cudaMemcpy(
+            capture->segments.data(), device_horizontal,
+            horizontal_count * sizeof(mu::DirectedSegmentI64),
+            cudaMemcpyDeviceToHost),
+        "resident horizontal boundary D2H");
+  }
+  if (vertical_count) {
+    cuda_require(
+        cudaMemcpy(
+            capture->segments.data() + horizontal_count, device_vertical,
+            vertical_count * sizeof(mu::DirectedSegmentI64),
+            cudaMemcpyDeviceToHost),
+        "resident vertical boundary D2H");
+  }
+}
+
+void reject_boundary(
+    cudaStream_t, const mu::DirectedSegmentI64 *, std::uint64_t,
+    const mu::DirectedSegmentI64 *, std::uint64_t, void *)
+{
+  throw std::runtime_error(
+      "intentional resident boundary consumer rejection");
+}
+
 thrust::device_vector<mu::RectI64> resident_copy(
     const std::vector<mu::RectI64> &rectangles)
 {
   return thrust::device_vector<mu::RectI64>(
       rectangles.begin(), rectangles.end());
+}
+
+void require_boundary_gate_rejects(
+    const std::vector<mu::DirectedSegmentI64> &horizontal,
+    const std::vector<mu::DirectedSegmentI64> &vertical,
+    int device, const std::string &name)
+{
+  std::string error;
+  if (mu::gpu_validate_resident_boundary_for_test(
+          horizontal, vertical, device, &error) ||
+      error.find("canonical boundary invariant") ==
+          std::string::npos) {
+    throw std::runtime_error(
+        name + " resident boundary corruption was accepted: " +
+        error);
+  }
 }
 
 }  // namespace
@@ -151,6 +208,7 @@ int main(int argc, char **argv)
         {0, 0, 3, -1, mu::SegmentAxis::vertical},
         {8, 0, 3, 1, mu::SegmentAxis::vertical}};
     if (host.fallback || host.resident_consumer_completed ||
+        host.resident_boundary_consumer_completed ||
         host.rectangle_count != 2 ||
         host.memberships != 2 || host.event_count != 4 ||
         host.x_slabs != 2 || host.strip_intervals != 2 ||
@@ -166,6 +224,58 @@ int main(int argc, char **argv)
             "unexpected canonical fixture boundary at " +
             std::to_string(index));
       }
+    }
+
+    const std::vector<mu::DirectedSegmentI64> valid_horizontal(
+        expected.begin(), expected.begin() + 2);
+    const std::vector<mu::DirectedSegmentI64> valid_vertical(
+        expected.begin() + 2, expected.end());
+    std::string boundary_gate_error = "not cleared";
+    if (!mu::gpu_validate_resident_boundary_for_test(
+            valid_horizontal, valid_vertical, device,
+            &boundary_gate_error) ||
+        !boundary_gate_error.empty()) {
+      throw std::runtime_error(
+          "valid resident boundary gate declined: " +
+          boundary_gate_error);
+    }
+    {
+      auto corrupted = valid_horizontal;
+      corrupted[0].axis = mu::SegmentAxis::vertical;
+      require_boundary_gate_rejects(
+          corrupted, valid_vertical, device, "wrong-axis");
+    }
+    {
+      auto corrupted = valid_horizontal;
+      corrupted[0].side = 0;
+      require_boundary_gate_rejects(
+          corrupted, valid_vertical, device, "bad-side");
+    }
+    {
+      auto corrupted = valid_horizontal;
+      corrupted[0].hi = corrupted[0].lo;
+      require_boundary_gate_rejects(
+          corrupted, valid_vertical, device, "empty-segment");
+    }
+    {
+      auto corrupted = valid_horizontal;
+      std::swap(corrupted[0], corrupted[1]);
+      require_boundary_gate_rejects(
+          corrupted, valid_vertical, device, "unsorted");
+    }
+    {
+      const std::vector<mu::DirectedSegmentI64> touching = {
+          {0, 0, 4, -1, mu::SegmentAxis::horizontal},
+          {0, 4, 8, -1, mu::SegmentAxis::horizontal}};
+      require_boundary_gate_rejects(
+          touching, valid_vertical, device, "touching");
+    }
+    {
+      const std::vector<mu::DirectedSegmentI64> overlapping = {
+          {0, 0, 5, -1, mu::SegmentAxis::horizontal},
+          {0, 4, 8, -1, mu::SegmentAxis::horizontal}};
+      require_boundary_gate_rejects(
+          overlapping, valid_vertical, device, "overlapping");
     }
 
     StripCapture capture;
@@ -208,6 +318,60 @@ int main(int argc, char **argv)
           "resident consumer rejection did not fail closed");
     }
 
+    BoundaryCapture boundary_capture;
+    mu::ResidentBoundaryHook boundary_hook;
+    boundary_hook.consume = capture_boundary;
+    boundary_hook.context = &boundary_capture;
+    const mu::GpuUnionOutput boundary_resident = mu::gpu_union_resident(
+        resident_copy(rectangles), 0, 3, limits, device, 0.0, nullptr,
+        &boundary_hook);
+    require_same_output(host, boundary_resident);
+    if (!boundary_capture.invoked ||
+        !boundary_resident.resident_boundary_consumer_completed ||
+        boundary_capture.segments.size() != expected.size()) {
+      throw std::runtime_error("resident boundary hook mismatch");
+    }
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+      if (!same_segment(expected[index], boundary_capture.segments[index])) {
+        throw std::runtime_error(
+            "resident boundary hook segment mismatch at " +
+            std::to_string(index));
+      }
+    }
+
+    BoundaryCapture stopped_boundary_capture;
+    boundary_hook.context = &stopped_boundary_capture;
+    boundary_hook.stop_before_d2h = true;
+    const mu::GpuUnionOutput stopped_boundary =
+        mu::gpu_union_resident(
+            resident_copy(rectangles), 0, 3, limits, device, 0.0,
+            nullptr, &boundary_hook);
+    if (stopped_boundary.fallback ||
+        !stopped_boundary.resident_boundary_consumer_completed ||
+        !stopped_boundary.segments.empty() ||
+        !stopped_boundary_capture.invoked ||
+        stopped_boundary_capture.segments.size() != expected.size() ||
+        stopped_boundary.d2h_ms != 0.0) {
+      throw std::runtime_error(
+          "resident boundary early-stop mismatch");
+    }
+
+    boundary_hook.consume = reject_boundary;
+    boundary_hook.context = nullptr;
+    const mu::GpuUnionOutput rejected_boundary =
+        mu::gpu_union_resident(
+            resident_copy(rectangles), 0, 3, limits, device, 0.0,
+            nullptr, &boundary_hook);
+    if (!rejected_boundary.fallback ||
+        rejected_boundary.resident_boundary_consumer_completed ||
+        !rejected_boundary.segments.empty() ||
+        rejected_boundary.message.find(
+            "intentional resident boundary consumer rejection") ==
+            std::string::npos) {
+      throw std::runtime_error(
+          "resident boundary rejection did not fail closed");
+    }
+
     const mu::GpuUnionOutput bad_bounds = mu::gpu_union_resident(
         resident_copy(rectangles), 1, 3, limits, device);
     if (!bad_bounds.fallback || !bad_bounds.segments.empty()) {
@@ -231,8 +395,10 @@ int main(int argc, char **argv)
 
     std::cout
         << "MANHATTAN_UNION_GPU_CORE_SMOKE PASS host=1 resident=1 "
-           "strip_hook=1 early_stop=1 bounds_fallback=1 "
-           "consumer_rejection_fallback=1 separate_raw_final_caps=1 "
+           "strip_hook=1 boundary_hook=1 early_stop=1 "
+           "boundary_device_gate=7 "
+           "bounds_fallback=1 consumer_rejection_fallback=1 "
+           "boundary_rejection_fallback=1 separate_raw_final_caps=1 "
            "segments="
         << host.segments.size() << " digest=" << host.digest << "\n";
     return 0;

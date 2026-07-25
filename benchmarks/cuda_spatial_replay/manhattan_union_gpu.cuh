@@ -54,6 +54,35 @@ struct ResidentStripHook
   bool stop_before_boundary = false;
 };
 
+/*
+ * Synchronous device-resident boundary consumer.
+ *
+ * The union core invokes this hook only after the exact horizontal and
+ * vertical boundary streams have passed every device invariant.  The two
+ * streams are independently canonical and together form the complete
+ * directed boundary.  Their storage remains owned by the union core and is
+ * valid only for the duration of consume().
+ *
+ * At this point the high-water event/coverage/strip storage has already been
+ * released.  A downstream spatial certificate can therefore allocate its
+ * own index without overlapping the union sweep's peak memory.  Setting
+ * stop_before_d2h skips host boundary materialization after a successful
+ * callback.
+ */
+struct ResidentBoundaryHook
+{
+  using Consume = void (*)(
+      cudaStream_t stream,
+      const DirectedSegmentI64 *horizontal,
+      std::uint64_t horizontal_count,
+      const DirectedSegmentI64 *vertical,
+      std::uint64_t vertical_count, void *context);
+
+  Consume consume = nullptr;
+  void *context = nullptr;
+  bool stop_before_d2h = false;
+};
+
 struct GpuUnionLimits
 {
   std::uint64_t max_rectangles = UINT64_C(32000000);
@@ -71,6 +100,7 @@ struct GpuUnionOutput
 {
   bool fallback = false;
   bool resident_consumer_completed = false;
+  bool resident_boundary_consumer_completed = false;
   std::string message;
   std::vector<DirectedSegmentI64> segments;
   std::uint64_t rectangle_count = 0;
@@ -100,7 +130,8 @@ struct GpuUnionOutput
 GpuUnionOutput gpu_union_host(
     const std::vector<RectI64> &rectangles,
     const GpuUnionLimits &limits, int device,
-    const ResidentStripHook *resident_hook = nullptr);
+    const ResidentStripHook *resident_hook = nullptr,
+    const ResidentBoundaryHook *boundary_hook = nullptr);
 
 // Resident seam for a checked upstream device expander.  Ownership of
 // rectangles is transferred to the union so it can release the 48-byte input
@@ -114,11 +145,20 @@ GpuUnionOutput gpu_union_resident(
     std::int64_t y_base, std::int64_t y_high,
     const GpuUnionLimits &limits, int device,
     double input_prepare_ms = 0.0,
-    const ResidentStripHook *resident_hook = nullptr);
+    const ResidentStripHook *resident_hook = nullptr,
+    const ResidentBoundaryHook *boundary_hook = nullptr);
 
 // Retained as a direct unit-test seam for the parallel canonicalizer.
 std::vector<DirectedSegmentI64> gpu_canonicalize_segments_for_test(
     const std::vector<DirectedSegmentI64> &raw, int device);
+
+// Direct qualification seam for the exact device gate that protects a
+// ResidentBoundaryHook.  Production invokes the same gate immediately before
+// exposing either device pointer.
+bool gpu_validate_resident_boundary_for_test(
+    const std::vector<DirectedSegmentI64> &horizontal,
+    const std::vector<DirectedSegmentI64> &vertical,
+    int device, std::string *error = nullptr);
 
 // Exact serial references retained only for differential qualification of the
 // shared core; production adapters must use the two GPU entry points above.

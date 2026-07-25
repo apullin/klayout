@@ -10,6 +10,13 @@ set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_ARCHITECTURES 86 CACHE STRING "CUDA architectures to compile")
 
+add_executable(m2_manhattan_decompose_test
+  m2_manhattan_decompose_test.cc
+)
+target_compile_options(m2_manhattan_decompose_test PRIVATE
+  -O3 -Wall -Wextra -Werror
+)
+
 add_executable(cuda_spatial_replay spatial_replay.cu)
 target_compile_options(cuda_spatial_replay PRIVATE
   $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
@@ -58,6 +65,38 @@ set_target_properties(manhattan_union_gpu_core_smoke PROPERTIES
   CUDA_RESOLVE_DEVICE_SYMBOLS OFF
 )
 target_link_libraries(manhattan_union_gpu_core_smoke PRIVATE
+  manhattan_union_gpu_core
+)
+
+add_library(contact4_union_resident_gpu STATIC
+  contact4_union_resident.cu
+)
+target_compile_options(contact4_union_resident_gpu PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(contact4_union_resident_gpu PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+  POSITION_INDEPENDENT_CODE ON
+)
+target_link_libraries(contact4_union_resident_gpu PUBLIC
+  manhattan_union_gpu_core
+)
+
+add_executable(contact4_union_resident_replay
+  contact4_union_resident_replay.cu
+)
+target_compile_options(contact4_union_resident_replay PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(contact4_union_resident_replay PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+)
+target_link_libraries(contact4_union_resident_replay PRIVATE
+  contact4_union_resident_gpu
   manhattan_union_gpu_core
 )
 
