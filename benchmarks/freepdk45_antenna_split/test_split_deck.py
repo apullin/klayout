@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 import subprocess
 import sys
@@ -52,7 +53,7 @@ def source_deck() -> str:
         "#   ANTENNA checks\r\n"
         "################\r\n"
         "if ANTENNA &amp;&amp; run_antenna\r\n"
-        "diode = nplus &amp; active - nwell\r\n"
+        "diode = nplus &amp; active - nwell # diode recognition layer\r\n"
         "connect(gate, poly)\r\n"
         "connect(poly, cont)\r\n"
         "connect(diode, cont)\r\n"
@@ -111,6 +112,71 @@ def execute_generated_antenna_section(
 
 
 class SplitDeckTest(unittest.TestCase):
+    def test_small_first_diode_is_opt_in_and_changes_exactly_one_line(
+        self,
+    ) -> None:
+        historical_line = (
+            "diode = nplus &amp; active - nwell # diode recognition layer"
+        )
+        small_first_line = (
+            "diode = (nplus &amp; active) - nwell # diode recognition layer"
+        )
+        default = split_deck(source_deck())
+        explicit_default = split_deck(
+            source_deck(), small_first_diode=False
+        )
+        candidate = split_deck(source_deck(), small_first_diode=True)
+
+        self.assertEqual(default, explicit_default)
+        self.assertEqual(
+            hashlib.sha256(default.encode("utf-8")).hexdigest(),
+            "068c84d65a3951b93610de8d420fba433ab3f06c3dd395390a3dab680b760211",
+        )
+        self.assertEqual(default.count(historical_line), 1)
+        self.assertNotIn(small_first_line, default)
+        self.assertEqual(candidate.count(small_first_line), 1)
+        self.assertNotIn(historical_line, candidate)
+        self.assertEqual(
+            candidate,
+            default.replace(historical_line, small_first_line, 1),
+        )
+
+    def test_rejects_noncanonical_historical_diode_source(self) -> None:
+        historical_line = (
+            "diode = nplus &amp; active - nwell # diode recognition layer"
+        )
+        cases = {
+            "missing": source_deck().replace(
+                historical_line + "\r\n", "", 1
+            ),
+            "malformed": source_deck().replace(
+                historical_line,
+                "diode = nplus &amp; (active - nwell) "
+                "# diode recognition layer",
+                1,
+            ),
+            "duplicate": source_deck().replace(
+                historical_line,
+                historical_line + "\r\n" + historical_line,
+                1,
+            ),
+        }
+        for name, source in cases.items():
+            for small_first_diode in (False, True):
+                with self.subTest(
+                    name=name, small_first_diode=small_first_diode
+                ):
+                    expected_count = 2 if name == "duplicate" else 0
+                    with self.assertRaisesRegex(
+                        TransformError,
+                        "historical diode source: expected exactly one line, "
+                        f"found {expected_count}",
+                    ):
+                        split_deck(
+                            source,
+                            small_first_diode=small_first_diode,
+                        )
+
     def test_split_is_lf_normalized_and_preserves_all_check_order(self) -> None:
         result = split_deck(source_deck())
         self.assertNotIn("\r", result)
@@ -322,6 +388,50 @@ class SplitDeckTest(unittest.TestCase):
                 self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertEqual(first.read_bytes(), second.read_bytes())
             self.assertNotIn(b"\r", first.read_bytes())
+
+    def test_small_first_diode_cli_changes_only_the_expression(self) -> None:
+        script = Path(__file__).with_name("split_deck.py")
+        historical_line = (
+            b"diode = nplus &amp; active - nwell # diode recognition layer"
+        )
+        small_first_line = (
+            b"diode = (nplus &amp; active) - nwell "
+            b"# diode recognition layer"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.lydrc"
+            default = root / "default.lydrc"
+            candidate = root / "candidate.lydrc"
+            source.write_bytes(source_deck().encode("utf-8"))
+            for output, extra_args in (
+                (default, ()),
+                (candidate, ("--small-first-diode",)),
+            ):
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        *extra_args,
+                        str(source),
+                        str(output),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+
+            default_bytes = default.read_bytes()
+            candidate_bytes = candidate.read_bytes()
+            self.assertEqual(default_bytes.count(historical_line), 1)
+            self.assertEqual(candidate_bytes.count(small_first_line), 1)
+            self.assertEqual(
+                candidate_bytes,
+                default_bytes.replace(
+                    historical_line, small_first_line, 1
+                ),
+            )
 
     def test_rejects_a_missing_output_site(self) -> None:
         source = source_deck().replace(

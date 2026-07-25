@@ -21,6 +21,10 @@ The optional ``--split-lower`` mode replaces the lower owner with two:
 * ``antenna_m1``: METAL1_ANTENNA
 * ``antenna_m2``: METAL2_ANTENNA
 
+The optional ``--small-first-diode`` mode reassociates the exact diode set
+expression from ``nplus & (active - nwell)`` to
+``(nplus & active) - nwell`` so the smaller intersection is formed first.
+
 The two modes compose. An M1-only process does not build the M1-via1-M2
 connection; every M2-or-higher process rebuilds that exact cumulative prefix.
 
@@ -45,6 +49,12 @@ M2_SHARD = "antenna_m2"
 M3_SHARD = "antenna_m3"
 M4_UPPER_SHARD = "antenna_m4_m10"
 ANTENNA_CATEGORIES = tuple(f"METAL{layer}_ANTENNA" for layer in range(1, 11))
+HISTORICAL_DIODE_LINE = (
+    "diode = nplus &amp; active - nwell # diode recognition layer"
+)
+SMALL_FIRST_DIODE_LINE = (
+    "diode = (nplus &amp; active) - nwell # diode recognition layer"
+)
 
 
 class TransformError(ValueError):
@@ -100,7 +110,9 @@ def _owner_predicate(shard: str) -> str:
 
 
 def _antenna_section(
-    split_upper: bool = False, split_lower: bool = False
+    split_upper: bool = False,
+    split_lower: bool = False,
+    small_first_diode: bool = False,
 ) -> str:
     lower_m1_predicate = _owner_predicate(
         M1_SHARD if split_lower else LOWER_SHARD
@@ -121,7 +133,11 @@ def _antenna_section(
         "if ANTENNA &amp;&amp; run_antenna_checks",
         'info("ANTENNA section")',
         "",
-        "diode = nplus &amp; active - nwell # diode recognition layer",
+        (
+            SMALL_FIRST_DIODE_LINE
+            if small_first_diode
+            else HISTORICAL_DIODE_LINE
+        ),
         "",
         "# Every checking owner needs the exact gate-to-M1 connection prefix.",
         "connect(gate, poly)",
@@ -205,7 +221,11 @@ def _antenna_section(
 
 
 def split_deck(
-    source: str, *, split_lower: bool = False, split_upper: bool = False
+    source: str,
+    *,
+    split_lower: bool = False,
+    split_upper: bool = False,
+    small_first_diode: bool = False,
 ) -> str:
     """Return a deterministic LF-normalized antenna-sharded deck."""
 
@@ -223,6 +243,13 @@ def split_deck(
         )
     ):
         raise TransformError("source deck is already antenna-split")
+
+    diode_line_count = text.splitlines().count(HISTORICAL_DIODE_LINE)
+    if diode_line_count != 1:
+        raise TransformError(
+            "historical diode source: expected exactly one line, "
+            f"found {diode_line_count}"
+        )
 
     for category in ANTENNA_CATEGORIES:
         count = text.count(f'.output("{category}"')
@@ -285,7 +312,11 @@ def split_deck(
     end = text.index(end_marker, start)
     text = (
         text[:start]
-        + _antenna_section(split_upper=split_upper, split_lower=split_lower)
+        + _antenna_section(
+            split_upper=split_upper,
+            split_lower=split_lower,
+            small_first_diode=small_first_diode,
+        )
         + text[end:]
     )
 
@@ -335,6 +366,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="split METAL3 and METAL4-through-METAL10 into separate owners",
     )
+    parser.add_argument(
+        "--small-first-diode",
+        action="store_true",
+        help="form the exact diode recognition layer from its smaller operand first",
+    )
     return parser.parse_args()
 
 
@@ -350,6 +386,7 @@ def main() -> int:
             source,
             split_lower=args.split_lower,
             split_upper=args.split_upper,
+            small_first_diode=args.small_first_diode,
         )
         _write_atomic(args.output, transformed)
     except (OSError, UnicodeDecodeError, TransformError) as exc:
