@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="utf-8"?>
+<klayout-macro>
+ <description>Capture raw hierarchical FreePDK45 ACTIVE/CONTACT operands</description>
+ <version/>
+ <category>drc</category>
+ <prolog/>
+ <epilog/>
+ <doc/>
+ <autorun>false</autorun>
+ <autorun-early>false</autorun-early>
+ <shortcut/>
+ <show-in-menu>false</show-in-menu>
+ <group-name>drc_scripts</group-name>
+ <menu-path>tools_menu.drc.end</menu-path>
+ <interpreter>dsl</interpreter>
+ <dsl-interpreter-name>drc-dsl-xml</dsl-interpreter-name>
+ <text>
+# This is an offline qualification capture for the resident CONTACT.4 path.
+# It copies only the two raw physical operands, retaining their hierarchy and
+# their exact FreePDK45 layer identities:
+#
+#   KACT logical slot 0 ("WELL" in the legacy exporter): ACTIVE  1/0
+#   KACT logical slot 1 ("ACTIVE" in the legacy exporter): CONTACT 10/0
+#
+# The source operands deliberately use "polygons", not "input", so source text
+# labels are excluded exactly as they are from the DRC expression.
+
+input_path = $input
+top_name = $topcell
+scene_path = $scene_output
+report_path = $output
+thread_text = ($threads || "1").to_s
+
+raise("missing -rd input=PATH") unless input_path &amp;&amp; !input_path.to_s.empty?
+raise("missing -rd topcell=NAME") unless top_name &amp;&amp; !top_name.to_s.empty?
+raise("missing -rd scene_output=PATH") unless scene_path &amp;&amp; !scene_path.to_s.empty?
+raise("missing -rd output=PATH") unless report_path &amp;&amp; !report_path.to_s.empty?
+raise("threads must be a positive integer") unless thread_text =~ /\A[1-9][0-9]*\z/
+thread_count = thread_text.to_i
+
+input_expanded = File.expand_path(input_path.to_s)
+raise("input does not exist: #{input_expanded}") unless File.file?(input_expanded)
+input_abs = File.realpath(input_expanded)
+canonical_output = lambda do |path|
+  expanded = File.expand_path(path.to_s)
+  parent = File.realpath(File.dirname(expanded))
+  File.join(parent, File.basename(expanded))
+end
+scene_abs = canonical_output.call(scene_path)
+report_abs = canonical_output.call(report_path)
+raise("scene output aliases input") if scene_abs == input_abs
+raise("report output aliases input") if report_abs == input_abs
+raise("scene and report outputs alias each other") if scene_abs == report_abs
+raise("refusing to overwrite scene output: #{scene_abs}") if File.exist?(scene_abs) || File.symlink?(scene_abs)
+raise("refusing to overwrite report output: #{report_abs}") if File.exist?(report_abs) || File.symlink?(report_abs)
+
+source(input_abs, top_name.to_s)
+report("FreePDK45 raw ACTIVE/CONTACT qualification", report_abs)
+deep
+threads(thread_count)
+verbose(true)
+
+active = polygons(1, 0)
+contact = polygons(10, 0)
+
+capture_layout = RBA::Layout.new
+capture_layout.dbu = dbu
+capture_top =
+  capture_layout.create_cell("KLAYOUT_CUDA_CONTACT4_ACTIVE_CONTACT_SCENE")
+capture_active = capture_layout.layer(RBA::LayerInfo.new(1, 0))
+capture_contact = capture_layout.layer(RBA::LayerInfo.new(10, 0))
+
+active.data.insert_into(
+  capture_layout, capture_top.cell_index, capture_active
+)
+contact.data.insert_into(
+  capture_layout, capture_top.cell_index, capture_contact
+)
+
+# DeepRegion#insert_into normally receives polygon-only layers here.  Audit the
+# self-contained capture anyway: remove reconstructed text annotations, reject
+# every other shape kind and every property, and require both operands.
+removed_texts = 0
+captured_shapes = [0, 0]
+capture_layout.each_cell do |cell|
+  [capture_active, capture_contact].each_with_index do |layer_index, operand|
+    shapes = cell.shapes(layer_index)
+    texts = []
+    shapes.each(RBA::Shapes::STexts) { |shape| texts &lt;&lt; shape }
+    texts.each do |shape|
+      shapes.erase(shape)
+      removed_texts += 1
+    end
+    shapes.each(RBA::Shapes::SAll) do |shape|
+      unless shape.is_box? || shape.is_polygon? || shape.is_simple_polygon?
+        raise("captured operand contains a non-polygon shape in cell #{cell.name}")
+      end
+      unless shape.prop_id == 0
+        raise("captured operand contains shape properties in cell #{cell.name}")
+      end
+      captured_shapes[operand] += 1
+    end
+  end
+end
+raise("captured ACTIVE operand is empty") if captured_shapes[0] == 0
+raise("captured CONTACT operand is empty") if captured_shapes[1] == 0
+
+capture_layout.write(scene_abs)
+
+# Preserve the production CONTACT.4 invocation as a source-side sanity oracle.
+# The captured operands above are raw; this expression retains the production
+# merged-primary semantics.
+contact4 = active.enclosing(contact, 5.nm, euclidian)
+raise("CONTACT.4 result is not an edge-pair layer") unless contact4.edge_pairs?
+contact4.output(
+  "CONTACT.4",
+  "CONTACT.4 : Minimum enclosure of active around contact : 5nm"
+)
+
+info(
+  "CONTACT4_ACTIVE_CONTACT_CAPTURE scene=#{scene_abs} " \
+  "top=KLAYOUT_CUDA_CONTACT4_ACTIVE_CONTACT_SCENE " \
+  "active=1/0 contact=10/0 " \
+  "active_shapes=#{captured_shapes[0]} " \
+  "contact_shapes=#{captured_shapes[1]} " \
+  "removed_texts=#{removed_texts} dbu=#{capture_layout.dbu}"
+)
+ </text>
+</klayout-macro>
