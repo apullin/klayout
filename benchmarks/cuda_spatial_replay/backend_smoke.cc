@@ -1033,30 +1033,69 @@ bool run_active3_abi_smoke() {
   }
   good = merged_wrong_options_good && good;
 
-  klayout_cuda_spatial_active3_request_v1 raw_wells_capacity =
-      raw_wells_request;
-  raw_wells_capacity.max_pair_work = 15;
-  const bool raw_wells_capacity_digest_good =
-      set_active3_digest(raw_wells_capacity);
-  klayout_cuda_spatial_active3_result_v1 raw_wells_capacity_result{};
-  const int raw_wells_capacity_status =
-      raw_wells_capacity_digest_good
+  // The established merged-WELL profile retains its conservative Cartesian
+  // preflight: 4x4 pairs cannot fit a cap of 15.
+  klayout_cuda_spatial_active3_request_v1 merged_cartesian_capacity =
+      request;
+  merged_cartesian_capacity.max_pair_work = 15;
+  const bool merged_cartesian_capacity_digest_good =
+      set_active3_digest(merged_cartesian_capacity);
+  klayout_cuda_spatial_active3_result_v1
+      merged_cartesian_capacity_result{};
+  const int merged_cartesian_capacity_status =
+      merged_cartesian_capacity_digest_good
           ? klayout_cuda_spatial_run_active3_empty_v1(
-                &raw_wells_capacity, &raw_wells_capacity_result)
+                &merged_cartesian_capacity,
+                &merged_cartesian_capacity_result)
           : KLAYOUT_CUDA_SPATIAL_ERROR;
-  const bool raw_wells_capacity_good =
-      raw_wells_capacity_digest_good &&
-      raw_wells_capacity_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
-      raw_wells_capacity_result.status ==
+  const bool merged_cartesian_capacity_good =
+      merged_cartesian_capacity_digest_good &&
+      merged_cartesian_capacity_status ==
           KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
-      raw_wells_capacity_result.disposition ==
+      merged_cartesian_capacity_result.status ==
+          KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      merged_cartesian_capacity_result.disposition ==
           KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN;
-  if (!raw_wells_capacity_good) {
+  if (!merged_cartesian_capacity_good) {
     report_active3_failure(
-        "CUDA ACTIVE.3 raw-WELL Cartesian capacity gate",
-        raw_wells_capacity_status, raw_wells_capacity_result);
+        "CUDA ACTIVE.3 merged-WELL Cartesian capacity gate",
+        merged_cartesian_capacity_status,
+        merged_cartesian_capacity_result);
   }
-  good = raw_wells_capacity_good && good;
+  good = merged_cartesian_capacity_good && good;
+
+  // The raw-WELL profile must accept the same 4x4 scene because its cap
+  // bounds actual spatial candidates, not the unusable Cartesian product.
+  klayout_cuda_spatial_active3_request_v1 raw_wells_noncartesian =
+      raw_wells_request;
+  raw_wells_noncartesian.max_pair_work = 15;
+  const bool raw_wells_noncartesian_digest_good =
+      set_active3_digest(raw_wells_noncartesian);
+  klayout_cuda_spatial_active3_result_v1 raw_wells_noncartesian_result{};
+  const int raw_wells_noncartesian_status =
+      raw_wells_noncartesian_digest_good
+          ? klayout_cuda_spatial_run_active3_empty_v1(
+                &raw_wells_noncartesian,
+                &raw_wells_noncartesian_result)
+          : KLAYOUT_CUDA_SPATIAL_ERROR;
+  const bool raw_wells_noncartesian_good =
+      raw_wells_noncartesian_digest_good &&
+      raw_wells_noncartesian_status == KLAYOUT_CUDA_SPATIAL_OK &&
+      raw_wells_noncartesian_result.status ==
+          KLAYOUT_CUDA_SPATIAL_OK &&
+      raw_wells_noncartesian_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_COMPLETE &&
+      raw_wells_noncartesian_result.fallback_flags == 0 &&
+      raw_wells_noncartesian_result.device_flags == 0 &&
+      raw_wells_noncartesian_result.candidate_pair_count <=
+          raw_wells_noncartesian.max_pair_work;
+  if (!raw_wells_noncartesian_good) {
+    report_active3_failure(
+        "CUDA ACTIVE.3 raw-WELL bypasses Cartesian capacity",
+        raw_wells_noncartesian_status,
+        raw_wells_noncartesian_result);
+  }
+  good = raw_wells_noncartesian_good && good;
 
   // Move ACTIVE within 50 DBU of every WELL edge: raw hits must request
   // pristine CPU fallback and must never masquerade as publishable markers.
@@ -1081,6 +1120,42 @@ bool run_active3_abi_smoke() {
         "CUDA ACTIVE.3 raw-hit fallback smoke", hit_status, raw_hit);
   }
   good = hit_good && good;
+
+  // Raw-WELL still fails closed when the query's actual spatial candidates
+  // exceed the configured cap.
+  klayout_cuda_spatial_active3_request_v1
+      raw_wells_actual_candidate_capacity = raw_wells_request;
+  raw_wells_actual_candidate_capacity.max_pair_work = 1;
+  const bool raw_wells_actual_candidate_capacity_digest_good =
+      set_active3_digest(raw_wells_actual_candidate_capacity);
+  klayout_cuda_spatial_active3_result_v1
+      raw_wells_actual_candidate_capacity_result{};
+  const int raw_wells_actual_candidate_capacity_status =
+      raw_wells_actual_candidate_capacity_digest_good
+          ? klayout_cuda_spatial_run_active3_empty_v1(
+                &raw_wells_actual_candidate_capacity,
+                &raw_wells_actual_candidate_capacity_result)
+          : KLAYOUT_CUDA_SPATIAL_ERROR;
+  const bool raw_wells_actual_candidate_capacity_good =
+      raw_wells_actual_candidate_capacity_digest_good &&
+      raw_wells_actual_candidate_capacity_status ==
+          KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      raw_wells_actual_candidate_capacity_result.status ==
+          KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+      raw_wells_actual_candidate_capacity_result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN &&
+      (raw_wells_actual_candidate_capacity_result.fallback_flags &
+       KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY) != 0 &&
+      raw_wells_actual_candidate_capacity_result.device_flags != 0 &&
+      raw_wells_actual_candidate_capacity_result.candidate_pair_count >
+          raw_wells_actual_candidate_capacity.max_pair_work;
+  if (!raw_wells_actual_candidate_capacity_good) {
+    report_active3_failure(
+        "CUDA ACTIVE.3 raw-WELL actual-candidate capacity gate",
+        raw_wells_actual_candidate_capacity_status,
+        raw_wells_actual_candidate_capacity_result);
+  }
+  good = raw_wells_actual_candidate_capacity_good && good;
 
   // The digest binds the exact serialized scene.  Any mismatch must be
   // rejected before the device pipeline can produce a consumable result.
@@ -1132,8 +1207,9 @@ bool run_active3_abi_smoke() {
 
   if (good) {
     std::cout << "CUDA ACTIVE.3 additive ABI smoke passed: "
-                 "clean certificate, raw-WELL profile/options/capacity, "
-                 "raw-hit fallback, digest/count rejection\n";
+                 "clean certificate, strict profile/options, merged-WELL "
+                 "Cartesian cap, raw-WELL actual-candidate cap, raw-hit "
+                 "fallback, digest/count rejection\n";
   }
   return good;
 }

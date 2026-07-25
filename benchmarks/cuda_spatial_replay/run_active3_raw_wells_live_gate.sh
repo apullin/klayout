@@ -139,15 +139,17 @@ grep -Fq \
   "${work}/logs/cuda-ACTIVE3_RAW_WELLS_TRUE_HIT-normal.log" ||
   die "true violation did not reach the CPU marker path"
 
-run_lane cuda ACTIVE3_RAW_WELLS_CLEAN tiny
+run_lane cuda ACTIVE3_RAW_WELLS_FALSE_POSITIVE tiny
 cmp \
-  "${work}/reports/cpu-ACTIVE3_RAW_WELLS_CLEAN-normal.lyrdb.canonical" \
-  "${work}/reports/cuda-ACTIVE3_RAW_WELLS_CLEAN-tiny.lyrdb.canonical" ||
+  "${work}/reports/cpu-ACTIVE3_RAW_WELLS_FALSE_POSITIVE-normal.lyrdb.canonical" \
+  "${work}/reports/cuda-ACTIVE3_RAW_WELLS_FALSE_POSITIVE-tiny.lyrdb.canonical" ||
   die "capacity fallback report differs from pristine CPU"
-grep -Fq "reason=pair-work-capacity" \
-  "${work}/logs/cuda-ACTIVE3_RAW_WELLS_CLEAN-tiny.log" ||
-  die "pair-work capacity fallback was not observed"
+grep -Eq \
+  'CUDA ACTIVE\.3 raw-WELL empty certificate: outcome=fallback .*candidates=[2-9][0-9]* .*fallback_flags=16 ' \
+  "${work}/logs/cuda-ACTIVE3_RAW_WELLS_FALSE_POSITIVE-tiny.log" ||
+  die "actual-candidate capacity fallback was not observed"
 
 echo \
   "ACTIVE3_RAW_WELLS_LIVE_GATE PASS clean=certified" \
-  "false_positive=cpu-fallback true_hit=cpu-marker capacity=cpu-fallback"
+  "false_positive=cpu-fallback true_hit=cpu-marker" \
+  "actual_candidate_capacity=cpu-fallback"

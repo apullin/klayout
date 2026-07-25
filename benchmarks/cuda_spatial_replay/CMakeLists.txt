@@ -148,6 +148,16 @@ target_link_libraries(cuda_spatial_backend_smoke PRIVATE
   klayout_cuda_spatial_backend
 )
 
+add_executable(active3_capacity_policy_test
+  active3_capacity_policy_test.cc
+)
+target_include_directories(active3_capacity_policy_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+target_compile_options(active3_capacity_policy_test PRIVATE
+  -O3 -Wall -Wextra -Werror
+)
+
 add_executable(contact4_active_union_backend_smoke
   contact4_active_union_backend_smoke.cc
 )

@@ -1113,25 +1113,15 @@ bool cuda_active3_raw_wells_try_empty (
 
     LiveScene scene = serialize_raw_wells_live_scene (
       raw_nwell, raw_pwell, raw_active, max_contexts);
-    uint64_t pair_work = 0;
-    if (! checked_multiply_u64 (
-          scene.flat_well_edges, scene.flat_active_edges, pair_work)) {
-      throw Active3Decline ("raw-WELL/ACTIVE pair-work census overflow");
-    }
-    if (pair_work > max_pair_work) {
-      if (telemetry) {
-        tl::info << "CUDA ACTIVE.3 raw-WELL live lowering:"
-                 << " outcome=cpu-fallback"
-                 << " reason=pair-work-capacity"
-                 << " contexts=" << scene.contexts.size ()
-                 << " nwell_edges=" << scene.flat_first_well_edges
-                 << " pwell_edges=" << scene.flat_second_well_edges
-                 << " active_edges=" << scene.flat_active_edges
-                 << " pair_bound=" << pair_work
-                 << " max_pair_work=" << max_pair_work;
-      }
-      return false;
-    }
+    uint64_t cartesian_pair_bound = 0;
+    const bool cartesian_pair_bound_overflow =
+      ! checked_multiply_u64 (
+          scene.flat_well_edges, scene.flat_active_edges,
+          cartesian_pair_bound);
+    const std::string cartesian_pair_bound_text =
+      cartesian_pair_bound_overflow
+        ? std::string ("overflow")
+        : std::to_string (cartesian_pair_bound);
 
     klayout_cuda_spatial_active3_request_v1 request;
     std::memset (&request, 0, sizeof (request));
@@ -1193,7 +1183,11 @@ bool cuda_active3_raw_wells_try_empty (
                << " nwell_edges=" << scene.flat_first_well_edges
                << " pwell_edges=" << scene.flat_second_well_edges
                << " active_edges=" << request.flat_active_edge_count
-               << " pair_bound=" << pair_work
+               << " cartesian_bound=" << cartesian_pair_bound_text
+               << " cartesian_bound_overflow="
+               << (cartesian_pair_bound_overflow ? 1 : 0)
+               << " grid_cells=" << attempt.grid_cell_count
+               << " memberships=" << attempt.membership_count
                << " max_pair_work=" << max_pair_work
                << " candidates=" << attempt.candidate_pair_count
                << " raw_hits=" << attempt.raw_hit_count

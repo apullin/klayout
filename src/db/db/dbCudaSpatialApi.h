@@ -323,7 +323,9 @@ enum klayout_cuda_spatial_active3_opcode
    * union(NWELL, PWELL) and merged ACTIVE is an orientation-preserving
    * subsegment of this raw universe.  Consequently only zero unshielded raw
    * hits is consumable; every hit or uncertainty retains the exact WELL union
-   * and historical ACTIVE.3 path.
+   * and historical ACTIVE.3 path.  Its Cartesian raw-edge product is
+   * telemetry only: max_pair_work bounds actual spatial candidates, as in
+   * CONTACT.4.
    */
   KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_WELLS_BOTH_SUPERSET_EMPTY = 4
 };

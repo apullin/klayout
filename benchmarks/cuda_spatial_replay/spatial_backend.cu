@@ -10,6 +10,7 @@
 #include "dbCudaActive3Digest.h"
 #include "dbCudaImplant12Digest.h"
 #include "active3_exact_predicate.cuh"
+#include "active3_capacity_policy.h"
 #include "implant12_exact_predicate.cuh"
 #include "m1_width_space_exact_predicate.h"
 
@@ -2591,22 +2592,14 @@ bool valid_active3_request(
     return false;
   }
 
-  // Preserve the conservative Cartesian gate for both ACTIVE.3 profiles.
-  // CONTACT.4 deliberately indexes tens of millions of raw CONTACT edges,
-  // making the Cartesian product unusable; that profile is bounded against
-  // actual spatial candidates in the query kernel instead.
-  if (request.opcode ==
-        KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_SUPERSET_EMPTY ||
-      request.opcode ==
-        KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_WELLS_BOTH_SUPERSET_EMPTY) {
-    if (request.flat_active_edge_count >
-        std::numeric_limits<std::uint64_t>::max() /
-            request.flat_well_edge_count) {
-      return false;
-    }
-    const std::uint64_t pair_work =
-        request.flat_active_edge_count * request.flat_well_edge_count;
-    if (pair_work > request.max_pair_work) return false;
+  // Preserve the established merged-WELL ACTIVE.3 Cartesian gate.  Raw-WELL
+  // ACTIVE.3 and both CONTACT.4 profiles deliberately index tens of millions
+  // of raw edges, making the Cartesian product unusable; those profiles are
+  // bounded against actual spatial candidates after the query kernel.
+  if (!klayout_cuda::active3::cartesian_pair_preflight_allows(
+          request.opcode, request.flat_well_edge_count,
+          request.flat_active_edge_count, request.max_pair_work)) {
+    return false;
   }
 
   std::uint64_t next_edge = 0;
@@ -2965,7 +2958,8 @@ Active3PipelineResult run_active3_pipeline(
   result.raw_hits = host_counters.raw_hits;
   result.uncertain = host_counters.uncertain;
   result.d2h_ns = elapsed_ns(d2h_begin, Clock::now());
-  if (result.candidates > request.max_pair_work) {
+  if (klayout_cuda::active3::actual_candidate_capacity_exceeded(
+          result.candidates, request.max_pair_work)) {
     result.device_flags |= kActive3PairCapacityExceeded;
   }
   if (result.device_flags) {
