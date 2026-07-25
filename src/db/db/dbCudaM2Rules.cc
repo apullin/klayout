@@ -50,6 +50,7 @@ CudaM2FlatUnionAttempt::CudaM2FlatUnionAttempt ()
     flat_edge_count (0), rectangle_count (0), x_slab_count (0),
     membership_count (0), event_count (0), strip_interval_count (0),
     raw_segment_count (0), boundary_segment_count (0), boundary_fnv64 (0),
+    suffix_certified_empty_mask (0), suffix_total_ns (0),
     lowering_ns (0), backend_ns (0), materialize_ns (0),
     live_total_ns (0), flat_stats (), message ()
 {
@@ -346,7 +347,7 @@ void make_m2_union_request (
   request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
   request.struct_size = sizeof (request);
   request.opcode =
-    KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY;
+    KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_M25_9_EMPTY;
   request.option_flags =
     KLAYOUT_CUDA_SPATIAL_M2_UNION_QUALIFIED_OPTIONS;
   request.format_version = scene.format_version;
@@ -628,8 +629,10 @@ CudaM2FlatUnionAttempt cuda_m2_raw_manhattan_try_flat_union (
     attempt.lowering_ns = elapsed_ns (begin, lower_end);
 
     backend_called = true;
+    CudaM2SuffixCertificate suffix;
     const CudaM2UnionAttempt backend =
-      cuda_spatial_try_m2_union (request);
+      cuda_spatial_try_m2_union_with_certificate (
+        request, &suffix, sizeof (suffix));
     copy_backend_telemetry (backend, attempt);
 
     switch (backend.disposition) {
@@ -653,6 +656,19 @@ CudaM2FlatUnionAttempt cuda_m2_raw_manhattan_try_flat_union (
       break;
     }
     if (backend.disposition != CudaM2UnionAttempt::Complete) {
+      attempt.live_total_ns =
+        elapsed_ns (begin, std::chrono::steady_clock::now ());
+      return attempt;
+    }
+    if (suffix.format_version != CudaM2SuffixCertificate::FormatVersion ||
+        suffix.struct_size != sizeof (suffix) ||
+        suffix.certified_empty_mask !=
+          KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY ||
+        suffix.reserved != 0 || suffix.total_ns == 0 ||
+        suffix.total_ns > backend.total_ns) {
+      attempt.disposition = CudaM2FlatUnionAttempt::InvalidResult;
+      attempt.message =
+        "complete M2 boundary lacked the exact M2.5-.9 empty certificate";
       attempt.live_total_ns =
         elapsed_ns (begin, std::chrono::steady_clock::now ());
       return attempt;
@@ -682,6 +698,9 @@ CudaM2FlatUnionAttempt cuda_m2_raw_manhattan_try_flat_union (
     }
 
     attempt.flat_stats = flat_stats;
+    attempt.suffix_certified_empty_mask =
+      suffix.certified_empty_mask;
+    attempt.suffix_total_ns = suffix.total_ns;
     attempt.disposition = CudaM2FlatUnionAttempt::Complete;
     attempt.message.clear ();
     return attempt;

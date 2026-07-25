@@ -1386,6 +1386,8 @@ static void cuda_m2_flat_union_telemetry (
       << " bridge_live_ms=" << double (bridge_live_ns) * ns_to_ms
       << " raw_segments=" << attempt.raw_segment_count
       << " boundary_segments=" << attempt.boundary_segment_count
+      << " suffix_mask=" << attempt.suffix_certified_empty_mask
+      << " suffix_ms=" << double (attempt.suffix_total_ns) * ns_to_ms
       << " contours=" << attempt.flat_stats.contour_count
       << " vertices=" << attempt.flat_stats.vertex_count
       << " via2_polygons=" << via2_polygon_count
@@ -4793,9 +4795,10 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "\n"
     "This internal fail-closed hook first requires the complete optional "
     "M2 union run/release capability. It publishes two owned flat Regions "
-    "only after exact M2 union validation and delayed read-only VIA2 "
-    "materialization both complete. False leaves all inputs and outputs "
-    "untouched and requires the pristine CPU rule path.\n"
+    "only after exact M2 union validation, an all-five-bit M2.5-.9 empty "
+    "certificate, and delayed read-only VIA2 materialization all complete. "
+    "False leaves all inputs and outputs untouched and requires the pristine "
+    "CPU rule path. M2.1, M2.2, and M2.4 remain unchecked.\n"
   ) +
   method_ext (
     "cuda_via1_stack_clean?", &cuda_via1_stack_clean,

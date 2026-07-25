@@ -9,8 +9,10 @@ Usage:
     [--live-klayout PATH] [--backend PATH] [--python PATH] [--cxx PATH] \
     [--generate-only] [--keep-work]
 
-Generates the exact opt-in M2.1/.2/.4-.9 speculative-flat deck and a bounded
-physical FreePDK45 M2/VIA2 fixture. The mandatory stock-host lanes check:
+Generates the exact opt-in M2 transaction deck and a bounded physical
+FreePDK45 M2/VIA2 fixture.  A successful backend certifies M2.5-.9 empty;
+the owned flat operands speculatively check M2.1/.2/.4. The mandatory
+stock-host lanes check:
 
   * deterministic, exact-count deck rewriting with no source-layer mutation;
   * source versus generated behavior with the runtime request disabled; and
@@ -20,9 +22,9 @@ An optional live host checks the same reports with the backend absent, then
 builds and loads the CPU-only contract fake. Its exact deck_clean boundary
 must certify an empty candidate set while preserving independent M2.3 and
 VIA2.1 owners; its live_caps boundary must complete host publication and then
-take the pristine CPU fallback on a speculative suffix hit. If a real backend
-is also supplied, clean M2 lanes must certify empty while every
-M2.1/.2/.4/.5-.9 hit must reproduce the pristine CPU report.
+take the pristine CPU fallback on a speculative prefix hit. If a real backend
+is also supplied, clean M2 lanes must certify empty while every prefix hit or
+suffix decline must reproduce the pristine CPU report.
 
 All generated decks, layouts, reports, logs, homes, and caches are created
 under a fresh /tmp directory. --generate-only stops after deterministic deck
@@ -268,7 +270,7 @@ assert_deck_count 1 \
 assert_deck_count 1 \
   'metal2.cuda_m2_flat_union(via2)' \
   "flat operand transaction"
-assert_deck_count 8 \
+assert_deck_count 3 \
   'm2_rules_flat_results &lt;&lt;' \
   "exact speculative result census"
 assert_deck_count 8 \
@@ -318,16 +320,16 @@ if grep -Fq -- '.output(' "${speculative_block}"; then
   die "speculative flat path publishes a non-atomic output"
 fi
 grep -Fq -- \
-  'm2_rules_flat_results.length == 8 &amp;&amp; m2_rules_flat_results.all? { |result| result.is_empty? }' \
+  'm2_rules_flat_results.length == 3 &amp;&amp; m2_rules_flat_results.all? { |result| result.is_empty? }' \
   "${speculative_block}" ||
-  die "generated deck is missing the exact eight-result clean decision"
+  die "generated deck is missing the exact three-prefix-result clean decision"
 grep -Fq -- 'm2_rules_flat_temps.reverse_each do |layer|' \
   "${speculative_block}" ||
   die "generated deck is missing reverse temporary cleanup"
 
-clean_assignment='m2_rules_clean = m2_rules_flat_results.length == 8 &amp;&amp; m2_rules_flat_results.all? { |result| result.is_empty? }'
+clean_assignment='m2_rules_clean = m2_rules_flat_results.length == 3 &amp;&amp; m2_rules_flat_results.all? { |result| result.is_empty? }'
 [[ $(grep -Fc -- "${clean_assignment}" "${speculative_block}" || true) == 1 ]] ||
-  die "generated deck must contain one exact eight-result decision"
+  die "generated deck must contain one exact three-prefix-result decision"
 [[ $(grep -Ec -- '^[[:space:]]*ensure$' "${speculative_block}" || true) == 1 ]] ||
   die "speculative transaction must contain one ensure boundary"
 [[ $(grep -Fc -- "'certified-empty'" "${speculative_block}" || true) == 1 ]] ||
@@ -347,7 +349,7 @@ certified_line=$(
 ((clean_line < ensure_line &&
   ensure_line < cleanup_line &&
   cleanup_line < certified_line)) ||
-  die "all-eight decision, ensure cleanup, and certification are misordered"
+  die "three-prefix decision, ensure cleanup, and certification are misordered"
 
 echo \
   "M2_RULES_LIVE_GATE ok gate=deck deterministic=1 exact_results=8 evaluation=before-cleanup certification=after-cleanup atomic_outputs=8 pristine_fallbacks=8 ownership=M2.3,VIA2.1-.4"
@@ -544,7 +546,7 @@ assert_transaction() {
         "CUDA M2 live flat operands: disposition=complete" "${log}" ||
         die "${lane}/${top}: deck_clean fake did not publish flat operands"
       grep -Fq -- \
-        "CUDA M2 rules transaction: certified-empty reason=all-clean" \
+        "CUDA M2 rules transaction: certified-empty reason=prefix-clean+suffix-certified" \
         "${log}" ||
         die "${lane}/${top}: exact clean flat operands did not certify empty"
       ;;
@@ -555,9 +557,9 @@ assert_transaction() {
         "CUDA M2 live flat operands: disposition=complete" "${log}" ||
         die "${lane}/${top}: live_caps fake did not publish flat operands"
       grep -Fq -- \
-        "CUDA M2 rules transaction: full-cpu-fallback reason=rule-hit" \
+        "CUDA M2 rules transaction: full-cpu-fallback reason=prefix-rule-hit" \
         "${log}" ||
-        die "${lane}/${top}: speculative suffix hit did not select CPU fallback"
+        die "${lane}/${top}: speculative prefix hit did not select CPU fallback"
       ;;
     cuda)
       [[ "${transaction_count}" == 1 ]] ||
@@ -567,12 +569,12 @@ assert_transaction() {
         die "${lane}/${top}: real backend did not publish exact flat operands"
       if is_atomic_hit_case "${top}"; then
         grep -Fq -- \
-          "CUDA M2 rules transaction: full-cpu-fallback reason=rule-hit" \
+          "CUDA M2 rules transaction: full-cpu-fallback reason=prefix-rule-hit" \
           "${log}" ||
           die "${lane}/${top}: flat rule hit did not select pristine fallback"
       else
         grep -Fq -- \
-          "CUDA M2 rules transaction: certified-empty reason=all-clean" \
+          "CUDA M2 rules transaction: certified-empty reason=prefix-clean+suffix-certified" \
           "${log}" ||
           die "${lane}/${top}: clean atomic M2 set did not certify empty"
       fi

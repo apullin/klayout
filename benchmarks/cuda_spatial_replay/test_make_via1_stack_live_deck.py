@@ -169,7 +169,7 @@ class M2RulesTransformTest(unittest.TestCase):
         self.assertEqual(
             first.count("metal2.cuda_m2_flat_union(via2)"), 1
         )
-        self.assertEqual(first.count("m2_rules_flat_results &lt;&lt;"), 8)
+        self.assertEqual(first.count("m2_rules_flat_results &lt;&lt;"), 3)
         self.assertEqual(first.count("m2_rules_empty.output"), 8)
 
         expected_empty = [
@@ -198,10 +198,14 @@ class M2RulesTransformTest(unittest.TestCase):
 
         self.assertNotIn(".output(", speculative)
         self.assertIn(
-            "m2_rules_flat_results.length == 8 &amp;&amp; "
+            "m2_rules_flat_results.length == 3 &amp;&amp; "
             "m2_rules_flat_results.all? { |result| result.is_empty? }",
             speculative,
         )
+        self.assertIn("prefix-clean+suffix-certified", speculative)
+        self.assertNotIn("m2_rules_flat_gt90", speculative)
+        self.assertNotIn("m2_rules_flat_edges_5", speculative)
+        self.assertNotIn("m2_rules_flat_metal2_9", speculative)
         self.assertIn("rescue StandardError =&gt; m2_rules_error", speculative)
         self.assertIn("m2_rules_flat_temps.reverse_each do |layer|", speculative)
         self.assertIn("layer.forget if layer", speculative)
@@ -210,7 +214,7 @@ class M2RulesTransformTest(unittest.TestCase):
         )
 
         clean_assignment = (
-            "m2_rules_clean = m2_rules_flat_results.length == 8 &amp;&amp; "
+            "m2_rules_clean = m2_rules_flat_results.length == 3 &amp;&amp; "
             "m2_rules_flat_results.all? { |result| result.is_empty? }"
         )
         clean_index = transformed.index(clean_assignment)

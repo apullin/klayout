@@ -3663,9 +3663,10 @@ CODE
     # Internal, fail-closed acceleration hook for a qualified physical
     # FreePDK45 M2/VIA2 pair.  The receiver is pristine deep M2.  C++ checks
     # complete backend capability before hierarchy access, constructs a true
-    # flat exact M2 union, and only then read-only materializes pristine deep
-    # VIA2 into a true flat region.  Nil means the caller must use every
-    # historical CPU rule.
+    # flat exact M2 union, requires the complete M2.5-.9 empty certificate,
+    # and only then read-only materializes pristine deep VIA2 into a true flat
+    # region.  M2.1/.2/.4 remain unchecked.  Nil means the caller must use
+    # every historical CPU rule.
     def cuda_m2_flat_union(via2)
       @engine._context("cuda_m2_flat_union") do
         check_is_layer(via2)

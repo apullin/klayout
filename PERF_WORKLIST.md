@@ -2432,6 +2432,35 @@ not just wall time.
                 Evidence:
                 `.scratchpad/cuda-runs/klayout-m2-rules-production-owner.oSbILc`.
 
+              - [x] **Fuse the exact resident M2.5-.9 suffix into that live
+                transaction:** additive opcode 2 returns the unchanged exact
+                union boundary only with an all-five-bit empty certificate.
+                Compact and live raw-scene digests are independently paired
+                with their exact 587,201-context/143-cell and
+                849,265-context/273-cell censuses; old backends, partial
+                masks, malformed/reserved telemetry, any hit or uncertainty,
+                capacity decline, topology failure, and every non-OK outcome
+                leave the complete historical CPU block intact.
+
+                The full compact production gate preserved all 4,385,384
+                canonical boundary segments and FNV-64
+                `7541395996791771514` across three calls while publishing
+                mask 31.  Its resident suffix took 585.247, 576.618, and
+                579.242 ms; the warm median is 577.930 ms versus the matched
+                14.691-second stock suffix, **14.113 real seconds / 96.07%
+                less suffix time**.  The live owner then preserved canonical
+                report SHA-256
+                `b817dc5b2158a5a04316daae8e27ec7fbf7e82341f961a3464c17937c8d9d77e`
+                at 18.41 s.  Against the immediately preceding accepted
+                accelerated owner record of 37.53 s, that is a provisional
+                **19.12 real seconds / 50.95% less owner wall**.  This last
+                comparison is cross-run `N=1`, so an order-balanced
+                previous-versus-resident A/B remains required before treating
+                it as a statistically booked incremental result.  Backend
+                commit `1d093dc`; evidence:
+                `.scratchpad/cuda-runs/m2-union-production-backend.nW8B8r`
+                and `/tmp/klayout-m2-rules-production-owner.1LYIyF`.
+
           Cache immutable merged M1/M2 geometry (or an equivalent canonical
           raw-layer scene), then the shared 273-cell/849,265-context hierarchy,
           cell-local layer templates, and device indexes.  Bind every reuse to

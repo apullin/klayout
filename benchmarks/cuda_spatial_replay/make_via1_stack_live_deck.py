@@ -157,12 +157,13 @@ metal2_width.output("METAL2.1", "METAL2.1 : Minimum width of  intermediate metal
 metal2_space.output("METAL2.2", "METAL2.2 : Minimum spacing of  intermediate metal2 : 70nm")""",
         """if run_m2_rules
 
-# The optional exact M2 union is geometry, not a rule certificate.  Run the
-# complete historical M2.1/.2/.4/.5-.9 suffix speculatively on owned flat
-# operands and publish empty categories only if every result is empty.
-# Any missing method, decline, hit, exception, or cleanup failure selects the
-# pristine deep CPU expressions below.  M2.3 remains under its existing VIA1
-# transaction owner and VIA2.1-.4 remain under run_via1_upper_active12.
+# The optional exact M2 transaction returns owned flat operands only when its
+# backend also certifies the fixed M2.5-.9 suffix empty.  Run M2.1/.2/.4
+# speculatively on those flat operands and publish empty categories only if
+# all three CPU results are empty.  Any missing method, backend decline,
+# prefix hit, exception, or cleanup failure selects the pristine complete CPU
+# block below.  M2.3 remains under its existing VIA1 transaction owner and
+# VIA2.1-.4 remain under run_via1_upper_active12.
 m2_rules_request = ENV["KLAYOUT_CUDA_M2_RULES"].to_s
 m2_rules_requested = !m2_rules_request.empty? &amp;&amp; m2_rules_request != "0" &amp;&amp; m2_rules_request != "false" &amp;&amp; m2_rules_request != "off"
 m2_rules_owner = m2_rules_requested &amp;&amp; run_m2_rules
@@ -203,55 +204,10 @@ if m2_rules_owner
         m2_rules_flat_temps &lt;&lt; m2_rules_flat_metal2_4
         m2_rules_flat_results &lt;&lt; m2_rules_flat_metal2_4
 
-        m2_rules_flat_gt90, m2_rules_flat_gt270, m2_rules_flat_gt500, m2_rules_flat_gt900, m2_rules_flat_gt1500 = classify_by_width(m2_rules_flat_metal2, 90.nm, 270.nm, 500.nm, 900.nm, 1500.nm)
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_gt90
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_gt270
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_gt500
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_gt900
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_gt1500
-
-        m2_rules_flat_edges_5 = m2_rules_flat_gt90.edges
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_edges_5
-        m2_rules_flat_long_edges_5 = m2_rules_flat_edges_5.with_length(300.nm,nil)
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_long_edges_5
-        m2_rules_flat_metal2_5 = m2_rules_flat_long_edges_5.space(90.nm,euclidian)
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_metal2_5
-        m2_rules_flat_results &lt;&lt; m2_rules_flat_metal2_5
-
-        m2_rules_flat_edges_6 = m2_rules_flat_gt270.edges
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_edges_6
-        m2_rules_flat_long_edges_6 = m2_rules_flat_edges_6.with_length(900.nm,nil)
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_long_edges_6
-        m2_rules_flat_metal2_6 = m2_rules_flat_long_edges_6.space(270.nm,euclidian)
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_metal2_6
-        m2_rules_flat_results &lt;&lt; m2_rules_flat_metal2_6
-
-        m2_rules_flat_edges_7 = m2_rules_flat_gt500.edges
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_edges_7
-        m2_rules_flat_long_edges_7 = m2_rules_flat_edges_7.with_length(1.8.um,nil)
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_long_edges_7
-        m2_rules_flat_metal2_7 = m2_rules_flat_long_edges_7.space(500.nm,euclidian)
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_metal2_7
-        m2_rules_flat_results &lt;&lt; m2_rules_flat_metal2_7
-
-        m2_rules_flat_edges_8 = m2_rules_flat_gt900.edges
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_edges_8
-        m2_rules_flat_long_edges_8 = m2_rules_flat_edges_8.with_length(2.7.um,nil)
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_long_edges_8
-        m2_rules_flat_metal2_8 = m2_rules_flat_long_edges_8.space(900.nm,euclidian)
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_metal2_8
-        m2_rules_flat_results &lt;&lt; m2_rules_flat_metal2_8
-
-        m2_rules_flat_edges_9 = m2_rules_flat_gt1500.edges
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_edges_9
-        m2_rules_flat_long_edges_9 = m2_rules_flat_edges_9.with_length(4.um,nil)
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_long_edges_9
-        m2_rules_flat_metal2_9 = m2_rules_flat_long_edges_9.space(1500.nm,euclidian)
-        m2_rules_flat_temps &lt;&lt; m2_rules_flat_metal2_9
-        m2_rules_flat_results &lt;&lt; m2_rules_flat_metal2_9
-
-        m2_rules_clean = m2_rules_flat_results.length == 8 &amp;&amp; m2_rules_flat_results.all? { |result| result.is_empty? }
-        m2_rules_reason = m2_rules_clean ? "all-clean" : "rule-hit"
+        # A successful operand transaction is itself the exact all-five-bit
+        # M2.5-.9 certificate.  Do not repeat those rules on the host.
+        m2_rules_clean = m2_rules_flat_results.length == 3 &amp;&amp; m2_rules_flat_results.all? { |result| result.is_empty? }
+        m2_rules_reason = m2_rules_clean ? "prefix-clean+suffix-certified" : "prefix-rule-hit"
       else
         m2_rules_reason = "operand-decline"
       end

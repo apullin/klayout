@@ -347,6 +347,8 @@ TEST(6_MissingCapabilityPrecedesRawGeometryAccess)
     attempt.disposition, db::CudaM2FlatUnionAttempt::Disabled);
   EXPECT_EQ (attempt.lowering_ns, uint64_t (0));
   EXPECT_EQ (attempt.boundary_segment_count, uint64_t (0));
+  EXPECT_EQ (attempt.suffix_certified_empty_mask, uint32_t (0));
+  EXPECT_EQ (attempt.suffix_total_ns, uint64_t (0));
   EXPECT_EQ (attempt.message, "");
   EXPECT_EQ (output.count (), size_t (1));
   EXPECT_EQ (output.bbox (), db::Box (100, 200, 300, 400));

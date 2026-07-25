@@ -170,9 +170,14 @@ int main (int argc, char **argv)
         output.merged_semantics () && output.is_merged () &&
         attempt.flat_stats.segment_count == 4 &&
         attempt.flat_stats.contour_count == 1 &&
-        attempt.flat_stats.vertex_count == 4
+        attempt.flat_stats.vertex_count == 4 &&
+        attempt.suffix_certified_empty_mask ==
+          KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY &&
+        attempt.suffix_total_ns == 500
       : output.count () == size_t (1) &&
-        output.bbox () == db::Box (100, 200, 300, 400);
+        output.bbox () == db::Box (100, 200, 300, 400) &&
+        attempt.suffix_certified_empty_mask == 0 &&
+        attempt.suffix_total_ns == 0;
   const bool counters_ok =
     (expected == "disabled" || expected == "host")
       ? run_count == 0 && release_count == 0
@@ -205,6 +210,8 @@ int main (int argc, char **argv)
       << " release_count=" << release_count
       << " contexts=" << attempt.context_count
       << " segments=" << attempt.boundary_segment_count
+      << " suffix_mask=" << attempt.suffix_certified_empty_mask
+      << " suffix_ns=" << attempt.suffix_total_ns
       << " message=" << attempt.message << "\n";
     return 1;
   }

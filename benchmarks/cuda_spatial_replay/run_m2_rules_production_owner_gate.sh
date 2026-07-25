@@ -284,7 +284,7 @@ assert_deck_count 1 \
 assert_deck_count 1 \
   'metal2.cuda_m2_flat_union(via2)' \
   "flat operand transaction"
-assert_deck_count 8 \
+assert_deck_count 3 \
   'm2_rules_flat_results &lt;&lt;' \
   "speculative result census"
 assert_deck_count 8 \
@@ -334,9 +334,9 @@ if grep -Fq -- '.output(' "${speculative_block}"; then
   die "speculative M2 path publishes a non-atomic output"
 fi
 
-clean_assignment='m2_rules_clean = m2_rules_flat_results.length == 8 &amp;&amp; m2_rules_flat_results.all? { |result| result.is_empty? }'
+clean_assignment='m2_rules_clean = m2_rules_flat_results.length == 3 &amp;&amp; m2_rules_flat_results.all? { |result| result.is_empty? }'
 [[ "$(grep -Fc -- "${clean_assignment}" "${speculative_block}" || true)" == 1 ]] ||
-  die "generated deck must contain one exact eight-result decision"
+  die "generated deck must contain one exact three-prefix-result decision"
 [[ "$(grep -Ec -- '^[[:space:]]*ensure$' \
   "${speculative_block}" || true)" == 1 ]] ||
   die "speculative transaction must contain one ensure boundary"
@@ -359,10 +359,10 @@ certified_line=$(grep -nF -- "'certified-empty'" \
 ((clean_line < ensure_line &&
   ensure_line < cleanup_line &&
   cleanup_line < certified_line)) ||
-  die "all-eight decision, cleanup, and certification are misordered"
+  die "three-prefix decision, cleanup, and certification are misordered"
 
 echo \
-  "M2_RULES_PRODUCTION_OWNER_GATE ok gate=generator default-byte-identical=1 repeatable=1 exact-matcher=1 atomic-results=8 pristine-fallbacks=8 ownership=M2.3,VIA2.1-.4"
+  "M2_RULES_PRODUCTION_OWNER_GATE ok gate=generator default-byte-identical=1 repeatable=1 exact-matcher=1 prefix-results=3 suffix-bits=5 atomic-outputs=8 pristine-fallbacks=8 ownership=M2.3,VIA2.1-.4"
 
 if ((generate_only)); then
   sha256sum -- \
@@ -778,7 +778,7 @@ assert_exact_marker \
   "complete live-flat"
 assert_exact_marker \
   candidate \
-  "CUDA M2 rules transaction: certified-empty reason=all-clean" \
+  "CUDA M2 rules transaction: certified-empty reason=prefix-clean+suffix-certified" \
   "certified-empty rules transaction"
 for family in \
   "CUDA M2 exact union boundary:" \
@@ -841,6 +841,7 @@ flat_line=$(
 for token in \
   raw_segments=9575624 \
   boundary_segments=4385384 \
+  suffix_mask=31 \
   contours=14222 \
   vertices=4385384 \
   via2_polygons=10128 \
@@ -849,9 +850,12 @@ for token in \
   [[ " ${flat_line} " == *" ${token} "* ]] ||
     die "candidate: live-flat topology fingerprint is missing ${token}"
 done
+[[ " ${flat_line} " =~ [[:space:]]suffix_ms=([0-9]+\.[0-9]+)[[:space:]] ]] &&
+  [[ "${BASH_REMATCH[1]}" != "0.000" ]] ||
+  die "candidate: resident M2.5-.9 timing is missing or zero"
 
 if grep -Eq -- \
-  'CUDA M2 rules transaction: full-cpu-fallback|reason=rule-hit|CUDA M2 exact union boundary: outcome=(fallback|error|invalid-result|disabled)|CUDA M2 live flat operands: disposition=(host-declined|backend-fallback|backend-error|invalid-result|topology-declined|disabled)|cudaSetDevice:' \
+  'CUDA M2 rules transaction: full-cpu-fallback|reason=prefix-rule-hit|CUDA M2 exact union boundary: outcome=(fallback|error|invalid-result|disabled)|CUDA M2 live flat operands: disposition=(host-declined|backend-fallback|backend-error|invalid-result|topology-declined|disabled)|cudaSetDevice:' \
   "${work}/logs/candidate.log"; then
   die "candidate: M2 telemetry reported a fallback, decline, or device error"
 fi

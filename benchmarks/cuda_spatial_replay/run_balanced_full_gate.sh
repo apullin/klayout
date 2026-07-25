@@ -563,7 +563,7 @@ if ((m2_rules == 1)); then
     "CUDA M2 live flat operands: disposition=complete" \
     "M2 live-flat operand publication"
   require_telemetry \
-    "CUDA M2 rules transaction: certified-empty reason=all-clean" \
+    "CUDA M2 rules transaction: certified-empty reason=prefix-clean+suffix-certified" \
     "M2 rules certified-empty"
 elif ((m2_rules == 0)) &&
      grep -R -Eq --include='*.log' -- \
