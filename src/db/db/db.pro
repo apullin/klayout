@@ -189,6 +189,7 @@ SOURCES = \
   dbCudaActive3.cc \
   dbCudaImplant12.cc \
   dbCudaM1WidthSpace.cc \
+  dbCudaM2Rules.cc \
   dbCudaPoly34.cc \
   dbCudaSpatialBackend.cc \
   dbCudaVia1Stack.cc \
@@ -380,6 +381,7 @@ HEADERS = \
   dbCudaImplant12Digest.h \
   dbCudaManhattanContour.h \
   dbCudaM1WidthSpace.h \
+  dbCudaM2Rules.h \
   dbCudaPoly34.h \
   dbCudaPoly34Digest.h \
   dbCudaSpatialApi.h \

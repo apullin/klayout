@@ -1,0 +1,239 @@
+/*
+
+  KLayout Layout Viewer
+  Copyright (C) 2006-2026 Matthias Koefferlein
+
+  This program is free software; you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation; either version 2 of the License, or
+  (at your option) any later version.
+
+*/
+
+#include "dbCudaM2Rules.h"
+
+#include "dbBox.h"
+#include "dbRegion.h"
+#include "tlUnitTest.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <vector>
+
+namespace
+{
+
+typedef klayout_cuda_spatial_m2_union_segment_v1 Segment;
+
+bool segment_less (const Segment &first, const Segment &second)
+{
+  if (first.axis != second.axis) {
+    return first.axis < second.axis;
+  }
+  if (first.side != second.side) {
+    return first.side < second.side;
+  }
+  if (first.fixed != second.fixed) {
+    return first.fixed < second.fixed;
+  }
+  if (first.lo != second.lo) {
+    return first.lo < second.lo;
+  }
+  return first.hi < second.hi;
+}
+
+uint64_t boundary_fnv64 (const std::vector<Segment> &segments)
+{
+  uint64_t hash = UINT64_C (1469598103934665603);
+  const auto mix = [&hash] (uint64_t value) {
+    for (unsigned int byte = 0; byte < 8; ++byte) {
+      hash ^= (value >> (byte * 8)) & UINT64_C (0xff);
+      hash *= UINT64_C (1099511628211);
+    }
+  };
+  mix (segments.size ());
+  for (std::vector<Segment>::const_iterator segment =
+         segments.begin (); segment != segments.end (); ++segment) {
+    mix (uint64_t (segment->axis));
+    mix (uint64_t (uint32_t (segment->side)));
+    mix (uint64_t (segment->fixed));
+    mix (uint64_t (segment->lo));
+    mix (uint64_t (segment->hi));
+  }
+  return hash;
+}
+
+std::vector<Segment> rectangle (
+  int64_t left, int64_t bottom, int64_t right, int64_t top,
+  bool clockwise = true)
+{
+  std::vector<Segment> result;
+  if (clockwise) {
+    result.push_back (
+      Segment {
+        bottom, left, right, -1,
+        KLAYOUT_CUDA_SPATIAL_M2_UNION_HORIZONTAL
+      });
+    result.push_back (
+      Segment {
+        top, left, right, 1,
+        KLAYOUT_CUDA_SPATIAL_M2_UNION_HORIZONTAL
+      });
+    result.push_back (
+      Segment {
+        left, bottom, top, -1,
+        KLAYOUT_CUDA_SPATIAL_M2_UNION_VERTICAL
+      });
+    result.push_back (
+      Segment {
+        right, bottom, top, 1,
+        KLAYOUT_CUDA_SPATIAL_M2_UNION_VERTICAL
+      });
+  } else {
+    result.push_back (
+      Segment {
+        top, left, right, -1,
+        KLAYOUT_CUDA_SPATIAL_M2_UNION_HORIZONTAL
+      });
+    result.push_back (
+      Segment {
+        bottom, left, right, 1,
+        KLAYOUT_CUDA_SPATIAL_M2_UNION_HORIZONTAL
+      });
+    result.push_back (
+      Segment {
+        right, bottom, top, -1,
+        KLAYOUT_CUDA_SPATIAL_M2_UNION_VERTICAL
+      });
+    result.push_back (
+      Segment {
+        left, bottom, top, 1,
+        KLAYOUT_CUDA_SPATIAL_M2_UNION_VERTICAL
+      });
+  }
+  std::sort (result.begin (), result.end (), segment_less);
+  return result;
+}
+
+void append_rectangle (
+  std::vector<Segment> &target,
+  int64_t left, int64_t bottom, int64_t right, int64_t top)
+{
+  const std::vector<Segment> added =
+    rectangle (left, bottom, right, top);
+  target.insert (target.end (), added.begin (), added.end ());
+  std::sort (target.begin (), target.end (), segment_less);
+}
+
+void expect_decline_unchanged (
+  tl::TestBase *_this, const std::vector<Segment> &segments)
+{
+  db::Region output (db::Box (100, 200, 300, 400));
+  db::CudaM2FlatUnionStats stats;
+  stats.segment_count = 91;
+  stats.contour_count = 92;
+  stats.vertex_count = 93;
+  stats.max_vertices = 94;
+  std::string reason;
+  EXPECT_EQ (
+    db::cuda_m2_union_boundary_to_flat_region (
+      segments.data (), segments.size (), boundary_fnv64 (segments),
+      output, &stats, &reason),
+    false);
+  EXPECT_EQ (output.count (), size_t (1));
+  EXPECT_EQ (output.bbox (), db::Box (100, 200, 300, 400));
+  EXPECT_EQ (stats.segment_count, uint64_t (91));
+  EXPECT_EQ (stats.contour_count, uint64_t (92));
+  EXPECT_EQ (stats.vertex_count, uint64_t (93));
+  EXPECT_EQ (stats.max_vertices, uint64_t (94));
+  EXPECT_EQ (reason.empty (), false);
+}
+
+} // anonymous namespace
+
+TEST(1_ValidBoundaryBecomesOwnedMergedFlatRegion)
+{
+  const std::vector<Segment> box = rectangle (0, 0, 10, 20);
+  EXPECT_EQ (boundary_fnv64 (box), UINT64_C (11447980897846940057));
+
+  db::Region output (db::Box (100, 200, 300, 400));
+  db::CudaM2FlatUnionStats stats;
+  std::string reason;
+  EXPECT_EQ (
+    db::cuda_m2_union_boundary_to_flat_region (
+      box.data (), box.size (), boundary_fnv64 (box),
+      output, &stats, &reason),
+    true);
+  EXPECT_EQ (reason, "");
+  EXPECT_EQ (output.merged_semantics (), true);
+  EXPECT_EQ (output.is_merged (), true);
+  EXPECT_EQ (output.count (), size_t (1));
+  EXPECT_EQ (output.bbox (), db::Box (0, 0, 10, 20));
+  EXPECT_EQ (stats.segment_count, uint64_t (4));
+  EXPECT_EQ (stats.contour_count, uint64_t (1));
+  EXPECT_EQ (stats.vertex_count, uint64_t (4));
+  EXPECT_EQ (stats.max_vertices, uint64_t (4));
+
+  std::vector<Segment> disjoint = box;
+  append_rectangle (disjoint, 100, 200, 130, 240);
+  EXPECT_EQ (
+    db::cuda_m2_union_boundary_to_flat_region (
+      disjoint.data (), disjoint.size (), boundary_fnv64 (disjoint),
+      output, &stats, &reason),
+    true);
+  EXPECT_EQ (output.is_merged (), true);
+  EXPECT_EQ (output.count (), size_t (2));
+  EXPECT_EQ (stats.segment_count, uint64_t (8));
+  EXPECT_EQ (stats.contour_count, uint64_t (2));
+  EXPECT_EQ (stats.vertex_count, uint64_t (8));
+}
+
+TEST(2_TopologyAndOrientationFailClosed)
+{
+  std::vector<Segment> open = rectangle (0, 0, 10, 20);
+  open.pop_back ();
+  expect_decline_unchanged (_this, open);
+
+  std::vector<Segment> kissing = rectangle (0, 0, 10, 10);
+  append_rectangle (kissing, 10, 10, 20, 20);
+  expect_decline_unchanged (_this, kissing);
+
+  std::vector<Segment> crossing = rectangle (0, 0, 10, 10);
+  append_rectangle (crossing, 5, -5, 15, 5);
+  expect_decline_unchanged (_this, crossing);
+
+  const std::vector<Segment> hole =
+    rectangle (0, 0, 10, 20, false);
+  expect_decline_unchanged (_this, hole);
+}
+
+TEST(3_DigestCanonicalAndCoordinateFailuresAreAtomic)
+{
+  const std::vector<Segment> box = rectangle (0, 0, 10, 20);
+  db::Region output (db::Box (100, 200, 300, 400));
+  db::CudaM2FlatUnionStats stats;
+  stats.segment_count = 77;
+  std::string reason;
+  EXPECT_EQ (
+    db::cuda_m2_union_boundary_to_flat_region (
+      box.data (), box.size (), boundary_fnv64 (box) + 1,
+      output, &stats, &reason),
+    false);
+  EXPECT_EQ (output.bbox (), db::Box (100, 200, 300, 400));
+  EXPECT_EQ (stats.segment_count, uint64_t (77));
+  EXPECT_EQ (reason, "M2 boundary FNV-1a digest mismatch");
+
+  std::vector<Segment> unordered = box;
+  std::swap (unordered [0], unordered [1]);
+  expect_decline_unchanged (_this, unordered);
+
+  if (sizeof (db::Coord) < sizeof (int64_t)) {
+    const int64_t left =
+      int64_t (std::numeric_limits<db::Coord>::max ()) + 1;
+    const std::vector<Segment> outside =
+      rectangle (left, 0, left + 10, 20);
+    expect_decline_unchanged (_this, outside);
+  }
+}
