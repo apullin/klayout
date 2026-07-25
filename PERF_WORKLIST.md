@@ -983,6 +983,30 @@ not just wall time.
       and every CUDA transaction certified.  Do not spend a repeated cohort
       on this thread allocation.  Evidence:
       `.scratchpad/cuda-runs/composed-14-owner-full.2cYHCx`.
+
+    - [x] **Separate hierarchy reuse from the antenna compute ceiling —
+      diagnostic completed, clone-specific optimization deferred:** the same
+      executable and M3-owner deck measured the AREF-expanded one-macro input
+      at **33.78 s**, two physical copies sharing that same expanded-SREF cell
+      tree at **33.01 s**, and the accepted two-copy independent-tree input at
+      **56.15 s**.  KLayout therefore already reuses one shared cell tree
+      almost perfectly; retaining shared hierarchy removes **23.14 real
+      seconds / 41.21%** from this owner.  Using the compact AREF-aware source
+      reduces it further to **20.12 s**, or **36.03 seconds / 64.17% less**
+      than the independent-tree lane.
+
+      These are representation diagnostics, not a booked code speedup.  The
+      independent-SREF benchmark deliberately clones the complete source tree
+      to measure worst-case geometry scaling, so adding structural interning
+      specifically for its byte-identical clones would risk optimizing the
+      benchmark rather than the general engine.  Retain content-addressed
+      subtree reuse as a later generic experiment only if a non-SRAM workload
+      shows renamed identical IP blocks.  Continue the device-neutral fused
+      antenna path for the true independent-geometry case.  Evidence:
+      `.scratchpad/cuda-runs/antenna-m3-expanded-x1-owner.z9pqPq`,
+      `.scratchpad/cuda-runs/antenna-m3-expanded-shared-x2-owner.frJDNC`,
+      `.scratchpad/cuda-runs/antenna-m3-expanded-independent-x2-owner.t1mR1P`,
+      and `.scratchpad/cuda-runs/antenna-m3-shared-owner.TvV8Uy`.
 14. [ ] **Device-neutral accelerator replay gate — active, orthogonal project**
     Do not translate the Ruby PDK deck to an accelerator language.  Build a
     device-neutral replay harness around spatial bin/sort plus candidate
