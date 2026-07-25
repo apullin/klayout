@@ -1,9 +1,9 @@
 # Raw-M2 live union seam: host ABI scaffold
 
-This implementation contains the fail-closed host ABI/loader scaffold and the
-qualified compact raw-M2 scene serializer.  It does not yet export the
-production backend entry point, stitch a backend boundary into a live flat
-region, expose a GSI method, or rewrite the deck.  Therefore it does not
+This implementation contains the fail-closed host ABI/loader scaffold, the
+qualified compact raw-M2 scene serializer, and the production CUDA
+run/release adapter.  It does not yet stitch a backend boundary into a live
+flat region, expose a GSI method, or rewrite the deck.  Therefore it does not
 complete or cross off the live M2 transaction.
 
 ## Status
@@ -18,7 +18,7 @@ complete or cross off the live M2 transaction.
   `(axis, side, fixed, lo, hi)`, maximal same-line intervals, and FNV-1a.
 - [x] Exercise missing-symbol, valid, fallback, malformed echo/order/digest/
   count, and throwing host-copy paths against the real loader wrapper.
-- [ ] Implement and export the production CUDA union entry and release
+- [x] Implement and export the production CUDA union entry and release
   functions.
 - [x] Build the qualified compact scene from raw live M2 before
   `merged_deep_layer()`.
@@ -168,14 +168,22 @@ The smallest subsequent live implementation should add:
 
 - `dbCudaM2Rules.{h,cc}` for scene ownership, boundary stitching, flat stock
   checks, and the one boolean transaction;
-- a raw-scene serializer refactor beside `dbCudaM1WidthSpace.{h,cc}`;
-- the production run/release exports in `spatial_backend.cu`;
 - one guarded `cuda_m2_rules_clean?` binding in `gsiDeclDbRegion.cc`; and
 - an atomic, exact-count rewrite in `make_via1_stack_live_deck.py`.
 
 No generic `DeepRegion` merged cache should be mutated by the first version.
 The validated flat region is transaction-local and the pristine deep inputs
 remain the sole fallback operands.
+
+The production adapter is
+`benchmarks/cuda_spatial_replay/m2_union_backend.cu`.  Before its first CUDA
+allocation it independently validates record sizes and spans, root and
+context order, stored and flat censuses, exact world bounds, coordinate
+safety, and the complete `KM2RAW01` digest.  It accepts only checked
+four-edge boxes and six-edge three-cell L contours, conserves exact area,
+uploads compact local templates, expands all eight transforms on the device,
+and moves the 22,946,444-record resident buffer into the shared union core.
+The 1.026-GiB world stream is never materialized on the host.
 
 ## Contract gate
 
@@ -196,3 +204,41 @@ Each mode runs in a fresh process because the loader intentionally snapshots
 environment and DSO symbols on first use.  The gate requires exactly zero
 backend calls for incomplete capabilities and exactly one release for every
 invoked result path.
+
+## Production backend gate
+
+The DSO-level small gate covers all eight transforms against an independent
+integer-cell boundary oracle, eleven malformed/capacity cases, and idempotent
+release.  The full gate reconstructs the compact raw ABI from the pinned
+KACT capture, recomputes its independent `KM2RAW01` identity, and compares
+all 4,385,384 returned segments with the pinned stock KLayout merged-boundary
+oracle:
+
+```sh
+/tmp/klayout_cuda_workbench.sh \
+  m2-union-production-backend-v1 production
+```
+
+Evidence from commit `e3ad0ee` plus the production-gate follow-up is in
+`m2-union-production-backend.RGYZyn`.  Three exact calls produced:
+
+- 587,201 contexts, 568,632 nonempty M2 contexts, 143 cells;
+- 45,960 stored polygons and 183,852 stored edges;
+- 22,945,976 flat polygons and 91,784,840 flat edges;
+- 22,946,444 rectangles, 92,386,704 memberships, 184,773,408 events;
+- 46,383 x slabs, 3,691,466 strip intervals, 9,575,624 raw segments;
+- 4,385,384 canonical segments and FNV64
+  `7541395996791771514`; and
+- raw scene SHA-256
+  `66ec73eaf686c6f630eb91e63949b70301ca2f24726ee4033dd77a5f8908c1c3`.
+
+Warm observed adapter calls were 1,517.197 and 1,517.459 ms (median
+1,517.328 ms).  Their charged internal components were approximately
+691 ms independent host validation/lowering, 5–6 ms compact upload,
+2.5 ms device rectangle expansion, 21.1 ms x membership, 138.7 ms strip
+scan, 9.5 ms boundary work, and 104.3 ms core D2H.  Remaining charged time is
+the core's other exact sort/scan/allocation work plus conversion into the
+backend-owned ABI buffer.  The 2.162-second KACT reconstruction and
+5.917-second heavyweight oracle load are qualification harness costs outside
+the backend call.  These are production-corpus DSO/replay measurements, not a
+live KLayout transaction or full-signoff runtime.
