@@ -11,11 +11,15 @@
 
 #define KLAYOUT_MANHATTAN_UNION_REPLAY_NO_MAIN
 #include "manhattan_union_replay.cu"
+#include "m1_width_space_exact_predicate.h"
 
 #include <set>
 #include <thrust/count.h>
+#include <thrust/copy.h>
 
 namespace {
+
+namespace m1ws = klayout_cuda::m1_width_space;
 
 constexpr std::uint32_t kMorphMaxActiveSlabs = 128;
 
@@ -541,6 +545,13 @@ DeviceBandSet morph_bands(
           &source_high, source.xs + source.x_slabs,
           sizeof(source_high), cudaMemcpyDeviceToHost),
       "source upper x D2H");
+  const __int128 wide_low = source_low;
+  const __int128 wide_high = source_high;
+  const __int128 wide_radius = radius;
+  const __int128 wide_min =
+      std::numeric_limits<std::int64_t>::min();
+  const __int128 wide_max =
+      std::numeric_limits<std::int64_t>::max();
   if (source_low >
           std::numeric_limits<std::int64_t>::max() - radius ||
       source_low <
@@ -549,10 +560,8 @@ DeviceBandSet morph_bands(
           std::numeric_limits<std::int64_t>::max() - radius ||
       source_high <
           std::numeric_limits<std::int64_t>::min() + radius ||
-      source_low <
-          std::numeric_limits<std::int64_t>::min() / 2 + radius ||
-      source_high >
-          std::numeric_limits<std::int64_t>::max() / 2 - radius) {
+      2 * wide_low - 4 * wide_radius < wide_min ||
+      2 * wide_high + 4 * wide_radius > wide_max) {
     throw std::runtime_error("x coordinate overflow");
   }
 
@@ -1050,6 +1059,87 @@ void run_gate_case(
       context.boundary);
 }
 
+void run_morph_x_guard_case(
+    const std::string &name, std::int64_t low, std::int64_t split,
+    std::int64_t high, bool expect_fallback, int device)
+{
+  constexpr std::int64_t radius = 10;
+  constexpr std::int64_t bottom = 0;
+  constexpr std::int64_t top = 4;
+  if (!(low < split && split < high)) {
+    throw std::runtime_error(name + ": malformed guard fixture");
+  }
+  const std::vector<RectI64> rectangles = {
+      {low, bottom, split, top, 0, 0},
+      {split, bottom, high, top, 0, 0}};
+  GateContext context;
+  context.operation = GateOperation::dilate;
+  context.first_radius = radius;
+  ResidentStripHook hook;
+  hook.consume = gate_consume_strips;
+  hook.context = &context;
+  hook.stop_before_boundary = true;
+  Limits limits;
+  limits.max_slabs_per_rectangle = 4096;
+  const UnionOutput output = gpu_union(rectangles, limits, device, &hook);
+  if (expect_fallback) {
+    if (!output.fallback || !context.invoked ||
+        !output.segments.empty() ||
+        output.message.find("x coordinate overflow") ==
+            std::string::npos) {
+      throw std::runtime_error(
+          name + ": unsafe x arithmetic did not fail closed: " +
+          output.message);
+    }
+    return;
+  }
+  if (output.fallback || !context.invoked) {
+    throw std::runtime_error(
+        name + ": just-inside x arithmetic was rejected: " +
+        output.message);
+  }
+  const std::vector<DirectedSegmentI64> expected = {
+      {bottom - radius, low - radius, high + radius, -1,
+       SegmentAxis::horizontal},
+      {top + radius, low - radius, high + radius, 1,
+       SegmentAxis::horizontal},
+      {low - radius, bottom - radius, top + radius, -1,
+       SegmentAxis::vertical},
+      {high + radius, bottom - radius, top + radius, 1,
+       SegmentAxis::vertical}};
+  require_boundary_equal(name, expected, context.boundary);
+}
+
+void run_morph_x_guard_gate(int device)
+{
+  constexpr std::int64_t radius = 10;
+  constexpr std::int64_t low_limit =
+      std::numeric_limits<std::int64_t>::min() / 2;
+  constexpr std::int64_t high_limit =
+      std::numeric_limits<std::int64_t>::max() / 2;
+
+  const std::int64_t rejected_low = low_limit + radius;
+  run_morph_x_guard_case(
+      "x-guard-low-reject", rejected_low, rejected_low + 1,
+      rejected_low + 100, true, device);
+  const std::int64_t accepted_low = low_limit + 2 * radius;
+  run_morph_x_guard_case(
+      "x-guard-low-accept", accepted_low, accepted_low + 1,
+      accepted_low + 100, false, device);
+
+  const std::int64_t rejected_high = high_limit - radius;
+  run_morph_x_guard_case(
+      "x-guard-high-reject", rejected_high - 100,
+      rejected_high - 1, rejected_high, true, device);
+  const std::int64_t accepted_high = high_limit - 2 * radius;
+  run_morph_x_guard_case(
+      "x-guard-high-accept", accepted_high - 100,
+      accepted_high - 1, accepted_high, false, device);
+
+  std::cout << "M2_RESIDENT_MORPH_X_GUARD PASS checks=4"
+            << " rejected=2 accepted_exact=2\n";
+}
+
 std::vector<std::pair<std::string, std::vector<RectI64>>>
 morphology_fixtures()
 {
@@ -1138,6 +1228,12 @@ constexpr std::uint64_t kGt90GoldenSegments = UINT64_C(4254384);
 constexpr std::uint64_t kGt90GoldenFnv64 =
     UINT64_C(2057677162565968634);
 constexpr std::uint64_t kGt90LongSegments = UINT64_C(8);
+constexpr std::uint64_t kGt90LongPairs =
+    kGt90LongSegments * (kGt90LongSegments - 1) / 2;
+// This bounds the segment count, not the pair count: 4096 segments imply at
+// most 8,386,560 unordered pairs in this deliberately bounded certificate.
+constexpr std::uint64_t kF90LongSpacePairwiseSegmentCountCap =
+    UINT64_C(4096);
 
 struct LongSegment
 {
@@ -1151,6 +1247,156 @@ struct LongSegment
   }
 };
 
+struct LongSpaceCertificate
+{
+  std::uint64_t pairs_checked = 0;
+  std::uint64_t violations = 0;
+  std::uint64_t uncertain = 0;
+};
+
+m1ws::DirectedEdge directed_edge_from_boundary(
+    const DirectedSegmentI64 &segment)
+{
+  if (segment.lo >= segment.hi ||
+      (segment.side != -1 && segment.side != 1)) {
+    throw std::runtime_error(
+        "invalid canonical segment in F90 long-edge certificate");
+  }
+  if (segment.axis == SegmentAxis::horizontal) {
+    return segment.side > 0
+               ? m1ws::DirectedEdge{
+                     segment.lo, segment.fixed, segment.hi, segment.fixed}
+               : m1ws::DirectedEdge{
+                     segment.hi, segment.fixed, segment.lo, segment.fixed};
+  }
+  if (segment.axis == SegmentAxis::vertical) {
+    return segment.side < 0
+               ? m1ws::DirectedEdge{
+                     segment.fixed, segment.lo, segment.fixed, segment.hi}
+               : m1ws::DirectedEdge{
+                     segment.fixed, segment.hi, segment.fixed, segment.lo};
+  }
+  throw std::runtime_error(
+      "invalid canonical axis in F90 long-edge certificate");
+}
+
+LongSpaceCertificate certify_f90_long_edge_space(
+    const std::vector<DirectedSegmentI64> &segments)
+{
+  if (segments.size() > kF90LongSpacePairwiseSegmentCountCap) {
+    throw std::runtime_error(
+        "F90 long-edge pairwise certificate segment-count capacity");
+  }
+  const std::uint64_t segment_count =
+      static_cast<std::uint64_t>(segments.size());
+  if (segment_count > 1 &&
+      segment_count >
+          std::numeric_limits<std::uint64_t>::max() /
+              (segment_count - 1)) {
+    throw std::runtime_error(
+        "F90 long-edge pairwise certificate pair-count overflow");
+  }
+  const std::uint64_t pair_count =
+      segment_count > 1 ? segment_count * (segment_count - 1) / 2 : 0;
+
+  LongSpaceCertificate result;
+  result.pairs_checked = pair_count;
+  std::uint64_t observed_pairs = 0;
+  for (std::size_t first = 0; first < segments.size(); ++first) {
+    const m1ws::DirectedEdge first_edge =
+        directed_edge_from_boundary(segments[first]);
+    for (std::size_t second = first + 1; second < segments.size();
+         ++second) {
+      const m1ws::CandidatePair candidate = {
+          first_edge, directed_edge_from_boundary(segments[second]),
+          0, 0, m1ws::Rule::kSpace};
+      const m1ws::Verdict verdict = m1ws::classify_pair_bounded(
+          candidate, m1ws::kM2F90LongSpaceCoordinateDistance);
+      if (verdict == m1ws::Verdict::kViolation) {
+        ++result.violations;
+      } else if (verdict == m1ws::Verdict::kUncertain) {
+        ++result.uncertain;
+      }
+      ++observed_pairs;
+    }
+  }
+  if (observed_pairs != result.pairs_checked) {
+    throw std::runtime_error(
+        "F90 long-edge pair census mismatch");
+  }
+  return result;
+}
+
+void require_long_space_certificate(
+    const std::string &name,
+    const std::vector<DirectedSegmentI64> &segments,
+    std::uint64_t expected_violations,
+    std::uint64_t expected_uncertain)
+{
+  const LongSpaceCertificate result =
+      certify_f90_long_edge_space(segments);
+  const std::uint64_t expected_pairs =
+      segments.size() > 1
+          ? static_cast<std::uint64_t>(segments.size()) *
+                static_cast<std::uint64_t>(segments.size() - 1) / 2
+          : 0;
+  if (result.pairs_checked != expected_pairs ||
+      result.violations != expected_violations ||
+      result.uncertain != expected_uncertain) {
+    std::ostringstream message;
+    message << name << ": pairs=" << result.pairs_checked
+            << " violations=" << result.violations
+            << " uncertain=" << result.uncertain;
+    throw std::runtime_error(message.str());
+  }
+}
+
+void run_f90_long_space_certificate_gate()
+{
+  const DirectedSegmentI64 east = {
+      0, 0, 200, 1, SegmentAxis::horizontal};
+  require_long_space_certificate(
+      "horizontal-179",
+      {east, {179, 0, 200, -1, SegmentAxis::horizontal}}, 1, 0);
+  require_long_space_certificate(
+      "horizontal-180",
+      {east, {180, 0, 200, -1, SegmentAxis::horizontal}}, 0, 0);
+  require_long_space_certificate(
+      "horizontal-181",
+      {east, {181, 0, 200, -1, SegmentAxis::horizontal}}, 0, 0);
+  require_long_space_certificate(
+      "wrong-exterior-side",
+      {east, {-179, 0, 200, -1, SegmentAxis::horizontal}}, 0, 0);
+  require_long_space_certificate(
+      "vertical-179",
+      {{0, 0, 200, 1, SegmentAxis::vertical},
+       {179, 0, 200, -1, SegmentAxis::vertical}},
+      1, 0);
+  require_long_space_certificate(
+      "corner-exact-108-144-180",
+      {{0, 0, 100, 1, SegmentAxis::horizontal},
+       {144, 208, 300, -1, SegmentAxis::horizontal}},
+      0, 0);
+  require_long_space_certificate(
+      "corner-inside-107-144",
+      {{0, 0, 100, 1, SegmentAxis::horizontal},
+       {144, 207, 300, -1, SegmentAxis::horizontal}},
+      1, 0);
+  require_long_space_certificate(
+      "unsafe-signed-span",
+      {{0, std::numeric_limits<std::int64_t>::min(),
+        std::numeric_limits<std::int64_t>::max(), 1,
+        SegmentAxis::horizontal},
+       {179, std::numeric_limits<std::int64_t>::min(),
+        std::numeric_limits<std::int64_t>::max(), -1,
+        SegmentAxis::horizontal}},
+      0, 1);
+  std::cout
+      << "M2_RESIDENT_F90_LONG_SPACE_GATE PASS checks=8"
+      << " threshold_dbu="
+      << m1ws::kM2F90LongSpaceCoordinateDistance << "\n";
+}
+
 struct ProductionMorphContext
 {
   bool qualify_boundary = false;
@@ -1161,6 +1407,9 @@ struct ProductionMorphContext
   MorphMetrics erode269_count;
   std::uint64_t gt90_boundary_segments = 0;
   std::uint64_t gt90_long_segments = 0;
+  std::uint64_t gt90_space_pairs_checked = 0;
+  std::uint64_t gt90_space_violations = 0;
+  std::uint64_t gt90_space_uncertain = 0;
   std::uint64_t gt270_eroded_intervals = 0;
   std::uint64_t callback_device_total_bytes = 0;
   std::uint64_t callback_device_free_begin_bytes = 0;
@@ -1270,6 +1519,44 @@ void production_consume_strips(
   context->gt90_long_segments = thrust::count_if(
       thrust::device, boundary.begin(), boundary.end(),
       LongSegment{600});
+  if (context->gt90_long_segments >
+      kF90LongSpacePairwiseSegmentCountCap) {
+    throw std::runtime_error(
+        "production F90 long-edge pairwise capacity");
+  }
+  thrust::device_vector<DirectedSegmentI64> long_segments(
+      context->gt90_long_segments);
+  const auto long_end = thrust::copy_if(
+      thrust::device, boundary.begin(), boundary.end(),
+      long_segments.begin(), LongSegment{600});
+  if (static_cast<std::uint64_t>(
+          long_end - long_segments.begin()) !=
+      context->gt90_long_segments) {
+    throw std::runtime_error(
+        "production F90 long-edge compaction mismatch");
+  }
+  std::vector<DirectedSegmentI64> host_long_segments(
+      context->gt90_long_segments);
+  if (!host_long_segments.empty()) {
+    cuda_require(
+        cudaMemcpy(
+            host_long_segments.data(),
+            thrust::raw_pointer_cast(long_segments.data()),
+            host_long_segments.size() * sizeof(DirectedSegmentI64),
+            cudaMemcpyDeviceToHost),
+        "production F90 long edges D2H");
+  }
+  const LongSpaceCertificate long_space =
+      certify_f90_long_edge_space(host_long_segments);
+  context->gt90_space_pairs_checked = long_space.pairs_checked;
+  context->gt90_space_violations = long_space.violations;
+  context->gt90_space_uncertain = long_space.uncertain;
+  if (context->gt90_space_violations ||
+      context->gt90_space_uncertain) {
+    throw std::runtime_error(
+        "production F90 long-edge space certificate is not clean");
+  }
+  release_device_vector(&long_segments);
   if (context->qualify_boundary) {
     context->qualified_boundary.resize(boundary.size());
     if (!boundary.empty()) {
@@ -1362,12 +1649,18 @@ void print_production_morph_timing(
       << std::setprecision(3) << output.total_ms
       << " erode89_ms=" << context.erode89.elapsed_ms
       << " dilate90_ms=" << context.dilate90.elapsed_ms
-      << " boundary_and_long_count_ms=" << context.boundary_ms
+      << " boundary_and_long_space_ms=" << context.boundary_ms
       << " erode269_count_ms=" << context.erode269_count.elapsed_ms
       << " resident_callback_ms=" << context.callback_ms
       << " gt90_intervals=" << context.dilate90.output_intervals
       << " gt90_segments=" << context.gt90_boundary_segments
       << " gt90_long_segments=" << context.gt90_long_segments
+      << " gt90_space_pairs_checked="
+      << context.gt90_space_pairs_checked
+      << " gt90_space_violations="
+      << context.gt90_space_violations
+      << " gt90_space_uncertain="
+      << context.gt90_space_uncertain
       << " gt270_eroded_intervals="
       << context.gt270_eroded_intervals
       << " erode89_max_active=" << context.erode89.max_active_slabs
@@ -1447,6 +1740,9 @@ void run_production_morphology(
     if (!context.invoked ||
         context.gt90_boundary_segments != kGt90GoldenSegments ||
         context.gt90_long_segments != kGt90LongSegments ||
+        context.gt90_space_pairs_checked != kGt90LongPairs ||
+        context.gt90_space_violations != 0 ||
+        context.gt90_space_uncertain != 0 ||
         context.gt270_eroded_intervals != 0) {
       throw std::runtime_error(
           "production resident morphology census mismatch");
@@ -1479,13 +1775,15 @@ void run_production_morphology(
   // which this resident morphology callback does not yet perform.
   constexpr double stock_f90_f270_ms = 14691.0;
   constexpr double stock_union_stitch_f90_f270_ms =
-      1707.380 + 2188.0 + stock_f90_f270_ms;
+      1707.380 + 2194.0 + stock_f90_f270_ms;
+  const double charged_resident_pipeline_ms =
+      load_ms + host_expand_ms + warm_union_resident;
   const double callback_reduction =
       100.0 * (stock_f90_f270_ms - warm_callback) /
       stock_f90_f270_ms;
-  const double resident_reduction =
+  const double charged_pipeline_reduction =
       100.0 *
-      (stock_union_stitch_f90_f270_ms - warm_union_resident) /
+      (stock_union_stitch_f90_f270_ms - charged_resident_pipeline_ms) /
       stock_union_stitch_f90_f270_ms;
   std::cout
       << "M2_RESIDENT_F90_PRODUCTION PASS"
@@ -1505,8 +1803,10 @@ void run_production_morphology(
       << callback_reduction
       << " stock_union_stitch_f90_f270_ms="
       << stock_union_stitch_f90_f270_ms
-      << " union_resident_less_time_pct="
-      << resident_reduction
+      << " charged_resident_pipeline_ms="
+      << charged_resident_pipeline_ms
+      << " charged_pipeline_less_time_pct="
+      << charged_pipeline_reduction
       << " verification_total_ms="
       << elapsed_ms(all_begin, Clock::now()) << "\n";
 }
@@ -1560,6 +1860,8 @@ int main(int argc, char **argv)
     }
     cuda_require(cudaSetDevice(device), "morph cudaSetDevice");
     if (self_test) {
+      run_morph_x_guard_gate(device);
+      run_f90_long_space_certificate_gate();
       run_differential_gate(device);
     } else {
       if (kact_path.empty() || gt90_path.empty()) {
