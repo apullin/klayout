@@ -7,6 +7,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -19,6 +20,7 @@ struct Options
   std::string expected_file_sha256;
   std::string expected_scene_sha256;
   std::string expected_boundary_sha256;
+  std::string candidate_producer_scene_sha256;
   std::string candidate;
   std::string write_oracle;
 };
@@ -45,6 +47,8 @@ Options parse_options(int argc, char **argv)
              &options.expected_scene_sha256) ||
         take(argument, "--expect-boundary-sha256=",
              &options.expected_boundary_sha256) ||
+        take(argument, "--candidate-producer-scene-sha256=",
+             &options.candidate_producer_scene_sha256) ||
         take(argument, "--candidate=", &options.candidate) ||
         take(argument, "--write-oracle=", &options.write_oracle)) {
       continue;
@@ -62,7 +66,8 @@ Options parse_options(int argc, char **argv)
     throw std::runtime_error(
         "usage: m2_merged_boundary_oracle "
         "--expect-file-sha256=HEX --expect-scene-sha256=HEX "
-        "[--expect-boundary-sha256=HEX] [--candidate=FILE] "
+        "[--expect-boundary-sha256=HEX] "
+        "[--candidate=FILE --candidate-producer-scene-sha256=HEX] "
         "[--write-oracle=FILE] SCENE.km1ws");
   }
   return options;
@@ -149,8 +154,22 @@ int main(int argc, char **argv)
     }
     if (!options.candidate.empty()) {
       const Clock::time_point compare_begin = Clock::now();
-      const auto candidate =
-          oracle::read_candidate_stream(options.candidate, boundary);
+      std::vector<oracle::DirectedSegmentI64> candidate;
+      if (options.candidate_producer_scene_sha256.empty()) {
+        candidate =
+            oracle::read_candidate_stream(options.candidate, boundary);
+      } else {
+        oracle::CandidateStreamIdentity identity;
+        identity.producer_scene_sha256 =
+            options.candidate_producer_scene_sha256;
+        identity.qualification_scene_sha256 =
+            boundary.scene_sha256;
+        identity.boundary_sha256 = boundary.boundary_sha256;
+        identity.segment_count = boundary.segments.size();
+        identity.boundary_fnv64 = boundary.boundary_fnv64;
+        candidate =
+            oracle::read_candidate_stream(options.candidate, identity);
+      }
       const oracle::Comparison comparison =
           oracle::compare_candidate(boundary, candidate);
       std::cout << "CANDIDATE_COMPARISON"

@@ -97,21 +97,32 @@ qualification host.
 exact statistics, and `compare_candidate()`. The comparator requires strict
 canonical input and reports the first differing segment or count.
 
-The CLI can also read or write a pointer-free candidate stream. Its 128-byte
-little-endian header contains:
+The CLI can also read or write a pointer-free candidate stream. The
+`KM2BND02` 160-byte little-endian header contains:
 
 ```text
-char magic[8] = "KM2BND01"
-u32 version=1, header_bytes=128, endian_tag, record_bytes=32
+char magic[8] = "KM2BND02"
+u32 version=2, header_bytes=160, endian_tag, record_bytes=32
 u64 file_bytes, record_count
 u8 payload_sha256[32]
-u8 source_scene_sha256[32]
+u8 producer_scene_sha256[32]
+u8 qualification_scene_sha256[32]
 u8 reserved_zero[24]
 ```
 
-The payload is the canonical sequence of 32-byte segment records. The reader
-checks every header field, length calculation, payload digest, scene identity,
-record semantic, and canonical-order invariant before comparison.
+The two scene identities are intentionally distinct.  A GPU-produced stream
+binds `producer_scene_sha256` to the exact raw hierarchical KACT capture and
+`qualification_scene_sha256` to the independently merged KM1WS scene from
+which the boundary allowlist was established.  An oracle-only stream uses the
+oracle scene for both.  This keeps provenance self-evident without changing
+the proven 32-byte segment ABI.
+
+The payload is the canonical sequence of 32-byte
+`(fixed,lo,hi,side,axis)` records, strictly ordered by
+`(axis,side,fixed,lo,hi)`. The reader checks every header field, length
+calculation, both scene identities, the allowlisted and recomputed payload
+SHA-256, FNV-64, record semantics, strict canonical order, and maximal
+nonoverlapping fragments before comparison or KLayout materialization.
 
 ## Build and run
 

@@ -27,6 +27,14 @@ without floating point or a dense pixel raster.  Its qualified production M2
 gate compares all 4,385,384 output segments against an independently decoded
 CPU-merged boundary oracle.
 
+The first exact producer-to-consumer bridge is documented in
+[`M2_FLAT_REGION_BRIDGE.md`](M2_FLAT_REGION_BRIDGE.md).  Its offline production
+gate serializes the actual GPU boundary as dual-provenance `KM2BND02`, rejects
+corruption/noncanonical topology before materialization, constructs an
+already-merged flat KLayout `Region`, and runs stock M2.1/.2 plus F90/F270.
+Serialization and read validation are charged; the heavyweight CPU oracle is
+qualification-only.
+
 ## KLayout-pointer-free record contract
 
 The on-disk/host replay record is an 80-byte POD with:
