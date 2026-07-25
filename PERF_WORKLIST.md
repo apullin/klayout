@@ -2622,8 +2622,8 @@ not just wall time.
         `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.Nvr8tg`, and
         `.scratchpad/cuda-runs/composed-14-owner-full.xgZl6S`.
 
-      - [ ] **Reassociate the antenna diode algebra small-first, with exact
-        differential gates:** Ruby parses the current
+      - [x] **Reassociate the antenna diode algebra small-first — proved exact
+        and rejected on production timing:** Ruby parses the current
         `nplus & active - nwell` as `nplus & (active - nwell)`.  For ordinary
         property-free regions, test the equivalent
         `(nplus & active) - nwell` behind an opt-in deck transform.  Current
@@ -2634,6 +2634,19 @@ not just wall time.
         canonical full reports, and an alternating repeated cohort; leave the
         source deck byte-identical by default.
 
+        Commit `661b607` adds the default-off one-line transform and a
+        nonempty exact XOR gate spanning partial WELL cuts, parent/child
+        overlap, all eight orthogonal transforms, and a 3-by-2 array.  The
+        six-way concurrent production cohort preserved canonical owner-report
+        SHA-256
+        `4607611a05fde052068a4b3bb4d831f2c67bc21dea214d6acc4ffa4e9ed88c0`
+        in every lane, but the historical controls averaged 57.570 s while
+        the small-first candidates averaged 58.267 s: **0.697 real seconds /
+        1.210% slower owner wall** (`N=3+3`).  Do not promote this algebraic
+        reassociation; retain the proof and negative result so it is not
+        rediscovered.  Evidence:
+        `.scratchpad/cuda-runs/antenna-diode-owner-ab.Huytst`.
+
       - [ ] **Port the exact resident morphology transaction from M2 to raw
         M1 for `m1_via_class`:** M1.5-.9 use the same F90/F270 morphology
         grammar already proved for M2.5-.9.  Bind a distinct raw-M1 digest
@@ -2641,8 +2654,9 @@ not just wall time.
         default-off ABI.  Raw M1 is larger (about 41.1 million rectangles),
         so qualify memory/capacity and fail-closed fallback explicitly.  The
         current 14-owner roof is `m1_via_class` at 58.83 s, immediately above
-        antenna at about 57.1 s; this port and the small-first antenna change
-        should be composed because either alone quickly exposes the other.
+        antenna at about 57.1 s.  The small-first antenna change above was
+        rejected, so this port will expose antenna as the next independent
+        roof after roughly the first 1.4--1.7 seconds of full-wall gain.
 
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
