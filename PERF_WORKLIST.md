@@ -968,6 +968,21 @@ not just wall time.
       antenna critical-path wall**.  This comparison is cross-run and the
       launcher also contains other newly composed optimizations, so it is a
       roofline observation rather than an isolated antenna A/B.
+
+    - [x] **Give only the critical owners a third inner thread — screened and
+      rejected:** with 13 concurrent jobs, assign three threads to
+      `m1_width_space`, `implant_contact`, `m1_enclosure`, and the M2/M3/M4
+      antenna owners while retaining two threads elsewhere.  The peak request
+      is exactly 32 threads; the queued high-memory raw-M1 owner still starts
+      last.  The exact full screen took **62.940 s versus the accepted
+      62.940-second mean: 0.000 real seconds / 0.000% less full-launch wall**
+      (`N=1` screen, not a promoted cohort).  Its slowest antenna owner was
+      58.015 s, so the extra thread did not shorten the critical path.  The
+      canonical report remained SHA-256
+      `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`
+      and every CUDA transaction certified.  Do not spend a repeated cohort
+      on this thread allocation.  Evidence:
+      `.scratchpad/cuda-runs/composed-14-owner-full.2cYHCx`.
 14. [ ] **Device-neutral accelerator replay gate — active, orthogonal project**
     Do not translate the Ruby PDK deck to an accelerator language.  Build a
     device-neutral replay harness around spatial bin/sort plus candidate
