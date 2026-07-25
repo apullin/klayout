@@ -1474,11 +1474,19 @@ void run_production_morphology(
       median(warm_union_resident_ms);
   const double warm_callback = median(warm_callback_ms);
   const double warm_peak_delta = median(warm_peak_delta_mib);
-  constexpr double flat_bridge_ms = 22077.0;
+  // Keep the performance comparisons like-for-like.  The full 22.077-second
+  // offline bridge also includes the separate 3.485-second M2.1/.2 checks,
+  // which this resident morphology callback does not yet perform.
+  constexpr double stock_f90_f270_ms = 14691.0;
+  constexpr double stock_union_stitch_f90_f270_ms =
+      1707.380 + 2188.0 + stock_f90_f270_ms;
   const double callback_reduction =
-      100.0 * (flat_bridge_ms - warm_callback) / flat_bridge_ms;
+      100.0 * (stock_f90_f270_ms - warm_callback) /
+      stock_f90_f270_ms;
   const double resident_reduction =
-      100.0 * (flat_bridge_ms - warm_union_resident) / flat_bridge_ms;
+      100.0 *
+      (stock_union_stitch_f90_f270_ms - warm_union_resident) /
+      stock_union_stitch_f90_f270_ms;
   std::cout
       << "M2_RESIDENT_F90_PRODUCTION PASS"
       << " rectangles=" << rectangles.size()
@@ -1492,9 +1500,12 @@ void run_production_morphology(
       << " warm_resident_peak_delta_mib=" << std::setprecision(1)
       << warm_peak_delta
       << std::setprecision(3)
-      << " versus_flat_bridge_callback_less_time_pct="
+      << " stock_f90_f270_ms=" << stock_f90_f270_ms
+      << " resident_suffix_less_time_pct="
       << callback_reduction
-      << " versus_flat_bridge_union_resident_less_time_pct="
+      << " stock_union_stitch_f90_f270_ms="
+      << stock_union_stitch_f90_f270_ms
+      << " union_resident_less_time_pct="
       << resident_reduction
       << " verification_total_ms="
       << elapsed_ms(all_begin, Clock::now()) << "\n";
