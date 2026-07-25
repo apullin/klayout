@@ -158,6 +158,30 @@ struct DB_PUBLIC CudaM2UnionAttempt
   std::vector<klayout_cuda_spatial_m2_union_segment_v1> segments;
 };
 
+/**
+ * Additive component timing returned only by the explicitly versioned timed
+ * M2-union wrapper.  Keeping this POD separate preserves the established
+ * returned-by-value CudaM2UnionAttempt binary layout.
+ */
+struct DB_PUBLIC CudaM2UnionTiming
+{
+  enum
+  {
+    FormatVersion = 1
+  };
+
+  uint32_t format_version;
+  uint32_t struct_size;
+  uint64_t setup_ns;
+  uint64_t h2d_ns;
+  uint64_t rectangle_expand_ns;
+  uint64_t x_membership_ns;
+  uint64_t strip_scan_ns;
+  uint64_t boundary_ns;
+  uint64_t d2h_ns;
+  uint64_t total_ns;
+};
+
 struct DB_PUBLIC CudaPoly34Attempt
 {
   enum Disposition
@@ -403,6 +427,15 @@ DB_PUBLIC bool cuda_spatial_m2_width_space_requested ();
  */
 DB_PUBLIC CudaM2UnionAttempt cuda_spatial_try_m2_union (
   const klayout_cuda_spatial_m2_union_request_v1 &request);
+
+/**
+ * Invoke the same wrapper while copying charged component timing into a
+ * size-checked additive POD.  This distinct symbol makes a stale qmake DB
+ * library fail at link/load time instead of silently changing attempt layout.
+ */
+DB_PUBLIC CudaM2UnionAttempt cuda_spatial_try_m2_union_with_timing (
+  const klayout_cuda_spatial_m2_union_request_v1 &request,
+  CudaM2UnionTiming *timing, uint32_t timing_struct_size);
 
 /** Return true only when the M2-rules opt-in and both union symbols exist. */
 DB_PUBLIC bool cuda_spatial_m2_union_requested ();

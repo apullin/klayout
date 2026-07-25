@@ -35,6 +35,14 @@ already-merged flat KLayout `Region`, and runs stock M2.1/.2 plus F90/F270.
 Serialization and read validation are charged; the heavyweight CPU oracle is
 qualification-only.
 
+The raw production host transaction and its combined real-DSO gate are
+documented in
+[`M2_LIVE_UNION_HOST_SEAM.md`](M2_LIVE_UNION_HOST_SEAM.md).  The gate composes
+the production DSO with KLayout's runtime loader/copy/release wrapper and the
+checked flat-region stitch, reproducing the exact 4,385,384-segment oracle in
+one process.  GSI/deck ownership and the complete stock M2-rule suffix remain
+separate unfinished milestones.
+
 The reusable no-host-geometry F90/F270 successor is documented in
 [`M2_RESIDENT_MORPHOLOGY_GPU.md`](M2_RESIDENT_MORPHOLOGY_GPU.md).  Its
 separately linked production gate consumes the union core's resident strip

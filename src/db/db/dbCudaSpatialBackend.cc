@@ -49,6 +49,15 @@ static_assert (
   offsetof (klayout_cuda_spatial_m2_union_segment_v1, side) == 24 &&
   offsetof (klayout_cuda_spatial_m2_union_segment_v1, axis) == 28,
   "M2 union boundary segment ABI layout changed");
+static_assert (
+  std::is_standard_layout<CudaM2UnionTiming>::value &&
+  std::is_trivially_copyable<CudaM2UnionTiming>::value &&
+  sizeof (CudaM2UnionTiming) == 72 &&
+  offsetof (CudaM2UnionTiming, format_version) == 0 &&
+  offsetof (CudaM2UnionTiming, struct_size) == 4 &&
+  offsetof (CudaM2UnionTiming, setup_ns) == 8 &&
+  offsetof (CudaM2UnionTiming, total_ns) == 64,
+  "additive M2 union component-timing ABI layout changed");
 
 CudaSpatialAttempt::CudaSpatialAttempt ()
   : disposition (Disabled), fallback_flags (0), membership_count (0),
@@ -2135,10 +2144,22 @@ bool cuda_spatial_validate_m2_union_boundary (
   }
 }
 
-CudaM2UnionAttempt cuda_spatial_try_m2_union (
-  const klayout_cuda_spatial_m2_union_request_v1 &request)
+static CudaM2UnionAttempt cuda_spatial_try_m2_union_impl (
+  const klayout_cuda_spatial_m2_union_request_v1 &request,
+  CudaM2UnionTiming *timing, uint32_t timing_struct_size)
 {
   CudaM2UnionAttempt attempt;
+  if (timing) {
+    if (timing_struct_size != sizeof (CudaM2UnionTiming)) {
+      attempt.disposition = CudaM2UnionAttempt::InvalidResult;
+      attempt.message = "host supplied an incompatible M2 timing record";
+      log_m2_union_attempt (attempt);
+      return attempt;
+    }
+    std::memset (timing, 0, sizeof (*timing));
+    timing->format_version = CudaM2UnionTiming::FormatVersion;
+    timing->struct_size = sizeof (*timing);
+  }
   CudaSpatialModule &module = cuda_spatial_module ();
   if (! module.m2_union_enabled ()) {
     return attempt;
@@ -2232,6 +2253,16 @@ CudaM2UnionAttempt cuda_spatial_try_m2_union (
   attempt.raw_segment_count = result.raw_segment_count;
   attempt.boundary_fnv64 = result.boundary_fnv64;
   attempt.total_ns = result.total_ns;
+  if (timing) {
+    timing->setup_ns = result.setup_ns;
+    timing->h2d_ns = result.h2d_ns;
+    timing->rectangle_expand_ns = result.rectangle_expand_ns;
+    timing->x_membership_ns = result.x_membership_ns;
+    timing->strip_scan_ns = result.strip_scan_ns;
+    timing->boundary_ns = result.boundary_ns;
+    timing->d2h_ns = result.d2h_ns;
+    timing->total_ns = result.total_ns;
+  }
   attempt.message.assign (
     result.message,
     std::find (result.message, result.message + sizeof (result.message), '\0'));
@@ -2337,6 +2368,20 @@ CudaM2UnionAttempt cuda_spatial_try_m2_union (
 
   log_m2_union_attempt (attempt);
   return attempt;
+}
+
+CudaM2UnionAttempt cuda_spatial_try_m2_union (
+  const klayout_cuda_spatial_m2_union_request_v1 &request)
+{
+  return cuda_spatial_try_m2_union_impl (request, 0, 0);
+}
+
+CudaM2UnionAttempt cuda_spatial_try_m2_union_with_timing (
+  const klayout_cuda_spatial_m2_union_request_v1 &request,
+  CudaM2UnionTiming *timing, uint32_t timing_struct_size)
+{
+  return cuda_spatial_try_m2_union_impl (
+    request, timing, timing_struct_size);
 }
 
 bool cuda_spatial_m2_union_requested ()

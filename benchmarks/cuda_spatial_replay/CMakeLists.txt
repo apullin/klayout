@@ -543,6 +543,50 @@ if(KLAYOUT_QMAKE_BUILD_DIR)
     BUILD_RPATH "${KLAYOUT_QMAKE_BUILD_DIR}"
   )
 
+  add_executable(m2_union_real_transaction_gate
+    m2_union_real_transaction_gate.cu
+  )
+  target_include_directories(m2_union_real_transaction_gate PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/tl/tl
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/gsi/gsi
+  )
+  target_compile_options(m2_union_real_transaction_gate PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+    $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+  )
+  # nvcc contributes its (older) CUDA host compiler directory to the final
+  # C++ link.  Keep the CMake C++ driver's runtime first: the qmake libraries
+  # were built by that driver and may require its newer CXXABI symbols.
+  execute_process(
+    COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=libstdc++.so
+    OUTPUT_VARIABLE KLAYOUT_CXX_STDLIB
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if(EXISTS "${KLAYOUT_CXX_STDLIB}")
+    get_filename_component(
+      KLAYOUT_CXX_STDLIB_DIR "${KLAYOUT_CXX_STDLIB}" DIRECTORY)
+    target_link_options(m2_union_real_transaction_gate BEFORE PRIVATE
+      "-L${KLAYOUT_CXX_STDLIB_DIR}"
+    )
+  endif()
+  target_link_libraries(m2_union_real_transaction_gate PRIVATE
+    m2_merged_boundary_oracle
+    "${KLAYOUT_DB_LIBRARY}"
+    "${KLAYOUT_TL_LIBRARY}"
+    "${KLAYOUT_GSI_LIBRARY}"
+    Threads::Threads
+    ${CMAKE_DL_LIBS}
+  )
+  add_dependencies(m2_union_real_transaction_gate
+    klayout_cuda_spatial_backend
+  )
+  set_target_properties(m2_union_real_transaction_gate PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+    BUILD_RPATH "${KLAYOUT_QMAKE_BUILD_DIR}"
+  )
+
   add_custom_target(m2_union_live_transaction_gate
     COMMAND m2_union_live_transaction_smoke
       $<TARGET_FILE:m2_union_contract_backend_run_only>

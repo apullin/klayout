@@ -1,10 +1,12 @@
-# Raw-M2 live union seam: host ABI scaffold
+# Raw-M2 live union seam: host transaction scaffold
 
-This implementation contains the fail-closed host ABI/loader scaffold, the
-qualified compact raw-M2 scene serializer, and the production CUDA
-run/release adapter.  It does not yet stitch a backend boundary into a live
-flat region, expose a GSI method, or rewrite the deck.  Therefore it does not
-complete or cross off the live M2 transaction.
+This implementation contains the fail-closed host ABI/loader, the qualified
+compact raw-M2 scene serializer, the production CUDA run/release adapter, and
+the checked boundary-to-flat-region stitch.  A combined production gate now
+composes those pieces in one process through KLayout's real runtime loader.
+It does not yet expose the transaction through GSI, run the complete stock
+flat-rule suffix, or rewrite the deck.  Therefore it does not complete or
+cross off the live M2 transaction.
 
 ## Status
 
@@ -22,6 +24,8 @@ complete or cross off the live M2 transaction.
   functions.
 - [x] Build the qualified compact scene from raw live M2 before
   `merged_deep_layer()`.
+- [x] Compose the real production DSO, runtime loader/copy/release wrapper,
+  and checked stitch against the exact production oracle.
 - [ ] Stitch the validated boundary, run the complete stock flat M2 suffix, and
   return one atomic clean decision.
 - [ ] Add `cuda_m2_rules_clean?` to the Region GSI.
@@ -155,19 +159,24 @@ CPU expressions.
 
 ## Implementation map
 
-The scaffold in this commit touches:
+The host transaction implementation touches:
 
 - `src/db/db/dbCudaSpatialApi.h`: additive raw-M2 request/result/release ABI;
 - `src/db/db/dbCudaSpatialBackend.{h,cc}`: optional-symbol discovery,
-  capability gate, result ownership, and proof validation;
+  capability gate, result ownership, proof validation, and charged backend
+  component timing through a size/version-checked additive API that preserves
+  the existing attempt layout;
+- `src/db/db/dbCudaM2Rules.{h,cc}`: atomic checked endpoint stitch into an
+  owned, merged flat `Region`;
 - `src/db/unit_tests/dbCudaM2UnionContractTests.cc`: layout/order/digest
   validator tests; and
-- `benchmarks/cuda_spatial_replay/m2_union_*`: adversarial DSO/loader gate.
+- `benchmarks/cuda_spatial_replay/m2_union_*`: adversarial DSO/loader gates
+  and the combined real production transaction gate.
 
 The smallest subsequent live implementation should add:
 
-- `dbCudaM2Rules.{h,cc}` for scene ownership, boundary stitching, flat stock
-  checks, and the one boolean transaction;
+- the flat stock M2 suffix and its one boolean transaction around the existing
+  scene ownership and boundary stitch;
 - one guarded `cuda_m2_rules_clean?` binding in `gsiDeclDbRegion.cc`; and
 - an atomic, exact-count rewrite in `make_via1_stack_live_deck.py`.
 
@@ -242,3 +251,47 @@ backend-owned ABI buffer.  The 2.162-second KACT reconstruction and
 5.917-second heavyweight oracle load are qualification harness costs outside
 the backend call.  These are production-corpus DSO/replay measurements, not a
 live KLayout transaction or full-signoff runtime.
+
+## Combined real DSO/loader/stitch gate
+
+The combined gate loads the production DSO through the same runtime wrapper
+used by KLayout, copies and validates its backend-owned boundary, invokes the
+dedicated release entry point, and then passes the host-owned copy into the
+checked stitch:
+
+```sh
+/tmp/klayout_cuda_workbench.sh m2-combined-real-dso-gate-v1
+```
+
+The exact production run reproduced all 4,385,384 canonical segments and
+FNV64 `7541395996791771514`, compared every segment field with the separately
+decoded oracle, and stitched 14,222 contours with 4,385,384 vertices and a
+2,084-vertex maximum.  The resulting `Region` had both merged semantics and
+an actual merged state.
+
+The benchmark-only DSO ownership probe ended with one owned allocation, two
+release calls, one owned release, and zero outstanding allocations.  The
+second release belongs to a real capacity-fallback invocation, which returned
+no owned buffer.  That fallback left a sentinel output unchanged.  A rejected
+canonical/FNV-consistent open-endpoint stitch likewise left both its sentinel
+output and statistics unchanged.  A wrong-sized additive timing record
+declined before any DSO call.
+
+Evidence `m2-union-real-transaction.D0RnHh` measured:
+
+- 2,146.273 ms of charged compact request preparation;
+- 1,747.730 ms backend total, including 694.155 ms setup, 248.892 ms H2D,
+  3.198 ms rectangle expansion, 21.326 ms x-membership, 133.917 ms strip
+  scan, 9.542 ms boundary work, and 106.974 ms D2H;
+- 2,074.692 ms observed loader call, of which 326.963 ms remained after the
+  backend timer for copy, validation, and release;
+- 4,999.362 ms checked stitch;
+- 7,074.055 ms charged loader-through-stitch seam; and
+- 9,220.328 ms charged request-preparation-through-stitch gate path.
+
+The 5,949.906 ms independent oracle load, 11.419 ms oracle comparison,
+870.597 ms forced fallback, and 0.132 ms rejected-stitch check are
+qualification work, not part of that 9,220.328 ms path.  This gate still
+reconstructs its request from the pinned KACT capture; it is not a GSI/deck
+call, a complete M2-rule transaction, or a full-launch runtime claim.  No GSI
+binding or deck owner was changed by this milestone.

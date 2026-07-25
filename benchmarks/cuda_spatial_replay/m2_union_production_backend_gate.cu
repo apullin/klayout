@@ -469,6 +469,7 @@ double median(std::vector<double> values)
              : (values[middle - 1] + values[middle]) * 0.5;
 }
 
+#if !defined(KLAYOUT_M2_UNION_PRODUCTION_SCENE_ONLY)
 int run_gate(const std::string &kact_path,
              const std::string &oracle_path,
              std::uint32_t repeat, int device)
@@ -614,9 +615,11 @@ int run_gate(const std::string &kact_path,
       << gate_ms(all_begin, GateClock::now()) << "\n";
   return 0;
 }
+#endif
 
 }  // namespace production_gate
 
+#if !defined(KLAYOUT_M2_UNION_PRODUCTION_SCENE_ONLY)
 int main(int argc, char **argv)
 {
   try {
@@ -644,3 +647,4 @@ int main(int argc, char **argv)
     return 1;
   }
 }
+#endif

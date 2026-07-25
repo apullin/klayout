@@ -282,6 +282,19 @@ std::unordered_set<const Segment *> &owned_allocations()
   return allocations;
 }
 
+struct AllocationCounters
+{
+  std::uint64_t allocations = 0;
+  std::uint64_t release_calls = 0;
+  std::uint64_t owned_releases = 0;
+};
+
+AllocationCounters &allocation_counters()
+{
+  static AllocationCounters counters;
+  return counters;
+}
+
 std::uint64_t elapsed_ns(Clock::time_point begin, Clock::time_point end)
 {
   return static_cast<std::uint64_t>(
@@ -1470,6 +1483,7 @@ void register_allocation(const Segment *segments)
     throw std::runtime_error(
         "duplicate M2 boundary allocation identity");
   }
+  ++allocation_counters().allocations;
 }
 
 void fill_success_result(
@@ -1721,14 +1735,17 @@ void release_result(Result *result) noexcept
 {
   if (!result) return;
   const Segment *segments = result->segments;
+  bool owned = false;
   if (segments) {
-    bool owned = false;
-    {
-      std::lock_guard<std::mutex> lock(allocation_mutex());
-      owned = owned_allocations().erase(segments) == 1;
-    }
-    if (owned) delete[] segments;
+    std::lock_guard<std::mutex> lock(allocation_mutex());
+    ++allocation_counters().release_calls;
+    owned = owned_allocations().erase(segments) == 1;
+    if (owned) ++allocation_counters().owned_releases;
+  } else {
+    std::lock_guard<std::mutex> lock(allocation_mutex());
+    ++allocation_counters().release_calls;
   }
+  if (owned) delete[] segments;
   result->segments = nullptr;
   result->segment_count = 0;
 }
@@ -1772,5 +1789,28 @@ klayout_cuda_spatial_release_m2_union_boundary_v1(
       result->segments = nullptr;
       result->segment_count = 0;
     }
+  }
+}
+
+/*
+ * Benchmark-only ownership probe.  This is deliberately outside the public
+ * backend ABI: the combined production gate resolves it with dlsym and uses
+ * it only to prove that the real loader released each DSO-owned result.
+ *
+ * selector 0: successful owned allocations
+ * selector 1: release entry-point calls
+ * selector 2: releases that matched an owned allocation
+ * selector 3: currently outstanding owned allocations
+ */
+extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT std::uint64_t
+klayout_cuda_spatial_m2_union_test_counter_v1(std::uint32_t selector)
+{
+  std::lock_guard<std::mutex> lock(allocation_mutex());
+  switch (selector) {
+  case 0: return allocation_counters().allocations;
+  case 1: return allocation_counters().release_calls;
+  case 2: return allocation_counters().owned_releases;
+  case 3: return owned_allocations().size();
+  default: return std::numeric_limits<std::uint64_t>::max();
   }
 }
