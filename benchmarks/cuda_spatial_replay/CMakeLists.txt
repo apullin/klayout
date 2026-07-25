@@ -135,6 +135,7 @@ set_target_properties(klayout_cuda_spatial_backend PROPERTIES
   CUDA_VISIBILITY_PRESET hidden
 )
 target_link_libraries(klayout_cuda_spatial_backend PRIVATE
+  contact4_union_resident_gpu
   manhattan_union_gpu_core
 )
 
@@ -143,6 +144,19 @@ target_include_directories(cuda_spatial_backend_smoke PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
 )
 target_link_libraries(cuda_spatial_backend_smoke PRIVATE
+  klayout_cuda_spatial_backend
+)
+
+add_executable(contact4_active_union_backend_smoke
+  contact4_active_union_backend_smoke.cc
+)
+target_include_directories(contact4_active_union_backend_smoke PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+target_compile_options(contact4_active_union_backend_smoke PRIVATE
+  -O3 -Wall -Wextra -Werror
+)
+target_link_libraries(contact4_active_union_backend_smoke PRIVATE
   klayout_cuda_spatial_backend
 )
 

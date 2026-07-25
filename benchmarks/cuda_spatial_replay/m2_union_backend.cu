@@ -12,6 +12,7 @@
 
 #include "dbCudaActive3Digest.h"
 #include "dbCudaSpatialApi.h"
+#include "contact4_union_resident.cuh"
 #include "m2_manhattan_decompose.h"
 #include "manhattan_union_gpu.cuh"
 
@@ -42,6 +43,8 @@ namespace {
 
 namespace mu = klayout_cuda::manhattan_union;
 namespace md = klayout_cuda::m2_manhattan_decompose;
+namespace c4 = klayout_cuda::contact4_union_resident;
+namespace a3 = klayout_cuda::active3;
 
 using Context =
     klayout_cuda_spatial_m1_width_space_context_v1;
@@ -57,6 +60,14 @@ using Result =
     klayout_cuda_spatial_m2_union_result_v1;
 using Segment =
     klayout_cuda_spatial_m2_union_segment_v1;
+using Contact4Scene =
+    klayout_cuda_spatial_contact4_active_union_scene_v1;
+using Contact4SceneEcho =
+    klayout_cuda_spatial_contact4_active_union_scene_echo_v1;
+using Contact4Request =
+    klayout_cuda_spatial_contact4_active_union_request_v1;
+using Contact4Result =
+    klayout_cuda_spatial_contact4_active_union_result_v1;
 using Clock = std::chrono::steady_clock;
 
 static_assert(std::is_trivially_copyable<Context>::value,
@@ -74,6 +85,16 @@ static_assert(sizeof(Edge) == 32, "unexpected M2 edge ABI padding");
 static_assert(sizeof(Request) == 336, "unexpected M2 request ABI padding");
 static_assert(sizeof(Result) == 480, "unexpected M2 result ABI padding");
 static_assert(sizeof(Segment) == 32, "unexpected M2 segment ABI padding");
+static_assert(sizeof(Contact4Scene) == 280,
+              "unexpected CONTACT4 scene ABI padding");
+static_assert(sizeof(Contact4SceneEcho) == 192,
+              "unexpected CONTACT4 scene echo ABI padding");
+static_assert(sizeof(Contact4Request) == 760,
+              "unexpected CONTACT4 request ABI padding");
+static_assert(sizeof(Contact4Result) == 944,
+              "unexpected CONTACT4 result ABI padding");
+static_assert(sizeof(a3::DirectedEdge) == sizeof(Edge),
+              "CONTACT4 and raw-scene edge layouts diverged");
 static_assert(sizeof(mu::DirectedSegmentI64) == sizeof(Segment),
               "shared union and C ABI segment sizes diverged");
 static_assert(
@@ -86,6 +107,12 @@ static_assert(
 constexpr std::int64_t kCoordinateLimit = INT64_C(1000000000000);
 constexpr std::uint32_t kExpandThreads = 256;
 constexpr std::uint32_t kMaximumBlocks = 65535;
+constexpr char kM2RawDigestMagic[8] =
+    {'K', 'M', '2', 'R', 'A', 'W', '0', '1'};
+constexpr char kActiveRawDigestMagic[8] =
+    {'K', 'A', 'R', 'A', 'W', '0', '0', '1'};
+constexpr char kContactRawDigestMagic[8] =
+    {'K', 'C', 'R', 'A', 'W', '0', '0', '1'};
 
 enum ExpandFlag : std::uint32_t {
   kExpandTransformOverflow = 1u << 0,
@@ -336,6 +363,13 @@ void set_message(Result *result, const char *message)
       message ? message : "");
 }
 
+void set_message(Contact4Result *result, const char *message)
+{
+  std::snprintf(
+      result->message, sizeof(result->message), "%s",
+      message ? message : "");
+}
+
 bool coordinate_qualified(std::int64_t value)
 {
   return value >= -kCoordinateLimit && value <= kCoordinateLimit;
@@ -498,6 +532,150 @@ bool valid_basic_request(const Request &request)
       coordinate_qualified(request.scene_top);
 }
 
+Request scene_as_union_request(
+    const Contact4Scene &scene, const Contact4Request &request)
+{
+  Request adapted{};
+  adapted.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  adapted.struct_size = sizeof(adapted);
+  adapted.opcode =
+      KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY;
+  adapted.option_flags =
+      KLAYOUT_CUDA_SPATIAL_M2_UNION_QUALIFIED_OPTIONS;
+  adapted.format_version = scene.format_version;
+  adapted.dbu_per_micron = scene.dbu_per_micron;
+  adapted.root_cell = scene.root_cell;
+  adapted.device = request.device;
+  adapted.contexts = scene.contexts;
+  adapted.context_count = scene.context_count;
+  adapted.context_record_bytes = scene.context_record_bytes;
+  adapted.metal_contexts = scene.layer_contexts;
+  adapted.metal_context_count = scene.layer_context_count;
+  adapted.context_polygon_offsets =
+      scene.context_polygon_offsets;
+  adapted.context_polygon_offset_count =
+      scene.context_polygon_offset_count;
+  adapted.context_edge_offsets = scene.context_edge_offsets;
+  adapted.context_edge_offset_count =
+      scene.context_edge_offset_count;
+  adapted.cells = scene.cells;
+  adapted.cell_count = scene.cell_count;
+  adapted.cell_record_bytes = scene.cell_record_bytes;
+  adapted.polygons = scene.polygons;
+  adapted.polygon_count = scene.polygon_count;
+  adapted.polygon_record_bytes = scene.polygon_record_bytes;
+  adapted.edges = scene.edges;
+  adapted.edge_count = scene.edge_count;
+  adapted.edge_record_bytes = scene.edge_record_bytes;
+  adapted.flat_polygon_count = scene.flat_polygon_count;
+  adapted.flat_edge_count = scene.flat_edge_count;
+  adapted.scene_left = scene.scene_left;
+  adapted.scene_bottom = scene.scene_bottom;
+  adapted.scene_right = scene.scene_right;
+  adapted.scene_top = scene.scene_top;
+  adapted.max_contexts = request.max_contexts;
+  adapted.max_rectangles = request.max_rectangles;
+  adapted.max_x_slabs = request.max_x_slabs;
+  adapted.max_memberships = request.max_union_memberships;
+  adapted.max_events = request.max_events;
+  adapted.max_raw_segments = request.max_raw_segments;
+  adapted.max_segments = request.max_boundary_segments;
+  adapted.max_slabs_per_rectangle =
+      request.max_slabs_per_rectangle;
+  std::copy(
+      scene.scene_digest, scene.scene_digest + 32,
+      adapted.scene_digest);
+  return adapted;
+}
+
+bool exact_bytes(
+    const std::uint8_t *bytes, const char (&expected)[8])
+{
+  return std::equal(bytes, bytes + 8, expected);
+}
+
+bool valid_contact4_scene_descriptor(
+    const Contact4Scene &scene, std::uint32_t role,
+    std::uint32_t layer, const char (&digest_magic)[8],
+    const Contact4Request &request)
+{
+  if (scene.struct_size != sizeof(scene) ||
+      scene.role != role || scene.format_version != 1 ||
+      scene.dbu_per_micron != 2000 || scene.layer != layer ||
+      scene.datatype != 0 || scene.reserved0 ||
+      scene.context_reserved || scene.cell_reserved ||
+      scene.polygon_reserved || scene.edge_reserved ||
+      scene.reserved1[0] || scene.reserved1[1] ||
+      !exact_bytes(scene.digest_domain, digest_magic)) {
+    return false;
+  }
+  Request structural = scene_as_union_request(scene, request);
+  // Operational caps are allowed to be smaller than the input census: that
+  // is a valid bounded request which must return FALLBACK, not BAD_ARGUMENT.
+  // Raise only the two cap-dependent fields for this pointer/record-shape
+  // precheck; validate_and_lower receives the original limits and emits the
+  // checked capacity decline before any large allocation.
+  structural.max_rectangles = std::max(
+      structural.max_rectangles, structural.flat_polygon_count);
+  structural.max_memberships = std::max(
+      structural.max_memberships, structural.edge_count);
+  return valid_basic_request(structural);
+}
+
+bool valid_contact4_request(const Contact4Request &request)
+{
+  if (request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      request.struct_size != sizeof(request) ||
+      request.opcode !=
+          KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_EMPTY ||
+      request.option_flags !=
+          KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_QUALIFIED_OPTIONS ||
+      request.format_version != 1 ||
+      request.dbu_per_micron != 2000 || request.device < 0 ||
+      request.reserved0 || request.distance != 10 ||
+      request.grid_cell_size != 2000 ||
+      !request.max_contexts || !request.max_rectangles ||
+      !request.max_x_slabs || !request.max_union_memberships ||
+      !request.max_events || !request.max_raw_segments ||
+      !request.max_boundary_segments ||
+      !request.max_slabs_per_rectangle ||
+      request.union_reserved || !request.max_contact_edges ||
+      !request.max_grid_cells ||
+      !request.max_contact_memberships ||
+      !request.max_boundary_cell_visits ||
+      !request.max_member_visits || !request.max_pair_work ||
+      !request.max_cells_per_contact_edge ||
+      !request.max_cells_per_boundary_edge ||
+      request.reserved1[0] || request.reserved1[1] ||
+      request.reserved1[2] || request.reserved1[3]) {
+    return false;
+  }
+  if (!valid_contact4_scene_descriptor(
+          request.active,
+          KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_ROLE, 1,
+          kActiveRawDigestMagic, request) ||
+      !valid_contact4_scene_descriptor(
+          request.contact,
+          KLAYOUT_CUDA_SPATIAL_CONTACT4_CONTACT_ROLE, 10,
+          kContactRawDigestMagic, request) ||
+      request.active.format_version != request.format_version ||
+      request.contact.format_version != request.format_version ||
+      request.active.dbu_per_micron != request.dbu_per_micron ||
+      request.contact.dbu_per_micron != request.dbu_per_micron ||
+      request.active.root_cell != request.contact.root_cell ||
+      request.active.context_count != request.contact.context_count ||
+      request.active.cell_count != request.contact.cell_count ||
+      request.active.context_count > request.max_contexts ||
+      request.contact.context_count > request.max_contexts ||
+      request.contact.flat_edge_count >
+          request.max_contact_edges ||
+      request.contact.flat_edge_count >
+          std::numeric_limits<std::uint32_t>::max()) {
+    return false;
+  }
+  return true;
+}
+
 void echo_request(const Request &request, Result *result)
 {
   result->opcode = request.opcode;
@@ -519,10 +697,8 @@ void echo_request(const Request &request, Result *result)
 }
 
 std::array<std::uint8_t, 32>
-request_digest(const Request &request)
+request_digest(const Request &request, const char (&magic)[8])
 {
-  static const char magic[8] =
-      {'K', 'M', '2', 'R', 'A', 'W', '0', '1'};
   CanonicalDigest digest;
   digest.bytes(magic, sizeof(magic));
   digest.u32(request.format_version);
@@ -586,6 +762,41 @@ request_digest(const Request &request)
     digest.i64(edge.y2);
   }
   return digest.finish();
+}
+
+void validate_shared_contact4_hierarchy(
+    const Request &active, const Request &contact)
+{
+  if (active.root_cell != contact.root_cell ||
+      active.context_count != contact.context_count ||
+      active.cell_count != contact.cell_count) {
+    malformed(
+        "ACTIVE and CONTACT do not share one hierarchy identity");
+  }
+  for (std::uint64_t index = 0;
+       index < active.context_count; ++index) {
+    const Context first = load_record<Context>(
+        active.contexts, index, active.context_record_bytes);
+    const Context second = load_record<Context>(
+        contact.contexts, index, contact.context_record_bytes);
+    if (first.tx != second.tx || first.ty != second.ty ||
+        first.cell_id != second.cell_id ||
+        first.transform_code != second.transform_code) {
+      malformed(
+          "ACTIVE and CONTACT context hierarchies differ");
+    }
+  }
+  for (std::uint64_t index = 0;
+       index < active.cell_count; ++index) {
+    const Cell first = load_record<Cell>(
+        active.cells, index, active.cell_record_bytes);
+    const Cell second = load_record<Cell>(
+        contact.cells, index, contact.cell_record_bytes);
+    if (first.source_cell_index != second.source_cell_index) {
+      malformed(
+          "ACTIVE and CONTACT source-cell identities differ");
+    }
+  }
 }
 
 __int128 twice_area(const std::array<Point, 6> &points,
@@ -1314,22 +1525,37 @@ LoweredScene lower_scene(
   return lowered;
 }
 
-LoweredScene validate_and_lower(const Request &request)
+LoweredScene validate_and_lower(
+    const Request &request, const char (&digest_magic)[8])
 {
   const std::vector<CellCensus> cells =
       validate_cells_and_polygons(request);
   const std::uint64_t flat_rectangles =
       validate_contexts_and_census(request, cells);
   const std::array<std::uint8_t, 32> digest =
-      request_digest(request);
+      request_digest(request, digest_magic);
   if (!std::equal(
           digest.begin(), digest.end(), request.scene_digest)) {
-    malformed("raw M2 KM2RAW01 digest mismatch");
+    malformed("raw Manhattan scene digest mismatch");
   }
   // Only compact host templates and offsets are materialized here.  Device
   // allocation and the 22.9M-record production world stream remain strictly
   // after the complete structural/census/digest gate.
   return lower_scene(request, cells, flat_rectangles);
+}
+
+void validate_without_lowering(
+    const Request &request, const char (&digest_magic)[8])
+{
+  const std::vector<CellCensus> cells =
+      validate_cells_and_polygons(request);
+  validate_contexts_and_census(request, cells);
+  const std::array<std::uint8_t, 32> digest =
+      request_digest(request, digest_magic);
+  if (!std::equal(
+          digest.begin(), digest.end(), request.scene_digest)) {
+    malformed("raw Manhattan scene digest mismatch");
+  }
 }
 
 __device__ bool negate_checked(std::int64_t value,
@@ -1471,6 +1697,117 @@ __global__ void expand_rectangles_kernel(
       const std::uint64_t output =
           rectangle_offsets[list_id] + local;
       rectangles[output] = rectangle;
+    }
+  }
+}
+
+__global__ void expand_contact_edges_kernel(
+    const Context *contexts, std::uint64_t context_count,
+    const std::uint32_t *layer_contexts,
+    const std::uint64_t *edge_offsets,
+    std::uint64_t layer_context_count, const Cell *cells,
+    std::uint64_t cell_count, const Polygon *polygons,
+    std::uint64_t polygon_count, const Edge *templates,
+    std::uint64_t template_count,
+    std::int64_t scene_left, std::int64_t scene_bottom,
+    std::int64_t scene_right, std::int64_t scene_top,
+    a3::DirectedEdge *expanded, std::uint64_t expanded_count,
+    std::uint32_t *status)
+{
+  for (std::uint64_t list_id = blockIdx.x;
+       list_id < layer_context_count;
+       list_id += gridDim.x) {
+    const std::uint32_t context_id = layer_contexts[list_id];
+    if (context_id >= context_count) {
+      atomicOr(status, std::uint32_t(kExpandInvalidRecord));
+      continue;
+    }
+    const Context context = contexts[context_id];
+    if (context.cell_id >= cell_count) {
+      atomicOr(status, std::uint32_t(kExpandInvalidRecord));
+      continue;
+    }
+    const Cell cell = cells[context.cell_id];
+    const std::uint64_t output_base = edge_offsets[list_id];
+    if (output_base > expanded_count ||
+        cell.edge_count > expanded_count - output_base ||
+        cell.polygon_begin > polygon_count ||
+        cell.polygon_count >
+            polygon_count - cell.polygon_begin ||
+        cell.edge_begin > template_count ||
+        cell.edge_count > template_count - cell.edge_begin) {
+      atomicOr(status, std::uint32_t(kExpandInvalidRecord));
+      continue;
+    }
+
+    const bool mirrored = context.transform_code >= 4;
+    for (std::uint32_t polygon_local = 0;
+         polygon_local < cell.polygon_count; ++polygon_local) {
+      const Polygon polygon =
+          polygons[cell.polygon_begin + polygon_local];
+      if (polygon.edge_begin < cell.edge_begin ||
+          polygon.edge_begin > template_count ||
+          polygon.edge_count >
+              template_count - polygon.edge_begin) {
+        atomicOr(status, std::uint32_t(kExpandInvalidRecord));
+        continue;
+      }
+      const std::uint64_t cell_edge_local =
+          polygon.edge_begin - cell.edge_begin;
+      if (cell_edge_local > cell.edge_count ||
+          polygon.edge_count >
+              cell.edge_count - cell_edge_local) {
+        atomicOr(status, std::uint32_t(kExpandInvalidRecord));
+        continue;
+      }
+
+      for (std::uint32_t output_local = threadIdx.x;
+           output_local < polygon.edge_count;
+           output_local += blockDim.x) {
+        const std::uint32_t source_local =
+            mirrored
+                ? polygon.edge_count - 1 - output_local
+                : output_local;
+        const Edge source =
+            templates[polygon.edge_begin + source_local];
+        std::int64_t x1 = 0;
+        std::int64_t y1 = 0;
+        std::int64_t x2 = 0;
+        std::int64_t y2 = 0;
+        if (!transform_point_device(
+                context, source.x1, source.y1, &x1, &y1) ||
+            !transform_point_device(
+                context, source.x2, source.y2, &x2, &y2)) {
+          atomicOr(
+              status, std::uint32_t(kExpandTransformOverflow));
+          continue;
+        }
+        a3::DirectedEdge destination = mirrored
+            ? a3::DirectedEdge{x2, y2, x1, y1}
+            : a3::DirectedEdge{x1, y1, x2, y2};
+        if ((destination.x1 == destination.x2 &&
+             destination.y1 == destination.y2) ||
+            !(destination.x1 == destination.x2 ||
+              destination.y1 == destination.y2) ||
+            destination.x1 < scene_left ||
+            destination.x1 > scene_right ||
+            destination.x2 < scene_left ||
+            destination.x2 > scene_right ||
+            destination.y1 < scene_bottom ||
+            destination.y1 > scene_top ||
+            destination.y2 < scene_bottom ||
+            destination.y2 > scene_top) {
+          atomicOr(status, std::uint32_t(kExpandBoundsMismatch));
+          continue;
+        }
+        const std::uint64_t output =
+            output_base + cell_edge_local + output_local;
+        if (output >= expanded_count) {
+          atomicOr(status, std::uint32_t(kExpandInvalidRecord));
+          continue;
+        }
+        expanded[output] = destination;
+      }
     }
   }
 }
@@ -1621,6 +1958,637 @@ void fill_success_result(
   result->boundary_fnv64 = output.digest;
 }
 
+struct ExpandedRectangles
+{
+  thrust::device_vector<mu::RectI64> rectangles;
+  std::uint32_t status = 0;
+  std::uint64_t h2d_ns = 0;
+  std::uint64_t expand_ns = 0;
+};
+
+ExpandedRectangles expand_rectangles_resident(
+    const Request &request, const LoweredScene &lowered)
+{
+  ExpandedRectangles expanded;
+  const auto h2d_begin = Clock::now();
+  cuda_require(
+      cudaSetDevice(request.device), "raw Manhattan cudaSetDevice");
+  {
+    DeviceBuffer<Context> device_contexts(request.context_count);
+    DeviceBuffer<std::uint32_t> device_metal_contexts(
+        request.metal_context_count);
+    DeviceBuffer<std::uint64_t> device_offsets(
+        request.metal_context_count);
+    DeviceBuffer<LoweredCell> device_cells(request.cell_count);
+    DeviceBuffer<RectangleTemplate> device_templates(
+        lowered.rectangles.size());
+    DeviceBuffer<std::uint32_t> device_status(1);
+    expanded.rectangles.resize(
+        static_cast<std::size_t>(lowered.flat_rectangles));
+
+    cuda_require(
+        cudaMemcpy(
+            device_contexts.get(), request.contexts,
+            static_cast<std::size_t>(request.context_count) *
+                sizeof(Context),
+            cudaMemcpyHostToDevice),
+        "raw Manhattan context H2D");
+    cuda_require(
+        cudaMemcpy(
+            device_metal_contexts.get(), request.metal_contexts,
+            static_cast<std::size_t>(
+                request.metal_context_count) *
+                sizeof(std::uint32_t),
+            cudaMemcpyHostToDevice),
+        "raw Manhattan context-list H2D");
+    cuda_require(
+        cudaMemcpy(
+            device_offsets.get(), lowered.rectangle_offsets.data(),
+            lowered.rectangle_offsets.size() *
+                sizeof(std::uint64_t),
+            cudaMemcpyHostToDevice),
+        "raw Manhattan rectangle-offset H2D");
+    cuda_require(
+        cudaMemcpy(
+            device_cells.get(), lowered.cells.data(),
+            lowered.cells.size() * sizeof(LoweredCell),
+            cudaMemcpyHostToDevice),
+        "raw Manhattan cell H2D");
+    cuda_require(
+        cudaMemcpy(
+            device_templates.get(), lowered.rectangles.data(),
+            lowered.rectangles.size() *
+                sizeof(RectangleTemplate),
+            cudaMemcpyHostToDevice),
+        "raw Manhattan rectangle-template H2D");
+    cuda_require(
+        cudaMemset(
+            device_status.get(), 0, sizeof(std::uint32_t)),
+        "raw Manhattan expansion status clear");
+    cuda_require(
+        cudaDeviceSynchronize(),
+        "raw Manhattan compact H2D synchronize");
+    expanded.h2d_ns = elapsed_ns(h2d_begin, Clock::now());
+
+    const auto expand_begin = Clock::now();
+    const std::uint32_t blocks =
+        static_cast<std::uint32_t>(std::min<std::uint64_t>(
+            request.metal_context_count, kMaximumBlocks));
+    expand_rectangles_kernel<<<blocks, kExpandThreads>>>(
+        device_contexts.get(), device_metal_contexts.get(),
+        device_offsets.get(), device_cells.get(),
+        device_templates.get(), request.metal_context_count,
+        request.scene_left, request.scene_bottom,
+        request.scene_right, request.scene_top,
+        thrust::raw_pointer_cast(expanded.rectangles.data()),
+        device_status.get());
+    cuda_require(
+        cudaGetLastError(), "raw Manhattan rectangle expansion launch");
+    cuda_require(
+        cudaDeviceSynchronize(),
+        "raw Manhattan rectangle expansion synchronize");
+    cuda_require(
+        cudaMemcpy(
+            &expanded.status, device_status.get(),
+            sizeof(expanded.status), cudaMemcpyDeviceToHost),
+        "raw Manhattan rectangle expansion status D2H");
+    expanded.expand_ns =
+        elapsed_ns(expand_begin, Clock::now());
+  }
+  return expanded;
+}
+
+struct ExpandedContacts
+{
+  thrust::device_vector<a3::DirectedEdge> edges;
+  std::uint32_t status = 0;
+  std::uint64_t h2d_ns = 0;
+  std::uint64_t expand_ns = 0;
+  std::uint64_t device_total_bytes = 0;
+  std::uint64_t free_low_bytes = 0;
+};
+
+ExpandedContacts expand_contact_edges_resident(
+    const Request &request)
+{
+  ExpandedContacts expanded;
+  const auto h2d_begin = Clock::now();
+  Clock::time_point expand_begin;
+  cuda_require(
+      cudaSetDevice(request.device),
+      "raw CONTACT cudaSetDevice");
+  {
+    DeviceBuffer<Context> device_contexts(request.context_count);
+    DeviceBuffer<std::uint32_t> device_layer_contexts(
+        request.metal_context_count);
+    DeviceBuffer<std::uint64_t> device_offsets(
+        request.metal_context_count);
+    DeviceBuffer<Cell> device_cells(request.cell_count);
+    DeviceBuffer<Polygon> device_polygons(request.polygon_count);
+    DeviceBuffer<Edge> device_templates(request.edge_count);
+    DeviceBuffer<std::uint32_t> device_status(1);
+    expanded.edges.resize(
+        static_cast<std::size_t>(request.flat_edge_count));
+
+    cuda_require(
+        cudaMemcpy(
+            device_contexts.get(), request.contexts,
+            static_cast<std::size_t>(request.context_count) *
+                sizeof(Context),
+            cudaMemcpyHostToDevice),
+        "raw CONTACT context H2D");
+    cuda_require(
+        cudaMemcpy(
+            device_layer_contexts.get(), request.metal_contexts,
+            static_cast<std::size_t>(
+                request.metal_context_count) *
+                sizeof(std::uint32_t),
+            cudaMemcpyHostToDevice),
+        "raw CONTACT context-list H2D");
+    cuda_require(
+        cudaMemcpy(
+            device_offsets.get(), request.context_edge_offsets,
+            static_cast<std::size_t>(
+                request.context_edge_offset_count) *
+                sizeof(std::uint64_t),
+            cudaMemcpyHostToDevice),
+        "raw CONTACT edge-offset H2D");
+    cuda_require(
+        cudaMemcpy(
+            device_cells.get(), request.cells,
+            static_cast<std::size_t>(request.cell_count) *
+                sizeof(Cell),
+            cudaMemcpyHostToDevice),
+        "raw CONTACT cell H2D");
+    cuda_require(
+        cudaMemcpy(
+            device_polygons.get(), request.polygons,
+            static_cast<std::size_t>(request.polygon_count) *
+                sizeof(Polygon),
+            cudaMemcpyHostToDevice),
+        "raw CONTACT polygon H2D");
+    cuda_require(
+        cudaMemcpy(
+            device_templates.get(), request.edges,
+            static_cast<std::size_t>(request.edge_count) *
+                sizeof(Edge),
+            cudaMemcpyHostToDevice),
+        "raw CONTACT edge-template H2D");
+    cuda_require(
+        cudaMemset(
+            device_status.get(), 0, sizeof(std::uint32_t)),
+        "raw CONTACT expansion status clear");
+    cuda_require(
+        cudaDeviceSynchronize(),
+        "raw CONTACT compact H2D synchronize");
+    std::size_t free_bytes = 0;
+    std::size_t total_bytes = 0;
+    cuda_require(
+        cudaMemGetInfo(&free_bytes, &total_bytes),
+        "raw CONTACT staging cudaMemGetInfo");
+    expanded.device_total_bytes = total_bytes;
+    expanded.free_low_bytes = free_bytes;
+    expanded.h2d_ns = elapsed_ns(h2d_begin, Clock::now());
+
+    expand_begin = Clock::now();
+    const std::uint32_t blocks =
+        static_cast<std::uint32_t>(std::min<std::uint64_t>(
+            request.metal_context_count, kMaximumBlocks));
+    expand_contact_edges_kernel<<<blocks, kExpandThreads>>>(
+        device_contexts.get(), request.context_count,
+        device_layer_contexts.get(), device_offsets.get(),
+        request.metal_context_count, device_cells.get(),
+        request.cell_count, device_polygons.get(),
+        request.polygon_count, device_templates.get(),
+        request.edge_count, request.scene_left,
+        request.scene_bottom, request.scene_right,
+        request.scene_top,
+        thrust::raw_pointer_cast(expanded.edges.data()),
+        request.flat_edge_count, device_status.get());
+    cuda_require(
+        cudaGetLastError(), "raw CONTACT edge expansion launch");
+    cuda_require(
+        cudaDeviceSynchronize(),
+        "raw CONTACT edge expansion synchronize");
+    cuda_require(
+        cudaMemcpy(
+            &expanded.status, device_status.get(),
+            sizeof(expanded.status), cudaMemcpyDeviceToHost),
+        "raw CONTACT edge expansion status D2H");
+  }
+  // Include destruction of the compact staging buffers.  The expanded edge
+  // array intentionally remains resident for the relation consumer.
+  expanded.expand_ns =
+      elapsed_ns(expand_begin, Clock::now());
+  return expanded;
+}
+
+struct Contact4CallbackContext
+{
+  const Request *contact = nullptr;
+  const Contact4Request *outer = nullptr;
+  bool invoked = false;
+  std::uint32_t expansion_status = 0;
+  std::uint64_t contact_h2d_ns = 0;
+  std::uint64_t contact_expand_ns = 0;
+  std::uint64_t device_total_bytes = 0;
+  std::uint64_t callback_free_begin_bytes = 0;
+  std::uint64_t callback_free_low_bytes = 0;
+  c4::DeviceResidentContext resident;
+};
+
+void consume_contact4_active_union_boundary(
+    cudaStream_t stream,
+    const mu::DirectedSegmentI64 *horizontal,
+    std::uint64_t horizontal_count,
+    const mu::DirectedSegmentI64 *vertical,
+    std::uint64_t vertical_count, void *opaque)
+{
+  Contact4CallbackContext *context =
+      static_cast<Contact4CallbackContext *>(opaque);
+  if (!context || context->invoked || !context->contact ||
+      !context->outer) {
+    throw std::runtime_error(
+        "CONTACT4 fused boundary callback contract");
+  }
+  context->invoked = true;
+  if (stream != nullptr) {
+    throw std::runtime_error(
+        "CONTACT4 fused callback requires the default stream");
+  }
+
+  std::size_t callback_free_begin = 0;
+  std::size_t device_total = 0;
+  cuda_require(
+      cudaMemGetInfo(&callback_free_begin, &device_total),
+      "CONTACT4 fused callback-entry cudaMemGetInfo");
+  context->device_total_bytes = device_total;
+  context->callback_free_begin_bytes = callback_free_begin;
+  context->callback_free_low_bytes = callback_free_begin;
+
+  ExpandedContacts expanded =
+      expand_contact_edges_resident(*context->contact);
+  context->expansion_status = expanded.status;
+  context->contact_h2d_ns = expanded.h2d_ns;
+  context->contact_expand_ns = expanded.expand_ns;
+  if (expanded.device_total_bytes != context->device_total_bytes ||
+      !expanded.free_low_bytes) {
+    throw std::runtime_error(
+        "raw CONTACT memory telemetry identity mismatch");
+  }
+  context->callback_free_low_bytes = std::min(
+      context->callback_free_low_bytes, expanded.free_low_bytes);
+  if (expanded.status) {
+    throw std::runtime_error(
+        "raw CONTACT device expansion failed its exact gate");
+  }
+
+  c4::DeviceRequest &device_request =
+      context->resident.request;
+  device_request.contacts.device_edges =
+      thrust::raw_pointer_cast(expanded.edges.data());
+  device_request.contacts.count =
+      context->contact->flat_edge_count;
+  device_request.contacts.bounds = c4::ContactBounds{
+      context->contact->scene_left,
+      context->contact->scene_bottom,
+      context->contact->scene_right,
+      context->contact->scene_top};
+  device_request.distance = context->outer->distance;
+  device_request.grid_cell_size =
+      context->outer->grid_cell_size;
+  device_request.device = context->outer->device;
+  device_request.contact_direction_contract =
+      c4::ContactDirectionContract::
+          validated_material_on_right_contours;
+  device_request.limits.max_contact_edges =
+      context->outer->max_contact_edges;
+  device_request.limits.max_grid_cells =
+      context->outer->max_grid_cells;
+  device_request.limits.max_memberships =
+      context->outer->max_contact_memberships;
+  device_request.limits.max_boundary_cell_visits =
+      context->outer->max_boundary_cell_visits;
+  device_request.limits.max_member_visits =
+      context->outer->max_member_visits;
+  device_request.limits.max_pair_work =
+      context->outer->max_pair_work;
+  device_request.limits.max_cells_per_contact_edge =
+      context->outer->max_cells_per_contact_edge;
+  device_request.limits.max_cells_per_boundary_edge =
+      context->outer->max_cells_per_boundary_edge;
+
+  const auto reconcile_memory = [context]() {
+    c4::Result &result = context->resident.result;
+    if (!result.device_total_bytes) return;
+    if (result.device_total_bytes != context->device_total_bytes ||
+        !result.callback_free_begin_bytes ||
+        !result.callback_free_low_bytes) {
+      throw std::runtime_error(
+          "CONTACT4 fused resident memory telemetry mismatch");
+    }
+    result.callback_free_begin_bytes =
+        context->callback_free_begin_bytes;
+    result.callback_free_low_bytes = std::min(
+        context->callback_free_low_bytes,
+        result.callback_free_low_bytes);
+    result.callback_incremental_peak_bytes =
+        result.callback_free_begin_bytes -
+        result.callback_free_low_bytes;
+  };
+  try {
+    c4::consume_device_boundary_hook(
+        stream, horizontal, horizontal_count, vertical,
+        vertical_count, &context->resident);
+  } catch (...) {
+    reconcile_memory();
+    throw;
+  }
+  reconcile_memory();
+}
+
+mu::ResidentBoundaryHook make_contact4_active_union_hook(
+    Contact4CallbackContext *context)
+{
+  mu::ResidentBoundaryHook hook;
+  hook.consume = &consume_contact4_active_union_boundary;
+  hook.context = context;
+  hook.stop_before_d2h = true;
+  return hook;
+}
+
+void echo_contact4_scene(
+    const Contact4Scene &source, Contact4SceneEcho *echo)
+{
+  std::memset(echo, 0, sizeof(*echo));
+  echo->struct_size = sizeof(*echo);
+  echo->role = source.role;
+  echo->format_version = source.format_version;
+  echo->dbu_per_micron = source.dbu_per_micron;
+  echo->root_cell = source.root_cell;
+  echo->layer = source.layer;
+  echo->datatype = source.datatype;
+  echo->context_count = source.context_count;
+  echo->layer_context_count = source.layer_context_count;
+  echo->context_polygon_offset_count =
+      source.context_polygon_offset_count;
+  echo->context_edge_offset_count =
+      source.context_edge_offset_count;
+  echo->cell_count = source.cell_count;
+  echo->polygon_count = source.polygon_count;
+  echo->edge_count = source.edge_count;
+  echo->flat_polygon_count = source.flat_polygon_count;
+  echo->flat_edge_count = source.flat_edge_count;
+  echo->scene_left = source.scene_left;
+  echo->scene_bottom = source.scene_bottom;
+  echo->scene_right = source.scene_right;
+  echo->scene_top = source.scene_top;
+  std::copy(
+      source.digest_domain,
+      source.digest_domain +
+          KLAYOUT_CUDA_SPATIAL_CONTACT4_DIGEST_DOMAIN_BYTES,
+      echo->digest_domain);
+  std::copy(
+      source.scene_digest, source.scene_digest + 32,
+      echo->scene_digest);
+}
+
+void echo_contact4_request(
+    const Contact4Request &request, Contact4Result *result)
+{
+  result->opcode = request.opcode;
+  result->option_flags = request.option_flags;
+  result->format_version = request.format_version;
+  result->dbu_per_micron = request.dbu_per_micron;
+  result->device = request.device;
+  result->distance = request.distance;
+  result->grid_cell_size = request.grid_cell_size;
+  echo_contact4_scene(request.active, &result->active);
+  echo_contact4_scene(request.contact, &result->contact);
+}
+
+void copy_contact4_pipeline_result(
+    const mu::GpuUnionOutput &output,
+    const Contact4CallbackContext &callback,
+    Contact4Result *result)
+{
+  const c4::Result &contact = callback.resident.result;
+  result->rectangle_count = output.rectangle_count;
+  result->x_slab_count = output.x_slabs;
+  result->union_membership_count = output.memberships;
+  result->event_count = output.event_count;
+  result->strip_interval_count = output.strip_intervals;
+  result->raw_segment_count = output.raw_segments;
+  result->boundary_segment_count = contact.boundary_segments;
+  result->contact_expanded_edge_count = contact.contact_edges;
+  result->grid_cell_count = contact.grid_cells;
+  result->contact_membership_count = contact.memberships;
+  result->boundary_cell_visit_count =
+      contact.boundary_cell_visits;
+  result->member_visit_count = contact.member_visits;
+  result->candidate_pair_count = contact.candidate_pairs;
+  result->raw_hit_count = contact.hits;
+  result->uncertain_count = contact.uncertain;
+  result->device_flags = contact.device_flags;
+  result->device_total_bytes = std::max(
+      output.device_total_bytes, contact.device_total_bytes);
+  result->union_free_begin_bytes =
+      output.device_free_begin_bytes;
+  result->union_free_low_bytes = output.device_free_low_bytes;
+  result->callback_free_begin_bytes =
+      contact.callback_free_begin_bytes;
+  result->callback_free_low_bytes =
+      contact.callback_free_low_bytes;
+  result->post_scan_free_bytes = contact.post_scan_free_bytes;
+  result->callback_incremental_peak_bytes =
+      contact.callback_incremental_peak_bytes;
+  result->x_membership_ns =
+      milliseconds_to_ns(output.x_membership_ms);
+  result->strip_scan_ns =
+      milliseconds_to_ns(output.strip_scan_ms);
+  result->boundary_ns =
+      milliseconds_to_ns(output.boundary_ms);
+  result->contact_h2d_ns = callback.contact_h2d_ns;
+  result->contact_expand_ns = callback.contact_expand_ns;
+  result->boundary_preflight_ns =
+      milliseconds_to_ns(contact.boundary_preflight_ms);
+  result->grid_count_ns =
+      milliseconds_to_ns(contact.grid_count_ms);
+  result->grid_build_ns =
+      milliseconds_to_ns(contact.grid_build_ms);
+  result->query_ns = milliseconds_to_ns(contact.query_ms);
+  result->d2h_ns =
+      milliseconds_to_ns(output.d2h_ms + contact.d2h_ms);
+}
+
+int run_contact4_active_union_request(
+    const Contact4Request *request, Contact4Result *result)
+{
+  if (!result) return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  std::memset(result, 0, sizeof(*result));
+  result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  result->struct_size = sizeof(*result);
+  result->status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  result->fallback_flags =
+      KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+  result->disposition =
+      KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_UNCERTAIN;
+  if (!request || !valid_contact4_request(*request)) {
+    set_message(
+        result,
+        "unsupported or malformed CONTACT4 ACTIVE-union request");
+    return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  }
+  echo_contact4_request(*request, result);
+
+  const auto total_begin = Clock::now();
+  try {
+    std::lock_guard<std::mutex> lock(pipeline_mutex());
+    const auto setup_begin = Clock::now();
+    const Request active =
+        scene_as_union_request(request->active, *request);
+    Request contact =
+        scene_as_union_request(request->contact, *request);
+    // CONTACT is structurally/digest validated but never decomposed into the
+    // ACTIVE union's rectangle stream.  Give that validation its independent
+    // exact upper bound (one rectangle cannot require more source edges than
+    // the whole flattened contour stream) instead of coupling it to the
+    // operational ACTIVE rectangle cap.
+    contact.max_rectangles = contact.flat_edge_count;
+    validate_shared_contact4_hierarchy(active, contact);
+    const LoweredScene active_lowered =
+        validate_and_lower(active, kActiveRawDigestMagic);
+    validate_without_lowering(contact, kContactRawDigestMagic);
+    result->setup_ns = elapsed_ns(setup_begin, Clock::now());
+
+    ExpandedRectangles expanded_active =
+        expand_rectangles_resident(active, active_lowered);
+    result->active_h2d_ns = expanded_active.h2d_ns;
+    result->active_expand_ns = expanded_active.expand_ns;
+    if (expanded_active.status) {
+      result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      result->fallback_flags =
+          expanded_active.status & kExpandTransformOverflow
+              ? KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW
+              : KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+      set_message(
+          result,
+          "raw ACTIVE device expansion failed its exact gate");
+      result->total_ns = elapsed_ns(total_begin, Clock::now());
+      return KLAYOUT_CUDA_SPATIAL_FALLBACK;
+    }
+
+    mu::GpuUnionLimits limits;
+    limits.max_rectangles = request->max_rectangles;
+    limits.max_x_slabs = request->max_x_slabs;
+    limits.max_memberships = request->max_union_memberships;
+    limits.max_events = request->max_events;
+    limits.max_raw_segments = request->max_raw_segments;
+    limits.max_segments = request->max_boundary_segments;
+    limits.max_slabs_per_rectangle =
+        request->max_slabs_per_rectangle;
+
+    Contact4CallbackContext callback;
+    callback.contact = &contact;
+    callback.outer = request;
+    const mu::ResidentBoundaryHook hook =
+        make_contact4_active_union_hook(&callback);
+    const double input_prepare_ms =
+        static_cast<double>(
+            result->active_h2d_ns + result->active_expand_ns) /
+        1000000.0;
+    const mu::GpuUnionOutput output = mu::gpu_union_resident(
+        std::move(expanded_active.rectangles),
+        active.scene_bottom, active.scene_top, limits,
+        request->device, input_prepare_ms, nullptr, &hook);
+    copy_contact4_pipeline_result(output, callback, result);
+
+    if (output.fallback) {
+      if (callback.resident.result.hits &&
+          !callback.resident.result.uncertain &&
+          !callback.resident.result.device_flags) {
+        result->status = KLAYOUT_CUDA_SPATIAL_OK;
+        result->fallback_flags =
+            KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE;
+        result->disposition =
+            KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_RAW_HITS;
+        set_message(
+            result,
+            "exact ACTIVE union has raw CONTACT4 hits");
+        result->total_ns = elapsed_ns(total_begin, Clock::now());
+        return KLAYOUT_CUDA_SPATIAL_OK;
+      }
+      result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      result->fallback_flags =
+          callback.expansion_status & kExpandTransformOverflow
+              ? static_cast<std::uint32_t>(
+                    KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW)
+              : fallback_flags_for_union(output);
+      set_message(result, output.message.c_str());
+      result->total_ns = elapsed_ns(total_begin, Clock::now());
+      return KLAYOUT_CUDA_SPATIAL_FALLBACK;
+    }
+
+    const c4::Result &contact_result =
+        callback.resident.result;
+    if (!callback.invoked || !callback.resident.invoked ||
+        !output.resident_boundary_consumer_completed ||
+        !output.segments.empty() || output.d2h_ms != 0.0 ||
+        !contact_result.certified_empty ||
+        contact_result.contact_edges !=
+            request->contact.flat_edge_count ||
+        !contact_result.boundary_segments ||
+        contact_result.hits || contact_result.uncertain ||
+        contact_result.device_flags ||
+        contact_result.grid_cells > request->max_grid_cells ||
+        contact_result.memberships >
+            request->max_contact_memberships ||
+        contact_result.boundary_cell_visits >
+            request->max_boundary_cell_visits ||
+        contact_result.member_visits >
+            request->max_member_visits ||
+        contact_result.candidate_pairs >
+            request->max_pair_work) {
+      throw std::runtime_error(
+          "CONTACT4 fused completion invariant failed");
+    }
+
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE;
+    result->disposition =
+        KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_COMPLETE;
+    result->status = KLAYOUT_CUDA_SPATIAL_OK;
+    set_message(
+        result,
+        "complete resident ACTIVE-union CONTACT4 empty certificate");
+    result->total_ns = elapsed_ns(total_begin, Clock::now());
+    return KLAYOUT_CUDA_SPATIAL_OK;
+  } catch (const M2Decline &decline) {
+    result->fallback_flags = decline.fallback_flags();
+    result->status =
+        decline.kind() == DeclineKind::bad_argument
+            ? KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT
+            : KLAYOUT_CUDA_SPATIAL_FALLBACK;
+    set_message(result, decline.what());
+  } catch (const std::exception &error) {
+    result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    set_message(result, error.what());
+  } catch (...) {
+    result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    set_message(
+        result,
+        "unknown resident ACTIVE-union CONTACT4 exception");
+  }
+  result->disposition =
+      KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_UNCERTAIN;
+  result->total_ns = elapsed_ns(total_begin, Clock::now());
+  return result->status;
+}
+
 int run_request(const Request *request, Result *result)
 {
   if (!result) return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
@@ -1645,113 +2613,26 @@ int run_request(const Request *request, Result *result)
     std::lock_guard<std::mutex> lock(pipeline_mutex());
 
     const auto setup_begin = Clock::now();
-    const LoweredScene lowered = validate_and_lower(*request);
+    const LoweredScene lowered =
+        validate_and_lower(*request, kM2RawDigestMagic);
     result->setup_ns = elapsed_ns(setup_begin, Clock::now());
 
-    thrust::device_vector<mu::RectI64> device_rectangles;
-    const auto h2d_begin = Clock::now();
-    cuda_require(
-        cudaSetDevice(request->device), "M2 union cudaSetDevice");
-    {
-      DeviceBuffer<Context> device_contexts(
-          request->context_count);
-      DeviceBuffer<std::uint32_t> device_metal_contexts(
-          request->metal_context_count);
-      DeviceBuffer<std::uint64_t> device_offsets(
-          request->metal_context_count);
-      DeviceBuffer<LoweredCell> device_cells(
-          request->cell_count);
-      DeviceBuffer<RectangleTemplate> device_templates(
-          lowered.rectangles.size());
-      DeviceBuffer<std::uint32_t> device_status(1);
-      device_rectangles.resize(
-          static_cast<std::size_t>(lowered.flat_rectangles));
-
-      cuda_require(
-          cudaMemcpy(
-              device_contexts.get(), request->contexts,
-              static_cast<std::size_t>(request->context_count) *
-                  sizeof(Context),
-              cudaMemcpyHostToDevice),
-          "M2 context H2D");
-      cuda_require(
-          cudaMemcpy(
-              device_metal_contexts.get(),
-              request->metal_contexts,
-              static_cast<std::size_t>(
-                  request->metal_context_count) *
-                  sizeof(std::uint32_t),
-              cudaMemcpyHostToDevice),
-          "M2 context-list H2D");
-      cuda_require(
-          cudaMemcpy(
-              device_offsets.get(),
-              lowered.rectangle_offsets.data(),
-              lowered.rectangle_offsets.size() *
-                  sizeof(std::uint64_t),
-              cudaMemcpyHostToDevice),
-          "M2 rectangle-offset H2D");
-      cuda_require(
-          cudaMemcpy(
-              device_cells.get(), lowered.cells.data(),
-              lowered.cells.size() * sizeof(LoweredCell),
-              cudaMemcpyHostToDevice),
-          "M2 cell H2D");
-      cuda_require(
-          cudaMemcpy(
-              device_templates.get(),
-              lowered.rectangles.data(),
-              lowered.rectangles.size() *
-                  sizeof(RectangleTemplate),
-              cudaMemcpyHostToDevice),
-          "M2 rectangle-template H2D");
-      cuda_require(
-          cudaMemset(
-              device_status.get(), 0, sizeof(std::uint32_t)),
-          "M2 expansion status clear");
-      cuda_require(
-          cudaDeviceSynchronize(), "M2 compact H2D synchronize");
-      result->h2d_ns = elapsed_ns(h2d_begin, Clock::now());
-
-      const auto expand_begin = Clock::now();
-      const std::uint32_t blocks =
-          static_cast<std::uint32_t>(std::min<std::uint64_t>(
-              request->metal_context_count, kMaximumBlocks));
-      expand_rectangles_kernel<<<blocks, kExpandThreads>>>(
-          device_contexts.get(),
-          device_metal_contexts.get(), device_offsets.get(),
-          device_cells.get(), device_templates.get(),
-          request->metal_context_count, request->scene_left,
-          request->scene_bottom, request->scene_right,
-          request->scene_top,
-          thrust::raw_pointer_cast(device_rectangles.data()),
-          device_status.get());
-      cuda_require(
-          cudaGetLastError(), "M2 rectangle expansion launch");
-      cuda_require(
-          cudaDeviceSynchronize(),
-          "M2 rectangle expansion synchronize");
-      std::uint32_t status = 0;
-      cuda_require(
-          cudaMemcpy(
-              &status, device_status.get(), sizeof(status),
-              cudaMemcpyDeviceToHost),
-          "M2 rectangle expansion status D2H");
-      result->rectangle_expand_ns =
-          elapsed_ns(expand_begin, Clock::now());
-      if (status) {
-        result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
-        result->fallback_flags =
-            status & kExpandTransformOverflow
-                ? KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW
-                : KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
-        set_message(
-            result,
-            "raw M2 device expansion failed its exact bounds gate");
-        result->total_ns =
-            elapsed_ns(total_begin, Clock::now());
-        return KLAYOUT_CUDA_SPATIAL_FALLBACK;
-      }
+    ExpandedRectangles expanded =
+        expand_rectangles_resident(*request, lowered);
+    result->h2d_ns = expanded.h2d_ns;
+    result->rectangle_expand_ns = expanded.expand_ns;
+    if (expanded.status) {
+      result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      result->fallback_flags =
+          expanded.status & kExpandTransformOverflow
+              ? KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW
+              : KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+      set_message(
+          result,
+          "raw M2 device expansion failed its exact bounds gate");
+      result->total_ns =
+          elapsed_ns(total_begin, Clock::now());
+      return KLAYOUT_CUDA_SPATIAL_FALLBACK;
     }
 
     mu::GpuUnionLimits limits;
@@ -1768,7 +2649,7 @@ int run_request(const Request *request, Result *result)
             result->h2d_ns + result->rectangle_expand_ns) /
         1000000.0;
     const mu::GpuUnionOutput output = mu::gpu_union_resident(
-        std::move(device_rectangles), request->scene_bottom,
+        std::move(expanded.rectangles), request->scene_bottom,
         request->scene_top, limits, request->device,
         input_prepare_ms);
     result->x_membership_ns =
@@ -1878,6 +2759,31 @@ klayout_cuda_spatial_run_m2_union_boundary_v1(
       set_message(
           result,
           "exception escaped the exact raw M2 union boundary");
+    }
+    return KLAYOUT_CUDA_SPATIAL_ERROR;
+  }
+}
+
+extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_contact4_active_union_empty_v1(
+    const klayout_cuda_spatial_contact4_active_union_request_v1 *request,
+    klayout_cuda_spatial_contact4_active_union_result_v1 *result)
+{
+  try {
+    return run_contact4_active_union_request(request, result);
+  } catch (...) {
+    if (result) {
+      std::memset(result, 0, sizeof(*result));
+      result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+      result->struct_size = sizeof(*result);
+      result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+      result->fallback_flags =
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+      result->disposition =
+          KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_UNCERTAIN;
+      set_message(
+          result,
+          "exception escaped resident ACTIVE-union CONTACT4 boundary");
     }
     return KLAYOUT_CUDA_SPATIAL_ERROR;
   }
