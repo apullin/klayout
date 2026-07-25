@@ -951,6 +951,23 @@ not just wall time.
       emit an empty subset while still rejecting unknown or conflicting tags.
       Keep `--jobs 8` with four KLayout threads per process so ten owners never
       request more than 32 threads.
+
+    - [x] **Split the remaining cumulative M1/M2 antenna owner and compose all
+      five antenna owners into the CUDA launcher:** the generated deck now
+      retains the exact cumulative connectivity prefix while assigning
+      `METAL1_ANTENNA` and `METAL2_ANTENNA` to independent owners.  The
+      historical all-owner path remains unchanged, and lower/upper splitting
+      are independent opt-ins.  Focused launcher, generator, manifest, and
+      nonempty category-assignment gates pass; commits `54cef10`, `cbf41d8`,
+      and `2762ced` are pushed.
+
+      In the accepted two-run 12-owner composition, the new M1 and M2 antenna
+      owners averaged 46.388 s and 57.054 s.  The longest of all five antenna
+      owners averaged 57.509 s, versus the preceding accepted
+      `antenna_m1_m2` pole of 84.703 s: **27.194 real seconds / 32.105% less
+      antenna critical-path wall**.  This comparison is cross-run and the
+      launcher also contains other newly composed optimizations, so it is a
+      roofline observation rather than an isolated antenna A/B.
 14. [ ] **Device-neutral accelerator replay gate — active, orthogonal project**
     Do not translate the Ruby PDK deck to an accelerator language.  Build a
     device-neutral replay harness around spatial bin/sort plus candidate
@@ -2490,6 +2507,25 @@ not just wall time.
           Broad same-layout geometry reuse models roughly **8--12% less child
           wall** (96.316 s to about 85--88 s), with antenna M1/M2 likely next;
           this is an unmeasured opportunity estimate, not an accepted result.
+
+      - [x] **Compose the accepted CUDA transactions and antenna splits into a
+        12-owner full gate:** the exact launcher simultaneously enables fused
+        CONTACT.4, IMPLANT.1/.2, resident M2 union plus M2.5-.9, POLY.3/.4,
+        POLY.2 pruning, and both lower and upper antenna splits.  It preserves
+        157 categories and canonical merged-report SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+        Runtime closure hashes are stable, the GPU is idle before launch, and
+        the exact manifest assigns every category once.
+
+        Two full replicates both took 65.640 s.  Against the immediately
+        preceding accepted two-run mean of 89.660 s, the composition saves
+        **24.020 real seconds / 26.790% less full-launch wall**.  This is a
+        cross-run cumulative comparison, not attribution to one component.
+        The child window is now about 60.68 s, led by `m1_enclosure` at
+        60.675 s and `implant_contact` at 60.427 s; `via1_upper_active12`
+        follows at 59.747 s.  The resident `m2_rules` owner is no longer near
+        the roofline at 18.286 s.  Evidence:
+        `.scratchpad/cuda-runs/composed-12-owner-full.0ceCTb`.
 
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
