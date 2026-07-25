@@ -46,6 +46,20 @@ inline constexpr std::int64_t kM2QualifiedSceneCoordinateDistance =
     kM2RuleDistancePicometers / kQualifiedSceneDbuPicometers;
 static_assert(kM2QualifiedSceneCoordinateDistance == 140,
               "0.070 um / 0.0005 um must be 140 DBU");
+// The long-edge suffix of the stock FreePDK45 F90 rule applies an independent
+// strict 90-nm space check.  It consumes the same directed Manhattan edge
+// representation, but is deliberately qualified only for SpaceRelation.
+inline constexpr std::int64_t kM2F90LongSpaceDistancePicometers = 90000;
+static_assert(
+    kM2F90LongSpaceDistancePicometers %
+            kQualifiedSceneDbuPicometers ==
+        0,
+    "qualified M2 F90 long-edge distance must be integral in scene DBU");
+inline constexpr std::int64_t kM2F90LongSpaceCoordinateDistance =
+    kM2F90LongSpaceDistancePicometers /
+    kQualifiedSceneDbuPicometers;
+static_assert(kM2F90LongSpaceCoordinateDistance == 180,
+              "0.090 um / 0.0005 um must be 180 DBU");
 
 // Polygon IDs must identify merged polygons in the fully resolved hierarchy
 // context.  UINT64_MAX is reserved so missing topology metadata fails closed.
@@ -205,11 +219,16 @@ KLAYOUT_CUDA_M1_HD inline bool second_is_right_of_first(
 // Allocation-free hook for host and resident CUDA pipelines.  The exact
 // domain is deliberately limited to nondegenerate Manhattan contour edges.
 // Diagonal/dot geometry, unknown topology, unsafe source-coordinate spans,
-// and any non-FreePDK45 distance return kUncertain.
+// and any unqualified FreePDK45 distance/relation profile return kUncertain.
 KLAYOUT_CUDA_M1_HD inline Verdict classify_pair_bounded(
     const CandidatePair &pair, std::int64_t distance) {
-  if ((distance != kQualifiedSceneCoordinateDistance &&
-       distance != kM2QualifiedSceneCoordinateDistance) ||
+  const bool qualified_width_space_distance =
+      distance == kQualifiedSceneCoordinateDistance ||
+      distance == kM2QualifiedSceneCoordinateDistance;
+  const bool qualified_f90_long_space =
+      distance == kM2F90LongSpaceCoordinateDistance &&
+      pair.rule == Rule::kSpace;
+  if ((!qualified_width_space_distance && !qualified_f90_long_space) ||
       pair.first_polygon_id == kUnknownPolygonId ||
       pair.second_polygon_id == kUnknownPolygonId ||
       !detail::source_coordinate_differences_are_safe(pair)) {

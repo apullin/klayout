@@ -35,6 +35,8 @@ constexpr std::int64_t kDistance =
     klayout_cuda::m1_width_space::kQualifiedSceneCoordinateDistance;
 constexpr std::int64_t kM2Distance =
     klayout_cuda::m1_width_space::kM2QualifiedSceneCoordinateDistance;
+constexpr std::int64_t kF90LongSpaceDistance =
+    klayout_cuda::m1_width_space::kM2F90LongSpaceCoordinateDistance;
 constexpr std::uint64_t kPolygonA = 17;
 constexpr std::uint64_t kPolygonB = 29;
 
@@ -215,6 +217,61 @@ std::vector<NamedCase> make_named_cases() {
             kPolygonA, Rule::kWidth),
        kM2Distance, Verdict::kNoViolation, true},
 
+      // The F90 suffix checks only long-edge spacing at a strict 180-DBU
+      // Euclidean distance.  Keep this profile separate from M2.1/.2.
+      {"f90 long space horizontal gap 179",
+       pair(east, edge(200, 179, 0, 179), kPolygonA, kPolygonB,
+            Rule::kSpace),
+       kF90LongSpaceDistance, Verdict::kViolation, true},
+      {"f90 long space horizontal gap 180",
+       pair(east, edge(200, 180, 0, 180), kPolygonA, kPolygonB,
+            Rule::kSpace),
+       kF90LongSpaceDistance, Verdict::kNoViolation, true},
+      {"f90 long space horizontal gap 181",
+       pair(east, edge(200, 181, 0, 181), kPolygonA, kPolygonB,
+            Rule::kSpace),
+       kF90LongSpaceDistance, Verdict::kNoViolation, true},
+      {"f90 long space wrong exterior side",
+       pair(east, edge(200, -179, 0, -179), kPolygonA, kPolygonB,
+            Rule::kSpace),
+       kF90LongSpaceDistance, Verdict::kNoViolation, true},
+      {"f90 long space same direction ignored",
+       pair(east, edge(0, 179, 200, 179), kPolygonA, kPolygonB,
+            Rule::kSpace),
+       kF90LongSpaceDistance, Verdict::kNoViolation, true},
+      {"f90 long space perpendicular ignored",
+       pair(east, edge(100, 179, 100, -20), kPolygonA, kPolygonB,
+            Rule::kSpace),
+       kF90LongSpaceDistance, Verdict::kNoViolation, true},
+      {"f90 long space vertical gap 179",
+       pair(edge(0, 200, 0, 0), edge(179, 0, 179, 200), kPolygonA,
+            kPolygonB, Rule::kSpace),
+       kF90LongSpaceDistance, Verdict::kViolation, true},
+      {"f90 long space corner inside 107-144",
+       pair(edge(0, 0, 100, 0), edge(300, 144, 207, 144), kPolygonA,
+            kPolygonB, Rule::kSpace),
+       kF90LongSpaceDistance, Verdict::kViolation, true},
+      {"f90 long space corner exact 108-144-180",
+       pair(edge(0, 0, 100, 0), edge(300, 144, 208, 144), kPolygonA,
+            kPolygonB, Rule::kSpace),
+       kF90LongSpaceDistance, Verdict::kNoViolation, true},
+      {"f90 long space corner outside 109-144",
+       pair(edge(0, 0, 100, 0), edge(300, 144, 209, 144), kPolygonA,
+            kPolygonB, Rule::kSpace),
+       kF90LongSpaceDistance, Verdict::kNoViolation, true},
+      {"f90 long space collinear endpoint touch",
+       pair(edge(0, 0, 100, 0), edge(200, 0, 100, 0), kPolygonA,
+            kPolygonB, Rule::kSpace),
+       kF90LongSpaceDistance, Verdict::kViolation, true},
+      {"f90 distance is not a width profile",
+       pair(east, edge(200, -179, 0, -179), kPolygonA, kPolygonA,
+            Rule::kWidth),
+       kF90LongSpaceDistance, Verdict::kUncertain, false},
+      {"f90 unsafe full signed x span",
+       pair(edge(lo, 0, hi, 0), edge(hi, 179, lo, 179), kPolygonA,
+            kPolygonB, Rule::kSpace),
+       kF90LongSpaceDistance, Verdict::kUncertain, false},
+
       // The scanner does not present different polygons to WidthRelation.
       {"width different polygon metadata",
        pair(east, edge(200, -1, 0, -1), kPolygonA, kPolygonB,
@@ -323,6 +380,7 @@ std::vector<NamedCase> make_named_cases() {
 
 void test_named_cases(std::vector<CandidatePair> *m1_batch,
                       std::vector<CandidatePair> *m2_batch,
+                      std::vector<CandidatePair> *f90_batch,
                       std::uint64_t *checked_count) {
   for (const NamedCase &test : make_named_cases()) {
     const Verdict host =
@@ -339,6 +397,9 @@ void test_named_cases(std::vector<CandidatePair> *m1_batch,
       m1_batch->push_back(test.candidate);
     } else if (test.distance == kM2Distance) {
       m2_batch->push_back(test.candidate);
+    } else if (test.distance == kF90LongSpaceDistance &&
+               test.candidate.rule == Rule::kSpace) {
+      f90_batch->push_back(test.candidate);
     }
     ++*checked_count;
   }
@@ -458,8 +519,8 @@ void test_invalid_distance(std::uint64_t *checked_count) {
   const CandidatePair invalid_distance_pair =
       pair(edge(0, 0, 100, 0), edge(100, -1, 0, -1), kPolygonA,
            kPolygonA, Rule::kWidth);
-  for (const std::int64_t invalid_distance : std::array<std::int64_t, 4>{
-           129, 131, 139, 141}) {
+  for (const std::int64_t invalid_distance : std::array<std::int64_t, 6>{
+           129, 131, 139, 141, 179, 181}) {
     require_verdict(
         "host invalid distance",
         klayout_cuda::m1_width_space::classify_pair_bounded(
@@ -503,7 +564,9 @@ int main() {
     std::uint64_t checked_count = 0;
     std::vector<CandidatePair> m1_batch;
     std::vector<CandidatePair> m2_batch;
-    test_named_cases(&m1_batch, &m2_batch, &checked_count);
+    std::vector<CandidatePair> f90_batch;
+    test_named_cases(
+        &m1_batch, &m2_batch, &f90_batch, &checked_count);
     test_random_source_differential(
         &m1_batch, kDistance, UINT64_C(0x4d31574944544853),
         &checked_count);
@@ -512,10 +575,14 @@ int main() {
         &checked_count);
     test_cuda_parity(m1_batch, kDistance, "M1", &checked_count);
     test_cuda_parity(m2_batch, kM2Distance, "M2", &checked_count);
+    test_cuda_parity(
+        f90_batch, kF90LongSpaceDistance, "M2-F90-long-space",
+        &checked_count);
     test_invalid_distance(&checked_count);
     test_batch_contract(&checked_count);
     std::cout << "m1 width/space exact predicate: PASS (" << checked_count
-              << " checks; " << (m1_batch.size() + m2_batch.size())
+              << " checks; "
+              << (m1_batch.size() + m2_batch.size() + f90_batch.size())
               << " KLayout-source differential/device pairs)\n";
     return 0;
   } catch (const std::exception &error) {
