@@ -1310,6 +1310,23 @@ static bool cuda_m2_rules_telemetry_enabled ()
          std::strcmp (value, "off") != 0;
 }
 
+static bool cuda_poly34_host_telemetry_enabled ()
+{
+  const char *value = std::getenv ("KLAYOUT_CUDA_POLY34_TELEMETRY");
+  return value && *value && std::strcmp (value, "0") != 0 &&
+         std::strcmp (value, "false") != 0 &&
+         std::strcmp (value, "off") != 0;
+}
+
+static bool cuda_poly34_host_decline (const char *reason)
+{
+  if (cuda_poly34_host_telemetry_enabled ()) {
+    tl::info << "CUDA POLY.3/.4 host guard: outcome=cpu-fallback reason="
+             << reason;
+  }
+  return false;
+}
+
 static const char *cuda_m2_flat_union_disposition (
   db::CudaM2FlatUnionAttempt::Disposition disposition)
 {
@@ -1692,7 +1709,7 @@ static bool cuda_poly34_clean (
   // independent opt-in/backend capability before touching any deep layer so
   // a disabled or missing backend preserves the pristine CPU path.
   if (! db::cuda_spatial_poly34_requested ()) {
-    return false;
+    return cuda_poly34_host_decline ("capability-unavailable");
   }
   const db::DeepRegion *deep_poly =
     dynamic_cast<const db::DeepRegion *> (poly->delegate ());
@@ -1700,25 +1717,33 @@ static bool cuda_poly34_clean (
     dynamic_cast<const db::DeepRegion *> (active->delegate ());
   const db::DeepRegion *deep_gate =
     dynamic_cast<const db::DeepRegion *> (gate->delegate ());
-  if (! deep_poly || ! deep_active || ! deep_gate ||
-      ! poly->merged_semantics () ||
+  if (! deep_poly || ! deep_active || ! deep_gate) {
+    return cuda_poly34_host_decline ("operand-is-not-deep-region");
+  }
+  if (! poly->merged_semantics () ||
       ! active->merged_semantics () ||
       ! gate->merged_semantics ()) {
-    return false;
+    return cuda_poly34_host_decline ("operand-has-raw-semantics");
   }
   const db::DeepLayer &raw_poly = deep_poly->deep_layer ();
   const db::DeepLayer &raw_active = deep_active->deep_layer ();
   const db::DeepLayer &raw_gate = deep_gate->deep_layer ();
   if (raw_poly.layer () >= raw_poly.layout ().layers () ||
       raw_active.layer () >= raw_active.layout ().layers () ||
-      raw_gate.layer () >= raw_gate.layout ().layers () ||
-      ! raw_poly.layout ().get_properties (raw_poly.layer ()).log_equal (
-          db::LayerProperties (9, 0)) ||
-      ! raw_active.layout ().get_properties (raw_active.layer ()).log_equal (
-          db::LayerProperties (1, 0)) ||
-      ! raw_gate.layout ().get_properties (raw_gate.layer ()).log_equal (
-          db::LayerProperties ())) {
-    return false;
+      raw_gate.layer () >= raw_gate.layout ().layers ()) {
+    return cuda_poly34_host_decline ("operand-layer-is-invalid");
+  }
+  if (! raw_poly.layout ().get_properties (raw_poly.layer ()).log_equal (
+        db::LayerProperties (9, 0))) {
+    return cuda_poly34_host_decline ("poly-is-not-physical-layer-9/0");
+  }
+  if (! raw_active.layout ().get_properties (raw_active.layer ()).log_equal (
+        db::LayerProperties (1, 0))) {
+    return cuda_poly34_host_decline ("active-is-not-physical-layer-1/0");
+  }
+  if (! raw_gate.layout ().get_properties (raw_gate.layer ()).log_equal (
+        db::LayerProperties ())) {
+    return cuda_poly34_host_decline ("gate-is-not-anonymous-derived-layer");
   }
   try {
     // Explicitly materialize the same exact merged operands required by the
@@ -1733,8 +1758,14 @@ static bool cuda_poly34_clean (
       deep_poly->merged_deep_layer (),
       deep_active->merged_deep_layer (),
       deep_gate->merged_deep_layer (), spec);
-  } catch (...) {
+  } catch (const std::exception &error) {
+    if (cuda_poly34_host_telemetry_enabled ()) {
+      tl::info << "CUDA POLY.3/.4 host guard: outcome=cpu-fallback reason="
+               << error.what ();
+    }
     return false;
+  } catch (...) {
+    return cuda_poly34_host_decline ("unknown-host-exception");
   }
 }
 
