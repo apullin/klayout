@@ -2092,6 +2092,30 @@ not just wall time.
                 remain open.  Commit `08ac9a2`; the post-cherry main contract
                 gate passed all eleven cases.
 
+              - [x] **Serialize the raw physical M2 hierarchy before merge:**
+                the distinct `KM2RAW01` scene path requires live FreePDK45
+                layer 13/0, 0.5-nm DBU, a valid non-special layer, no breakout
+                or properties, bounded orthogonal hierarchy, and checked
+                clockwise Manhattan contours.  It preserves the existing M1
+                serializer byte-for-byte: an old-library/new-library probe and
+                a pinned unit vector both produce digest
+                `dd86b0a84fcac619046c0a4986104bc8b57001473d6d0ef823f5bcc866e8583e`.
+                Focused editable/non-editable gates pass 4/4 existing M1 and
+                6/6 raw-M2 cases.  Commit `e15188e`.
+
+              - [x] **Stitch a validated union boundary into an owned flat
+                Region:** the helper independently rechecks canonical/FNV,
+                coordinate range, unique incoming/outgoing endpoints, global
+                collinear and perpendicular intersections, closed cycles,
+                clockwise non-hole area, and polygon/vertex census before one
+                atomic output swap.  Production reconstructs all 4,385,384
+                segments as 14,222 contours with maximum 2,084 vertices and
+                retains both merged flags.  A standalone file-backed probe
+                charged 6.25 s and about 1.0 GiB maximum RSS; that includes
+                file read and duplicate integrity work and is not the future
+                live-ABI stitch-only timing.  Focused M1/raw/stitch/loader
+                gates pass 4/6/6/4.  Commit `9ffeb8a`.
+
               - [x] **Prove the exact resident F90/F270 morphology engine:**
                 248 directed and deterministic-random differential cases pass
                 edge-for-edge against an independent CPU raster oracle.  On
