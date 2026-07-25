@@ -10,6 +10,7 @@ Usage:
     [--python PATH] [--timeout-seconds N] [--jobs 8|10|11] \
     [--split-upper-antenna] \
     [--without-contact4] \
+    [--with-contact4-active-union|--without-contact4-active-union] \
     [--with-m2-rules|--without-m2-rules] \
     [--with-m2-width-space|--without-m2-width-space] \
     [--with-implant12|--without-implant12] \
@@ -29,6 +30,13 @@ provenance are checked before success.
 
 --without-contact4 retains every other qualified CUDA transaction and exists
 only to produce a same-binary CONTACT.4-off performance control.
+
+--with-contact4-active-union and --without-contact4-active-union retain the
+same fused-capable binary, backend, and deck while toggling only the exact
+pre-merge raw-ACTIVE union/CONTACT.4 transaction.  Both modes leave the older
+merged CONTACT.4 certificate enabled as the candidate's fail-closed fallback
+and the control's active implementation.  The default leaves the fused
+environment unset for compatibility with historical gates.
 
 --with-m2-rules and --without-m2-rules both generate the identical
 fail-closed METAL2.1/.2/.4-.9 speculative-flat transaction, then toggle only
@@ -77,6 +85,7 @@ python=${PYTHON:-python3}
 timeout_seconds=900
 keep_work=0
 contact4=1
+contact4_active_union=-1
 implant12=-1
 m2_rules=-1
 m2_width_space=-1
@@ -146,6 +155,18 @@ while (($#)); do
       ;;
     --without-contact4)
       contact4=0
+      shift
+      ;;
+    --with-contact4-active-union)
+      ((contact4_active_union == -1)) ||
+        die "choose exactly one fused CONTACT.4 runtime mode"
+      contact4_active_union=1
+      shift
+      ;;
+    --without-contact4-active-union)
+      ((contact4_active_union == -1)) ||
+        die "choose exactly one fused CONTACT.4 runtime mode"
+      contact4_active_union=0
       shift
       ;;
     --with-m2-rules)
@@ -219,6 +240,9 @@ if [[ "${jobs}" == 11 ]] && (( ! split_upper_antenna)); then
 fi
 if ((m2_rules == 1 && m2_width_space == 1)); then
   die "--with-m2-rules is incompatible with --with-m2-width-space"
+fi
+if ((contact4 == 0 && contact4_active_union == 1)); then
+  die "--with-contact4-active-union requires the fail-closed CONTACT.4 fallback"
 fi
 
 [[ -x "${klayout}" ]] || die "KLayout is not executable: ${klayout}"
@@ -315,6 +339,15 @@ if ((poly34 >= 0)); then
   poly34_env=(
     "KLAYOUT_CUDA_POLY34=${poly34}"
     "KLAYOUT_CUDA_POLY34_TELEMETRY=${poly34}"
+  )
+fi
+contact4_active_union_env=()
+if ((contact4_active_union >= 0)); then
+  contact4_active_union_env=(
+    "KLAYOUT_CUDA_CONTACT4_RAW_ACTIVE=0"
+    "KLAYOUT_CUDA_CONTACT4_RAW_ACTIVE_TELEMETRY=0"
+    "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION=${contact4_active_union}"
+    "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_TELEMETRY=1"
   )
 fi
 run_transform "live CUDA deck generation" \
@@ -426,6 +459,7 @@ set +e
       KLAYOUT_CUDA_M1_CONTACT_TELEMETRY=1 \
       "KLAYOUT_CUDA_CONTACT4=${contact4}" \
       "KLAYOUT_CUDA_CONTACT4_TELEMETRY=${contact4}" \
+      "${contact4_active_union_env[@]}" \
       "${implant12_env[@]}" \
       "${poly34_env[@]}" \
       "${python}" "${runner}" \
@@ -509,10 +543,30 @@ require_telemetry \
 require_telemetry \
   "CUDA M1 contact transaction: certified-empty" \
   "M1-contact certified-empty"
-if ((contact4)); then
+if ((contact4_active_union == 1)); then
+  require_telemetry \
+    "CUDA CONTACT.4 fused ACTIVE-union empty certificate: outcome=certified-empty" \
+    "fused ACTIVE-union CONTACT.4 certified-empty"
+  require_telemetry \
+    "CUDA CONTACT.4 fused ACTIVE-union live lowering:" \
+    "fused ACTIVE-union CONTACT.4 live lowering"
+  if grep -R -Fq --include='*.log' -- \
+       "CUDA CONTACT.4 empty certificate:" "${shard_dir}" ||
+     grep -R -Fq --include='*.log' -- \
+       "CUDA CONTACT.4 live lowering:" "${shard_dir}" ||
+     grep -R -Fq --include='*.log' -- \
+       "CUDA CONTACT.4 raw-ACTIVE" "${shard_dir}"; then
+    die "fused CONTACT.4 candidate unexpectedly invoked a fallback certificate"
+  fi
+elif ((contact4)); then
   require_telemetry \
     "CUDA CONTACT.4 empty certificate: outcome=certified-empty" \
     "CONTACT.4 certified-empty"
+  if ((contact4_active_union == 0)) &&
+     grep -R -Fq --include='*.log' -- \
+       "CUDA CONTACT.4 fused ACTIVE-union" "${shard_dir}"; then
+    die "fused CONTACT.4-off control unexpectedly invoked the fused path"
+  fi
 elif grep -R -Fq --include='*.log' -- \
   "CUDA CONTACT.4" "${shard_dir}"; then
   die "CONTACT.4-off control unexpectedly invoked CONTACT.4 CUDA"
