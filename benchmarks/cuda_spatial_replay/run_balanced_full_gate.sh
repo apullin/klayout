@@ -7,8 +7,9 @@ Usage:
   bash run_balanced_full_gate.sh \
     --klayout PATH --backend PATH --source-deck PATH \
     --manifest PATH --input PATH --top-cell NAME --reference PATH \
-    [--python PATH] [--timeout-seconds N] [--jobs 8|10|11|12] \
+    [--python PATH] [--timeout-seconds N] [--jobs 8..14] \
     [--split-lower-antenna] [--split-upper-antenna] \
+    [--split-implant-contact] [--split-active12] \
     [--without-contact4] \
     [--with-contact4-active-union|--without-contact4-active-union] \
     [--with-m2-rules|--without-m2-rules] \
@@ -22,9 +23,11 @@ coalesces CONTACT.6 into the grid owner, and runs the exact balanced full-launch
 gate. With --split-lower-antenna, METAL1 and METAL2 checks use separate
 owners. With --split-upper-antenna, METAL3 and METAL4-through-METAL10 checks
 use separate owners. The modes compose: the selected plan has ten owners by
-default, eleven with either split, or twelve with both. CUDA resource limits
-remain fixed; the launcher may use eight, ten, eleven, or twelve process slots,
-never more slots than selected owners.
+default and up to fourteen with all four splits. --split-implant-contact moves
+the intact IMPLANT.1-.5 and CONTACT.1-.5 blocks into separate owners.
+--split-active12 moves the intact ACTIVE.1/.2 block out of the upper-metal
+owner. CUDA resource limits remain fixed; the launcher may use 8 through 14
+process slots, never more slots than selected owners.
 
 The manifest must be bound to the generated deck and selected owner set.
 Reference may be either a raw or generator-stripped XML .lyrdb report. The
@@ -84,6 +87,7 @@ deck_generator="${here}/make_via1_stack_live_deck.py"
 poly2_prune="${root}/benchmarks/freepdk45_poly2_prune/prune_deck.py"
 antenna_split="${root}/benchmarks/freepdk45_antenna_split/split_deck.py"
 contact6_split="${root}/benchmarks/freepdk45_contact6_split/split_deck.py"
+owner_split="${root}/benchmarks/freepdk45_owner_split/split_deck.py"
 runner="${root}/scripts/run_parallel_drc.py"
 
 klayout=
@@ -106,6 +110,8 @@ prune_poly2=0
 jobs=8
 split_lower_antenna=0
 split_upper_antenna=0
+split_implant_contact=0
+split_active12=0
 
 while (($#)); do
   case "$1" in
@@ -165,6 +171,14 @@ while (($#)); do
       ;;
     --split-upper-antenna)
       split_upper_antenna=1
+      shift
+      ;;
+    --split-implant-contact)
+      split_implant_contact=1
+      shift
+      ;;
+    --split-active12)
+      split_active12=1
       shift
       ;;
     --keep-work)
@@ -255,10 +269,12 @@ done
 [[ -n "${reference}" ]] || die "missing --reference"
 [[ "${timeout_seconds}" =~ ^[1-9][0-9]*$ ]] ||
   die "--timeout-seconds must be a positive integer"
-[[ "${jobs}" == 8 || "${jobs}" == 10 || "${jobs}" == 11 ||
-   "${jobs}" == 12 ]] ||
-  die "--jobs must be 8, 10, 11, or 12"
-selected_owner_count=$((10 + split_lower_antenna + split_upper_antenna))
+[[ "${jobs}" =~ ^[0-9]+$ ]] && ((jobs >= 8 && jobs <= 14)) ||
+  die "--jobs must be an integer from 8 through 14"
+selected_owner_count=$((
+  10 + split_lower_antenna + split_upper_antenna +
+  split_implant_contact + split_active12
+))
 ((jobs <= selected_owner_count)) ||
   die "--jobs ${jobs} exceeds selected ${selected_owner_count}-owner plan"
 if ((m2_rules == 1 && m2_width_space == 1)); then
@@ -279,6 +295,7 @@ fi
 [[ -f "${poly2_prune}" ]] || die "POLY.2 prune transform is missing"
 [[ -f "${antenna_split}" ]] || die "antenna split transform is missing"
 [[ -f "${contact6_split}" ]] || die "CONTACT.6 split transform is missing"
+[[ -f "${owner_split}" ]] || die "owner split transform is missing"
 [[ -f "${runner}" ]] || die "parallel DRC runner is missing"
 [[ -x /usr/bin/time ]] || die "/usr/bin/time is unavailable"
 [[ -x /usr/bin/timeout ]] || die "/usr/bin/timeout is unavailable"
@@ -323,6 +340,7 @@ if ((prune_poly2)); then
   generator_deck="${deck_dir}/freepdk45-m1-contact-live-unpruned.lydrc"
 fi
 antenna_deck="${deck_dir}/freepdk45-m1-contact-antenna.lydrc"
+coalesced_deck="${deck_dir}/freepdk45-contact6-coalesced.lydrc"
 balanced_deck="${deck_dir}/freepdk45-balanced-cuda.lydrc"
 transform_log="${work}/deck-transform.log"
 
@@ -400,7 +418,21 @@ run_transform "antenna split" \
     "${antenna_split_args[@]}" "${live_deck}" "${antenna_deck}"
 run_transform "CONTACT.6 grid coalescing" \
   "${python}" "${contact6_split}" \
-    --owner grid "${antenna_deck}" "${balanced_deck}"
+    --owner grid "${antenna_deck}" "${coalesced_deck}"
+owner_split_args=()
+if ((split_implant_contact)); then
+  owner_split_args+=(--split-implant-contact)
+fi
+if ((split_active12)); then
+  owner_split_args+=(--split-active12)
+fi
+if ((${#owner_split_args[@]})); then
+  run_transform "implant/contact and ACTIVE.1/.2 owner split" \
+    "${python}" "${owner_split}" \
+      "${owner_split_args[@]}" "${coalesced_deck}" "${balanced_deck}"
+else
+  cp -- "${coalesced_deck}" "${balanced_deck}"
+fi
 
 [[ -s "${balanced_deck}" ]] || die "generated balanced deck is empty"
 if ((prune_poly2)); then
@@ -422,23 +454,30 @@ sed '/<generator>/d' "${reference}" >"${reference_canonical}"
 grep -Fq -- "<report-database>" "${reference_canonical}" ||
   die "reference is not an XML KLayout report database"
 
-owner_prefix=(
-  m1_width_space
-  implant_contact
-)
+owner_prefix=(m1_width_space)
+owner_implant_joined=(implant_contact)
+owner_implant_split=(implant contact)
 owner_upper_joined=(antenna_m3_m10)
 owner_upper_split=(antenna_m4_m10 antenna_m3)
 owner_lower_joined=(antenna_m1_m2)
 owner_lower_split=(antenna_m2 antenna_m1)
-owner_suffix=(
+owner_suffix_pre=(
   m2_rules
   m1_enclosure
+)
+owner_active_split=(active12)
+owner_suffix_post=(
   via1_upper_active12
   grid
   m1_via_class
   antenna_feol
 )
 shards=("${owner_prefix[@]}")
+if ((split_implant_contact)); then
+  shards+=("${owner_implant_split[@]}")
+else
+  shards+=("${owner_implant_joined[@]}")
+fi
 if ((split_upper_antenna)); then
   shards+=("${owner_upper_split[@]}")
 else
@@ -449,7 +488,11 @@ if ((split_lower_antenna)); then
 else
   shards+=("${owner_lower_joined[@]}")
 fi
-shards+=("${owner_suffix[@]}")
+shards+=("${owner_suffix_pre[@]}")
+if ((split_active12)); then
+  shards+=("${owner_active_split[@]}")
+fi
+shards+=("${owner_suffix_post[@]}")
 ((${#shards[@]} == selected_owner_count)) ||
   die "internal owner-plan count mismatch"
 shard_args=()
@@ -669,6 +712,7 @@ sha256sum -- \
   "${poly2_pins[@]}" \
   "${live_deck}" \
   "${antenna_deck}" \
+  "${coalesced_deck}" \
   "${balanced_deck}" \
   "${manifest}" \
   "${input}" \
@@ -679,6 +723,7 @@ sha256sum -- \
   "${deck_generator}" \
   "${antenna_split}" \
   "${contact6_split}" \
+  "${owner_split}" \
   "${runner}" \
   >"${work}/pinned-artifacts.sha256"
 sha256sum -- \
@@ -690,4 +735,4 @@ cat -- "${work}/launcher-summary.txt"
 cat -- "${work}/canonical-report-sha256.txt"
 cat -- "${work}/cuda-telemetry.txt"
 echo \
-  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} contact4_active_union=${contact4_active_union} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} poly34=${poly34} prune_poly2=${prune_poly2} split_lower_antenna=${split_lower_antenna} split_upper_antenna=${split_upper_antenna}"
+  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} contact4_active_union=${contact4_active_union} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} poly34=${poly34} prune_poly2=${prune_poly2} split_lower_antenna=${split_lower_antenna} split_upper_antenna=${split_upper_antenna} split_implant_contact=${split_implant_contact} split_active12=${split_active12}"
