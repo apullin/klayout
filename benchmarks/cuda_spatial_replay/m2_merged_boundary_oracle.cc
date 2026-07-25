@@ -1115,6 +1115,28 @@ std::uint64_t canonical_boundary_fnv64(
   return boundary_fnv64(segments);
 }
 
+std::string candidate_stream_file_sha256(const std::string &path)
+{
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    throw std::runtime_error("cannot open candidate stream: " + path);
+  }
+  Sha256 digest;
+  std::array<char, 1024 * 1024> buffer{};
+  while (input) {
+    input.read(buffer.data(), buffer.size());
+    const std::streamsize count = input.gcount();
+    if (count > 0) {
+      digest.update(buffer.data(), static_cast<std::size_t>(count));
+    }
+  }
+  if (!input.eof()) {
+    throw std::runtime_error("failed reading candidate stream: " + path);
+  }
+  const auto bytes = digest.finish();
+  return hex_digest(bytes.data(), bytes.size());
+}
+
 std::vector<DirectedSegmentI64> read_candidate_stream(
     const std::string &path, const BoundaryOracle &oracle)
 {
