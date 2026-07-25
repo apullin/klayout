@@ -2078,6 +2078,20 @@ not just wall time.
                 so the parent remains open.  Commit `4763330`; evidence:
                 `.scratchpad/cuda-runs/m2-gpu-flat-pipeline.YIDVkJ`.
 
+              - [x] **Land the fail-closed host ABI/loader contract:** the
+                optional raw-M2 union capability is advertised only when both
+                the run and dedicated release symbols exist.  The host copies
+                backend-owned segments only after validating the full proof
+                echo, capacities, exact `(axis,side,fixed,lo,hi)` canonical
+                order, maximal collinear intervals, and FNV-64.  Fresh-process
+                adversarial gates reject missing symbols, bad echoes, order,
+                digests, and counters; success, fallback, backend exceptions,
+                malformed results, and host-copy exceptions each release
+                exactly once.  This is intentionally scaffold-only: the
+                production CUDA export, live GSI method, and deck transaction
+                remain open.  Commit `08ac9a2`; the post-cherry main contract
+                gate passed all eleven cases.
+
           Cache immutable merged M1/M2 geometry (or an equivalent canonical
           raw-layer scene), then the shared 273-cell/849,265-context hierarchy,
           cell-local layer templates, and device indexes.  Bind every reuse to
