@@ -5,6 +5,7 @@ source($drc_test_source, "RINGO")
 target($drc_test_target)
 
 deep 
+threads(4)
 
 diff = input(2, 0)
 poly = input(3, 0)
@@ -73,4 +74,3 @@ antenna_check(perimeter_only(gate, 0.07.um), area_only(metal2), 2.0, diode).outp
 antenna_check(perimeter_only(gate, 70.nm), area_only(metal2), 5.0, diode).output(505)
 antenna_check(perimeter_only(gate, 0.07), area_only(metal2), 10.0, diode).output(510)
 antenna_check(perimeter_only(gate, 0.07), area_only(metal2), 50.0, diode).output(550)
-

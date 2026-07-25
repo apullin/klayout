@@ -1093,6 +1093,11 @@ module DRC
         @l2n.device_scaling = @device_scaling
         @l2n.top_level_mode = @top_level
       end
+      # Network operations use the LayoutToNetlist object directly rather
+      # than the tiled-operation path, so propagate the deck's thread budget
+      # here as well.  Keep this outside the creation branch in case threads()
+      # changed after the netter was initialized.
+      @l2n.threads = (@engine.threads || 1)
     end
 
   end

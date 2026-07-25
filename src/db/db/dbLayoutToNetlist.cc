@@ -37,6 +37,11 @@
 #include "dbMeasureEval.h"
 #include "dbLog.h"
 #include "tlGlobPattern.h"
+#include "tlEnv.h"
+#include "tlThreadedWorkers.h"
+#include "tlTimer.h"
+
+#include <algorithm>
 
 namespace db
 {
@@ -1805,6 +1810,158 @@ public:
   perimeter_type m_perimeter;
 };
 
+struct AntennaMetricParameters
+{
+  const db::LayoutToNetlist *l2n;
+  unsigned int gate_layer;
+  unsigned int metal_layer;
+  std::vector<std::pair<unsigned int, double> > diodes;
+  double gate_area_factor;
+  double gate_perimeter_factor;
+  double metal_area_factor;
+  double metal_perimeter_factor;
+  double ratio;
+  double dbu;
+  bool profile;
+  db::Polygon::area_type *diode_results;
+};
+
+struct AntennaMetricResult
+{
+  AntennaMetricResult (db::cell_index_type cell_index, size_t cluster_id)
+    : ci (cell_index), cid (cluster_id), r (0.0), skip (false), has_gate (false),
+      violation (false), diode_offset (0), ndiodes_computed (0),
+      agate_int (0), pgate_int (0), agate (0.0),
+      ametal_int (0), pmetal_int (0), ametal (0.0), elapsed_seconds (0.0)
+  {
+    //  .. nothing yet ..
+  }
+
+  db::cell_index_type ci;
+  size_t cid;
+  double r;
+  bool skip;
+  bool has_gate;
+  bool violation;
+  size_t diode_offset;
+  size_t ndiodes_computed;
+  db::Polygon::area_type agate_int;
+  db::Polygon::perimeter_type pgate_int;
+  double agate;
+  db::Polygon::area_type ametal_int;
+  db::Polygon::perimeter_type pmetal_int;
+  double ametal;
+  double elapsed_seconds;
+};
+
+class AntennaMetricTask
+  : public tl::Task
+{
+public:
+  AntennaMetricTask (const AntennaMetricParameters *parameters, AntennaMetricResult *begin, AntennaMetricResult *end)
+    : mp_parameters (parameters), mp_begin (begin), mp_end (end)
+  {
+    //  .. nothing yet ..
+  }
+
+  void perform ()
+  {
+    for (AntennaMetricResult *result = mp_begin; result != mp_end; ++result) {
+      perform_one (result);
+    }
+  }
+
+private:
+  void perform_one (AntennaMetricResult *result)
+  {
+    tl::Clock start;
+    if (mp_parameters->profile) {
+      start = tl::Clock::current ();
+    }
+
+    result->r = mp_parameters->ratio;
+
+    for (auto d = mp_parameters->diodes.begin (); d != mp_parameters->diodes.end () && ! result->skip; ++d) {
+
+      db::Polygon::area_type adiode_int = 0;
+      db::Polygon::perimeter_type pdiode_int = 0;
+
+      mp_parameters->l2n->compute_area_and_perimeter_of_net_shapes (result->ci, result->cid, d->first, adiode_int, pdiode_int);
+      mp_parameters->diode_results [result->diode_offset + result->ndiodes_computed] = adiode_int;
+      ++result->ndiodes_computed;
+
+      if (fabs (d->second) < db::epsilon) {
+        if (adiode_int > 0) {
+          result->skip = true;
+        }
+      } else {
+        result->r += adiode_int * mp_parameters->dbu * mp_parameters->dbu * d->second;
+      }
+
+    }
+
+    if (! result->skip) {
+
+      mp_parameters->l2n->compute_area_and_perimeter_of_net_shapes (result->ci, result->cid, mp_parameters->gate_layer, result->agate_int, result->pgate_int);
+
+      if (fabs (mp_parameters->gate_area_factor) > 1e-6) {
+        result->agate += result->agate_int * mp_parameters->dbu * mp_parameters->dbu * mp_parameters->gate_area_factor;
+      }
+      if (fabs (mp_parameters->gate_perimeter_factor) > 1e-6) {
+        result->agate += result->pgate_int * mp_parameters->dbu * mp_parameters->gate_perimeter_factor;
+      }
+
+      result->has_gate = result->agate > mp_parameters->dbu * mp_parameters->dbu;
+
+      if (result->has_gate) {
+
+        mp_parameters->l2n->compute_area_and_perimeter_of_net_shapes (result->ci, result->cid, mp_parameters->metal_layer, result->ametal_int, result->pmetal_int);
+
+        if (fabs (mp_parameters->metal_area_factor) > 1e-6) {
+          result->ametal += result->ametal_int * mp_parameters->dbu * mp_parameters->dbu * mp_parameters->metal_area_factor;
+        }
+        if (fabs (mp_parameters->metal_perimeter_factor) > 1e-6) {
+          result->ametal += result->pmetal_int * mp_parameters->dbu * mp_parameters->metal_perimeter_factor;
+        }
+
+        result->violation = result->ametal / result->agate > result->r + db::epsilon;
+
+      }
+
+    }
+
+    if (mp_parameters->profile) {
+      result->elapsed_seconds = (tl::Clock::current () - start).seconds ();
+    }
+  }
+
+  const AntennaMetricParameters *mp_parameters;
+  AntennaMetricResult *mp_begin;
+  AntennaMetricResult *mp_end;
+};
+
+class AntennaMetricWorker
+  : public tl::Worker
+{
+public:
+  void perform_task (tl::Task *task)
+  {
+    checkpoint ();
+    static_cast<AntennaMetricTask *> (task)->perform ();
+    checkpoint ();
+  }
+};
+
+static double
+antenna_metric_percentile (const std::vector<double> &sorted, double percentile)
+{
+  if (sorted.empty ()) {
+    return 0.0;
+  }
+  size_t i = size_t (ceil (percentile * sorted.size ()));
+  return sorted [std::min (sorted.size () - 1, std::max (size_t (1), i) - 1)];
+}
+
 }
 
 void
@@ -2003,6 +2160,9 @@ db::Region LayoutToNetlist::antenna_check (const db::Region &gate, double gate_a
     dlv = db::DeepLayer (&dss (), m_layout_index, ly.insert_layer ());
   }
 
+  //  Enumerate roots in publication order.  Metric computation below only
+  //  reads the cluster hierarchy and stores into one private result slot.
+  std::vector<AntennaMetricResult> results;
   for (db::Layout::bottom_up_const_iterator cid = ly.begin_bottom_up (); cid != ly.end_bottom_up (); ++cid) {
 
     const connected_clusters<db::NetShape> &clusters = m_net_clusters.clusters_per_cell (*cid);
@@ -2010,121 +2170,176 @@ db::Region LayoutToNetlist::antenna_check (const db::Region &gate, double gate_a
       continue;
     }
 
-    std::vector<db::Polygon::area_type> adiodes_int;
-
     for (connected_clusters<db::NetShape>::all_iterator c = clusters.begin_all (); ! c.at_end (); ++c) {
+      if (clusters.is_root (*c)) {
+        results.push_back (AntennaMetricResult (*cid, *c));
+      }
+    }
 
-      if (! clusters.is_root (*c)) {
-        continue;
+  }
+
+  if (results.empty ()) {
+    if (values) {
+      *values = db::Texts (new db::DeepTexts (dlv));
+    }
+    return db::Region (new db::DeepRegion (dl));
+  }
+
+  AntennaMetricParameters parameters;
+  parameters.l2n = this;
+  parameters.gate_area_factor = gate_area_factor;
+  parameters.gate_perimeter_factor = gate_perimeter_factor;
+  parameters.metal_area_factor = metal_area_factor;
+  parameters.metal_perimeter_factor = metal_perimeter_factor;
+  parameters.ratio = ratio;
+  parameters.dbu = dbu;
+  parameters.profile = tl::app_flag ("antenna-metric-profile");
+  parameters.diodes.reserve (diodes.size ());
+  for (auto d = diodes.begin (); d != diodes.end (); ++d) {
+    parameters.diodes.push_back (std::make_pair (layer_of (*d->first), d->second));
+  }
+  parameters.gate_layer = layer_of (gate);
+  parameters.metal_layer = layer_of (metal);
+
+  std::vector<db::Polygon::area_type> diode_results (results.size () * diodes.size (), 0);
+  parameters.diode_results = diode_results.empty () ? 0 : diode_results.data ();
+  for (size_t i = 0; i < results.size (); ++i) {
+    results [i].diode_offset = i * diodes.size ();
+  }
+
+  int nworkers = 0;
+  if (threads () > 1 && results.size () > 1) {
+    nworkers = threads ();
+    if (results.size () < size_t (nworkers)) {
+      nworkers = int (results.size ());
+    }
+  }
+
+  //  The production census has hundreds of thousands of low-skew roots.
+  //  Coarse contiguous chunks keep dynamic balancing while avoiding one
+  //  scheduler allocation and lock handoff per root.  Retain enough tasks
+  //  to exercise all workers on smaller layouts and in focused tests.
+  size_t roots_per_task = 1024;
+  if (nworkers > 1) {
+    const size_t target_tasks = size_t (nworkers) * 16;
+    const size_t roots_for_target = results.size () / target_tasks + (results.size () % target_tasks != 0 ? 1 : 0);
+    roots_per_task = std::max (size_t (1), std::min (roots_per_task, roots_for_target));
+  }
+  tl::Job<AntennaMetricWorker> job (nworkers);
+  size_t ntasks = 0;
+  for (size_t begin = 0; begin < results.size (); begin += roots_per_task) {
+    size_t end = std::min (results.size (), begin + roots_per_task);
+    job.schedule (new AntennaMetricTask (&parameters, results.data () + begin, results.data () + end));
+    ++ntasks;
+  }
+
+  try {
+    job.start ();
+    job.wait ();
+  } catch (...) {
+    job.terminate ();
+    throw;
+  }
+
+  if (job.has_error ()) {
+    throw tl::Exception (tl::to_string (tr ("Errors occurred during antenna metric computation. First error message says:\n")) + job.error_messages ().front ());
+  }
+
+  if (parameters.profile) {
+
+    std::vector<double> elapsed;
+    elapsed.reserve (results.size ());
+    double elapsed_sum = 0.0;
+    size_t skipped = 0;
+    size_t with_gate = 0;
+    size_t violations = 0;
+
+    for (auto r = results.begin (); r != results.end (); ++r) {
+      elapsed.push_back (r->elapsed_seconds);
+      elapsed_sum += r->elapsed_seconds;
+      skipped += r->skip ? 1 : 0;
+      with_gate += r->has_gate ? 1 : 0;
+      violations += r->violation ? 1 : 0;
+    }
+
+    std::sort (elapsed.begin (), elapsed.end ());
+    double maximum = elapsed.empty () ? 0.0 : elapsed.back ();
+    tl::info << "antenna metric profile: roots=" << results.size ()
+             << " workers=" << nworkers
+             << " tasks=" << ntasks
+             << " roots_per_task=" << roots_per_task
+             << " skipped=" << skipped
+             << " with_gate=" << with_gate
+             << " violations=" << violations
+             << " task_seconds=" << elapsed_sum
+             << " p50_seconds=" << antenna_metric_percentile (elapsed, 0.50)
+             << " p90_seconds=" << antenna_metric_percentile (elapsed, 0.90)
+             << " p99_seconds=" << antenna_metric_percentile (elapsed, 0.99)
+             << " max_seconds=" << maximum
+             << " max_share=" << (elapsed_sum > 0.0 ? maximum / elapsed_sum : 0.0);
+
+  }
+
+  //  Preserve all externally visible ordering and mutations on the caller.
+  std::vector<db::Polygon::area_type> adiodes_int;
+  adiodes_int.reserve (diodes.size ());
+  for (auto result = results.begin (); result != results.end (); ++result) {
+
+    if (! result->skip && result->has_gate) {
+
+      if (tl::verbosity () >= 50 || result->violation) {
+        adiodes_int.assign (diode_results.begin () + result->diode_offset,
+                            diode_results.begin () + result->diode_offset + result->ndiodes_computed);
       }
 
-      double r = ratio;
-      bool skip = false;
-
-      adiodes_int.clear ();
-      adiodes_int.reserve (diodes.size ());
-
-      for (auto d = diodes.begin (); d != diodes.end () && ! skip; ++d) {
-
-        db::Polygon::area_type adiode_int = 0;
-        db::Polygon::perimeter_type pdiode_int = 0;
-
-        compute_area_and_perimeter_of_net_shapes (*cid, *c, layer_of (*d->first), adiode_int, pdiode_int);
-
-        adiodes_int.push_back (adiode_int);
-
-        if (fabs (d->second) < db::epsilon) {
-          if (adiode_int > 0) {
-            skip = true;
-          }
-        } else {
-          r += adiode_int * dbu * dbu * d->second;
+      if (tl::verbosity () >= 50) {
+        std::vector<std::pair<std::string, tl::Variant> > antenna_values =
+          create_antenna_values (result->agate, result->agate_int, gate_area_factor, result->pgate_int, gate_perimeter_factor,
+                                 result->ametal, result->ametal_int, metal_area_factor, result->pmetal_int, metal_perimeter_factor,
+                                 diodes, adiodes_int, result->r, ratio, dbu);
+        tl::info << "cell [" << ly.cell_name (result->ci) << "]: ";
+        for (auto v = antenna_values.begin (); v != antenna_values.end (); ++v) {
+          tl::info << "  " << v->first << ": " << v->second.to_string ();
         }
-
       }
 
-      if (! skip) {
+      if (result->violation) {
 
-        db::Polygon::area_type agate_int = 0;
-        db::Polygon::perimeter_type pgate_int = 0;
+        db::Shapes &shapes = ly.cell (result->ci).shapes (dl.layer ());
 
-        compute_area_and_perimeter_of_net_shapes (*cid, *c, layer_of (gate), agate_int, pgate_int);
+        std::vector<std::pair<std::string, tl::Variant> > antenna_values =
+          create_antenna_values (result->agate, result->agate_int, gate_area_factor, result->pgate_int, gate_perimeter_factor,
+                                 result->ametal, result->ametal_int, metal_area_factor, result->pmetal_int, metal_perimeter_factor,
+                                 diodes, adiodes_int, result->r, ratio, dbu);
 
-        double agate = 0.0;
-        if (fabs (gate_area_factor) > 1e-6) {
-          agate += agate_int * dbu * dbu * gate_area_factor;
+        db::properties_id_type prop_id = 0;
+        if (! values) {
+          db::PropertiesSet ps;
+          for (auto v = antenna_values.begin (); v != antenna_values.end (); ++v) {
+            ps.insert (v->first, v->second);
+          }
+          prop_id = db::properties_id (ps);
         }
-        if (fabs (gate_perimeter_factor) > 1e-6) {
-          agate += pgate_int * dbu * gate_perimeter_factor;
-        }
 
-        if (agate > dbu * dbu) {
+        std::vector<unsigned int> layers;
+        layers.push_back (parameters.metal_layer);
+        db::Point ref = get_shapes_of_net (result->ci, result->cid, layers, true, std::numeric_limits<size_t>::max (), shapes, prop_id);
 
-          db::Polygon::area_type ametal_int = 0;
-          db::Polygon::perimeter_type pmetal_int = 0;
+        if (values) {
 
-          compute_area_and_perimeter_of_net_shapes (*cid, *c, layer_of (metal), ametal_int, pmetal_int);
+          db::Shapes &shapesv = ly.cell (result->ci).shapes (dlv.layer ());
 
-          double ametal = 0.0;
-          if (fabs (metal_area_factor) > 1e-6) {
-            ametal += ametal_int * dbu * dbu * metal_area_factor;
-          }
-          if (fabs (metal_perimeter_factor) > 1e-6) {
-            ametal += pmetal_int * dbu * metal_perimeter_factor;
-          }
-
-          if (tl::verbosity () >= 50) {
-            std::vector<std::pair<std::string, tl::Variant> > antenna_values =
-              create_antenna_values (agate, agate_int, gate_area_factor, pgate_int, gate_perimeter_factor,
-                                     ametal, ametal_int, metal_area_factor, pmetal_int, metal_perimeter_factor,
-                                     diodes, adiodes_int, r, ratio, dbu);
-            tl::info << "cell [" << ly.cell_name (*cid) << "]: ";
-            for (auto v = antenna_values.begin (); v != antenna_values.end (); ++v) {
-              tl::info << "  " << v->first << ": " << v->second.to_string ();
+          std::string msg;
+          for (auto v = antenna_values.begin (); v != antenna_values.end (); ++v) {
+            if (v != antenna_values.begin ()) {
+              msg += ", ";
             }
+            msg += v->first;
+            msg += ": ";
+            msg += v->second.to_string ();
           }
 
-          if (ametal / agate > r + db::epsilon) {
-
-            db::Shapes &shapes = ly.cell (*cid).shapes (dl.layer ());
-
-            std::vector<std::pair<std::string, tl::Variant> > antenna_values =
-              create_antenna_values (agate, agate_int, gate_area_factor, pgate_int, gate_perimeter_factor,
-                                     ametal, ametal_int, metal_area_factor, pmetal_int, metal_perimeter_factor,
-                                     diodes, adiodes_int, r, ratio, dbu);
-
-            db::properties_id_type prop_id = 0;
-            if (! values) {
-              db::PropertiesSet ps;
-              for (auto v = antenna_values.begin (); v != antenna_values.end (); ++v) {
-                ps.insert (v->first, v->second);
-              }
-              prop_id = db::properties_id (ps);
-            }
-
-            std::vector<unsigned int> layers;
-            layers.push_back (layer_of (metal));
-            db::Point ref = get_shapes_of_net (*cid, *c, layers, true, std::numeric_limits<size_t>::max (), shapes, prop_id);
-
-            if (values) {
-
-              db::Shapes &shapesv = ly.cell (*cid).shapes (dlv.layer ());
-
-              std::string msg;
-              for (auto v = antenna_values.begin (); v != antenna_values.end (); ++v) {
-                if (v != antenna_values.begin ()) {
-                  msg += ", ";
-                }
-                msg += v->first;
-                msg += ": ";
-                msg += v->second.to_string ();
-              }
-
-              shapesv.insert (db::Text (msg, db::Trans (ref - db::Point ())));
-
-            }
-
-          }
+          shapesv.insert (db::Text (msg, db::Trans (ref - db::Point ())));
 
         }
 

@@ -29,11 +29,13 @@
 #include "dbWriter.h"
 #include "dbCommonReader.h"
 #include "dbTestSupport.h"
+#include "dbPropertiesRepository.h"
 
 #include "tlUnitTest.h"
 #include "tlString.h"
 #include "tlFileUtils.h"
 
+#include <algorithm>
 #include <memory>
 #include <limits>
 
@@ -120,6 +122,16 @@ static unsigned int define_layer (db::Layout &ly, db::LayerMap &lmap, int gds_la
   unsigned int lid = ly.insert_layer (db::LayerProperties (gds_layer, gds_datatype));
   lmap.map (ly.get_properties (lid), lid);
   return lid;
+}
+
+static std::string region_with_properties_to_string (const db::Region &region)
+{
+  std::vector<std::string> items;
+  for (db::Region::const_iterator shape = region.begin (); ! shape.at_end (); ++shape) {
+    items.push_back (std::string (db::properties (shape.prop_id ()).to_dict_var ().to_string ()) + ":" + shape->to_string ());
+  }
+  std::sort (items.begin (), items.end ());
+  return tl::join (items, "\n");
 }
 
 TEST(0_Basic)
@@ -2553,6 +2565,28 @@ TEST(10_Antenna)
     a3_3.insert_into (&ly2, top2.cell_index (), ly2.insert_layer (db::LayerProperties (300, 0)));
     a3_10.insert_into (&ly2, top2.cell_index (), ly2.insert_layer (db::LayerProperties (301, 0)));
     a3_30.insert_into (&ly2, top2.cell_index (), ly2.insert_layer (db::LayerProperties (302, 0)));
+
+    //  The worker phase must be exactly equivalent to serial computation,
+    //  including diode arithmetic, perimeter factors, properties and texts.
+    std::vector<std::pair<const db::Region *, double> > comparison_diodes;
+    comparison_diodes.push_back (std::make_pair (rdiode.get (), 0.001));
+
+    l2n.set_threads (1);
+    db::Region serial_properties = l2n.antenna_check (*rpoly, 1.25, 0.3, *rmetal1, 0.75, 0.2, 0.0, comparison_diodes);
+    db::Texts serial_values;
+    db::Region serial_text_region = l2n.antenna_check (*rpoly, 1.25, 0.3, *rmetal1, 0.75, 0.2, 0.0, comparison_diodes, &serial_values);
+
+    l2n.set_threads (4);
+    db::Region parallel_properties = l2n.antenna_check (*rpoly, 1.25, 0.3, *rmetal1, 0.75, 0.2, 0.0, comparison_diodes);
+    db::Texts parallel_values;
+    db::Region parallel_text_region = l2n.antenna_check (*rpoly, 1.25, 0.3, *rmetal1, 0.75, 0.2, 0.0, comparison_diodes, &parallel_values);
+
+    EXPECT_EQ (serial_properties.empty (), false);
+    EXPECT_EQ (region_with_properties_to_string (parallel_properties), region_with_properties_to_string (serial_properties));
+    EXPECT_EQ (parallel_text_region.to_string (std::numeric_limits<size_t>::max ()), serial_text_region.to_string (std::numeric_limits<size_t>::max ()));
+    EXPECT_EQ (parallel_values.to_string (std::numeric_limits<size_t>::max ()), serial_values.to_string (std::numeric_limits<size_t>::max ()));
+
+    l2n.set_threads (1);
   }
 
   {
@@ -3698,5 +3732,3 @@ TEST(20_MeasureNet)
 
   db::compare_layouts (_this, ly, au, db::NoNormalization);
 }
-
-
