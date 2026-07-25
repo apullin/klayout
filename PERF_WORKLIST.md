@@ -1960,6 +1960,32 @@ not just wall time.
             46-second payment; either publish an equivalent exact merged layer
             or extend the resident certificate through the whole M2 owner.
 
+            - [x] **Prove the production raw hierarchy is a bounded GPU-union
+              input:** the checked compact loader expands 22,945,976 flat M2
+              polygon occurrences into 22,946,444 exact nonoverlapping
+              rectangles; the extra 468 are one additional box for each
+              six-edge L occurrence.  The complete world stream has SHA-256
+              `f9a3a3d4bbdadc80531c341361eb4f0dfc18538a5ada303ac909da86cea1c767`.
+              It has only 46,384 unique X coordinates, 92,386,704
+              rectangle/slab memberships, and a maximum of 43 slabs per
+              rectangle.  On the RTX 3080, device expansion, X sort/unique,
+              membership census, allocation/upload, and cleanup total
+              **23.384 ms**; the optional 1.026-GiB coordinate-by-coordinate
+              D2H oracle matches exactly.  Commits `bcc96ea`/`c19a261`;
+              evidence:
+              `.scratchpad/cuda-runs/m2-production-census.gbkGRi`.
+
+            - [x] **Build an independent exact small-union oracle:** bounded
+              sparse occupancy is differentially checked against an
+              independently implemented dense bitmap/DSU/lattice scan across
+              nine directed fixtures and 5,000 deterministic random plus
+              metamorphic cases.  It emits maximal clockwise/interior-right
+              outer fragments and counter-clockwise hole fragments.  Because
+              production uses maximum coherence, checkerboard/kissing vertices
+              explicitly return `UnsupportedKissingVertex` rather than
+              silently applying four-neighbour component labels.  Commit
+              `ab8ed5d`.
+
           Cache immutable merged M1/M2 geometry (or an equivalent canonical
           raw-layer scene), then the shared 273-cell/849,265-context hierarchy,
           cell-local layer templates, and device indexes.  Bind every reuse to
