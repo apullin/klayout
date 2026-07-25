@@ -2,7 +2,7 @@
 
 # A deterministic hierarchical FreePDK45 antenna ladder.  Every M1-M4 target
 # has more than 300 times the gate area, with no protecting diode.  This makes
-# both sides of the antenna_m1_m2 / antenna_m3_m10 ownership boundary nonempty.
+# both the M1/M2 and the lower/upper ownership boundaries nonempty.
 
 include RBA
 

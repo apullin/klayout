@@ -16,6 +16,14 @@ The optional ``--split-upper`` mode replaces the last owner with two:
 * ``antenna_m3``: METAL3_ANTENNA
 * ``antenna_m4_m10``: METAL4_ANTENNA through METAL10_ANTENNA
 
+The optional ``--split-lower`` mode replaces the lower owner with two:
+
+* ``antenna_m1``: METAL1_ANTENNA
+* ``antenna_m2``: METAL2_ANTENNA
+
+The two modes compose. An M1-only process does not build the M1-via1-M2
+connection; every M2-or-higher process rebuilds that exact cumulative prefix.
+
 Each metal owner rebuilds the exact cumulative connection prefix it needs.
 Lower-metal antenna checks are not executed while constructing the M3 prefix.
 In ``drc_shard=all`` mode, the historical check/connect order is unchanged.
@@ -32,6 +40,8 @@ import xml.etree.ElementTree as ET
 FEOL_SHARD = "antenna_feol"
 LOWER_SHARD = "antenna_m1_m2"
 UPPER_SHARD = "antenna_m3_m10"
+M1_SHARD = "antenna_m1"
+M2_SHARD = "antenna_m2"
 M3_SHARD = "antenna_m3"
 M4_UPPER_SHARD = "antenna_m4_m10"
 ANTENNA_CATEGORIES = tuple(f"METAL{layer}_ANTENNA" for layer in range(1, 11))
@@ -48,7 +58,63 @@ def _replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
-def _antenna_section(split_upper: bool = False) -> str:
+def metal_owner_manifest(
+    *, split_lower: bool = False, split_upper: bool = False
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Return the deterministic metal-output ownership contract."""
+
+    lower = (
+        (
+            (M1_SHARD, (ANTENNA_CATEGORIES[0],)),
+            (M2_SHARD, (ANTENNA_CATEGORIES[1],)),
+        )
+        if split_lower
+        else ((LOWER_SHARD, ANTENNA_CATEGORIES[:2]),)
+    )
+    upper = (
+        (
+            (M3_SHARD, (ANTENNA_CATEGORIES[2],)),
+            (M4_UPPER_SHARD, ANTENNA_CATEGORIES[3:]),
+        )
+        if split_upper
+        else ((UPPER_SHARD, ANTENNA_CATEGORIES[2:]),)
+    )
+    return lower + upper
+
+
+def antenna_shards(
+    *, split_lower: bool = False, split_upper: bool = False
+) -> tuple[str, ...]:
+    """Return the deterministic antenna shard list used by launch harnesses."""
+
+    return (FEOL_SHARD,) + tuple(
+        owner
+        for owner, _categories in metal_owner_manifest(
+            split_lower=split_lower, split_upper=split_upper
+        )
+    )
+
+
+def _owner_predicate(shard: str) -> str:
+    return f"run_{shard}"
+
+
+def _antenna_section(
+    split_upper: bool = False, split_lower: bool = False
+) -> str:
+    lower_m1_predicate = _owner_predicate(
+        M1_SHARD if split_lower else LOWER_SHARD
+    )
+    lower_m2_predicate = _owner_predicate(
+        M2_SHARD if split_lower else LOWER_SHARD
+    )
+    upper_predicates = [
+        _owner_predicate(owner)
+        for owner, _categories in metal_owner_manifest(
+            split_lower=split_lower, split_upper=split_upper
+        )
+        if owner not in (M1_SHARD, M2_SHARD, LOWER_SHARD)
+    ]
     lines = [
         "#   ANTENNA checks",
         "################",
@@ -63,19 +129,41 @@ def _antenna_section(split_upper: bool = False) -> str:
         "connect(diode, cont)",
         "connect(cont, metal1)",
         "",
-        "if run_antenna_m1_m2",
+        f"if {lower_m1_predicate}",
         'antenna_check(gate, metal1, 300.0, diode).output("METAL1_ANTENNA", "METAL1_ANTENNA : Ratio of Maximum Allowed (Field poly area or Metal Layer Area) to transistor gate area : 300:1")',
         "end",
         "",
-        "# Both checking owners need the connection prefix through metal2.",
-        "connect(metal1, via1)",
-        "connect(via1, metal2)",
-        "",
-        "if run_antenna_m1_m2",
-        'antenna_check(gate, metal2, 300.0, diode).output("METAL2_ANTENNA", "METAL2_ANTENNA : Ratio of Maximum Allowed (Field poly area or Metal Layer Area) to transistor gate area : 300:1")',
-        "end",
-        "",
     ]
+    if split_lower:
+        lines.extend(
+            [
+                "# Only M2-or-higher owners need the connection prefix through metal2.",
+                f"if {' || '.join([lower_m2_predicate] + upper_predicates)}",
+                "connect(metal1, via1)",
+                "connect(via1, metal2)",
+                "",
+                f"if {lower_m2_predicate}",
+                'antenna_check(gate, metal2, 300.0, diode).output("METAL2_ANTENNA", "METAL2_ANTENNA : Ratio of Maximum Allowed (Field poly area or Metal Layer Area) to transistor gate area : 300:1")',
+                "end",
+                "",
+                "end",
+                "",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "# Both checking owners need the connection prefix through metal2.",
+                "connect(metal1, via1)",
+                "connect(via1, metal2)",
+                "",
+                f"if {lower_m2_predicate}",
+                'antenna_check(gate, metal2, 300.0, diode).output("METAL2_ANTENNA", "METAL2_ANTENNA : Ratio of Maximum Allowed (Field poly area or Metal Layer Area) to transistor gate area : 300:1")',
+                "end",
+                "",
+            ]
+        )
+
     if split_upper:
         lines.extend(
             [
@@ -116,7 +204,9 @@ def _antenna_section(split_upper: bool = False) -> str:
     return "\n".join(lines)
 
 
-def split_deck(source: str, *, split_upper: bool = False) -> str:
+def split_deck(
+    source: str, *, split_lower: bool = False, split_upper: bool = False
+) -> str:
     """Return a deterministic LF-normalized antenna-sharded deck."""
 
     text = source.replace("\r\n", "\n").replace("\r", "\n")
@@ -126,6 +216,8 @@ def split_deck(source: str, *, split_upper: bool = False) -> str:
             FEOL_SHARD,
             LOWER_SHARD,
             UPPER_SHARD,
+            M1_SHARD,
+            M2_SHARD,
             M3_SHARD,
             M4_UPPER_SHARD,
         )
@@ -139,22 +231,21 @@ def split_deck(source: str, *, split_upper: bool = False) -> str:
                 f"{category}: expected one antenna output site, found {count}"
             )
 
-    if split_upper:
-        owner_declaration = (
-            'run_antenna_feol = drc_shard == "all" || drc_shard == "antenna_feol"\n'
-            'run_antenna_m1_m2 = drc_shard == "all" || drc_shard == "antenna_m1_m2"\n'
-            'run_antenna_m3 = drc_shard == "all" || drc_shard == "antenna_m3"\n'
-            'run_antenna_m4_m10 = drc_shard == "all" || drc_shard == "antenna_m4_m10"\n'
-            "run_antenna_checks = run_antenna_m1_m2 || run_antenna_m3 || "
-            "run_antenna_m4_m10\n"
+    metal_owners = metal_owner_manifest(
+        split_lower=split_lower, split_upper=split_upper
+    )
+    owner_declaration = (
+        'run_antenna_feol = drc_shard == "all" || '
+        'drc_shard == "antenna_feol"\n'
+        + "".join(
+            f'{_owner_predicate(owner)} = drc_shard == "all" || '
+            f'drc_shard == "{owner}"\n'
+            for owner, _categories in metal_owners
         )
-    else:
-        owner_declaration = (
-            'run_antenna_feol = drc_shard == "all" || drc_shard == "antenna_feol"\n'
-            'run_antenna_m1_m2 = drc_shard == "all" || drc_shard == "antenna_m1_m2"\n'
-            'run_antenna_m3_m10 = drc_shard == "all" || drc_shard == "antenna_m3_m10"\n'
-            "run_antenna_checks = run_antenna_m1_m2 || run_antenna_m3_m10\n"
-        )
+        + "run_antenna_checks = "
+        + " || ".join(_owner_predicate(owner) for owner, _ in metal_owners)
+        + "\n"
+    )
     text = _replace_once(
         text,
         'run_antenna = drc_shard == "all" || drc_shard == "antenna"\n',
@@ -192,7 +283,11 @@ def split_deck(source: str, *, split_upper: bool = False) -> str:
         raise TransformError("antenna section boundaries are not unique")
     start = text.index(start_marker)
     end = text.index(end_marker, start)
-    text = text[:start] + _antenna_section(split_upper) + text[end:]
+    text = (
+        text[:start]
+        + _antenna_section(split_upper=split_upper, split_lower=split_lower)
+        + text[end:]
+    )
 
     # Parse the macro as XML after transformation.  This catches missed entity
     # escaping before an expensive KLayout run.
@@ -231,6 +326,11 @@ def parse_args() -> argparse.Namespace:
         "--force", action="store_true", help="replace an existing output"
     )
     parser.add_argument(
+        "--split-lower",
+        action="store_true",
+        help="split METAL1 and METAL2 into separate owners",
+    )
+    parser.add_argument(
         "--split-upper",
         action="store_true",
         help="split METAL3 and METAL4-through-METAL10 into separate owners",
@@ -246,7 +346,11 @@ def main() -> int:
         raise SystemExit(f"refusing to overwrite {args.output}; pass --force")
     try:
         source = args.input.read_bytes().decode("utf-8")
-        transformed = split_deck(source, split_upper=args.split_upper)
+        transformed = split_deck(
+            source,
+            split_lower=args.split_lower,
+            split_upper=args.split_upper,
+        )
         _write_atomic(args.output, transformed)
     except (OSError, UnicodeDecodeError, TransformError) as exc:
         raise SystemExit(str(exc)) from exc

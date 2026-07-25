@@ -3,9 +3,26 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
 
-from split_deck import ANTENNA_CATEGORIES, TransformError, split_deck
+from split_deck import (
+    ANTENNA_CATEGORIES,
+    FEOL_SHARD,
+    LOWER_SHARD,
+    M1_SHARD,
+    M2_SHARD,
+    M3_SHARD,
+    M4_UPPER_SHARD,
+    UPPER_SHARD,
+    TransformError,
+    antenna_shards,
+    metal_owner_manifest,
+    split_deck,
+)
 
 
 def source_deck() -> str:
@@ -46,6 +63,51 @@ def source_deck() -> str:
         "</text>\r\n"
         "</klayout-macro>\r\n"
     )
+
+
+def execute_generated_antenna_section(
+    deck: str, shard: str
+) -> tuple[list[str], list[str]]:
+    """Evaluate generated static guards and return connects/output categories."""
+
+    start = deck.index("#   ANTENNA checks\n")
+    end = deck.index("# time spent for the DRC\n", start)
+    active = [True]
+    connects: list[str] = []
+    outputs: list[str] = []
+
+    for line in deck[start:end].splitlines():
+        if line.startswith("if "):
+            tokens = (
+                line.removeprefix("if ")
+                .replace("ANTENNA &amp;&amp; ", "")
+                .split(" || ")
+            )
+            condition = any(
+                token == "ANTENNA"
+                or (
+                    token == "run_antenna_checks"
+                    and (shard == "all" or shard.startswith("antenna_m"))
+                )
+                or (
+                    token.startswith("run_")
+                    and (shard == "all" or token == f"run_{shard}")
+                )
+                for token in tokens
+            )
+            active.append(active[-1] and condition)
+        elif line == "end":
+            if len(active) == 1:
+                raise AssertionError("unbalanced generated antenna guard")
+            active.pop()
+        elif active[-1] and line.startswith("connect("):
+            connects.append(line)
+        elif active[-1] and '.output("METAL' in line:
+            outputs.append(line.split('.output("', 1)[1].split('"', 1)[0])
+
+    if active != [True]:
+        raise AssertionError("unterminated generated antenna guard")
+    return connects, outputs
 
 
 class SplitDeckTest(unittest.TestCase):
@@ -112,6 +174,154 @@ class SplitDeckTest(unittest.TestCase):
             result.index('.output("METAL3_ANTENNA"'),
             result.index("connect(metal3, via3)"),
         )
+
+    def test_optional_lower_split_has_exact_owners_and_m2_prefix_guard(self) -> None:
+        result = split_deck(source_deck(), split_lower=True)
+
+        self.assertIn('drc_shard == "antenna_m1"', result)
+        self.assertIn('drc_shard == "antenna_m2"', result)
+        self.assertNotIn('drc_shard == "antenna_m1_m2"', result)
+        self.assertIn(
+            "if run_antenna_m2 || run_antenna_m3_m10\n"
+            "connect(metal1, via1)\n"
+            "connect(via1, metal2)",
+            result,
+        )
+        self.assertEqual(result.count("connect(metal1, via1)"), 1)
+        self.assertEqual(result.count("connect(via1, metal2)"), 1)
+
+        expected_outputs = dict(
+            metal_owner_manifest(split_lower=True)
+        )
+        for shard in antenna_shards(split_lower=True):
+            connects, outputs = execute_generated_antenna_section(result, shard)
+            self.assertEqual(outputs, list(expected_outputs.get(shard, ())))
+            if shard == M1_SHARD:
+                self.assertNotIn("connect(metal1, via1)", connects)
+                self.assertNotIn("connect(via1, metal2)", connects)
+            elif shard != FEOL_SHARD:
+                self.assertIn("connect(metal1, via1)", connects)
+                self.assertIn("connect(via1, metal2)", connects)
+
+        all_connects, all_outputs = execute_generated_antenna_section(
+            result, "all"
+        )
+        self.assertEqual(all_outputs, list(ANTENNA_CATEGORIES))
+        self.assertEqual(
+            all_connects,
+            [
+                "connect(gate, poly)",
+                "connect(poly, cont)",
+                "connect(diode, cont)",
+                "connect(cont, metal1)",
+                "connect(metal1, via1)",
+                "connect(via1, metal2)",
+                *[
+                    connect
+                    for layer in range(3, 11)
+                    for connect in (
+                        f"connect(metal{layer - 1}, via{layer - 1})",
+                        f"connect(via{layer - 1}, metal{layer})",
+                    )
+                ],
+            ],
+        )
+
+    def test_lower_and_upper_splits_compose_with_complete_owner_manifest(self) -> None:
+        result = split_deck(
+            source_deck(), split_lower=True, split_upper=True
+        )
+        expected_manifest = (
+            (M1_SHARD, ("METAL1_ANTENNA",)),
+            (M2_SHARD, ("METAL2_ANTENNA",)),
+            (M3_SHARD, ("METAL3_ANTENNA",)),
+            (M4_UPPER_SHARD, ANTENNA_CATEGORIES[3:]),
+        )
+        self.assertEqual(
+            metal_owner_manifest(split_lower=True, split_upper=True),
+            expected_manifest,
+        )
+        self.assertEqual(
+            antenna_shards(split_lower=True, split_upper=True),
+            (FEOL_SHARD, M1_SHARD, M2_SHARD, M3_SHARD, M4_UPPER_SHARD),
+        )
+        self.assertIn(
+            "if run_antenna_m2 || run_antenna_m3 || run_antenna_m4_m10",
+            result,
+        )
+        for owner, expected_outputs in expected_manifest:
+            _connects, outputs = execute_generated_antenna_section(
+                result, owner
+            )
+            self.assertEqual(outputs, list(expected_outputs))
+
+    def test_owner_manifest_contract_is_complete_in_every_mode(self) -> None:
+        expected_shards = {
+            (False, False): (FEOL_SHARD, LOWER_SHARD, UPPER_SHARD),
+            (True, False): (FEOL_SHARD, M1_SHARD, M2_SHARD, UPPER_SHARD),
+            (False, True): (
+                FEOL_SHARD,
+                LOWER_SHARD,
+                M3_SHARD,
+                M4_UPPER_SHARD,
+            ),
+            (True, True): (
+                FEOL_SHARD,
+                M1_SHARD,
+                M2_SHARD,
+                M3_SHARD,
+                M4_UPPER_SHARD,
+            ),
+        }
+        for (split_lower, split_upper), shards in expected_shards.items():
+            with self.subTest(
+                split_lower=split_lower, split_upper=split_upper
+            ):
+                manifest = metal_owner_manifest(
+                    split_lower=split_lower, split_upper=split_upper
+                )
+                categories = [
+                    category
+                    for _owner, owned_categories in manifest
+                    for category in owned_categories
+                ]
+                self.assertEqual(categories, list(ANTENNA_CATEGORIES))
+                self.assertEqual(
+                    len({category for category in categories}),
+                    len(ANTENNA_CATEGORIES),
+                )
+                self.assertEqual(
+                    antenna_shards(
+                        split_lower=split_lower, split_upper=split_upper
+                    ),
+                    shards,
+                )
+
+    def test_split_lower_cli_generation_is_byte_deterministic(self) -> None:
+        script = Path(__file__).with_name("split_deck.py")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.lydrc"
+            first = root / "first.lydrc"
+            second = root / "second.lydrc"
+            source.write_bytes(source_deck().encode("utf-8"))
+            for output in (first, second):
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "--split-lower",
+                        "--split-upper",
+                        str(source),
+                        str(output),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(first.read_bytes(), second.read_bytes())
+            self.assertNotIn(b"\r", first.read_bytes())
 
     def test_rejects_a_missing_output_site(self) -> None:
         source = source_deck().replace(
