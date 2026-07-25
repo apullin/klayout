@@ -1066,6 +1066,7 @@ struct klayout_cuda_spatial_m2_union_request_v1
   uint64_t max_x_slabs;
   uint64_t max_memberships;
   uint64_t max_events;
+  uint64_t max_raw_segments;
   uint64_t max_segments;
   uint32_t max_slabs_per_rectangle;
   uint32_t reserved0;
