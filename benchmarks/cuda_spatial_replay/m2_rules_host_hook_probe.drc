@@ -1,0 +1,16 @@
+# Lightweight loader-selected host-capability probe for the production
+# M2-rules owner gate. This does not invoke the hook or touch CUDA.
+
+layer = polygon_layer
+unless layer.respond_to?(:cuda_m2_flat_union)
+  raise("loaded DRC layer is missing cuda_m2_flat_union")
+end
+unless layer.data.respond_to?(:cuda_m2_flat_union)
+  raise("loader-selected libklayout_db is missing cuda_m2_flat_union")
+end
+
+puts(
+  "M2_RULES_HOST_HOOK_PREFLIGHT PASS" \
+  " drc_layer=cuda_m2_flat_union" \
+  " region=cuda_m2_flat_union"
+)
