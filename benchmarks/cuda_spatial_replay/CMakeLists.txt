@@ -74,6 +74,7 @@ set_target_properties(m2_via2_certificate PROPERTIES
 )
 
 add_library(klayout_cuda_spatial_backend SHARED
+  m2_union_backend.cu
   poly34_backend.cu
   spatial_backend.cu
   via1_stack_backend.cu
@@ -93,6 +94,9 @@ set_target_properties(klayout_cuda_spatial_backend PROPERTIES
   CUDA_RESOLVE_DEVICE_SYMBOLS OFF
   CXX_VISIBILITY_PRESET hidden
   CUDA_VISIBILITY_PRESET hidden
+)
+target_link_libraries(klayout_cuda_spatial_backend PRIVATE
+  manhattan_union_gpu_core
 )
 
 add_executable(cuda_spatial_backend_smoke backend_smoke.cc)
@@ -171,6 +175,19 @@ target_include_directories(via1_stack_backend_smoke PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
 )
 target_link_libraries(via1_stack_backend_smoke PRIVATE
+  klayout_cuda_spatial_backend
+)
+
+add_executable(m2_union_production_backend_smoke
+  m2_union_production_backend_smoke.cc
+)
+target_include_directories(m2_union_production_backend_smoke PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+target_compile_options(m2_union_production_backend_smoke PRIVATE
+  -O3 -Wall -Wextra
+)
+target_link_libraries(m2_union_production_backend_smoke PRIVATE
   klayout_cuda_spatial_backend
 )
 
