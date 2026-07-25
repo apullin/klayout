@@ -2102,8 +2102,9 @@ not just wall time.
                 A fresh four-run qualification measured about 0.569 s for the
                 resident morphology callback.  The fully charged compact load,
                 host expansion, union, and resident morphology path is about
-                2.028 s versus 18.586 s for the matched prior union, stitch,
-                and stock F90/F270 geometry subtotal: approximately **16.558
+                2.028 s versus 18.592 s for the matched prior union, stitch,
+                Region construction, and stock F90/F270 geometry subtotal:
+                approximately **16.564
                 real seconds / 89.09% less**.  The callback alone is **14.122
                 seconds / 96.13% less** than stock F90/F270.  This closes the
                 exact morphology-engine proof, not the live rule certificate:
