@@ -26,6 +26,8 @@ env TMPDIR="${build}/tmp" cmake \
 env TMPDIR="${build}/tmp" cmake --build "${build}" \
   --target m2_flat_region_bridge
 
+export LD_LIBRARY_PATH="${qmake_build}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
 "${build}/m2_flat_region_bridge" --self-test
 "${build}/m2_flat_region_bridge" \
   --audit-full-boundary \
