@@ -27,6 +27,11 @@ The transform preserves `drc_shard=all` order and fails if its expected source
 sites differ. Each checking owner rebuilds its required cumulative connection
 prefix; the upper owner does not execute lower-metal checks.
 
+Pass `--split-upper` to replace `antenna_m3_m10` with independent
+`antenna_m3` and `antenna_m4_m10` owners. This mode keeps the METAL2-to-METAL3
+connection prefix shared by both upper owners without executing the METAL3
+check in the METAL4-through-METAL10 owner.
+
 Use `scripts/merge_sharded_lyrdb.py manifest` with a trusted full report and
 all ten shard reports to create the deck-bound manifest. Do not just reassign
 the old manifest: the proof must include the nonempty hierarchical fixture
