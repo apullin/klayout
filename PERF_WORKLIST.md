@@ -2060,6 +2060,24 @@ not just wall time.
               only those gates may convert the composed opportunity into a
               booked end-to-end saving.
 
+              - [x] **Remove the CPU-oracle file from the measured producer
+                path and prove the exact GPU-to-flat handoff:** a versioned
+                KM2BND02 stream binds the raw hierarchical producer scene, the
+                independent merged qualification scene, the exact boundary
+                SHA-256, 4,385,384-segment census, and FNV-64.  The production
+                GPU output matched every CPU-oracle segment; payload corruption
+                and truncation failed before stitching.  On the post-cherry
+                main gate, the fully charged producer was 2.773566 s and three
+                reader/stitch/stock-M2.1/.2/F90/F270 runs were
+                21.603414--21.832031 s (21.669964 s median), for a serialized
+                offline median of **24.443530 s**.  This is **43.168470 real
+                seconds / 63.85% less** than the two separately measured
+                67.612-second native merge payments, despite charging the
+                temporary file.  It still excludes the separately proven
+                M2.4 certificate and is not a live ABI or whole-owner result,
+                so the parent remains open.  Commit `4763330`; evidence:
+                `.scratchpad/cuda-runs/m2-gpu-flat-pipeline.YIDVkJ`.
+
           Cache immutable merged M1/M2 geometry (or an equivalent canonical
           raw-layer scene), then the shared 273-cell/849,265-context hierarchy,
           cell-local layer templates, and device indexes.  Bind every reuse to
