@@ -2140,6 +2140,57 @@ not just wall time.
                 `45a4457`, `ad18b4d`, `8ad5405`, and `4a2c6d9` on
                 `m2-resident-f90`.
 
+              - [x] **Extract the resident morphology proof into reusable
+                production-linked CUDA modules:** `manhattan_union_gpu_core`
+                and `m2_resident_morphology_gpu` now link as independent
+                libraries rather than including an executable `.cu` source.
+                Explicit-stream, malformed-view, capacity, overflow,
+                predicate, differential, union-core, and full production
+                gates pass.  The production qualification remains exact at
+                4,254,384 F90 edges, eight long edges, 28 clean unordered
+                pairs, and empty F270.  Four fresh runs measured a 583.350 ms
+                warm resident suffix versus 14.691 s stock, and a 1.989959 s
+                fully charged compact-load/host-expand/union/resident block
+                versus the matched 18.592380 s subtotal.  These are component
+                results, not live-owner or full-launcher savings.  Commit
+                `cdcb478` is included in the combined delivery branch.
+
+              - [x] **Land and exact-gate the production raw-M2 DSO through
+                checked host materialization:** the production adapter
+                independently validates `KM2RAW01`, expands all 22,946,444
+                rectangles on device, and returns the exact 4,385,384
+                canonical segments.  The combined real transaction then
+                exercises the actual capability loader, copy/release
+                ownership, canonical/FNV validation, topology proof, and
+                atomic `FlatRegion` publication.  Three direct production
+                calls and the combined gate match FNV-64
+                `7541395996791771514` and all oracle segments; output stitches
+                into 14,222 contours with maximum 2,084 vertices.  The final
+                ABI-safe gate charges 2.146273 s request preparation,
+                2.074692 s backend/loader observation, and 4.999362 s checked
+                stitch, or 9.220328 s preparation through owned KLayout
+                geometry.  This is the complete backend-to-host geometry seam,
+                but the GSI/deck owner and stock M2 rule suffix are not wired,
+                so it still contributes zero measured full-launcher saving.
+                Commits `a1c228c`, `57acfff`, `0598f95`, `cdcb478`, and
+                `d7676f7` are pushed through both `fork/cuda` and
+                `fork/m1-width-space-cuda`.
+
+              - [x] **Audit the unchanged roughly 100-second roofline before
+                live owner wiring:** the latest exact eleven-owner gate is a
+                maximum, not a sum.  Its 101.157571 s full wall comprises
+                2.457512 s prehash, a 96.316467 s child window, 0.028828 s
+                merge, 2.312154 s posthash, and 0.042609 s launcher residual.
+                The tied poles are `m2_rules` at 96.311983 s,
+                `m1_enclosure` at 96.110708 s, `implant_contact` at
+                93.305607 s, and `antenna_m1_m2` at 88.430861 s.  Raw-M2
+                union/resident work and the exact POLY.3/.4 transaction were
+                not production-deck enabled in this run.  Holding contention
+                fixed, removing only M2 would therefore expose M1 and model
+                only about 0.20 s less child wall; only a coordinated
+                multi-owner gate can book the larger work.  Evidence:
+                `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.jXRiJY`.
+
           Cache immutable merged M1/M2 geometry (or an equivalent canonical
           raw-layer scene), then the shared 273-cell/849,265-context hierarchy,
           cell-local layer templates, and device indexes.  Bind every reuse to
