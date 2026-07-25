@@ -177,3 +177,15 @@ set_target_properties(m1_width_space_scene_island PROPERTIES
   CUDA_SEPARABLE_COMPILATION OFF
   CUDA_RESOLVE_DEVICE_SYMBOLS OFF
 )
+
+add_executable(m2_manhattan_production_census
+  m2_manhattan_production_census.cu
+)
+target_compile_options(m2_manhattan_production_census PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(m2_manhattan_production_census PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+)
