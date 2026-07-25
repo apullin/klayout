@@ -2708,6 +2708,19 @@ not just wall time.
         remain unchanged.  No wall-time speedup is booked until the exact live
         input passes with measured transient memory headroom and report
         equality.
+
+        The first production-size focused completion establishes the remaining
+        exact capacity: 70,658,340 stitched strip intervals, well above the
+        original 32M/64M guesses but within a raw-M1-only 128M strip / 256M
+        transition gate.  The adaptive reservation uses the lesser of that
+        policy cap and the exact membership census; capacity fallback now
+        finishes a bounded census without storing partial output or invoking
+        the consumer.  The focused scene certified all five rules with zero
+        violations or uncertainty and empty F270.  CUDA backend time was
+        3.289 s, including 0.173 s of morphology; host lowering plus backend
+        was 8.290 s, with a sampled 2.70-GB device-free floor.  This proves the
+        production data path, but the isolated owner and full-launch wall
+        remain unbooked until their canonical report gates pass.
         Evidence:
         `.scratchpad/cuda-runs/m1-resident-morph-census.N7asak`,
         `.scratchpad/cuda-runs/m1-resident-morph-production.bkyw9Z`, and
@@ -2717,7 +2730,10 @@ not just wall time.
         `.scratchpad/cuda-runs/m1-resident-morph-small-transpose.88Cuwv`,
         `.scratchpad/cuda-runs/m1-resident-morph-probe.6Cdgrw`,
         `.scratchpad/cuda-runs/m1-resident-morph-probe.TunPqf`, and
-        `.scratchpad/cuda-runs/m1-resident-morph-probe.d1s5lV`.
+        `.scratchpad/cuda-runs/m1-resident-morph-probe.d1s5lV`,
+        `.scratchpad/cuda-runs/m1-resident-morph-production.G6jiQt`,
+        `.scratchpad/cuda-runs/m1-resident-morph-probe.PfmaaX`, and
+        `.scratchpad/cuda-runs/m1-resident-morph-probe.p7APt3`.
 
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the

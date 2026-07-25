@@ -2172,8 +2172,19 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
     output.x_membership_ms = elapsed_ms(x_begin, Clock::now());
 
     const auto strip_begin = Clock::now();
+    /*
+     * Every canonical union interval contains at least one source
+     * rectangle/slab membership, so the exact whole-input membership census
+     * is also a sound upper bound on the stitched strip census.  Retain the
+     * configured fail-closed cap, but do not reserve that potentially huge
+     * capacity for a small scene.
+     */
+    const std::uint64_t strip_interval_capacity =
+        std::min(
+            window_limits.max_strip_intervals,
+            output.memberships);
     thrust::device_vector<StripInterval> intervals(
-        window_limits.max_strip_intervals);
+        strip_interval_capacity);
     thrust::device_vector<std::uint32_t> slab_interval_counts(
         output.x_slabs, 0);
     thrust::device_vector<std::uint64_t> slab_interval_offsets(
@@ -2192,6 +2203,8 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
         output.rectangle_count);
     std::uint64_t transition_total = 0;
     std::uint64_t interval_total = 0;
+    bool raw_capacity_exceeded = false;
+    bool strip_capacity_exceeded = false;
 
     for (const SlabWindow &window : windows) {
       if (!window.memberships) continue;
@@ -2341,20 +2354,41 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
         return;
       }
       if (transition_count >
-          limits.max_raw_segments - transition_total) {
+          std::numeric_limits<std::uint64_t>::max() -
+              transition_total) {
         output.fallback = true;
-        output.message = "raw segment capacity";
+        output.message = "raw segment census overflow";
         return;
       }
       const std::uint64_t window_intervals =
           transition_count / 2;
       if (window_intervals >
-          window_limits.max_strip_intervals - interval_total) {
+          std::numeric_limits<std::uint64_t>::max() -
+              interval_total) {
         output.fallback = true;
-        output.message = "strip interval capacity";
+        output.message = "strip interval census overflow";
         return;
       }
-      if (window_intervals) {
+
+      if (transition_total > limits.max_raw_segments ||
+          transition_count >
+              limits.max_raw_segments - transition_total) {
+        raw_capacity_exceeded = true;
+      }
+      if (interval_total > strip_interval_capacity ||
+          window_intervals >
+              strip_interval_capacity - interval_total) {
+        strip_capacity_exceeded = true;
+      }
+
+      /*
+       * Once either global capacity has been exceeded, keep reducing every
+       * remaining bounded window so fallback telemetry reports the exact
+       * whole-scene census.  Do not append a partial global strip view: the
+       * terminal callback remains impossible on any capacity failure.
+       */
+      if (!raw_capacity_exceeded && !strip_capacity_exceeded &&
+          window_intervals) {
         build_intervals_kernel<<<
             launch_blocks(window_intervals), kThreads>>>(
             thrust::raw_pointer_cast(transitions.data()),
@@ -2388,6 +2422,26 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
       return;
     }
     output.strip_intervals = interval_total;
+    if (raw_capacity_exceeded || strip_capacity_exceeded) {
+      output.fallback = true;
+      std::ostringstream message;
+      if (raw_capacity_exceeded) {
+        message << "raw segment capacity";
+      }
+      if (strip_capacity_exceeded) {
+        if (raw_capacity_exceeded) message << "; ";
+        message << "strip interval capacity";
+      }
+      message << " (exact transitions=" << transition_total
+              << ", intervals=" << interval_total
+              << ", reserved intervals="
+              << strip_interval_capacity << ")";
+      output.message = message.str();
+      output.strip_scan_ms =
+          elapsed_ms(strip_begin, Clock::now());
+      sample_device_memory(&output);
+      return;
+    }
     intervals.resize(interval_total);
     thrust::exclusive_scan(
         thrust::device, slab_interval_counts.begin(),
@@ -2423,9 +2477,10 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
      * Release the expanded source and per-rectangle staging before compacting
      * the conservatively reserved strip array.  Compaction temporarily owns
      * both the capacity allocation and the exact allocation, a high-water
-     * bounded by twice max_strip_intervals and sampled explicitly below.  The
-     * oversized reservation is then freed before the whole-source consumer
-     * allocates morphology output.
+     * bounded by the sum of the membership-derived reservation and the exact
+     * strip census, and sampled explicitly below.  The oversized reservation
+     * is then freed before the whole-source consumer allocates morphology
+     * output.
      */
     release_device_vector(&device_rectangles);
     release_device_vector(&rectangle_slab_spans);

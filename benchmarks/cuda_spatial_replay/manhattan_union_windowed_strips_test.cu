@@ -229,7 +229,12 @@ void run_differential(
       capture_hook(&windowed_capture);
   mu::GpuUnionStripWindowLimits window_limits;
   window_limits.max_window_events = max_window_events;
-  window_limits.max_strip_intervals = 100000;
+  /*
+   * This deliberately huge policy cap is safe for these small fixtures only
+   * because the implementation reserves against the exact membership census.
+   */
+  window_limits.max_strip_intervals =
+      std::numeric_limits<std::uint32_t>::max();
   window_limits.max_windows = 10000;
   window_limits.max_window_slabs = max_window_slabs;
   const mu::GpuUnionOutput windowed =
@@ -333,17 +338,53 @@ void run_capacity_gates(int device)
 
   {
     const std::vector<mu::RectI64> rectangles = {
-        rect(0, 0, 10, 2), rect(0, 4, 10, 6)};
+        rect(0, 0, 1, 1), rect(2, 2, 3, 3),
+        rect(4, 4, 5, 5)};
     StripCapture capture;
     mu::ResidentStripHook hook = capture_hook(&capture);
     mu::GpuUnionStripWindowLimits windows;
     windows.max_window_events = 16;
     windows.max_strip_intervals = 1;
+    windows.max_window_slabs = 1;
     const auto output =
         run_capacity_case(rectangles, limits, windows, device, &hook);
     require_fallback(
         "strip interval cap", output, "strip interval capacity",
         capture);
+    if (output.strip_intervals != 3 ||
+        output.message.find("exact transitions=6, intervals=3") ==
+            std::string::npos) {
+      throw std::runtime_error(
+          "strip interval cap: incomplete fallback census: " +
+          output.message);
+    }
+  }
+
+  {
+    const std::vector<mu::RectI64> rectangles = {
+        rect(0, 0, 1, 1), rect(2, 2, 3, 3),
+        rect(4, 4, 5, 5)};
+    StripCapture capture;
+    mu::ResidentStripHook hook = capture_hook(&capture);
+    mu::GpuUnionStripWindowLimits windows;
+    windows.max_window_events = 16;
+    windows.max_strip_intervals = 20;
+    windows.max_window_slabs = 1;
+    mu::GpuUnionLimits narrow = limits;
+    narrow.max_raw_segments = 2;
+    const auto output =
+        run_capacity_case(
+            rectangles, narrow, windows, device, &hook);
+    require_fallback(
+        "raw transition cap", output, "raw segment capacity",
+        capture);
+    if (output.strip_intervals != 3 ||
+        output.message.find("exact transitions=6, intervals=3") ==
+            std::string::npos) {
+      throw std::runtime_error(
+          "raw transition cap: incomplete fallback census: " +
+          output.message);
+    }
   }
 
   {
@@ -483,7 +524,7 @@ int main(int argc, char **argv)
 
     std::cout
         << "MANHATTAN_UNION_WINDOWED_STRIPS_TEST ok directed=3 "
-        << "random=24 capacity=7\n";
+        << "random=24 capacity=8\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr

@@ -130,6 +130,8 @@ static_assert(
 constexpr std::int64_t kCoordinateLimit = INT64_C(1000000000000);
 constexpr std::uint32_t kExpandThreads = 256;
 constexpr std::uint32_t kMaximumBlocks = 65535;
+constexpr std::uint64_t kM1MaxStitchedStripIntervals =
+    UINT64_C(128000000);
 constexpr char kM2RawDigestMagic[8] =
     {'K', 'M', '2', 'R', 'A', 'W', '0', '1'};
 constexpr char kM1RawDigestMagic[8] =
@@ -3861,16 +3863,17 @@ int run_m1_morph_request(
     /*
      * The raw-M1 terminal consumer needs the canonical strips, not a
      * materialized boundary.  Bound each window independently while retaining
-     * the request's whole-scene membership/event gates.  The internal defaults
-     * cap temporary event storage and the exact stitched strip allocation;
-     * clamping them to the caller's existing union limits cannot broaden the
-     * accepted workload.  Each strip interval consumes two raw transitions.
+     * the request's whole-scene membership/event gates.  The internal default
+     * caps temporary event storage.  Raw M1 may retain up to 128M exact
+     * stitched intervals, still clamped to the caller's existing membership
+     * and raw-transition gates.  Each strip interval consumes two raw
+     * transitions.
      */
     mu::GpuUnionStripWindowLimits window_limits;
     window_limits.max_window_events = std::min(
         window_limits.max_window_events, union_limits.max_events);
     window_limits.max_strip_intervals = std::min(
-        {window_limits.max_strip_intervals,
+        {kM1MaxStitchedStripIntervals,
          union_limits.max_memberships,
          union_limits.max_raw_segments / 2});
     window_limits.max_windows = std::min(
