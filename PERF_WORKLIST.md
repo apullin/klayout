@@ -1675,7 +1675,7 @@ not just wall time.
           union/boundary filtering, but do not enable the raw-only lane in the
           production launcher.
 
-        - [ ] **Replace CONTACT.4's CPU ACTIVE merge with one resident exact
+        - [x] **Replace CONTACT.4's CPU ACTIVE merge with one resident exact
           Manhattan-union/check transaction:** reuse the qualified M2 integer
           union core, consume canonical ACTIVE boundary spans on device, and
           run the exact CONTACT.4 predicate before any D2H boundary or KLayout
@@ -1734,7 +1734,54 @@ not just wall time.
             M2 backend and resident-morphology consumers rebuild clean.  This
             qualifies the reusable component only; the compact live
             ACTIVE/CONTACT hierarchy adapter and production wall-time gate are
-            still open.
+            still open at this checkpoint and are closed immediately below.
+
+          - [x] **Integrate and production-qualify the fused raw-ACTIVE
+            union/CONTACT.4 transaction:** commits `ca5759f`, `e39f580`,
+            `8055d68`, `a91fbe0`, `6df471b`, and `6a50602` add the
+            device-resident consumer seam, fused backend, pre-merge live hook,
+            shared ACTIVE/CONTACT capture, real-output production-validator
+            gate, and full-size qualification.  Only a validator-accepted
+            COMPLETE result with zero hits and uncertainty is consumable;
+            RAW_HITS is valid diagnostic output but executes the untouched
+            merged certificate and CPU rule.  Missing/stale symbols, malformed
+            echoes or counters, changed semantics, capacity, hierarchy,
+            topology, and CUDA failures all fail closed.
+
+            The pinned x2 KACT has file SHA-256
+            `4c1609873c64c36b5ecf97796cc43cb4f164c4e872d199514ea07893449772bd`
+            and embedded-scene SHA-256
+            `88cf7064183aba158e80486463b21c2481c3861490c0d0d4215311b2491be23e`.
+            Its shared 273-cell/848,485-context hierarchy represents
+            24,687,816 raw ACTIVE polygons / 98,754,896 edges and
+            10,353,606 CONTACT polygons / 41,414,424 edges without host-flat
+            geometry.  Exact union produces 24,689,164 rectangles,
+            114,973,212 slab memberships, 87,241,928 raw boundary segments,
+            and 10,736,736 canonical boundary segments.
+
+            The resident CONTACT.4 scan proves 44,084,722 CONTACT
+            memberships, 13,416,293 boundary-cell visits, 1,099,731,476
+            hierarchy-member visits, and 1,091,588,254 uniquely owned
+            candidate pairs, with zero clean-scene hits or uncertainty.
+            Repeated counters are exact; a deliberate production-scale
+            mutation returns exactly one RAW_HITS result.  Geometry D2H is
+            zero, union high-water is released before CONTACT indexing, and
+            the phased callback peak is 1,450 MiB after the 4,138-MiB union
+            high-water.  The independent full-size replay charged 1.975 s
+            cold and 1.708 s warm to the fused backend; these are qualification
+            timings, not owner or full-launch savings.
+
+            An order-balanced, same-binary isolated `implant_contact` A/B
+            changed median wall **86.65 -> 58.23 seconds: 28.42 real seconds /
+            32.80% less owner wall time** (`N=3` per lane; controls
+            86.65/86.45/86.75 s, candidates 58.33/58.23/58.23 s).  Every
+            report retained canonical SHA-256
+            `b0e94aa57f09535c1b283e47838fba1830ffd17f9f88c9e15c9c2512aff95f56`.
+            Median candidate live work was 2.690 s of hierarchy lowering plus
+            1.712 s in the fused backend, or 4.402 s total.  This is an owner
+            result; do not book a full-launch reduction until the new switch is
+            enabled and attested in a matched balanced full A/B.  Evidence:
+            `.scratchpad/cuda-runs/contact4-active-union-production.EYGJ9E/`.
 
       - [x] **Fuse IMPLANT.1 and IMPLANT.2 as one atomic CUDA transaction:**
         rewrite only the two fixed projection-separation expressions into one
