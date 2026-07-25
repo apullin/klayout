@@ -73,7 +73,7 @@ class BalancedFullGateStaticTest(unittest.TestCase):
                         exact_plan = (
                             ("m1_width_space",)
                             + (
-                                ("implant", "contact")
+                                ("implant_contact", "contact")
                                 if split_implant_contact
                                 else ("implant_contact",)
                             )

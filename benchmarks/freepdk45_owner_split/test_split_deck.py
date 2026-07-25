@@ -60,16 +60,16 @@ class SplitDeckTest(unittest.TestCase):
             split_implant_contact=True,
             split_active12=True,
         )
-        self.assertIn('drc_shard == "implant"', result)
+        self.assertIn('drc_shard == "implant_contact"', result)
         self.assertIn('drc_shard == "contact"', result)
         self.assertIn('drc_shard == "active12"', result)
         self.assertIn(
-            "run_m2_rules || run_implant || run_contact || "
+            "run_m2_rules || run_implant_contact || run_contact || "
             "run_via1_upper_active12 || run_active12_rules || run_grid",
             result,
         )
         self.assertIn("run_active12 = run_active12_rules", result)
-        self.assertIn("run_poly || run_implant", result)
+        self.assertIn("run_poly || run_implant_contact", result)
         self.assertIn(
             "m1_contact_owner = requested &amp;&amp; "
             "(run_contact || run_m1_enclosure)",
@@ -79,7 +79,7 @@ class SplitDeckTest(unittest.TestCase):
             result.index('.output("IMPLANT.5"'),
             result.index('.output("CONTACT.1"'),
         )
-        self.assertEqual(result.count("if run_implant\n"), 1)
+        self.assertEqual(result.count("if run_implant_contact\n"), 1)
         self.assertEqual(result.count("if run_contact\n"), 1)
         ET.fromstring(result)
 
@@ -87,7 +87,7 @@ class SplitDeckTest(unittest.TestCase):
         result = split_deck(
             source_deck(), split_implant_contact=True
         )
-        self.assertIn('drc_shard == "implant"', result)
+        self.assertIn('drc_shard == "implant_contact"', result)
         self.assertIn('drc_shard == "contact"', result)
         self.assertNotIn('drc_shard == "active12"', result)
         self.assertIn("run_active12 = run_via1_upper_active12", result)
@@ -96,8 +96,18 @@ class SplitDeckTest(unittest.TestCase):
         result = split_deck(source_deck(), split_active12=True)
         self.assertIn('drc_shard == "active12"', result)
         self.assertIn('drc_shard == "implant_contact"', result)
-        self.assertNotIn('drc_shard == "implant"', result)
         self.assertIn("run_active12 = run_active12_rules", result)
+
+    def test_rejects_duplicate_output_sites(self) -> None:
+        source = source_deck().replace(
+            'active.output("ACTIVE.1", "active 1")',
+            'active.output("ACTIVE.1", "active 1")\n'
+            'active.output("ACTIVE.1", "duplicate")',
+        )
+        with self.assertRaisesRegex(
+            TransformError, "ACTIVE.1: expected 1 source sites, found 2"
+        ):
+            split_deck(source, split_active12=True)
 
     def test_rejects_noop_and_already_split_inputs(self) -> None:
         with self.assertRaisesRegex(TransformError, "at least one"):

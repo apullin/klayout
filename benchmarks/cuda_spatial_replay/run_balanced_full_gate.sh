@@ -456,7 +456,7 @@ grep -Fq -- "<report-database>" "${reference_canonical}" ||
 
 owner_prefix=(m1_width_space)
 owner_implant_joined=(implant_contact)
-owner_implant_split=(implant contact)
+owner_implant_split=(implant_contact contact)
 owner_upper_joined=(antenna_m3_m10)
 owner_upper_split=(antenna_m4_m10 antenna_m3)
 owner_lower_joined=(antenna_m1_m2)

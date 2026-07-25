@@ -3,8 +3,8 @@
 
 The input must already be a shard-aware FreePDK45 deck.  The transform can:
 
-* move IMPLANT.1-.5 and CONTACT.1-.5 from ``implant_contact`` into the
-  independent ``implant`` and ``contact`` owners; and
+* retain IMPLANT.1-.5 in ``implant_contact`` while moving CONTACT.1-.5 into
+  the independent ``contact`` owner; and
 * move ACTIVE.1/.2 from ``via1_upper_active12`` into ``active12``.
 
 No rule expression is rewritten.  In ``drc_shard=all`` mode both new owner
@@ -22,7 +22,6 @@ import xml.etree.ElementTree as ET
 
 
 IMPLANT_CONTACT_SHARD = "implant_contact"
-IMPLANT_SHARD = "implant"
 CONTACT_SHARD = "contact"
 VIA1_UPPER_ACTIVE12_SHARD = "via1_upper_active12"
 ACTIVE12_SHARD = "active12"
@@ -39,10 +38,16 @@ def _replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
-def _require_output_families(text: str, families: tuple[str, ...]) -> None:
-    for category in families:
-        if f'.output("{category}"' not in text:
-            raise TransformError(f"{category}: output site is missing")
+def _require_output_counts(
+    text: str, expected: dict[str, tuple[int, ...]]
+) -> None:
+    for category, allowed in expected.items():
+        count = text.count(f'.output("{category}"')
+        if count not in allowed:
+            choices = " or ".join(str(value) for value in allowed)
+            raise TransformError(
+                f"{category}: expected {choices} source sites, found {count}"
+            )
 
 
 def split_deck(
@@ -58,25 +63,32 @@ def split_deck(
 
     text = source.replace("\r\n", "\n").replace("\r", "\n")
     if (
-        f'drc_shard == "{IMPLANT_SHARD}"' in text
-        or f'drc_shard == "{CONTACT_SHARD}"' in text
+        f'drc_shard == "{CONTACT_SHARD}"' in text
         or f'drc_shard == "{ACTIVE12_SHARD}"' in text
     ):
         raise TransformError("source deck is already owner-split")
 
     if split_implant_contact:
-        _require_output_families(
+        _require_output_counts(
             text,
-            tuple(f"IMPLANT.{rule}" for rule in range(1, 6))
-            + tuple(f"CONTACT.{rule}" for rule in range(1, 6)),
+            {
+                "IMPLANT.1": (1, 2),
+                "IMPLANT.2": (1, 2),
+                "IMPLANT.3": (1,),
+                "IMPLANT.4": (1,),
+                "IMPLANT.5": (1,),
+                "CONTACT.1": (1, 2),
+                "CONTACT.2": (1, 2),
+                "CONTACT.3": (1, 2),
+                "CONTACT.4": (1,),
+                "CONTACT.5": (1,),
+            },
         )
         old_declaration = (
             'run_implant_contact = drc_shard == "all" || '
             f'drc_shard == "{IMPLANT_CONTACT_SHARD}"\n'
         )
-        new_declaration = (
-            'run_implant = drc_shard == "all" || '
-            f'drc_shard == "{IMPLANT_SHARD}"\n'
+        new_declaration = old_declaration + (
             'run_contact = drc_shard == "all" || '
             f'drc_shard == "{CONTACT_SHARD}"\n'
         )
@@ -90,21 +102,9 @@ def split_deck(
             text,
             "run_m2_rules || run_implant_contact || "
             "run_via1_upper_active12",
-            "run_m2_rules || run_implant || run_contact || "
+            "run_m2_rules || run_implant_contact || run_contact || "
             "run_via1_upper_active12",
             "implant/contact valid-shard guard",
-        )
-        text = _replace_once(
-            text,
-            "run_poly || run_implant_contact",
-            "run_poly || run_implant",
-            "gate dependency",
-        )
-        text = _replace_once(
-            text,
-            "need_implant = DRC &amp;&amp; run_implant_contact\n",
-            "need_implant = DRC &amp;&amp; run_implant\n",
-            "implant dependency",
         )
         text = _replace_once(
             text,
@@ -114,19 +114,15 @@ def split_deck(
         )
         text = _replace_once(
             text,
-            "if run_implant_contact\n\n#   Implant",
-            "if run_implant\n\n#   Implant",
-            "implant block owner",
-        )
-        text = _replace_once(
-            text,
             "implant.forget\n\n#   Contact",
             "implant.forget\n\nend\n\n\nif run_contact\n\n#   Contact",
             "implant/contact block boundary",
         )
 
     if split_active12:
-        _require_output_families(text, ("ACTIVE.1", "ACTIVE.2"))
+        _require_output_counts(
+            text, {"ACTIVE.1": (1,), "ACTIVE.2": (1,)}
+        )
         declaration = (
             'run_via1_upper_active12 = drc_shard == "all" || '
             f'drc_shard == "{VIA1_UPPER_ACTIVE12_SHARD}"\n'
