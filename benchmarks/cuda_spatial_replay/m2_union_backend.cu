@@ -169,6 +169,7 @@ enum ExpandFlag : std::uint32_t {
   kExpandTransformOverflow = 1u << 0,
   kExpandBoundsMismatch = 1u << 1,
   kExpandInvalidRecord = 1u << 2,
+  kExpandTransposeInvariant = 1u << 3,
 };
 
 enum class DeclineKind {
@@ -2182,6 +2183,56 @@ __global__ void expand_rectangles_kernel(
   }
 }
 
+/*
+ * The M1 suffix is invariant under the exact isometry (x, y) -> (y, x):
+ * both morphology radii use square structuring elements, the long-edge
+ * space predicate checks both axes symmetrically, and a COMPLETE certificate
+ * requires F270 to be empty before any directional M1.6-.9 result is
+ * consumed.  Transposing only this private resident stream lets horizontal
+ * M1 rails be swept along their narrow axis without changing the request
+ * digest, hierarchy census, or any caller-owned coordinate.
+ */
+__global__ void transpose_m1_rectangles_kernel(
+    mu::RectI64 *rectangles, std::uint64_t rectangle_count,
+    std::int64_t scene_left, std::int64_t scene_bottom,
+    std::int64_t scene_right, std::int64_t scene_top,
+    std::uint32_t *status)
+{
+  for (std::uint64_t index =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       index < rectangle_count;
+       index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const mu::RectI64 source = rectangles[index];
+    if (source.left >= source.right ||
+        source.bottom >= source.top ||
+        source.left < scene_left ||
+        source.bottom < scene_bottom ||
+        source.right > scene_right ||
+        source.top > scene_top ||
+        source.left < -kCoordinateLimit ||
+        source.bottom < -kCoordinateLimit ||
+        source.right > kCoordinateLimit ||
+        source.top > kCoordinateLimit) {
+      atomicOr(status, std::uint32_t(kExpandTransposeInvariant));
+      continue;
+    }
+    const mu::RectI64 transposed = {
+        source.bottom, source.left, source.top, source.right,
+        source.source_token, source.context_token};
+    if (transposed.left >= transposed.right ||
+        transposed.bottom >= transposed.top ||
+        transposed.left < scene_bottom ||
+        transposed.bottom < scene_left ||
+        transposed.right > scene_top ||
+        transposed.top > scene_right) {
+      atomicOr(status, std::uint32_t(kExpandTransposeInvariant));
+      continue;
+    }
+    rectangles[index] = transposed;
+  }
+}
+
 __global__ void expand_contact_edges_kernel(
     const Context *contexts, std::uint64_t context_count,
     const std::uint32_t *layer_contexts,
@@ -2542,6 +2593,46 @@ ExpandedRectangles expand_rectangles_resident(
         elapsed_ns(expand_begin, Clock::now());
   }
   return expanded;
+}
+
+std::uint64_t transpose_m1_rectangles_resident(
+    const Request &request, ExpandedRectangles *expanded)
+{
+  if (!expanded || expanded->status ||
+      expanded->rectangles.empty()) {
+    throw std::runtime_error(
+        "invalid M1 resident transpose input");
+  }
+  const auto begin = Clock::now();
+  DeviceBuffer<std::uint32_t> device_status(1);
+  cuda_require(
+      cudaMemset(device_status.get(), 0, sizeof(std::uint32_t)),
+      "raw M1 transpose status clear");
+  const std::uint64_t rectangle_count =
+      expanded->rectangles.size();
+  const std::uint32_t blocks =
+      static_cast<std::uint32_t>(std::min<std::uint64_t>(
+          (rectangle_count + kExpandThreads - 1) /
+              kExpandThreads,
+          kMaximumBlocks));
+  transpose_m1_rectangles_kernel<<<blocks, kExpandThreads>>>(
+      thrust::raw_pointer_cast(expanded->rectangles.data()),
+      rectangle_count, request.scene_left, request.scene_bottom,
+      request.scene_right, request.scene_top,
+      device_status.get());
+  cuda_require(
+      cudaGetLastError(), "raw M1 resident transpose launch");
+  cuda_require(
+      cudaDeviceSynchronize(),
+      "raw M1 resident transpose synchronize");
+  std::uint32_t transpose_status = 0;
+  cuda_require(
+      cudaMemcpy(
+          &transpose_status, device_status.get(),
+          sizeof(transpose_status), cudaMemcpyDeviceToHost),
+      "raw M1 resident transpose status D2H");
+  expanded->status |= transpose_status;
+  return elapsed_ns(begin, Clock::now());
 }
 
 struct ExpandedContacts
@@ -3695,6 +3786,15 @@ int run_m1_morph_request(
     const LoweredScene lowered =
         validate_and_lower(raw, kM1RawDigestMagic);
     result->setup_ns = elapsed_ns(setup_begin, Clock::now());
+    const __int128 transposed_y_range =
+        static_cast<__int128>(raw.scene_right) -
+        raw.scene_left;
+    if (transposed_y_range <= 0 ||
+        transposed_y_range >
+            std::numeric_limits<std::uint32_t>::max()) {
+      coordinate_decline(
+          "raw M1 transposed y range exceeds exact packed-union capacity");
+    }
 
     const bool qualified_production_scene =
         qualified_production_m1_morph_scene(*request);
@@ -3724,6 +3824,24 @@ int run_m1_morph_request(
       set_message(
           result,
           "raw M1 device expansion failed its exact bounds gate");
+      result->total_ns = elapsed_ns(total_begin, Clock::now());
+      return result->status;
+    }
+    const std::uint64_t transpose_ns =
+        transpose_m1_rectangles_resident(raw, &expanded);
+    if (!checked_add_u64(
+            result->rectangle_expand_ns, transpose_ns,
+            &result->rectangle_expand_ns)) {
+      throw std::runtime_error(
+          "raw M1 expansion/transpose timing overflow");
+    }
+    if (expanded.status) {
+      result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      result->fallback_flags =
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+      set_message(
+          result,
+          "raw M1 resident coordinate transpose failed its exact bounds gate");
       result->total_ns = elapsed_ns(total_begin, Clock::now());
       return result->status;
     }
@@ -3772,15 +3890,17 @@ int run_m1_morph_request(
             result->h2d_ns + result->rectangle_expand_ns) /
         1000000.0;
     const mu::GpuUnionOutput output = mu::gpu_union_resident(
-        std::move(expanded.rectangles), raw.scene_bottom,
-        raw.scene_top, union_limits, raw.device,
+        std::move(expanded.rectangles), raw.scene_left,
+        raw.scene_right, union_limits, raw.device,
         input_prepare_ms, &hook);
     copy_m1_union_telemetry(output, result);
 
     if (output.fallback) {
       result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
       result->fallback_flags = fallback_flags_for_union(output);
-      set_message(result, output.message.c_str());
+      const std::string message =
+          "transposed raw M1 union: " + output.message;
+      set_message(result, message.c_str());
       result->total_ns = elapsed_ns(total_begin, Clock::now());
       return result->status;
     }
@@ -3816,7 +3936,7 @@ int run_m1_morph_request(
     result->status = KLAYOUT_CUDA_SPATIAL_OK;
     set_message(
         result,
-        "complete exact raw M1 resident M1.5-.9 empty certificate");
+        "complete exact transposed raw M1 resident M1.5-.9 empty certificate");
     result->total_ns = elapsed_ns(total_begin, Clock::now());
     return result->status;
   } catch (const M2Decline &decline) {

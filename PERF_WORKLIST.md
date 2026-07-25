@@ -2677,13 +2677,27 @@ not just wall time.
         exact raw M1 requires **767,933,902 slab memberships / 1,535,867,804
         events**, not roughly 166M/331M.  The current all-at-once event
         representation therefore cannot fit a 10-GiB device and declines
-        safely before allocation; no speedup is booked.  The next required
-        implementation is an exact bounded x-slab-window union producer (or
-        equivalent lower-peak stream) feeding the already-proved resident
-        morphology consumer.  Evidence:
+        safely before allocation; no speedup is booked.
+
+        A private exact coordinate transpose now exploits the horizontal M1
+        bias without changing the request digest, hierarchy census, square
+        morphology, Euclidean long-space predicate, or scalar empty
+        disposition.  The focused live census reduced the union to 34,563
+        sweep slabs and **248,700,142 memberships / 497,400,284 events**:
+        519,233,760 memberships / **67.61% less** than the original sweep
+        (3.087x smaller).  The backend oracle suite, all 248 morphology
+        differentials, and a 2x16 SRAM CPU/CUDA canonical-report equality gate
+        pass.  This is a capacity reduction, not a booked wall-time win:
+        radix-sort input and alternate storage still make the global event
+        representation unsafe on the 10-GiB device.  The next required
+        implementation remains an exact bounded sweep-slab-window producer
+        feeding the already-proved one-shot resident morphology consumer.
+        Evidence:
         `.scratchpad/cuda-runs/m1-resident-morph-census.N7asak`,
         `.scratchpad/cuda-runs/m1-resident-morph-production.bkyw9Z`, and
-        `.scratchpad/cuda-runs/m1-resident-morph-probe.MhYkgL`.
+        `.scratchpad/cuda-runs/m1-resident-morph-probe.MhYkgL`,
+        `.scratchpad/cuda-runs/m1-resident-morph-probe.C7fVur`, and
+        `.scratchpad/cuda-runs/m1-resident-morph-small-transpose.QwiGpK`.
 
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
