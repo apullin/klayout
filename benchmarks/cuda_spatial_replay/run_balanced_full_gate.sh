@@ -7,8 +7,8 @@ Usage:
   bash run_balanced_full_gate.sh \
     --klayout PATH --backend PATH --source-deck PATH \
     --manifest PATH --input PATH --top-cell NAME --reference PATH \
-    [--python PATH] [--timeout-seconds N] [--jobs 8|10|11] \
-    [--split-upper-antenna] \
+    [--python PATH] [--timeout-seconds N] [--jobs 8|10|11|12] \
+    [--split-lower-antenna] [--split-upper-antenna] \
     [--without-contact4] \
     [--with-contact4-active-union|--without-contact4-active-union] \
     [--with-m2-rules|--without-m2-rules] \
@@ -19,9 +19,12 @@ Usage:
 
 Regenerates the qualified FreePDK45 live-CUDA deck, applies the antenna split,
 coalesces CONTACT.6 into the grid owner, and runs the exact balanced full-launch
-gate. With --split-upper-antenna, METAL3 and METAL4-through-METAL10 checks use
-separate owners, for eleven owners total. CUDA resource limits remain fixed;
-the launcher may use eight, ten, or eleven process slots.
+gate. With --split-lower-antenna, METAL1 and METAL2 checks use separate
+owners. With --split-upper-antenna, METAL3 and METAL4-through-METAL10 checks
+use separate owners. The modes compose: the selected plan has ten owners by
+default, eleven with either split, or twelve with both. CUDA resource limits
+remain fixed; the launcher may use eight, ten, eleven, or twelve process slots,
+never more slots than selected owners.
 
 The manifest must be bound to the generated deck and selected owner set.
 Reference may be either a raw or generator-stripped XML .lyrdb report. The
@@ -101,6 +104,7 @@ m2_width_space=-1
 poly34=-1
 prune_poly2=0
 jobs=8
+split_lower_antenna=0
 split_upper_antenna=0
 
 while (($#)); do
@@ -154,6 +158,10 @@ while (($#)); do
       (($# >= 2)) || die "--jobs requires a value"
       jobs=$2
       shift 2
+      ;;
+    --split-lower-antenna)
+      split_lower_antenna=1
+      shift
       ;;
     --split-upper-antenna)
       split_upper_antenna=1
@@ -247,11 +255,12 @@ done
 [[ -n "${reference}" ]] || die "missing --reference"
 [[ "${timeout_seconds}" =~ ^[1-9][0-9]*$ ]] ||
   die "--timeout-seconds must be a positive integer"
-[[ "${jobs}" == 8 || "${jobs}" == 10 || "${jobs}" == 11 ]] ||
-  die "--jobs must be 8, 10, or 11"
-if [[ "${jobs}" == 11 ]] && (( ! split_upper_antenna)); then
-  die "--jobs 11 requires --split-upper-antenna"
-fi
+[[ "${jobs}" == 8 || "${jobs}" == 10 || "${jobs}" == 11 ||
+   "${jobs}" == 12 ]] ||
+  die "--jobs must be 8, 10, 11, or 12"
+selected_owner_count=$((10 + split_lower_antenna + split_upper_antenna))
+((jobs <= selected_owner_count)) ||
+  die "--jobs ${jobs} exceeds selected ${selected_owner_count}-owner plan"
 if ((m2_rules == 1 && m2_width_space == 1)); then
   die "--with-m2-rules is incompatible with --with-m2-width-space"
 fi
@@ -380,8 +389,11 @@ if ((prune_poly2)); then
     "${python}" "${poly2_prune}" "${generator_deck}" "${live_deck}"
 fi
 antenna_split_args=()
+if ((split_lower_antenna)); then
+  antenna_split_args+=(--split-lower)
+fi
 if ((split_upper_antenna)); then
-  antenna_split_args=(--split-upper)
+  antenna_split_args+=(--split-upper)
 fi
 run_transform "antenna split" \
   "${python}" "${antenna_split}" \
@@ -410,34 +422,36 @@ sed '/<generator>/d' "${reference}" >"${reference_canonical}"
 grep -Fq -- "<report-database>" "${reference_canonical}" ||
   die "reference is not an XML KLayout report database"
 
+owner_prefix=(
+  m1_width_space
+  implant_contact
+)
+owner_upper_joined=(antenna_m3_m10)
+owner_upper_split=(antenna_m4_m10 antenna_m3)
+owner_lower_joined=(antenna_m1_m2)
+owner_lower_split=(antenna_m2 antenna_m1)
+owner_suffix=(
+  m2_rules
+  m1_enclosure
+  via1_upper_active12
+  grid
+  m1_via_class
+  antenna_feol
+)
+shards=("${owner_prefix[@]}")
 if ((split_upper_antenna)); then
-  shards=(
-    m1_width_space
-    implant_contact
-    antenna_m4_m10
-    antenna_m3
-    antenna_m1_m2
-    m2_rules
-    m1_enclosure
-    via1_upper_active12
-    grid
-    m1_via_class
-    antenna_feol
-  )
+  shards+=("${owner_upper_split[@]}")
 else
-  shards=(
-    m1_width_space
-    implant_contact
-    antenna_m3_m10
-    antenna_m1_m2
-    m2_rules
-    m1_enclosure
-    via1_upper_active12
-    grid
-    m1_via_class
-    antenna_feol
-  )
+  shards+=("${owner_upper_joined[@]}")
 fi
+if ((split_lower_antenna)); then
+  shards+=("${owner_lower_split[@]}")
+else
+  shards+=("${owner_lower_joined[@]}")
+fi
+shards+=("${owner_suffix[@]}")
+((${#shards[@]} == selected_owner_count)) ||
+  die "internal owner-plan count mismatch"
 shard_args=()
 for shard in "${shards[@]}"; do
   shard_args+=(--shard "${shard}")
@@ -676,4 +690,4 @@ cat -- "${work}/launcher-summary.txt"
 cat -- "${work}/canonical-report-sha256.txt"
 cat -- "${work}/cuda-telemetry.txt"
 echo \
-  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} contact4_active_union=${contact4_active_union} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} poly34=${poly34} prune_poly2=${prune_poly2} split_upper_antenna=${split_upper_antenna}"
+  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} contact4_active_union=${contact4_active_union} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} poly34=${poly34} prune_poly2=${prune_poly2} split_lower_antenna=${split_lower_antenna} split_upper_antenna=${split_upper_antenna}"

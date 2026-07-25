@@ -63,6 +63,9 @@ order is launch order, so schedule the long antenna owners in the first wave.
 For the current eleven-owner CUDA gate, use a deck-bound eleven-owner manifest
 and `run_balanced_full_gate.sh --split-upper-antenna --jobs 11`.  The accepted
 32-core-budget screen used two inner threads per owner (22 requested workers).
+The lower split is exposed independently as `--split-lower-antenna`; enabling
+both launcher flags selects the deterministic twelve-owner plan and permits
+`--jobs 12`. Each selected plan requires its own bound manifest.
 
 ## Qualified x2 result
 

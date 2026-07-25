@@ -493,12 +493,15 @@ created from a CPU `drc_shard=all` reference and the ten CUDA-enabled shard
 reports. Do not create the reference with CUDA enabled: that changes
 historical category order even when the semantic report is otherwise equal.
 
-`--split-upper-antenna` is an additive eleven-owner mode. It replaces
-`antenna_m3_m10` with independent `antenna_m3` and `antenna_m4_m10` owners;
-use a separately bound eleven-owner manifest and `--jobs 11`. The accepted
+`--split-lower-antenna` and `--split-upper-antenna` are independent,
+default-off owner splits. The lower mode replaces `antenna_m1_m2` with
+independent `antenna_m1` and `antenna_m2` owners. The upper mode replaces
+`antenna_m3_m10` with independent `antenna_m3` and `antenna_m4_m10` owners.
+The selected launch has ten owners by default, eleven with either split, and
+twelve with both; its `--jobs` value may not exceed that owner count. Every
+mode requires its own deck-bound manifest. The accepted upper-only
 32-core-budget screen used a source deck with `threads(2)`, so the eleven
-processes request 22 inner workers. Its full report retained canonical
-SHA-256
+processes request 22 inner workers. Its full report retained canonical SHA-256
 `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`;
 the antenna critical lane fell from 96.431 to 57.769 s while unchanged M2
 kept full wall flat at 101.36 -> 101.66 s.
