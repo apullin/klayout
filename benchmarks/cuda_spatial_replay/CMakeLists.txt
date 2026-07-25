@@ -359,6 +359,23 @@ target_link_libraries(manhattan_union_replay PRIVATE
   Threads::Threads
 )
 
+add_executable(m2_resident_morphology_replay
+  m2_resident_morphology_replay.cu
+)
+target_compile_options(m2_resident_morphology_replay PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+target_link_libraries(m2_resident_morphology_replay PRIVATE
+  m2_manhattan_production_loader
+  m2_merged_boundary_oracle
+  Threads::Threads
+)
+set_target_properties(m2_resident_morphology_replay PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+)
+
 add_executable(m2_merged_boundary_oracle_cli
   m2_merged_boundary_oracle_main.cc
 )

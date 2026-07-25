@@ -1,0 +1,1146 @@
+/*
+ * Exact resident-strip square morphology.
+ *
+ * This qualification executable deliberately includes the Manhattan-union
+ * replay implementation in the same translation unit.  The union exposes its
+ * canonical x-band/y-interval representation to the callback below while all
+ * arrays are still device resident.  Erosion and dilation consume that
+ * representation directly; there is no contour reconstruction, component
+ * labeling, or host geometry round trip between operations.
+ */
+
+#define KLAYOUT_MANHATTAN_UNION_REPLAY_NO_MAIN
+#include "manhattan_union_replay.cu"
+
+#include <set>
+
+namespace {
+
+constexpr std::uint32_t kMorphMaxActiveSlabs = 128;
+
+enum MorphStatus : std::uint32_t
+{
+  kMorphTooManyActiveSlabs = 1u << 0,
+  kMorphCoordinateOverflow = 1u << 1,
+  kMorphPerSlabCountOverflow = 1u << 2,
+  kMorphWorkCapacity = 1u << 3,
+  kMorphEmitMismatch = 1u << 4,
+  kMorphOutputInvariant = 1u << 5,
+};
+
+struct MorphLimits
+{
+  std::uint64_t max_output_slabs = UINT64_C(200000);
+  std::uint64_t max_output_intervals = UINT64_C(64000000);
+  std::uint64_t max_total_source_visits = UINT64_C(2000000000);
+  std::uint64_t max_source_visits_per_band = UINT64_C(4000000);
+  std::uint32_t max_active_slabs = kMorphMaxActiveSlabs;
+};
+
+struct DeviceBandView
+{
+  const std::int64_t *xs = nullptr;
+  std::uint32_t x_slabs = 0;
+  const StripInterval *intervals = nullptr;
+  std::uint64_t interval_count = 0;
+  const std::uint64_t *slab_offsets = nullptr;
+  const std::uint32_t *slab_counts = nullptr;
+};
+
+struct DeviceBandSet
+{
+  thrust::device_vector<std::int64_t> xs;
+  thrust::device_vector<StripInterval> intervals;
+  thrust::device_vector<std::uint64_t> slab_offsets;
+  thrust::device_vector<std::uint32_t> slab_counts;
+
+  std::uint32_t x_slabs() const
+  {
+    return xs.empty() ? 0u : static_cast<std::uint32_t>(xs.size() - 1);
+  }
+
+  DeviceBandView view() const
+  {
+    return {
+        xs.empty() ? nullptr : thrust::raw_pointer_cast(xs.data()),
+        x_slabs(),
+        intervals.empty()
+            ? nullptr
+            : thrust::raw_pointer_cast(intervals.data()),
+        intervals.size(),
+        slab_offsets.empty()
+            ? nullptr
+            : thrust::raw_pointer_cast(slab_offsets.data()),
+        slab_counts.empty()
+            ? nullptr
+            : thrust::raw_pointer_cast(slab_counts.data())};
+  }
+};
+
+struct MorphMetrics
+{
+  std::uint64_t output_intervals = 0;
+  std::uint64_t source_visits = 0;
+  std::uint32_t max_active_slabs = 0;
+  std::uint64_t device_total_bytes = 0;
+  std::uint64_t device_free_begin_bytes = 0;
+  std::uint64_t device_free_low_bytes = 0;
+  double elapsed_ms = 0.0;
+};
+
+struct OutsideCarrier
+{
+  std::int64_t low;
+  std::int64_t high;
+
+  MU_HD bool operator()(std::int64_t value) const
+  {
+    return value < low || value > high;
+  }
+};
+
+__global__ void shifted_x_endpoints_kernel(
+    const std::int64_t *xs, std::uint64_t endpoint_count,
+    std::int64_t radius, std::int64_t *shifted)
+{
+  for (std::uint64_t index =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       index < endpoint_count;
+       index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    shifted[2 * index] = xs[index] - radius;
+    shifted[2 * index + 1] = xs[index] + radius;
+  }
+}
+
+__device__ std::uint32_t first_intersecting_slab(
+    const std::int64_t *xs, std::uint32_t x_slabs,
+    std::int64_t lower2)
+{
+  std::uint32_t low = 0;
+  std::uint32_t high = x_slabs;
+  while (low < high) {
+    const std::uint32_t middle = low + (high - low) / 2;
+    if (2 * xs[middle + 1] > lower2) {
+      high = middle;
+    } else {
+      low = middle + 1;
+    }
+  }
+  return low;
+}
+
+__device__ std::uint32_t first_nonintersecting_slab(
+    const std::int64_t *xs, std::uint32_t x_slabs,
+    std::int64_t upper2)
+{
+  std::uint32_t low = 0;
+  std::uint32_t high = x_slabs;
+  while (low < high) {
+    const std::uint32_t middle = low + (high - low) / 2;
+    if (2 * xs[middle] >= upper2) {
+      high = middle;
+    } else {
+      low = middle + 1;
+    }
+  }
+  return low;
+}
+
+__device__ bool transformed_interval(
+    const StripInterval &interval, std::int64_t radius, bool erosion,
+    std::int64_t *lo, std::int64_t *hi, std::uint32_t *status)
+{
+  if (erosion) {
+    if (interval.bottom >
+            std::numeric_limits<std::int64_t>::max() - radius ||
+        interval.top <
+            std::numeric_limits<std::int64_t>::min() + radius) {
+      atomicOr(status,
+               static_cast<std::uint32_t>(kMorphCoordinateOverflow));
+      return false;
+    }
+    *lo = interval.bottom + radius;
+    *hi = interval.top - radius;
+  } else {
+    if (interval.bottom <
+            std::numeric_limits<std::int64_t>::min() + radius ||
+        interval.top >
+            std::numeric_limits<std::int64_t>::max() - radius) {
+      atomicOr(status,
+               static_cast<std::uint32_t>(kMorphCoordinateOverflow));
+      return false;
+    }
+    *lo = interval.bottom - radius;
+    *hi = interval.top + radius;
+  }
+  return *lo < *hi;
+}
+
+__device__ bool current_transformed_interval(
+    const DeviceBandView &source, std::uint32_t source_slab,
+    std::uint32_t *cursor, std::int64_t radius, bool erosion,
+    std::int64_t *lo, std::int64_t *hi, std::uint32_t *status)
+{
+  const std::uint32_t count = source.slab_counts[source_slab];
+  const std::uint64_t offset = source.slab_offsets[source_slab];
+  while (*cursor < count) {
+    if (transformed_interval(
+            source.intervals[offset + *cursor], radius, erosion,
+            lo, hi, status)) {
+      return true;
+    }
+    ++*cursor;
+  }
+  return false;
+}
+
+__device__ void publish_morph_interval(
+    std::int64_t lo, std::int64_t hi, std::uint32_t output_slab,
+    StripInterval *output, std::uint64_t *count)
+{
+  if (output) {
+    output[*count] = {lo, hi, output_slab, 0};
+  }
+  ++*count;
+}
+
+__device__ std::uint64_t visit_dilated_intervals(
+    const DeviceBandView &source, std::uint32_t first_source,
+    std::uint32_t last_source, std::int64_t radius,
+    std::uint32_t output_slab, StripInterval *output,
+    std::uint32_t *status)
+{
+  std::uint32_t cursors[kMorphMaxActiveSlabs];
+  const std::uint32_t active = last_source - first_source;
+  for (std::uint32_t index = 0; index < active; ++index) {
+    cursors[index] = 0;
+  }
+
+  bool have_accumulator = false;
+  std::int64_t accumulator_lo = 0;
+  std::int64_t accumulator_hi = 0;
+  std::uint64_t output_count = 0;
+
+  while (true) {
+    std::uint32_t selected = active;
+    std::int64_t selected_lo = 0;
+    std::int64_t selected_hi = 0;
+    for (std::uint32_t index = 0; index < active; ++index) {
+      std::int64_t lo = 0;
+      std::int64_t hi = 0;
+      if (!current_transformed_interval(
+              source, first_source + index, &cursors[index], radius,
+              false, &lo, &hi, status)) {
+        continue;
+      }
+      if (selected == active || lo < selected_lo ||
+          (lo == selected_lo && hi < selected_hi)) {
+        selected = index;
+        selected_lo = lo;
+        selected_hi = hi;
+      }
+    }
+    if (selected == active) break;
+    ++cursors[selected];
+
+    if (!have_accumulator) {
+      accumulator_lo = selected_lo;
+      accumulator_hi = selected_hi;
+      have_accumulator = true;
+    } else if (selected_lo <= accumulator_hi) {
+      accumulator_hi = max(accumulator_hi, selected_hi);
+    } else {
+      publish_morph_interval(
+          accumulator_lo, accumulator_hi, output_slab, output,
+          &output_count);
+      accumulator_lo = selected_lo;
+      accumulator_hi = selected_hi;
+    }
+  }
+
+  if (have_accumulator) {
+    publish_morph_interval(
+        accumulator_lo, accumulator_hi, output_slab, output,
+        &output_count);
+  }
+  return output_count;
+}
+
+__device__ std::uint64_t visit_eroded_intervals(
+    const DeviceBandView &source, std::uint32_t first_source,
+    std::uint32_t last_source, std::int64_t radius,
+    std::uint32_t output_slab, StripInterval *output,
+    std::uint32_t *status)
+{
+  std::uint32_t cursors[kMorphMaxActiveSlabs];
+  const std::uint32_t active = last_source - first_source;
+  for (std::uint32_t index = 0; index < active; ++index) {
+    cursors[index] = 0;
+  }
+
+  bool have_accumulator = false;
+  std::int64_t accumulator_lo = 0;
+  std::int64_t accumulator_hi = 0;
+  std::uint64_t output_count = 0;
+
+  while (true) {
+    std::int64_t intersection_lo =
+        std::numeric_limits<std::int64_t>::min();
+    std::int64_t intersection_hi =
+        std::numeric_limits<std::int64_t>::max();
+    std::int64_t current_hi[kMorphMaxActiveSlabs];
+    for (std::uint32_t index = 0; index < active; ++index) {
+      std::int64_t lo = 0;
+      std::int64_t hi = 0;
+      if (!current_transformed_interval(
+              source, first_source + index, &cursors[index], radius,
+              true, &lo, &hi, status)) {
+        if (have_accumulator) {
+          publish_morph_interval(
+              accumulator_lo, accumulator_hi, output_slab, output,
+              &output_count);
+        }
+        return output_count;
+      }
+      intersection_lo = max(intersection_lo, lo);
+      intersection_hi = min(intersection_hi, hi);
+      current_hi[index] = hi;
+    }
+
+    if (intersection_lo < intersection_hi) {
+      if (!have_accumulator) {
+        accumulator_lo = intersection_lo;
+        accumulator_hi = intersection_hi;
+        have_accumulator = true;
+      } else if (intersection_lo <= accumulator_hi) {
+        accumulator_hi = max(accumulator_hi, intersection_hi);
+      } else {
+        publish_morph_interval(
+            accumulator_lo, accumulator_hi, output_slab, output,
+            &output_count);
+        accumulator_lo = intersection_lo;
+        accumulator_hi = intersection_hi;
+      }
+    }
+
+    for (std::uint32_t index = 0; index < active; ++index) {
+      if (current_hi[index] == intersection_hi) {
+        ++cursors[index];
+      }
+    }
+  }
+}
+
+__device__ std::uint64_t visit_morph_intervals(
+    const DeviceBandView &source, const std::int64_t *output_xs,
+    std::uint32_t output_slab, std::int64_t radius, bool erosion,
+    StripInterval *output, std::uint32_t *status,
+    std::uint32_t max_active_slabs,
+    std::uint64_t max_source_visits_per_band,
+    unsigned long long *source_visits,
+    std::uint32_t *observed_max_active)
+{
+  const std::int64_t midpoint2 =
+      output_xs[output_slab] + output_xs[output_slab + 1];
+  const std::int64_t lower2 = midpoint2 - 2 * radius;
+  const std::int64_t upper2 = midpoint2 + 2 * radius;
+  const std::uint32_t first_source = first_intersecting_slab(
+      source.xs, source.x_slabs, lower2);
+  const std::uint32_t last_source = first_nonintersecting_slab(
+      source.xs, source.x_slabs, upper2);
+  if (last_source < first_source) {
+    atomicOr(status,
+             static_cast<std::uint32_t>(kMorphOutputInvariant));
+    return 0;
+  }
+  const std::uint32_t active = last_source - first_source;
+  if (observed_max_active) {
+    atomicMax(observed_max_active, active);
+  }
+  if (active > max_active_slabs ||
+      active > kMorphMaxActiveSlabs) {
+    atomicOr(status,
+             static_cast<std::uint32_t>(kMorphTooManyActiveSlabs));
+    return 0;
+  }
+
+  std::uint64_t visits = 0;
+  for (std::uint32_t slab = first_source; slab < last_source; ++slab) {
+    visits += source.slab_counts[slab];
+  }
+  if (source_visits) {
+    atomicAdd(source_visits, static_cast<unsigned long long>(visits));
+  }
+  if (visits > max_source_visits_per_band) {
+    atomicOr(status, static_cast<std::uint32_t>(kMorphWorkCapacity));
+    return 0;
+  }
+  if (!active) return 0;
+
+  return erosion
+             ? visit_eroded_intervals(
+                   source, first_source, last_source, radius,
+                   output_slab, output, status)
+             : visit_dilated_intervals(
+                   source, first_source, last_source, radius,
+                   output_slab, output, status);
+}
+
+__global__ void count_morph_intervals_kernel(
+    DeviceBandView source, const std::int64_t *output_xs,
+    std::uint32_t output_slabs, std::int64_t radius, bool erosion,
+    std::uint32_t max_active_slabs,
+    std::uint64_t max_source_visits_per_band,
+    std::uint32_t *output_counts, std::uint32_t *status,
+    unsigned long long *source_visits,
+    std::uint32_t *observed_max_active)
+{
+  for (std::uint64_t output_slab =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       output_slab < output_slabs;
+       output_slab +=
+           static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const std::uint64_t count = visit_morph_intervals(
+        source, output_xs, static_cast<std::uint32_t>(output_slab),
+        radius, erosion, nullptr, status, max_active_slabs,
+        max_source_visits_per_band, source_visits,
+        observed_max_active);
+    if (count > std::numeric_limits<std::uint32_t>::max()) {
+      atomicOr(status,
+               static_cast<std::uint32_t>(
+                   kMorphPerSlabCountOverflow));
+      output_counts[output_slab] = 0;
+    } else {
+      output_counts[output_slab] =
+          static_cast<std::uint32_t>(count);
+    }
+  }
+}
+
+__global__ void emit_morph_intervals_kernel(
+    DeviceBandView source, const std::int64_t *output_xs,
+    std::uint32_t output_slabs, std::int64_t radius, bool erosion,
+    std::uint32_t max_active_slabs,
+    std::uint64_t max_source_visits_per_band,
+    const std::uint64_t *output_offsets,
+    const std::uint32_t *output_counts, StripInterval *output,
+    std::uint32_t *status)
+{
+  for (std::uint64_t output_slab =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       output_slab < output_slabs;
+       output_slab +=
+           static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const std::uint64_t count = visit_morph_intervals(
+        source, output_xs, static_cast<std::uint32_t>(output_slab),
+        radius, erosion, output + output_offsets[output_slab], status,
+        max_active_slabs, max_source_visits_per_band, nullptr, nullptr);
+    if (count != output_counts[output_slab]) {
+      atomicOr(status,
+               static_cast<std::uint32_t>(kMorphEmitMismatch));
+    }
+  }
+}
+
+__global__ void validate_morph_intervals_kernel(
+    const StripInterval *intervals, std::uint64_t interval_count,
+    const std::uint64_t *slab_offsets,
+    const std::uint32_t *slab_counts, std::uint32_t x_slabs,
+    std::uint32_t *status)
+{
+  for (std::uint64_t index =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       index < interval_count;
+       index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const StripInterval interval = intervals[index];
+    if (interval.slab >= x_slabs ||
+        interval.bottom >= interval.top ||
+        index < slab_offsets[interval.slab] ||
+        index >= slab_offsets[interval.slab] +
+                     slab_counts[interval.slab]) {
+      atomicOr(status,
+               static_cast<std::uint32_t>(kMorphOutputInvariant));
+      continue;
+    }
+    if (index > slab_offsets[interval.slab]) {
+      const StripInterval previous = intervals[index - 1];
+      if (previous.slab != interval.slab ||
+          previous.top >= interval.bottom) {
+        atomicOr(status,
+                 static_cast<std::uint32_t>(
+                     kMorphOutputInvariant));
+      }
+    }
+  }
+}
+
+void sample_morph_memory(MorphMetrics *metrics)
+{
+  std::size_t free_bytes = 0;
+  std::size_t total_bytes = 0;
+  cuda_require(cudaMemGetInfo(&free_bytes, &total_bytes),
+               "morph cudaMemGetInfo");
+  if (!metrics->device_total_bytes) {
+    metrics->device_total_bytes = total_bytes;
+    metrics->device_free_begin_bytes = free_bytes;
+    metrics->device_free_low_bytes = free_bytes;
+  } else {
+    metrics->device_free_low_bytes =
+        std::min<std::uint64_t>(
+            metrics->device_free_low_bytes, free_bytes);
+  }
+}
+
+std::string morph_status_message(std::uint32_t status)
+{
+  std::ostringstream stream;
+  if (status & kMorphTooManyActiveSlabs)
+    stream << "active-slab capacity;";
+  if (status & kMorphCoordinateOverflow)
+    stream << "coordinate overflow;";
+  if (status & kMorphPerSlabCountOverflow)
+    stream << "per-slab count overflow;";
+  if (status & kMorphWorkCapacity) stream << "work capacity;";
+  if (status & kMorphEmitMismatch) stream << "emit mismatch;";
+  if (status & kMorphOutputInvariant)
+    stream << "output invariant;";
+  return stream.str();
+}
+
+DeviceBandSet morph_bands(
+    const DeviceBandView &source, std::int64_t radius, bool erosion,
+    const MorphLimits &limits, MorphMetrics *metrics)
+{
+  const auto begin = Clock::now();
+  if (radius < 0) {
+    throw std::runtime_error("negative morphology radius");
+  }
+  if (!source.x_slabs || !source.xs || !source.slab_offsets ||
+      !source.slab_counts) {
+    throw std::runtime_error("invalid empty source band view");
+  }
+  if (source.x_slabs >
+      std::numeric_limits<std::uint32_t>::max() / 2 - 1) {
+    throw std::runtime_error("shifted endpoint capacity");
+  }
+
+  std::int64_t source_low = 0;
+  std::int64_t source_high = 0;
+  cuda_require(
+      cudaMemcpy(&source_low, source.xs, sizeof(source_low),
+                 cudaMemcpyDeviceToHost),
+      "source lower x D2H");
+  cuda_require(
+      cudaMemcpy(
+          &source_high, source.xs + source.x_slabs,
+          sizeof(source_high), cudaMemcpyDeviceToHost),
+      "source upper x D2H");
+  if (source_low >
+          std::numeric_limits<std::int64_t>::max() - radius ||
+      source_low <
+          std::numeric_limits<std::int64_t>::min() + radius ||
+      source_high >
+          std::numeric_limits<std::int64_t>::max() - radius ||
+      source_high <
+          std::numeric_limits<std::int64_t>::min() + radius ||
+      source_low <
+          std::numeric_limits<std::int64_t>::min() / 2 + radius ||
+      source_high >
+          std::numeric_limits<std::int64_t>::max() / 2 - radius) {
+    throw std::runtime_error("x coordinate overflow");
+  }
+
+  DeviceBandSet result;
+  sample_morph_memory(metrics);
+  const std::uint64_t source_endpoint_count =
+      static_cast<std::uint64_t>(source.x_slabs) + 1;
+  result.xs.resize(2 * source_endpoint_count);
+  shifted_x_endpoints_kernel<<<
+      launch_blocks(source_endpoint_count), kThreads>>>(
+      source.xs, source_endpoint_count, radius,
+      thrust::raw_pointer_cast(result.xs.data()));
+  cuda_require(cudaGetLastError(), "shift morphology x endpoints");
+  thrust::sort(thrust::device, result.xs.begin(), result.xs.end());
+  result.xs.erase(
+      thrust::unique(
+          thrust::device, result.xs.begin(), result.xs.end()),
+      result.xs.end());
+
+  if (erosion) {
+    if (source_low > source_high - radius ||
+        source_low + radius >= source_high - radius) {
+      result.xs.clear();
+      metrics->elapsed_ms = elapsed_ms(begin, Clock::now());
+      return result;
+    }
+    const std::int64_t carrier_low = source_low + radius;
+    const std::int64_t carrier_high = source_high - radius;
+    result.xs.erase(
+        thrust::remove_if(
+            thrust::device, result.xs.begin(), result.xs.end(),
+            OutsideCarrier{carrier_low, carrier_high}),
+        result.xs.end());
+  }
+  if (result.xs.size() < 2) {
+    result.xs.clear();
+    metrics->elapsed_ms = elapsed_ms(begin, Clock::now());
+    return result;
+  }
+
+  const std::uint64_t output_slabs_u64 = result.xs.size() - 1;
+  if (output_slabs_u64 > limits.max_output_slabs ||
+      output_slabs_u64 >
+          std::numeric_limits<std::uint32_t>::max()) {
+    throw std::runtime_error("output slab capacity");
+  }
+  const std::uint32_t output_slabs =
+      static_cast<std::uint32_t>(output_slabs_u64);
+  result.slab_counts.assign(output_slabs, 0);
+  result.slab_offsets.resize(output_slabs);
+  thrust::device_vector<std::uint32_t> status(1, 0);
+  thrust::device_vector<unsigned long long> source_visits(1, 0);
+  thrust::device_vector<std::uint32_t> observed_max_active(1, 0);
+  sample_morph_memory(metrics);
+
+  count_morph_intervals_kernel<<<
+      launch_blocks(output_slabs), kThreads>>>(
+      source, thrust::raw_pointer_cast(result.xs.data()),
+      output_slabs, radius, erosion, limits.max_active_slabs,
+      limits.max_source_visits_per_band,
+      thrust::raw_pointer_cast(result.slab_counts.data()),
+      thrust::raw_pointer_cast(status.data()),
+      thrust::raw_pointer_cast(source_visits.data()),
+      thrust::raw_pointer_cast(observed_max_active.data()));
+  cuda_require(cudaGetLastError(), "count morphology intervals");
+  thrust::exclusive_scan(
+      thrust::device, result.slab_counts.begin(),
+      result.slab_counts.end(), result.slab_offsets.begin(),
+      std::uint64_t{0});
+
+  std::uint64_t final_offset = 0;
+  std::uint32_t final_count = 0;
+  cuda_require(
+      cudaMemcpy(
+          &final_offset,
+          thrust::raw_pointer_cast(result.slab_offsets.data()) +
+              output_slabs - 1,
+          sizeof(final_offset), cudaMemcpyDeviceToHost),
+      "last morphology offset D2H");
+  cuda_require(
+      cudaMemcpy(
+          &final_count,
+          thrust::raw_pointer_cast(result.slab_counts.data()) +
+              output_slabs - 1,
+          sizeof(final_count), cudaMemcpyDeviceToHost),
+      "last morphology count D2H");
+  if (final_offset >
+      std::numeric_limits<std::uint64_t>::max() - final_count) {
+    throw std::runtime_error("output interval count overflow");
+  }
+  const std::uint64_t output_intervals = final_offset + final_count;
+
+  std::uint32_t host_status = copy_device_status(status);
+  cuda_require(
+      cudaMemcpy(
+          &metrics->source_visits,
+          thrust::raw_pointer_cast(source_visits.data()),
+          sizeof(metrics->source_visits), cudaMemcpyDeviceToHost),
+      "morph source visits D2H");
+  cuda_require(
+      cudaMemcpy(
+          &metrics->max_active_slabs,
+          thrust::raw_pointer_cast(observed_max_active.data()),
+          sizeof(metrics->max_active_slabs), cudaMemcpyDeviceToHost),
+      "morph max active D2H");
+  if (metrics->source_visits > limits.max_total_source_visits) {
+    host_status |= kMorphWorkCapacity;
+  }
+  if (host_status) {
+    throw std::runtime_error(
+        "morph count failed: " + morph_status_message(host_status));
+  }
+  if (output_intervals > limits.max_output_intervals) {
+    throw std::runtime_error("output interval capacity");
+  }
+
+  result.intervals.resize(output_intervals);
+  sample_morph_memory(metrics);
+  if (output_intervals) {
+    emit_morph_intervals_kernel<<<
+        launch_blocks(output_slabs), kThreads>>>(
+        source, thrust::raw_pointer_cast(result.xs.data()),
+        output_slabs, radius, erosion, limits.max_active_slabs,
+        limits.max_source_visits_per_band,
+        thrust::raw_pointer_cast(result.slab_offsets.data()),
+        thrust::raw_pointer_cast(result.slab_counts.data()),
+        thrust::raw_pointer_cast(result.intervals.data()),
+        thrust::raw_pointer_cast(status.data()));
+    cuda_require(cudaGetLastError(), "emit morphology intervals");
+    validate_morph_intervals_kernel<<<
+        launch_blocks(output_intervals), kThreads>>>(
+        thrust::raw_pointer_cast(result.intervals.data()),
+        output_intervals,
+        thrust::raw_pointer_cast(result.slab_offsets.data()),
+        thrust::raw_pointer_cast(result.slab_counts.data()),
+        output_slabs, thrust::raw_pointer_cast(status.data()));
+    cuda_require(cudaGetLastError(), "validate morphology intervals");
+  }
+  cuda_require(cudaDeviceSynchronize(), "morphology synchronize");
+  host_status = copy_device_status(status);
+  if (host_status) {
+    throw std::runtime_error(
+        "morph emit failed: " + morph_status_message(host_status));
+  }
+  sample_morph_memory(metrics);
+  metrics->output_intervals = output_intervals;
+  metrics->elapsed_ms = elapsed_ms(begin, Clock::now());
+  return result;
+}
+
+__global__ void emit_horizontal_band_boundary_kernel(
+    const StripInterval *intervals, std::uint64_t interval_count,
+    const std::int64_t *xs, DirectedSegmentI64 *segments)
+{
+  for (std::uint64_t index =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       index < interval_count;
+       index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const StripInterval interval = intervals[index];
+    const std::int64_t left = xs[interval.slab];
+    const std::int64_t right = xs[interval.slab + 1];
+    segments[2 * index] = {
+        interval.bottom, left, right, -1, SegmentAxis::horizontal};
+    segments[2 * index + 1] = {
+        interval.top, left, right, 1, SegmentAxis::horizontal};
+  }
+}
+
+std::vector<DirectedSegmentI64> boundary_from_bands(
+    const DeviceBandSet &bands, std::uint64_t max_segments)
+{
+  const DeviceBandView view = bands.view();
+  if (!view.x_slabs || !view.interval_count) return {};
+  const std::uint64_t boundary_count =
+      static_cast<std::uint64_t>(view.x_slabs) + 1;
+  thrust::device_vector<std::uint64_t> vertical_counts(boundary_count);
+  thrust::device_vector<std::uint64_t> vertical_offsets(boundary_count);
+  count_vertical_xor_kernel<<<
+      launch_blocks(boundary_count), kThreads>>>(
+      view.intervals, view.slab_offsets, view.slab_counts,
+      view.x_slabs,
+      thrust::raw_pointer_cast(vertical_counts.data()));
+  cuda_require(cudaGetLastError(), "count morphology vertical boundary");
+  thrust::exclusive_scan(
+      thrust::device, vertical_counts.begin(), vertical_counts.end(),
+      vertical_offsets.begin(), std::uint64_t{0});
+
+  std::uint64_t final_offset = 0;
+  std::uint64_t final_count = 0;
+  cuda_require(
+      cudaMemcpy(
+          &final_offset,
+          thrust::raw_pointer_cast(vertical_offsets.data()) +
+              boundary_count - 1,
+          sizeof(final_offset), cudaMemcpyDeviceToHost),
+      "morph vertical offset D2H");
+  cuda_require(
+      cudaMemcpy(
+          &final_count,
+          thrust::raw_pointer_cast(vertical_counts.data()) +
+              boundary_count - 1,
+          sizeof(final_count), cudaMemcpyDeviceToHost),
+      "morph vertical count D2H");
+  if (final_offset >
+      std::numeric_limits<std::uint64_t>::max() - final_count) {
+    throw std::runtime_error("morph vertical boundary overflow");
+  }
+  const std::uint64_t vertical_count = final_offset + final_count;
+  if (view.interval_count >
+      (std::numeric_limits<std::uint64_t>::max() - vertical_count) / 2) {
+    throw std::runtime_error("morph boundary count overflow");
+  }
+  const std::uint64_t raw_count =
+      2 * view.interval_count + vertical_count;
+  if (raw_count > max_segments) {
+    throw std::runtime_error("morph boundary capacity");
+  }
+
+  thrust::device_vector<DirectedSegmentI64> raw(raw_count);
+  if (view.interval_count) {
+    emit_horizontal_band_boundary_kernel<<<
+        launch_blocks(view.interval_count), kThreads>>>(
+        view.intervals, view.interval_count, view.xs,
+        thrust::raw_pointer_cast(raw.data()));
+    cuda_require(cudaGetLastError(), "emit morph horizontal boundary");
+  }
+  thrust::device_vector<std::uint32_t> status(1, 0);
+  if (vertical_count) {
+    emit_vertical_xor_kernel<<<
+        launch_blocks(boundary_count), kThreads>>>(
+        view.intervals, view.slab_offsets, view.slab_counts,
+        view.x_slabs, view.xs,
+        thrust::raw_pointer_cast(vertical_counts.data()),
+        thrust::raw_pointer_cast(vertical_offsets.data()),
+        thrust::raw_pointer_cast(raw.data()) + 2 * view.interval_count,
+        thrust::raw_pointer_cast(status.data()));
+    cuda_require(cudaGetLastError(), "emit morph vertical boundary");
+  }
+  cuda_require(cudaDeviceSynchronize(), "morph boundary emit synchronize");
+  if (copy_device_status(status)) {
+    throw std::runtime_error("morph vertical boundary invariant");
+  }
+  canonicalize_device_segments(&raw);
+  cuda_require(
+      cudaDeviceSynchronize(), "morph boundary canonicalize synchronize");
+
+  std::vector<DirectedSegmentI64> host(raw.size());
+  if (!host.empty()) {
+    cuda_require(
+        cudaMemcpy(
+            host.data(), thrust::raw_pointer_cast(raw.data()),
+            host.size() * sizeof(DirectedSegmentI64),
+            cudaMemcpyDeviceToHost),
+        "morph boundary D2H");
+  }
+  return host;
+}
+
+enum class GateOperation
+{
+  erode,
+  dilate,
+  erode_then_dilate,
+};
+
+struct GateContext
+{
+  GateOperation operation = GateOperation::erode;
+  std::int64_t first_radius = 1;
+  std::int64_t second_radius = 0;
+  bool invoked = false;
+  MorphMetrics first_metrics;
+  MorphMetrics second_metrics;
+  std::vector<DirectedSegmentI64> boundary;
+};
+
+void gate_consume_strips(
+    const std::int64_t *xs, std::uint32_t x_slabs,
+    const StripInterval *intervals, std::uint64_t interval_count,
+    const std::uint64_t *slab_offsets,
+    const std::uint32_t *slab_counts, void *opaque)
+{
+  auto *context = static_cast<GateContext *>(opaque);
+  if (!context || context->invoked) {
+    throw std::runtime_error("resident callback state");
+  }
+  context->invoked = true;
+  if (!x_slabs) throw std::runtime_error("resident callback empty slabs");
+
+  std::uint64_t final_offset = 0;
+  std::uint32_t final_count = 0;
+  cuda_require(
+      cudaMemcpy(
+          &final_offset, slab_offsets + x_slabs - 1,
+          sizeof(final_offset), cudaMemcpyDeviceToHost),
+      "resident final offset D2H");
+  cuda_require(
+      cudaMemcpy(
+          &final_count, slab_counts + x_slabs - 1,
+          sizeof(final_count), cudaMemcpyDeviceToHost),
+      "resident final count D2H");
+  if (final_offset + final_count != interval_count) {
+    throw std::runtime_error("resident interval census mismatch");
+  }
+
+  const DeviceBandView source = {
+      xs, x_slabs, intervals, interval_count, slab_offsets, slab_counts};
+  const MorphLimits limits;
+  const bool first_erosion =
+      context->operation != GateOperation::dilate;
+  DeviceBandSet first = morph_bands(
+      source, context->first_radius, first_erosion, limits,
+      &context->first_metrics);
+  if (context->operation == GateOperation::erode_then_dilate) {
+    if (!first.x_slabs()) {
+      context->boundary.clear();
+      return;
+    }
+    DeviceBandSet second = morph_bands(
+        first.view(), context->second_radius, false, limits,
+        &context->second_metrics);
+    context->boundary = boundary_from_bands(
+        second, limits.max_output_intervals * 4);
+  } else {
+    context->boundary = boundary_from_bands(
+        first, limits.max_output_intervals * 4);
+  }
+}
+
+using Cell = std::pair<int, int>;
+using Cells = std::set<Cell>;
+
+Cells rasterize(const std::vector<RectI64> &rectangles)
+{
+  Cells cells;
+  for (const RectI64 &rectangle : rectangles) {
+    for (std::int64_t x = rectangle.left; x < rectangle.right; ++x) {
+      for (std::int64_t y = rectangle.bottom; y < rectangle.top; ++y) {
+        cells.emplace(static_cast<int>(x), static_cast<int>(y));
+      }
+    }
+  }
+  return cells;
+}
+
+Cells raster_dilate(const Cells &input, int radius)
+{
+  Cells result;
+  for (const Cell &cell : input) {
+    for (int dx = -radius; dx <= radius; ++dx) {
+      for (int dy = -radius; dy <= radius; ++dy) {
+        result.emplace(cell.first + dx, cell.second + dy);
+      }
+    }
+  }
+  return result;
+}
+
+Cells raster_erode(const Cells &input, int radius)
+{
+  Cells result;
+  for (const Cell &cell : input) {
+    bool keep = true;
+    for (int dx = -radius; dx <= radius && keep; ++dx) {
+      for (int dy = -radius; dy <= radius; ++dy) {
+        if (!input.count({cell.first + dx, cell.second + dy})) {
+          keep = false;
+          break;
+        }
+      }
+    }
+    if (keep) result.insert(cell);
+  }
+  return result;
+}
+
+std::vector<DirectedSegmentI64> raster_boundary(const Cells &cells)
+{
+  std::vector<DirectedSegmentI64> result;
+  result.reserve(cells.size() * 2);
+  for (const Cell &cell : cells) {
+    const std::int64_t x = cell.first;
+    const std::int64_t y = cell.second;
+    if (!cells.count({cell.first, cell.second - 1})) {
+      result.push_back(
+          {y, x, x + 1, -1, SegmentAxis::horizontal});
+    }
+    if (!cells.count({cell.first, cell.second + 1})) {
+      result.push_back(
+          {y + 1, x, x + 1, 1, SegmentAxis::horizontal});
+    }
+    if (!cells.count({cell.first - 1, cell.second})) {
+      result.push_back({x, y, y + 1, -1, SegmentAxis::vertical});
+    }
+    if (!cells.count({cell.first + 1, cell.second})) {
+      result.push_back({x + 1, y, y + 1, 1, SegmentAxis::vertical});
+    }
+  }
+  canonicalize_segments(&result);
+  return result;
+}
+
+std::string operation_name(GateOperation operation)
+{
+  if (operation == GateOperation::erode) return "erode";
+  if (operation == GateOperation::dilate) return "dilate";
+  return "erode-dilate";
+}
+
+void require_boundary_equal(
+    const std::string &name,
+    const std::vector<DirectedSegmentI64> &expected,
+    const std::vector<DirectedSegmentI64> &actual)
+{
+  if (expected.size() != actual.size()) {
+    std::ostringstream stream;
+    stream << name << ": boundary size expected=" << expected.size()
+           << " actual=" << actual.size();
+    throw std::runtime_error(stream.str());
+  }
+  for (std::size_t index = 0; index < expected.size(); ++index) {
+    const DirectedSegmentI64 &left = expected[index];
+    const DirectedSegmentI64 &right = actual[index];
+    if (left.fixed != right.fixed || left.lo != right.lo ||
+        left.hi != right.hi || left.side != right.side ||
+        left.axis != right.axis) {
+      throw std::runtime_error(
+          name + ": boundary mismatch index=" + std::to_string(index) +
+          " expected='" + segment_string(expected[index]) +
+          "' actual='" + segment_string(actual[index]) + "'");
+    }
+  }
+}
+
+void run_gate_case(
+    const std::string &name, const std::vector<RectI64> &rectangles,
+    GateOperation operation, int first_radius, int second_radius,
+    int device)
+{
+  Cells expected_cells = rasterize(rectangles);
+  if (operation == GateOperation::erode) {
+    expected_cells = raster_erode(expected_cells, first_radius);
+  } else if (operation == GateOperation::dilate) {
+    expected_cells = raster_dilate(expected_cells, first_radius);
+  } else {
+    expected_cells = raster_erode(expected_cells, first_radius);
+    expected_cells = raster_dilate(expected_cells, second_radius);
+  }
+  const std::vector<DirectedSegmentI64> expected =
+      raster_boundary(expected_cells);
+
+  GateContext context;
+  context.operation = operation;
+  context.first_radius = first_radius;
+  context.second_radius = second_radius;
+  ResidentStripHook hook;
+  hook.consume = gate_consume_strips;
+  hook.context = &context;
+  hook.stop_before_boundary = true;
+  Limits limits;
+  limits.max_slabs_per_rectangle = 4096;
+  const UnionOutput union_output =
+      gpu_union(rectangles, limits, device, &hook);
+  if (union_output.fallback) {
+    throw std::runtime_error(
+        name + ": union/callback fallback: " + union_output.message);
+  }
+  if (!context.invoked) {
+    throw std::runtime_error(name + ": resident callback not invoked");
+  }
+  require_boundary_equal(
+      name + "/" + operation_name(operation), expected,
+      context.boundary);
+}
+
+std::vector<std::pair<std::string, std::vector<RectI64>>>
+morphology_fixtures()
+{
+  return {
+      {"single", {{0, 0, 7, 6}}},
+      {"threshold-width-1", {{0, 0, 1, 7}}},
+      {"threshold-width-2", {{0, 0, 2, 7}}},
+      {"threshold-width-3", {{0, 0, 3, 7}}},
+      {"threshold-width-4", {{0, 0, 4, 7}}},
+      {"threshold-width-5", {{0, 0, 5, 7}}},
+      {"gap-2", {{0, 0, 3, 4}, {5, 0, 8, 4}}},
+      {"gap-3", {{0, 0, 3, 4}, {6, 0, 9, 4}}},
+      {"corner-touch", {{0, 0, 3, 3}, {3, 3, 6, 6}}},
+      {"edge-touch", {{0, 0, 3, 4}, {3, 1, 7, 5}}},
+      {"notch", {{0, 0, 9, 3}, {0, 3, 3, 9}, {6, 3, 9, 9}}},
+      {"hole",
+       {{0, 0, 9, 2}, {0, 7, 9, 9}, {0, 2, 2, 7},
+        {7, 2, 9, 7}}},
+      {"thin-bridge",
+       {{0, 0, 4, 6}, {8, 0, 12, 6}, {4, 2, 8, 3}}},
+      {"overlap",
+       {{-4, -2, 5, 3}, {-1, -5, 3, 7}, {2, 1, 8, 5}}},
+  };
+}
+
+void run_differential_gate(int device)
+{
+  std::uint64_t checks = 0;
+  for (const auto &fixture : morphology_fixtures()) {
+    run_gate_case(
+        fixture.first + "-e1", fixture.second,
+        GateOperation::erode, 1, 0, device);
+    ++checks;
+    run_gate_case(
+        fixture.first + "-d1", fixture.second,
+        GateOperation::dilate, 1, 0, device);
+    ++checks;
+    run_gate_case(
+        fixture.first + "-e1d2", fixture.second,
+        GateOperation::erode_then_dilate, 1, 2, device);
+    ++checks;
+    run_gate_case(
+        fixture.first + "-e2", fixture.second,
+        GateOperation::erode, 2, 0, device);
+    ++checks;
+  }
+
+  std::mt19937 generator(0x4d325f39);
+  std::uniform_int_distribution<int> coordinate(-8, 7);
+  std::uniform_int_distribution<int> extent(1, 7);
+  std::uniform_int_distribution<int> rectangle_count(1, 9);
+  for (int trial = 0; trial < 64; ++trial) {
+    std::vector<RectI64> rectangles;
+    const int count = rectangle_count(generator);
+    for (int index = 0; index < count; ++index) {
+      const int left = coordinate(generator);
+      const int bottom = coordinate(generator);
+      rectangles.push_back(
+          {left, bottom, left + extent(generator),
+           bottom + extent(generator)});
+    }
+    const std::string prefix = "random-" + std::to_string(trial);
+    run_gate_case(
+        prefix + "-e1", rectangles, GateOperation::erode, 1, 0,
+        device);
+    ++checks;
+    run_gate_case(
+        prefix + "-d2", rectangles, GateOperation::dilate, 2, 0,
+        device);
+    ++checks;
+    run_gate_case(
+        prefix + "-e1d2", rectangles,
+        GateOperation::erode_then_dilate, 1, 2, device);
+    ++checks;
+  }
+  std::cout << "M2_RESIDENT_MORPH_DIFFERENTIAL PASS checks=" << checks
+            << " directed=" << morphology_fixtures().size()
+            << " random=64\n";
+}
+
+void print_morph_help(const char *program)
+{
+  std::cout << "Usage: " << program << " --self-test [--device N]\n";
+}
+
+}  // namespace
+
+int main(int argc, char **argv)
+{
+  try {
+    int device = 0;
+    bool self_test = false;
+    for (int index = 1; index < argc; ++index) {
+      const std::string argument = argv[index];
+      if (argument == "--self-test") {
+        self_test = true;
+      } else if (argument == "--device" && index + 1 < argc) {
+        device = std::stoi(argv[++index]);
+      } else if (argument == "--help" || argument == "-h") {
+        print_morph_help(argv[0]);
+        return 0;
+      } else {
+        throw std::runtime_error("unknown argument: " + argument);
+      }
+    }
+    if (!self_test) {
+      print_morph_help(argv[0]);
+      return 2;
+    }
+    cuda_require(cudaSetDevice(device), "morph cudaSetDevice");
+    run_differential_gate(device);
+    return 0;
+  } catch (const std::exception &error) {
+    std::cerr << "M2_RESIDENT_MORPH_ERROR " << error.what() << "\n";
+    return 1;
+  }
+}
