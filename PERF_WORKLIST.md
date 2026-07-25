@@ -1779,9 +1779,28 @@ not just wall time.
             `b0e94aa57f09535c1b283e47838fba1830ffd17f9f88c9e15c9c2512aff95f56`.
             Median candidate live work was 2.690 s of hierarchy lowering plus
             1.712 s in the fused backend, or 4.402 s total.  This is an owner
-            result; do not book a full-launch reduction until the new switch is
-            enabled and attested in a matched balanced full A/B.  Evidence:
+            result; at this checkpoint no full-launch reduction was booked
+            until the new switch could be enabled and attested in a matched
+            balanced full A/B.  Evidence:
             `.scratchpad/cuda-runs/contact4-active-union-production.EYGJ9E/`.
+
+            Commits `4b6d3c3` and `30c787e` subsequently add explicit
+            fused-on/off balanced-full selection and a reproducible,
+            order-balanced `N=3` owner gate.  Two opposite-order eleven-owner
+            full pairs changed mean wall **94.97 -> 89.66 seconds: 5.31 real
+            seconds / 5.59% less full-launch wall time** (`N=2` per lane;
+            controls 94.57/95.37 s, candidates 89.76/89.56 s).  Mean
+            `implant_contact` owner wall changed **89.928 -> 59.750 seconds:
+            30.178 real seconds / 33.56% less owner wall time** under the full
+            launch.  As predicted by the max-of-owners roofline,
+            `antenna_m1_m2` became the new pole at 84.703 s mean, bounding the
+            immediately realizable full saving.  All four merged reports
+            retained canonical SHA-256
+            `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+            Evidence:
+            `.scratchpad/cuda-runs/contact4-active-union-balanced-full-ab.imX5zk/`
+            and
+            `.scratchpad/cuda-runs/contact4-active-union-balanced-full-ab.W503DQ/`.
 
       - [x] **Fuse IMPLANT.1 and IMPLANT.2 as one atomic CUDA transaction:**
         rewrite only the two fixed projection-separation expressions into one
