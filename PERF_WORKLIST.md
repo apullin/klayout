@@ -2719,8 +2719,18 @@ not just wall time.
         violations or uncertainty and empty F270.  CUDA backend time was
         3.289 s, including 0.173 s of morphology; host lowering plus backend
         was 8.290 s, with a sampled 2.70-GB device-free floor.  This proves the
-        production data path, but the isolated owner and full-launch wall
-        remain unbooked until their canonical report gates pass.
+        production data path.
+
+        The isolated production owner is now accepted.  Three feature-off
+        controls took 57.85, 58.06, and 57.86 s; three exact CUDA candidates
+        took 13.51, 13.41, and 13.41 s.  Means are 57.923 and 13.443 s:
+        **44.480 real seconds / 76.79% less isolated-owner wall** (`N=3+3`).
+        All six reports have canonical SHA-256
+        `f3101bc757edfb1e8c8ca6da3020944a4f9becae55f28dc8ceec6e8064441bc4`,
+        and runtime artifacts were pinned before and after the cohort.  The
+        full-launch reduction remains unbooked until the 14-owner composition
+        confirms the expected handoff from `m1_via_class` to the roughly
+        57-second antenna roof.
         Evidence:
         `.scratchpad/cuda-runs/m1-resident-morph-census.N7asak`,
         `.scratchpad/cuda-runs/m1-resident-morph-production.bkyw9Z`, and
@@ -2733,7 +2743,9 @@ not just wall time.
         `.scratchpad/cuda-runs/m1-resident-morph-probe.d1s5lV`,
         `.scratchpad/cuda-runs/m1-resident-morph-production.G6jiQt`,
         `.scratchpad/cuda-runs/m1-resident-morph-probe.PfmaaX`, and
-        `.scratchpad/cuda-runs/m1-resident-morph-probe.p7APt3`.
+        `.scratchpad/cuda-runs/m1-resident-morph-probe.p7APt3`,
+        `.scratchpad/cuda-runs/m1-resident-morph-production.f7WLA4`, and
+        `.scratchpad/cuda-runs/m1-resident-morph-owner-ab.LUmhBx`.
 
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
