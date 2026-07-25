@@ -41,10 +41,13 @@ struct DB_PUBLIC CudaM2FlatUnionStats
 /**
  * Outcome and bounded telemetry for one raw-M2-to-flat-union transaction.
  *
- * Complete means that the exact raw physical M2 scene was accepted by the
- * optional backend, its validated boundary was materialized as an owned
- * merged flat Region, and the fixed M2.5-.9 suffix was certified empty.
- * It does not certify M2.1, M2.2, M2.4, VIA2, or any other design rule.
+ * Complete means only that the exact raw physical M2 scene was accepted by
+ * the optional backend and that its validated boundary was materialized as
+ * an owned merged flat Region.  It does not certify M2.4, VIA2, or any other
+ * design rule.
+ *
+ * This exported returned-by-value layout is frozen.  Additive outputs belong
+ * in separate size-checked POD records and distinct function symbols.
  */
 struct DB_PUBLIC CudaM2FlatUnionAttempt
 {
@@ -79,14 +82,31 @@ struct DB_PUBLIC CudaM2FlatUnionAttempt
   uint64_t raw_segment_count;
   uint64_t boundary_segment_count;
   uint64_t boundary_fnv64;
-  uint32_t suffix_certified_empty_mask;
-  uint64_t suffix_total_ns;
   uint64_t lowering_ns;
   uint64_t backend_ns;
   uint64_t materialize_ns;
   uint64_t live_total_ns;
   CudaM2FlatUnionStats flat_stats;
   std::string message;
+};
+
+/**
+ * Additive M2.5-.9 clean certificate for the explicitly suffixed flat-union
+ * transaction.  Keeping this size-checked POD separate preserves the
+ * established returned-by-value CudaM2FlatUnionAttempt binary layout.
+ */
+struct DB_PUBLIC CudaM2FlatUnionSuffixCertificate
+{
+  enum
+  {
+    FormatVersion = 1
+  };
+
+  uint32_t format_version;
+  uint32_t struct_size;
+  uint32_t certified_empty_mask;
+  uint32_t reserved;
+  uint64_t total_ns;
 };
 
 /**
@@ -115,12 +135,26 @@ DB_PUBLIC bool cuda_m2_union_boundary_to_flat_region (
  * The request uses the fixed, production-qualified bounded capacities of the
  * first exact Manhattan-union backend.  Every non-Complete outcome leaves
  * "flat_union" unchanged and requires the caller to use the pristine CPU
- * path.  Complete additionally carries the exact all-five-bit M2.5-.9 empty
- * certificate; M2.1, M2.2, and M2.4 remain unchecked.
+ * path.  Even Complete is a geometry result, not a design-rule certificate.
  */
 DB_PUBLIC CudaM2FlatUnionAttempt cuda_m2_raw_manhattan_try_flat_union (
   const db::DeepLayer &raw_metal2, db::Region &flat_union,
   int32_t device = 0);
+
+/**
+ * Try the same owned flat-union transaction while also requiring an exact
+ * all-five-bit M2.5-.9 empty certificate.
+ *
+ * The caller must provide an exact-size certificate record.  It is
+ * initialized before capability or hierarchy access, remains zero-certified
+ * on every non-Complete outcome, and is published only after the boundary is
+ * independently materialized.  M2.1, M2.2, and M2.4 remain unchecked.
+ */
+DB_PUBLIC CudaM2FlatUnionAttempt
+cuda_m2_raw_manhattan_try_flat_union_with_suffix (
+  const db::DeepLayer &raw_metal2, db::Region &flat_union,
+  CudaM2FlatUnionSuffixCertificate *certificate,
+  uint32_t certificate_struct_size, int32_t device = 0);
 
 } // namespace db
 

@@ -11,7 +11,9 @@
 #include "dbLayerProperties.h"
 #include "dbRegion.h"
 
+#include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <string>
 
@@ -145,19 +147,37 @@ int main (int argc, char **argv)
   }
 
   const std::string expected (argv [3]);
+  const bool legacy_api =
+    std::string (argv [2]) == "legacy_opcode";
+  const bool bad_host_size =
+    std::string (argv [2]) == "suffix_bad_host_size";
   db::Region output (db::Box (100, 200, 300, 400));
   db::CudaM2FlatUnionAttempt attempt;
+  db::CudaM2FlatUnionSuffixCertificate certificate = {};
+  if (bad_host_size) {
+    std::memset (&certificate, 0xa5, sizeof (certificate));
+  }
   if (expected == "disabled" || expected == "host") {
     const db::DeepLayer deliberately_invalid;
-    attempt = db::cuda_m2_raw_manhattan_try_flat_union (
-      deliberately_invalid, output);
+    attempt = legacy_api
+      ? db::cuda_m2_raw_manhattan_try_flat_union (
+          deliberately_invalid, output)
+      : db::cuda_m2_raw_manhattan_try_flat_union_with_suffix (
+          deliberately_invalid, output, &certificate,
+          bad_host_size ? sizeof (certificate) - 1
+                        : sizeof (certificate));
   } else {
     db::DeepShapeStore store ("TOP", 0.0005);
     db::Region seed (db::Box (0, 0, 10, 20));
     db::DeepLayer raw_m2 = store.create_from_flat (seed, false);
     raw_m2.layout ().set_properties (
       raw_m2.layer (), db::LayerProperties (13, 0));
-    attempt = db::cuda_m2_raw_manhattan_try_flat_union (raw_m2, output);
+    attempt = legacy_api
+      ? db::cuda_m2_raw_manhattan_try_flat_union (raw_m2, output)
+      : db::cuda_m2_raw_manhattan_try_flat_union_with_suffix (
+          raw_m2, output, &certificate,
+          bad_host_size ? sizeof (certificate) - 1
+                        : sizeof (certificate));
   }
 
   const int run_count = counters.run_count ();
@@ -171,19 +191,45 @@ int main (int argc, char **argv)
         attempt.flat_stats.segment_count == 4 &&
         attempt.flat_stats.contour_count == 1 &&
         attempt.flat_stats.vertex_count == 4 &&
-        attempt.suffix_certified_empty_mask ==
-          KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY &&
-        attempt.suffix_total_ns == 500
+        (legacy_api
+           ? certificate.certified_empty_mask == 0 &&
+             certificate.total_ns == 0
+           : certificate.certified_empty_mask ==
+               KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY &&
+             certificate.total_ns == 500)
       : output.count () == size_t (1) &&
-        output.bbox () == db::Box (100, 200, 300, 400) &&
-        attempt.suffix_certified_empty_mask == 0 &&
-        attempt.suffix_total_ns == 0;
+        output.bbox () == db::Box (100, 200, 300, 400);
+  const unsigned char *certificate_bytes =
+    reinterpret_cast<const unsigned char *> (&certificate);
+  const bool certificate_untouched =
+    std::find_if (
+      certificate_bytes, certificate_bytes + sizeof (certificate),
+      [] (unsigned char value) { return value != 0xa5; }) ==
+        certificate_bytes + sizeof (certificate);
+  const bool certificate_ok =
+    legacy_api
+      ? certificate.certified_empty_mask == 0 &&
+        certificate.total_ns == 0
+      : bad_host_size
+        ? certificate_untouched
+        : certificate.format_version ==
+            db::CudaM2FlatUnionSuffixCertificate::FormatVersion &&
+          certificate.struct_size == sizeof (certificate) &&
+          certificate.reserved == 0 &&
+          (complete
+             ? certificate.certified_empty_mask ==
+                 KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY &&
+               certificate.total_ns == 500
+             : certificate.certified_empty_mask == 0 &&
+               certificate.total_ns == 0);
   const bool counters_ok =
-    (expected == "disabled" || expected == "host")
+    (expected == "disabled" || expected == "host" || bad_host_size)
       ? run_count == 0 && release_count == 0
       : run_count == 1 && release_count == 1;
   const bool telemetry_ok =
-    expected == "disabled"
+    bad_host_size
+      ? attempt.lowering_ns == 0 && attempt.boundary_segment_count == 0
+    : expected == "disabled"
       ? attempt.lowering_ns == 0 && attempt.boundary_segment_count == 0
       : expected == "host"
         ? attempt.boundary_segment_count == 0 &&
@@ -198,7 +244,7 @@ int main (int argc, char **argv)
         attempt.edge_count == 4;
   const bool good =
     expected_disposition (attempt, expected) &&
-    output_ok && counters_ok && telemetry_ok;
+    output_ok && certificate_ok && counters_ok && telemetry_ok;
   close_counters (counters);
   if (! good) {
     std::cerr
@@ -210,8 +256,8 @@ int main (int argc, char **argv)
       << " release_count=" << release_count
       << " contexts=" << attempt.context_count
       << " segments=" << attempt.boundary_segment_count
-      << " suffix_mask=" << attempt.suffix_certified_empty_mask
-      << " suffix_ns=" << attempt.suffix_total_ns
+      << " suffix_mask=" << certificate.certified_empty_mask
+      << " suffix_ns=" << certificate.total_ns
       << " message=" << attempt.message << "\n";
     return 1;
   }

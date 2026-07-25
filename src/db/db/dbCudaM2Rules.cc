@@ -50,7 +50,6 @@ CudaM2FlatUnionAttempt::CudaM2FlatUnionAttempt ()
     flat_edge_count (0), rectangle_count (0), x_slab_count (0),
     membership_count (0), event_count (0), strip_interval_count (0),
     raw_segment_count (0), boundary_segment_count (0), boundary_fnv64 (0),
-    suffix_certified_empty_mask (0), suffix_total_ns (0),
     lowering_ns (0), backend_ns (0), materialize_ns (0),
     live_total_ns (0), flat_stats (), message ()
 {
@@ -330,6 +329,31 @@ static_assert (
     offsetof (klayout_cuda_spatial_m1_width_space_edge_v1, y2),
   "raw M2 edge ABI layout mismatch");
 
+static_assert (
+  offsetof (CudaM2FlatUnionAttempt, disposition) == 0 &&
+  offsetof (CudaM2FlatUnionAttempt, fallback_flags) == 4 &&
+  offsetof (CudaM2FlatUnionAttempt, device_flags) == 8 &&
+  offsetof (CudaM2FlatUnionAttempt, context_count) == 16 &&
+  offsetof (CudaM2FlatUnionAttempt, boundary_fnv64) == 128 &&
+  offsetof (CudaM2FlatUnionAttempt, lowering_ns) == 136 &&
+  offsetof (CudaM2FlatUnionAttempt, backend_ns) == 144 &&
+  offsetof (CudaM2FlatUnionAttempt, materialize_ns) == 152 &&
+  offsetof (CudaM2FlatUnionAttempt, live_total_ns) == 160 &&
+  offsetof (CudaM2FlatUnionAttempt, flat_stats) == 168 &&
+  offsetof (CudaM2FlatUnionAttempt, message) == 200 &&
+  sizeof (CudaM2FlatUnionAttempt) ==
+    offsetof (CudaM2FlatUnionAttempt, message) + sizeof (std::string),
+  "returned-by-value CudaM2FlatUnionAttempt ABI layout changed");
+
+static_assert (
+  sizeof (CudaM2FlatUnionSuffixCertificate) == 24 &&
+  offsetof (CudaM2FlatUnionSuffixCertificate, format_version) == 0 &&
+  offsetof (CudaM2FlatUnionSuffixCertificate, struct_size) == 4 &&
+  offsetof (CudaM2FlatUnionSuffixCertificate, certified_empty_mask) == 8 &&
+  offsetof (CudaM2FlatUnionSuffixCertificate, reserved) == 12 &&
+  offsetof (CudaM2FlatUnionSuffixCertificate, total_ns) == 16,
+  "additive flat M2 suffix certificate ABI layout changed");
+
 uint64_t elapsed_ns (
   const std::chrono::steady_clock::time_point &begin,
   const std::chrono::steady_clock::time_point &end)
@@ -341,13 +365,13 @@ uint64_t elapsed_ns (
 
 void make_m2_union_request (
   const CudaM2RawManhattanScene &scene, int32_t device,
+  uint32_t opcode,
   klayout_cuda_spatial_m2_union_request_v1 &request)
 {
   std::memset (&request, 0, sizeof (request));
   request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
   request.struct_size = sizeof (request);
-  request.opcode =
-    KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_M25_9_EMPTY;
+  request.opcode = opcode;
   request.option_flags =
     KLAYOUT_CUDA_SPATIAL_M2_UNION_QUALIFIED_OPTIONS;
   request.format_version = scene.format_version;
@@ -576,11 +600,29 @@ bool cuda_m2_union_boundary_to_flat_region (
   return false;
 }
 
-CudaM2FlatUnionAttempt cuda_m2_raw_manhattan_try_flat_union (
+static CudaM2FlatUnionAttempt
+cuda_m2_raw_manhattan_try_flat_union_impl (
   const db::DeepLayer &raw_metal2, db::Region &flat_union,
+  CudaM2FlatUnionSuffixCertificate *certificate,
+  uint32_t certificate_struct_size, bool suffix_requested,
   int32_t device)
 {
   CudaM2FlatUnionAttempt attempt;
+
+  if (suffix_requested) {
+    if (! certificate ||
+        certificate_struct_size !=
+          sizeof (CudaM2FlatUnionSuffixCertificate)) {
+      attempt.disposition = CudaM2FlatUnionAttempt::InvalidResult;
+      attempt.message =
+        "host supplied an incompatible flat M2 suffix certificate record";
+      return attempt;
+    }
+    std::memset (certificate, 0, sizeof (*certificate));
+    certificate->format_version =
+      CudaM2FlatUnionSuffixCertificate::FormatVersion;
+    certificate->struct_size = sizeof (*certificate);
+  }
 
   //  This check deliberately precedes every access to raw_metal2.  A host
   //  must not pay for hierarchy lowering when the complete optional
@@ -623,7 +665,12 @@ CudaM2FlatUnionAttempt cuda_m2_raw_manhattan_try_flat_union (
     }
 
     klayout_cuda_spatial_m2_union_request_v1 request;
-    make_m2_union_request (scene, device, request);
+    make_m2_union_request (
+      scene, device,
+      suffix_requested
+        ? KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_M25_9_EMPTY
+        : KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY,
+      request);
     const std::chrono::steady_clock::time_point lower_end =
       std::chrono::steady_clock::now ();
     attempt.lowering_ns = elapsed_ns (begin, lower_end);
@@ -631,8 +678,10 @@ CudaM2FlatUnionAttempt cuda_m2_raw_manhattan_try_flat_union (
     backend_called = true;
     CudaM2SuffixCertificate suffix;
     const CudaM2UnionAttempt backend =
-      cuda_spatial_try_m2_union_with_certificate (
-        request, &suffix, sizeof (suffix));
+      suffix_requested
+        ? cuda_spatial_try_m2_union_with_certificate (
+            request, &suffix, sizeof (suffix))
+        : cuda_spatial_try_m2_union (request);
     copy_backend_telemetry (backend, attempt);
 
     switch (backend.disposition) {
@@ -660,12 +709,13 @@ CudaM2FlatUnionAttempt cuda_m2_raw_manhattan_try_flat_union (
         elapsed_ns (begin, std::chrono::steady_clock::now ());
       return attempt;
     }
-    if (suffix.format_version != CudaM2SuffixCertificate::FormatVersion ||
-        suffix.struct_size != sizeof (suffix) ||
-        suffix.certified_empty_mask !=
-          KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY ||
-        suffix.reserved != 0 || suffix.total_ns == 0 ||
-        suffix.total_ns > backend.total_ns) {
+    if (suffix_requested &&
+        (suffix.format_version != CudaM2SuffixCertificate::FormatVersion ||
+         suffix.struct_size != sizeof (suffix) ||
+         suffix.certified_empty_mask !=
+           KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY ||
+         suffix.reserved != 0 || suffix.total_ns == 0 ||
+         suffix.total_ns > backend.total_ns)) {
       attempt.disposition = CudaM2FlatUnionAttempt::InvalidResult;
       attempt.message =
         "complete M2 boundary lacked the exact M2.5-.9 empty certificate";
@@ -698,11 +748,15 @@ CudaM2FlatUnionAttempt cuda_m2_raw_manhattan_try_flat_union (
     }
 
     attempt.flat_stats = flat_stats;
-    attempt.suffix_certified_empty_mask =
-      suffix.certified_empty_mask;
-    attempt.suffix_total_ns = suffix.total_ns;
     attempt.disposition = CudaM2FlatUnionAttempt::Complete;
     attempt.message.clear ();
+    //  Publish the additive proof only after every operation which can turn
+    //  this transaction into a conservative non-Complete outcome.
+    if (suffix_requested) {
+      certificate->certified_empty_mask =
+        suffix.certified_empty_mask;
+      certificate->total_ns = suffix.total_ns;
+    }
     return attempt;
   } catch (const std::exception &ex) {
     attempt.disposition =
@@ -724,9 +778,33 @@ CudaM2FlatUnionAttempt cuda_m2_raw_manhattan_try_flat_union (
       //  Diagnostics cannot turn a fail-closed result into an exception.
     }
   }
+  if (suffix_requested) {
+    certificate->certified_empty_mask = 0;
+    certificate->reserved = 0;
+    certificate->total_ns = 0;
+  }
   attempt.live_total_ns =
     elapsed_ns (begin, std::chrono::steady_clock::now ());
   return attempt;
+}
+
+CudaM2FlatUnionAttempt cuda_m2_raw_manhattan_try_flat_union (
+  const db::DeepLayer &raw_metal2, db::Region &flat_union,
+  int32_t device)
+{
+  return cuda_m2_raw_manhattan_try_flat_union_impl (
+    raw_metal2, flat_union, 0, 0, false, device);
+}
+
+CudaM2FlatUnionAttempt
+cuda_m2_raw_manhattan_try_flat_union_with_suffix (
+  const db::DeepLayer &raw_metal2, db::Region &flat_union,
+  CudaM2FlatUnionSuffixCertificate *certificate,
+  uint32_t certificate_struct_size, int32_t device)
+{
+  return cuda_m2_raw_manhattan_try_flat_union_impl (
+    raw_metal2, flat_union, certificate, certificate_struct_size,
+    true, device);
 }
 
 } // namespace db

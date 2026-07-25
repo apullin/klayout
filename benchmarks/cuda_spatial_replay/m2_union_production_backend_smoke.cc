@@ -24,6 +24,11 @@
 #include <utility>
 #include <vector>
 
+extern "C" void
+klayout_cuda_spatial_m2_union_test_fault_v1(std::uint32_t selector);
+extern "C" std::uint64_t
+klayout_cuda_spatial_m2_union_test_counter_v1(std::uint32_t selector);
+
 namespace {
 
 using Context = klayout_cuda_spatial_m1_width_space_context_v1;
@@ -541,6 +546,19 @@ int main()
     klayout_cuda_spatial_release_m2_union_boundary_v1(
         &suffix_result);
 
+    require(
+        klayout_cuda_spatial_m2_union_test_counter_v1(3) == 0,
+        "M2 backend retained ownership before the fault gate");
+    klayout_cuda_spatial_m2_union_test_fault_v1(1);
+    Scene suffix_fault = make_rectangle_scene(200, 500);
+    expect_decline(
+        suffix_fault, "post-suffix output-validation fault",
+        KLAYOUT_CUDA_SPATIAL_ERROR,
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT);
+    require(
+        klayout_cuda_spatial_m2_union_test_counter_v1(3) == 0,
+        "post-suffix fault leaked an M2 boundary allocation");
+
     Scene suffix_hit = make_rectangle_scene(600, 600);
     expect_decline(
         suffix_hit, "M2 suffix F270 hit",
@@ -636,8 +654,9 @@ int main()
         << expected.size()
         << " fnv64="
         << boundary_fnv64(expected.data(), expected.size())
-        << " adversarial=11 release_idempotent=1"
-        << " suffix_clean=1 suffix_hit_fallback=1\n";
+        << " adversarial=12 release_idempotent=1"
+        << " suffix_clean=1 suffix_fault_zeroed=1"
+        << " suffix_hit_fallback=1\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr

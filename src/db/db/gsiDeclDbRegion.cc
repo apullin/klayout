@@ -1363,7 +1363,9 @@ static uint64_t cuda_m2_elapsed_ns (
 }
 
 static void cuda_m2_flat_union_telemetry (
-  const db::CudaM2FlatUnionAttempt &attempt, const char *disposition,
+  const db::CudaM2FlatUnionAttempt &attempt,
+  const db::CudaM2FlatUnionSuffixCertificate &suffix,
+  const char *disposition,
   uint64_t via2_materialize_ns, uint64_t bridge_live_ns,
   const std::string &reason, uint64_t via2_polygon_count = 0,
   uint64_t via2_property_polygon_count = 0)
@@ -1386,8 +1388,8 @@ static void cuda_m2_flat_union_telemetry (
       << " bridge_live_ms=" << double (bridge_live_ns) * ns_to_ms
       << " raw_segments=" << attempt.raw_segment_count
       << " boundary_segments=" << attempt.boundary_segment_count
-      << " suffix_mask=" << attempt.suffix_certified_empty_mask
-      << " suffix_ms=" << double (attempt.suffix_total_ns) * ns_to_ms
+      << " suffix_mask=" << suffix.certified_empty_mask
+      << " suffix_ms=" << double (suffix.total_ns) * ns_to_ms
       << " contours=" << attempt.flat_stats.contour_count
       << " vertices=" << attempt.flat_stats.vertex_count
       << " via2_polygons=" << via2_polygon_count
@@ -1482,13 +1484,17 @@ static bool cuda_m2_flat_union (
   const std::chrono::steady_clock::time_point bridge_begin =
     std::chrono::steady_clock::now ();
   db::CudaM2FlatUnionAttempt attempt;
+  db::CudaM2FlatUnionSuffixCertificate suffix = {
+    db::CudaM2FlatUnionSuffixCertificate::FormatVersion,
+    sizeof (db::CudaM2FlatUnionSuffixCertificate), 0, 0, 0
+  };
 
   //  Capability must precede all input-region and hierarchy access.  In
   //  particular, a stock host or an incomplete run/release backend does not
   //  materialize VIA2 or even inspect either delegate.
   if (! db::cuda_spatial_m2_union_requested ()) {
     cuda_m2_flat_union_telemetry (
-      attempt, "capability-unavailable", 0,
+      attempt, suffix, "capability-unavailable", 0,
       cuda_m2_elapsed_ns (
         bridge_begin, std::chrono::steady_clock::now ()),
       "complete M2 union run/release capability is unavailable");
@@ -1506,7 +1512,7 @@ static bool cuda_m2_flat_union (
       reason = "M2 live flat operands require distinct non-null inputs and outputs";
       attempt.disposition = db::CudaM2FlatUnionAttempt::HostDeclined;
       cuda_m2_flat_union_telemetry (
-        attempt, "host-declined", 0,
+        attempt, suffix, "host-declined", 0,
         cuda_m2_elapsed_ns (
           bridge_begin, std::chrono::steady_clock::now ()),
         reason);
@@ -1517,7 +1523,7 @@ static bool cuda_m2_flat_union (
     if (! cuda_m2_parse_device (device, reason)) {
       attempt.disposition = db::CudaM2FlatUnionAttempt::HostDeclined;
       cuda_m2_flat_union_telemetry (
-        attempt, "host-declined", 0,
+        attempt, suffix, "host-declined", 0,
         cuda_m2_elapsed_ns (
           bridge_begin, std::chrono::steady_clock::now ()),
         reason);
@@ -1532,7 +1538,7 @@ static bool cuda_m2_flat_union (
           metal2, via2, deep_metal2, deep_via2, reason)) {
       attempt.disposition = db::CudaM2FlatUnionAttempt::HostDeclined;
       cuda_m2_flat_union_telemetry (
-        attempt, "host-declined", 0,
+        attempt, suffix, "host-declined", 0,
         cuda_m2_elapsed_ns (
           bridge_begin, std::chrono::steady_clock::now ()),
         reason);
@@ -1540,14 +1546,32 @@ static bool cuda_m2_flat_union (
     }
 
     db::Region candidate_metal2;
-    attempt = db::cuda_m2_raw_manhattan_try_flat_union (
-      deep_metal2->deep_layer (), candidate_metal2, device);
-    if (attempt.disposition != db::CudaM2FlatUnionAttempt::Complete) {
+    attempt = db::cuda_m2_raw_manhattan_try_flat_union_with_suffix (
+      deep_metal2->deep_layer (), candidate_metal2,
+      &suffix, sizeof (suffix), device);
+    const bool suffix_complete =
+      suffix.format_version ==
+        db::CudaM2FlatUnionSuffixCertificate::FormatVersion &&
+      suffix.struct_size == sizeof (suffix) &&
+      suffix.certified_empty_mask ==
+        KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY &&
+      suffix.reserved == 0 && suffix.total_ns > 0 &&
+      suffix.total_ns <= attempt.backend_ns;
+    if (attempt.disposition != db::CudaM2FlatUnionAttempt::Complete ||
+        ! suffix_complete) {
+      if (attempt.disposition == db::CudaM2FlatUnionAttempt::Complete) {
+        reason =
+          "complete M2 boundary lacked the exact additive suffix certificate";
+      }
       cuda_m2_flat_union_telemetry (
-        attempt, cuda_m2_flat_union_disposition (attempt.disposition), 0,
+        attempt, suffix,
+        attempt.disposition == db::CudaM2FlatUnionAttempt::Complete
+          ? "invalid-suffix-certificate"
+          : cuda_m2_flat_union_disposition (attempt.disposition),
+        0,
         cuda_m2_elapsed_ns (
           bridge_begin, std::chrono::steady_clock::now ()),
-        attempt.message);
+        reason.empty () ? attempt.message : reason);
       return false;
     }
 
@@ -1613,7 +1637,7 @@ static bool cuda_m2_flat_union (
       const uint64_t via2_ns = cuda_m2_elapsed_ns (
         via2_begin, std::chrono::steady_clock::now ());
       cuda_m2_flat_union_telemetry (
-        attempt, "via2-materialize-declined", via2_ns,
+        attempt, suffix, "via2-materialize-declined", via2_ns,
         cuda_m2_elapsed_ns (
           bridge_begin, std::chrono::steady_clock::now ()),
         reason, via2_polygon_count, via2_property_polygon_count);
@@ -1628,7 +1652,7 @@ static bool cuda_m2_flat_union (
     flat_metal2->swap (candidate_metal2);
     flat_via2->swap (candidate_via2);
     cuda_m2_flat_union_telemetry (
-      attempt, "complete", via2_ns,
+      attempt, suffix, "complete", via2_ns,
       cuda_m2_elapsed_ns (
         bridge_begin, std::chrono::steady_clock::now ()),
       std::string (), via2_polygon_count,
@@ -1645,7 +1669,7 @@ static bool cuda_m2_flat_union (
   }
 
   cuda_m2_flat_union_telemetry (
-    attempt,
+    attempt, suffix,
     attempt.disposition == db::CudaM2FlatUnionAttempt::Complete
       ? "via2-materialize-declined"
       : "host-declined",

@@ -674,6 +674,12 @@ if(KLAYOUT_QMAKE_BUILD_DIR)
       live_caps complete
     COMMAND m2_union_live_transaction_smoke
       $<TARGET_FILE:m2_union_contract_backend_full>
+      legacy_opcode complete
+    COMMAND m2_union_live_transaction_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      suffix_bad_host_size invalid
+    COMMAND m2_union_live_transaction_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
       fallback fallback
     COMMAND m2_union_live_transaction_smoke
       $<TARGET_FILE:m2_union_contract_backend_full>

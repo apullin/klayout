@@ -154,6 +154,25 @@ klayout_cuda_spatial_run_m2_union_boundary_v1 (
   const char *mode = std::getenv ("KLAYOUT_CUDA_M2_UNION_FAKE_MODE");
   mode = mode ? mode : "ok";
 
+  if ((std::strcmp (mode, "legacy_opcode") == 0 &&
+       request->opcode !=
+         KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY) ||
+      ((std::strcmp (mode, "live_caps") == 0 ||
+        std::strcmp (mode, "deck_clean") == 0) &&
+       request->opcode !=
+         KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_M25_9_EMPTY)) {
+    result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+    result->disposition = KLAYOUT_CUDA_SPATIAL_M2_UNION_UNCERTAIN;
+    result->segments = 0;
+    result->segment_count = 0;
+    result->certified_empty_mask = 0;
+    result->certificate_reserved = 0;
+    result->suffix_total_ns = 0;
+    std::strncpy (
+      result->message, "host selected the wrong M2 union opcode",
+      sizeof (result->message) - 1);
+    return KLAYOUT_CUDA_SPATIAL_ERROR;
+  }
   if (std::strcmp (mode, "backend_throw") == 0) {
     throw std::runtime_error ("synthetic M2 union backend exception");
   }

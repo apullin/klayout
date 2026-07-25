@@ -18,7 +18,9 @@
 #include "tlUnitTest.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <vector>
@@ -27,6 +29,24 @@ namespace
 {
 
 typedef klayout_cuda_spatial_m2_union_segment_v1 Segment;
+
+static_assert (
+  offsetof (db::CudaM2FlatUnionAttempt, disposition) == 0 &&
+  offsetof (db::CudaM2FlatUnionAttempt, context_count) == 16 &&
+  offsetof (db::CudaM2FlatUnionAttempt, boundary_fnv64) == 128 &&
+  offsetof (db::CudaM2FlatUnionAttempt, lowering_ns) == 136 &&
+  offsetof (db::CudaM2FlatUnionAttempt, flat_stats) == 168 &&
+  offsetof (db::CudaM2FlatUnionAttempt, message) == 200 &&
+  sizeof (db::CudaM2FlatUnionAttempt) ==
+    offsetof (db::CudaM2FlatUnionAttempt, message) +
+      sizeof (std::string),
+  "legacy flat M2 attempt ABI layout changed");
+static_assert (
+  sizeof (db::CudaM2FlatUnionSuffixCertificate) == 24 &&
+  offsetof (
+    db::CudaM2FlatUnionSuffixCertificate, certified_empty_mask) == 8 &&
+  offsetof (db::CudaM2FlatUnionSuffixCertificate, total_ns) == 16,
+  "flat M2 suffix certificate ABI layout changed");
 
 bool segment_less (const Segment &first, const Segment &second)
 {
@@ -347,9 +367,52 @@ TEST(6_MissingCapabilityPrecedesRawGeometryAccess)
     attempt.disposition, db::CudaM2FlatUnionAttempt::Disabled);
   EXPECT_EQ (attempt.lowering_ns, uint64_t (0));
   EXPECT_EQ (attempt.boundary_segment_count, uint64_t (0));
-  EXPECT_EQ (attempt.suffix_certified_empty_mask, uint32_t (0));
-  EXPECT_EQ (attempt.suffix_total_ns, uint64_t (0));
   EXPECT_EQ (attempt.message, "");
+  EXPECT_EQ (output.count (), size_t (1));
+  EXPECT_EQ (output.bbox (), db::Box (100, 200, 300, 400));
+
+  db::Region suffix_output (db::Box (100, 200, 300, 400));
+  db::CudaM2FlatUnionSuffixCertificate certificate;
+  std::memset (&certificate, 0xa5, sizeof (certificate));
+  const db::CudaM2FlatUnionAttempt suffix_attempt =
+    db::cuda_m2_raw_manhattan_try_flat_union_with_suffix (
+      deliberately_invalid, suffix_output, &certificate,
+      sizeof (certificate));
+  EXPECT_EQ (
+    suffix_attempt.disposition, db::CudaM2FlatUnionAttempt::Disabled);
+  EXPECT_EQ (
+    certificate.format_version,
+    uint32_t (db::CudaM2FlatUnionSuffixCertificate::FormatVersion));
+  EXPECT_EQ (certificate.struct_size, uint32_t (sizeof (certificate)));
+  EXPECT_EQ (certificate.certified_empty_mask, uint32_t (0));
+  EXPECT_EQ (certificate.reserved, uint32_t (0));
+  EXPECT_EQ (certificate.total_ns, uint64_t (0));
+  EXPECT_EQ (suffix_output.count (), size_t (1));
+  EXPECT_EQ (
+    suffix_output.bbox (), db::Box (100, 200, 300, 400));
+}
+
+TEST(7_SuffixRecordSizeFailsBeforeGeometryAccess)
+{
+  const db::DeepLayer deliberately_invalid;
+  db::Region output (db::Box (100, 200, 300, 400));
+  db::CudaM2FlatUnionSuffixCertificate certificate;
+  std::memset (&certificate, 0xa5, sizeof (certificate));
+  const db::CudaM2FlatUnionAttempt attempt =
+    db::cuda_m2_raw_manhattan_try_flat_union_with_suffix (
+      deliberately_invalid, output, &certificate,
+      sizeof (certificate) - 1);
+  EXPECT_EQ (
+    attempt.disposition, db::CudaM2FlatUnionAttempt::InvalidResult);
+  EXPECT_EQ (attempt.lowering_ns, uint64_t (0));
+  const unsigned char *bytes =
+    reinterpret_cast<const unsigned char *> (&certificate);
+  EXPECT_EQ (
+    std::find_if (
+      bytes, bytes + sizeof (certificate),
+      [] (unsigned char value) { return value != 0xa5; }) ==
+        bytes + sizeof (certificate),
+    true);
   EXPECT_EQ (output.count (), size_t (1));
   EXPECT_EQ (output.bbox (), db::Box (100, 200, 300, 400));
 }

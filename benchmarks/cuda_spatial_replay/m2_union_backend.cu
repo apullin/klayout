@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -339,6 +340,12 @@ AllocationCounters &allocation_counters()
   return counters;
 }
 
+std::atomic<std::uint32_t> &m2_test_fault()
+{
+  static std::atomic<std::uint32_t> fault{0};
+  return fault;
+}
+
 std::uint64_t elapsed_ns(Clock::time_point begin, Clock::time_point end)
 {
   return static_cast<std::uint64_t>(
@@ -375,6 +382,13 @@ void set_message(Result *result, const char *message)
   std::snprintf(
       result->message, sizeof(result->message), "%s",
       message ? message : "");
+}
+
+void clear_suffix_certificate(Result *result) noexcept
+{
+  result->certified_empty_mask = 0;
+  result->certificate_reserved = 0;
+  result->suffix_total_ns = 0;
 }
 
 void set_message(Contact4Result *result, const char *message)
@@ -1984,6 +1998,11 @@ void fill_success_result(
         static_cast<std::uint32_t>(source.axis)};
   }
   validate_output(request, lowered, output, portable);
+  if (m2_test_fault().exchange(
+          0, std::memory_order_acq_rel) == 1) {
+    throw std::runtime_error(
+        "synthetic failure after M2 output validation");
+  }
 
   std::unique_ptr<Segment[]> storage(
       new Segment[portable.size()]);
@@ -2696,6 +2715,8 @@ int run_request(const Request *request, Result *result)
     const bool suffix_requested =
         request->opcode ==
         KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_M25_9_EMPTY;
+    std::uint32_t certified_empty_mask = 0;
+    std::uint64_t suffix_total_ns = 0;
     const bool qualified_production_suffix =
         suffix_requested &&
         qualified_production_m2_suffix_scene(*request);
@@ -2766,13 +2787,14 @@ int run_request(const Request *request, Result *result)
         result->total_ns = elapsed_ns(total_begin, Clock::now());
         return KLAYOUT_CUDA_SPATIAL_FALLBACK;
       }
-      result->certified_empty_mask =
+      certified_empty_mask =
           KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY;
-      result->suffix_total_ns =
-          milliseconds_to_ns(suffix.total_ms);
+      suffix_total_ns = milliseconds_to_ns(suffix.total_ms);
     }
 
     fill_success_result(*request, lowered, output, result);
+    result->certified_empty_mask = certified_empty_mask;
+    result->suffix_total_ns = suffix_total_ns;
     result->fallback_flags =
         KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE;
     result->device_flags = 0;
@@ -2787,6 +2809,7 @@ int run_request(const Request *request, Result *result)
     result->total_ns = elapsed_ns(total_begin, Clock::now());
     return KLAYOUT_CUDA_SPATIAL_OK;
   } catch (const M2Decline &decline) {
+    clear_suffix_certificate(result);
     result->fallback_flags = decline.fallback_flags();
     result->disposition =
         KLAYOUT_CUDA_SPATIAL_M2_UNION_UNCERTAIN;
@@ -2798,6 +2821,7 @@ int run_request(const Request *request, Result *result)
     result->total_ns = elapsed_ns(total_begin, Clock::now());
     return result->status;
   } catch (const std::exception &error) {
+    clear_suffix_certificate(result);
     result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
     result->fallback_flags =
         KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
@@ -2805,6 +2829,7 @@ int run_request(const Request *request, Result *result)
         KLAYOUT_CUDA_SPATIAL_M2_UNION_UNCERTAIN;
     set_message(result, error.what());
   } catch (...) {
+    clear_suffix_certificate(result);
     result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
     result->fallback_flags =
         KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
@@ -2924,4 +2949,16 @@ klayout_cuda_spatial_m2_union_test_counter_v1(std::uint32_t selector)
   case 3: return owned_allocations().size();
   default: return std::numeric_limits<std::uint64_t>::max();
   }
+}
+
+/*
+ * Benchmark-only one-shot fault injection.  Selector 1 throws after the
+ * suffix proof and canonical-output validation, but before output ownership
+ * or certificate publication.  It is intentionally absent from the public
+ * backend header and exists only to lock the fail-closed DSO contract.
+ */
+extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT void
+klayout_cuda_spatial_m2_union_test_fault_v1(std::uint32_t selector)
+{
+  m2_test_fault().store(selector, std::memory_order_release);
 }
