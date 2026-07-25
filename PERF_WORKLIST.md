@@ -637,7 +637,8 @@ not just wall time.
      full-launch wall reduction.
 
      - [x] **Compose the proven prune with the balanced CUDA pipeline:**
-       commit `a683042` adds an independent `--prune-poly2` launcher flag.
+       CUDA-branch commit `04ccb83` (from integration commit `a683042`) adds
+       an independent `--prune-poly2` launcher flag.
        The CUDA rewrites run first, the exact POLY.2 source contract runs once,
        and only then do the antenna and CONTACT.6 owner transforms run.  With
        the flag absent, the generated current deck is byte-identical to the
