@@ -2092,6 +2092,27 @@ not just wall time.
                 remain open.  Commit `08ac9a2`; the post-cherry main contract
                 gate passed all eleven cases.
 
+              - [x] **Prove the exact resident F90/F270 morphology engine:**
+                248 directed and deterministic-random differential cases pass
+                edge-for-edge against an independent CPU raster oracle.  On
+                the production M2 union, CUDA reproduces all 4,254,384 pinned
+                stock F90 boundary edges (FNV-64
+                `2057677162565968634`), retains exactly eight edges at least
+                600 DBU long, and proves the subsequent 269-DBU erosion empty.
+                A fresh four-run qualification measured about 0.569 s for the
+                resident morphology callback.  The fully charged compact load,
+                host expansion, union, and resident morphology path is about
+                2.028 s versus 18.586 s for the matched prior union, stitch,
+                and stock F90/F270 geometry subtotal: approximately **16.558
+                real seconds / 89.09% less**.  The callback alone is **14.122
+                seconds / 96.13% less** than stock F90/F270.  This closes the
+                exact morphology-engine proof, not the live rule certificate:
+                the final 180-DBU spacing check on the eight long edges, the
+                raw live serializer/DSO seam, and the complete atomic owner
+                remain open.  Qualification commits `8893e6f`, `45a4457`,
+                `ad18b4d`, and accounting correction `a62d700` on
+                `m2-resident-f90`.
+
           Cache immutable merged M1/M2 geometry (or an equivalent canonical
           raw-layer scene), then the shared 273-cell/849,265-context hierarchy,
           cell-local layer templates, and device indexes.  Bind every reuse to
