@@ -2647,7 +2647,7 @@ not just wall time.
         rediscovered.  Evidence:
         `.scratchpad/cuda-runs/antenna-diode-owner-ab.Huytst`.
 
-      - [ ] **Port the exact resident morphology transaction from M2 to raw
+      - [x] **Port the exact resident morphology transaction from M2 to raw
         M1 for `m1_via_class`:** M1.5-.9 use the same F90/F270 morphology
         grammar already proved for M2.5-.9.  Bind a distinct raw-M1 digest
         domain and return only the exact scalar disposition through a
@@ -2728,9 +2728,24 @@ not just wall time.
         All six reports have canonical SHA-256
         `f3101bc757edfb1e8c8ca6da3020944a4f9becae55f28dc8ceec6e8064441bc4`,
         and runtime artifacts were pinned before and after the cohort.  The
-        full-launch reduction remains unbooked until the 14-owner composition
-        confirms the expected handoff from `m1_via_class` to the roughly
-        57-second antenna roof.
+        The exact 14-owner composition confirms the expected roofline handoff.
+        Three full launches took 62.74, 63.04, and 63.04 s, averaging
+        **62.940 s**.  Against the immediately preceding accepted 63.647-second
+        mean, this is **0.707 real seconds / 1.111% less full-launch wall**
+        (`N=3`, cross-run cumulative comparison).  Every merged report retained
+        canonical SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`,
+        every CUDA transaction certified, and `m1_via_class` fell to
+        13.29--13.31 s.  The new full-run roof is the independent antenna
+        cluster at roughly 57.5--58.0 s, so the much larger isolated M1 saving
+        cannot reduce end-to-end wall further until antenna is shortened.
+
+        The production composition uses 13 concurrent jobs and queues the
+        high-memory raw-M1 owner last.  A 14-job screen overlapped its union
+        staging with other resident transactions, drove the 10-GiB device to a
+        136-MiB free floor, and correctly triggered fail-closed CONTACT.4
+        fallback.  The memory-aware schedule leaves roughly 2.47 GiB free at
+        the raw-M1 union floor while keeping every other transaction certified.
         Evidence:
         `.scratchpad/cuda-runs/m1-resident-morph-census.N7asak`,
         `.scratchpad/cuda-runs/m1-resident-morph-production.bkyw9Z`, and
@@ -2744,8 +2759,9 @@ not just wall time.
         `.scratchpad/cuda-runs/m1-resident-morph-production.G6jiQt`,
         `.scratchpad/cuda-runs/m1-resident-morph-probe.PfmaaX`, and
         `.scratchpad/cuda-runs/m1-resident-morph-probe.p7APt3`,
-        `.scratchpad/cuda-runs/m1-resident-morph-production.f7WLA4`, and
-        `.scratchpad/cuda-runs/m1-resident-morph-owner-ab.LUmhBx`.
+        `.scratchpad/cuda-runs/m1-resident-morph-production.f7WLA4`,
+        `.scratchpad/cuda-runs/m1-resident-morph-owner-ab.LUmhBx`, and
+        `.scratchpad/cuda-runs/composed-14-owner-full.hxV33P`.
 
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
