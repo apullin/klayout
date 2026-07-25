@@ -15,6 +15,7 @@
 #include "dbArray.h"
 #include "dbCell.h"
 #include "dbCudaActive3Digest.h"
+#include "dbCudaM1WidthSpace.h"
 #include "dbCudaSpatialBackend.h"
 #include "dbDeepShapeStore.h"
 #include "dbLayout.h"
@@ -27,6 +28,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -34,6 +36,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <typeinfo>
 #include <utility>
 #include <vector>
@@ -57,6 +60,21 @@ const int64_t qualified_contact4_distance = 10;
 const int qualified_contact4_active_layer = 1;
 const int qualified_contact4_contact_layer = 10;
 const int qualified_contact4_datatype = 0;
+const uint64_t contact4_union_max_rectangles = UINT64_C (32000000);
+const uint64_t contact4_union_max_x_slabs = UINT64_C (32000000);
+const uint64_t contact4_union_max_memberships = UINT64_C (128000000);
+const uint64_t contact4_union_max_events = UINT64_C (256000000);
+const uint64_t contact4_union_max_raw_segments = UINT64_C (32000000);
+const uint64_t contact4_union_max_boundary_segments = UINT64_C (16000000);
+const uint64_t contact4_union_max_contact_edges = UINT64_C (64000000);
+const uint64_t contact4_union_max_contact_memberships = UINT64_C (200000000);
+const uint64_t contact4_union_max_boundary_cell_visits =
+  UINT64_C (200000000);
+const uint64_t contact4_union_max_member_visits = UINT64_C (1000000000);
+const uint64_t contact4_union_max_pair_work = UINT64_C (1000000000);
+const uint64_t contact4_union_max_flat_edges = UINT64_C (128000000);
+const uint32_t contact4_union_max_slabs_per_rectangle = 64;
+const uint32_t contact4_union_max_cells_per_edge = 4096;
 
 class Active3Decline
   : public std::runtime_error
@@ -696,6 +714,152 @@ bool eligible_contact4 (
     active.layout ().dbu () == 0.0005;
 }
 
+static_assert (
+  std::is_standard_layout<CudaM1WidthSpaceContext>::value &&
+  std::is_trivially_copyable<CudaM1WidthSpaceContext>::value &&
+  sizeof (CudaM1WidthSpaceContext) ==
+    sizeof (klayout_cuda_spatial_m1_width_space_context_v1) &&
+  offsetof (CudaM1WidthSpaceContext, tx) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_context_v1, tx) &&
+  offsetof (CudaM1WidthSpaceContext, ty) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_context_v1, ty) &&
+  offsetof (CudaM1WidthSpaceContext, cell_id) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_context_v1, cell_id) &&
+  offsetof (CudaM1WidthSpaceContext, transform_code) ==
+    offsetof (
+      klayout_cuda_spatial_m1_width_space_context_v1, transform_code),
+  "raw CONTACT.4 context ABI layout mismatch");
+static_assert (
+  std::is_standard_layout<CudaM1WidthSpaceCell>::value &&
+  std::is_trivially_copyable<CudaM1WidthSpaceCell>::value &&
+  sizeof (CudaM1WidthSpaceCell) ==
+    sizeof (klayout_cuda_spatial_m1_width_space_cell_v1) &&
+  offsetof (CudaM1WidthSpaceCell, source_cell_index) ==
+    offsetof (
+      klayout_cuda_spatial_m1_width_space_cell_v1, source_cell_index) &&
+  offsetof (CudaM1WidthSpaceCell, polygon_begin) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_cell_v1, polygon_begin) &&
+  offsetof (CudaM1WidthSpaceCell, edge_begin) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_cell_v1, edge_begin) &&
+  offsetof (CudaM1WidthSpaceCell, polygon_count) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_cell_v1, polygon_count) &&
+  offsetof (CudaM1WidthSpaceCell, edge_count) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_cell_v1, edge_count),
+  "raw CONTACT.4 cell ABI layout mismatch");
+static_assert (
+  std::is_standard_layout<CudaM1WidthSpacePolygon>::value &&
+  std::is_trivially_copyable<CudaM1WidthSpacePolygon>::value &&
+  sizeof (CudaM1WidthSpacePolygon) ==
+    sizeof (klayout_cuda_spatial_m1_width_space_polygon_v1) &&
+  offsetof (CudaM1WidthSpacePolygon, edge_begin) ==
+    offsetof (
+      klayout_cuda_spatial_m1_width_space_polygon_v1, edge_begin) &&
+  offsetof (CudaM1WidthSpacePolygon, left) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_polygon_v1, left) &&
+  offsetof (CudaM1WidthSpacePolygon, bottom) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_polygon_v1, bottom) &&
+  offsetof (CudaM1WidthSpacePolygon, right) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_polygon_v1, right) &&
+  offsetof (CudaM1WidthSpacePolygon, top) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_polygon_v1, top) &&
+  offsetof (CudaM1WidthSpacePolygon, polygon_id) ==
+    offsetof (
+      klayout_cuda_spatial_m1_width_space_polygon_v1, polygon_id) &&
+  offsetof (CudaM1WidthSpacePolygon, edge_count) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_polygon_v1, edge_count),
+  "raw CONTACT.4 polygon ABI layout mismatch");
+static_assert (
+  std::is_standard_layout<CudaM1WidthSpaceEdge>::value &&
+  std::is_trivially_copyable<CudaM1WidthSpaceEdge>::value &&
+  sizeof (CudaM1WidthSpaceEdge) ==
+    sizeof (klayout_cuda_spatial_m1_width_space_edge_v1) &&
+  offsetof (CudaM1WidthSpaceEdge, x1) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_edge_v1, x1) &&
+  offsetof (CudaM1WidthSpaceEdge, y1) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_edge_v1, y1) &&
+  offsetof (CudaM1WidthSpaceEdge, x2) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_edge_v1, x2) &&
+  offsetof (CudaM1WidthSpaceEdge, y2) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_edge_v1, y2),
+  "raw CONTACT.4 edge ABI layout mismatch");
+
+void fill_contact4_active_union_scene (
+  const CudaRawManhattanScene &source, uint32_t role, uint32_t layer,
+  const char *digest_domain,
+  klayout_cuda_spatial_contact4_active_union_scene_v1 &destination)
+{
+  std::memset (&destination, 0, sizeof (destination));
+  destination.struct_size = sizeof (destination);
+  destination.role = role;
+  destination.format_version = source.format_version;
+  destination.dbu_per_micron = source.dbu_per_micron;
+  destination.root_cell = source.root_cell;
+  destination.layer = layer;
+  destination.datatype = qualified_contact4_datatype;
+  destination.contexts = source.contexts.data ();
+  destination.context_count = source.contexts.size ();
+  destination.context_record_bytes = sizeof (CudaM1WidthSpaceContext);
+  destination.layer_contexts = source.metal_contexts.data ();
+  destination.layer_context_count = source.metal_contexts.size ();
+  destination.context_polygon_offsets =
+    source.context_polygon_offsets.data ();
+  destination.context_polygon_offset_count =
+    source.context_polygon_offsets.size ();
+  destination.context_edge_offsets = source.context_edge_offsets.data ();
+  destination.context_edge_offset_count =
+    source.context_edge_offsets.size ();
+  destination.cells = source.cells.data ();
+  destination.cell_count = source.cells.size ();
+  destination.cell_record_bytes = sizeof (CudaM1WidthSpaceCell);
+  destination.polygons = source.polygons.data ();
+  destination.polygon_count = source.polygons.size ();
+  destination.polygon_record_bytes = sizeof (CudaM1WidthSpacePolygon);
+  destination.edges = source.edges.data ();
+  destination.edge_count = source.edges.size ();
+  destination.edge_record_bytes = sizeof (CudaM1WidthSpaceEdge);
+  destination.flat_polygon_count = source.flat_polygon_count;
+  destination.flat_edge_count = source.flat_edge_count;
+  destination.scene_left = source.scene_left;
+  destination.scene_bottom = source.scene_bottom;
+  destination.scene_right = source.scene_right;
+  destination.scene_top = source.scene_top;
+  std::memcpy (
+    destination.digest_domain, digest_domain,
+    KLAYOUT_CUDA_SPATIAL_CONTACT4_DIGEST_DOMAIN_BYTES);
+  std::copy (
+    source.digest.begin (), source.digest.end (),
+    destination.scene_digest);
+}
+
+bool contact4_scenes_share_hierarchy (
+  const CudaRawManhattanScene &active,
+  const CudaRawManhattanScene &contact)
+{
+  if (active.format_version != contact.format_version ||
+      active.dbu_per_micron != contact.dbu_per_micron ||
+      active.root_cell != contact.root_cell ||
+      active.contexts.size () != contact.contexts.size () ||
+      active.cells.size () != contact.cells.size ()) {
+    return false;
+  }
+  for (size_t index = 0; index < active.contexts.size (); ++index) {
+    const CudaM1WidthSpaceContext &first = active.contexts [index];
+    const CudaM1WidthSpaceContext &second = contact.contexts [index];
+    if (first.tx != second.tx || first.ty != second.ty ||
+        first.cell_id != second.cell_id ||
+        first.transform_code != second.transform_code) {
+      return false;
+    }
+  }
+  for (size_t index = 0; index < active.cells.size (); ++index) {
+    if (active.cells [index].source_cell_index !=
+        contact.cells [index].source_cell_index) {
+      return false;
+    }
+  }
+  return true;
+}
+
 } // anonymous namespace
 
 bool cuda_active3_try_empty (
@@ -981,11 +1145,249 @@ bool cuda_contact4_raw_active_try_empty (
   if (! env_enabled ("KLAYOUT_CUDA_CONTACT4_RAW_ACTIVE")) {
     return false;
   }
+  //  Do not pay for a second complete raw-scene lowering after the exact
+  //  fused capability has already declined.  When available, that path
+  //  strictly subsumes this conservative raw-superset certificate.
+  if (db::cuda_spatial_contact4_active_union_requested ()) {
+    return false;
+  }
   return cuda_contact4_try_empty_impl (
     relation, different_polygons, distance, options,
     raw_active, raw_active, raw_contact,
     KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_SUPERSET_EMPTY,
     KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_QUALIFIED_OPTIONS, "raw", true);
+}
+
+bool cuda_contact4_active_union_try_empty (
+  db::edge_relation_type relation, bool different_polygons,
+  db::Coord distance, const db::RegionCheckOptions &options,
+  const db::DeepLayer &raw_active, const db::DeepLayer &raw_contact)
+{
+  const bool telemetry =
+    env_enabled ("KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_TELEMETRY");
+  const std::chrono::steady_clock::time_point begin =
+    std::chrono::steady_clock::now ();
+  try {
+    //  Capability discovery deliberately precedes hierarchy serialization.
+    if (! db::cuda_spatial_contact4_active_union_requested () ||
+        ! eligible_contact4 (
+          relation, different_polygons, distance, options,
+          raw_active, raw_active, raw_contact)) {
+      return false;
+    }
+
+    CudaM1WidthSpaceSceneLimits scene_limits;
+    scene_limits.max_cells = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_CELLS",
+      scene_limits.max_cells);
+    scene_limits.max_contexts = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_CONTEXTS",
+      scene_limits.max_contexts);
+    scene_limits.max_stored_polygons = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_STORED_POLYGONS",
+      scene_limits.max_stored_polygons);
+    scene_limits.max_stored_edges = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_STORED_EDGES",
+      scene_limits.max_stored_edges);
+
+    const uint64_t max_rectangles = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_RECTANGLES",
+      contact4_union_max_rectangles);
+    scene_limits.max_flat_polygons = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_FLAT_POLYGONS",
+      contact4_union_max_rectangles);
+    scene_limits.max_flat_edges = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_FLAT_EDGES",
+      contact4_union_max_flat_edges);
+
+    const uint64_t max_x_slabs = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_X_SLABS",
+      contact4_union_max_x_slabs);
+    const uint64_t max_union_memberships = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_UNION_MEMBERSHIPS",
+      contact4_union_max_memberships);
+    const uint64_t max_events = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_EVENTS",
+      contact4_union_max_events);
+    const uint64_t max_raw_segments = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_RAW_SEGMENTS",
+      contact4_union_max_raw_segments);
+    const uint64_t max_boundary_segments = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_BOUNDARY_SEGMENTS",
+      contact4_union_max_boundary_segments);
+    const uint64_t max_slabs_per_rectangle = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_SLABS_PER_RECTANGLE",
+      contact4_union_max_slabs_per_rectangle);
+    const uint64_t max_contact_edges = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_CONTACT_EDGES",
+      contact4_union_max_contact_edges);
+    const uint64_t max_grid_cells = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_GRID_CELLS",
+      default_max_grid_cells);
+    const uint64_t max_contact_memberships = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_CONTACT_MEMBERSHIPS",
+      contact4_union_max_contact_memberships);
+    const uint64_t max_boundary_cell_visits = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_BOUNDARY_CELL_VISITS",
+      contact4_union_max_boundary_cell_visits);
+    const uint64_t max_member_visits = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_MEMBER_VISITS",
+      contact4_union_max_member_visits);
+    const uint64_t max_pair_work = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_PAIR_WORK",
+      contact4_union_max_pair_work);
+    const uint64_t max_cells_per_contact_edge = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_CELLS_PER_CONTACT_EDGE",
+      contact4_union_max_cells_per_edge);
+    const uint64_t max_cells_per_boundary_edge = env_u64 (
+      "KLAYOUT_CUDA_CONTACT4_ACTIVE_UNION_MAX_CELLS_PER_BOUNDARY_EDGE",
+      contact4_union_max_cells_per_edge);
+    const uint64_t device =
+      env_u64 ("KLAYOUT_CUDA_SPATIAL_DEVICE", 0);
+
+    if (! scene_limits.max_cells || ! scene_limits.max_contexts ||
+        ! scene_limits.max_stored_polygons ||
+        ! scene_limits.max_stored_edges ||
+        ! scene_limits.max_flat_polygons ||
+        ! scene_limits.max_flat_edges || ! max_rectangles ||
+        ! max_x_slabs || ! max_union_memberships || ! max_events ||
+        ! max_raw_segments || ! max_boundary_segments ||
+        ! max_slabs_per_rectangle ||
+        max_slabs_per_rectangle >
+          std::numeric_limits<uint32_t>::max () ||
+        ! max_contact_edges || ! max_grid_cells ||
+        ! max_contact_memberships || ! max_boundary_cell_visits ||
+        ! max_member_visits || ! max_pair_work ||
+        ! max_cells_per_contact_edge ||
+        max_cells_per_contact_edge >
+          std::numeric_limits<uint32_t>::max () ||
+        ! max_cells_per_boundary_edge ||
+        max_cells_per_boundary_edge >
+          std::numeric_limits<uint32_t>::max () ||
+        device > uint64_t (std::numeric_limits<int32_t>::max ())) {
+      throw Active3Decline (
+        "a CONTACT.4 ACTIVE-union capacity or device is invalid");
+    }
+
+    CudaRawManhattanScene active_scene;
+    CudaRawManhattanScene contact_scene;
+    std::string reason;
+    if (! cuda_active_raw_manhattan_build_scene (
+          raw_active, scene_limits, active_scene, &reason)) {
+      throw Active3Decline (
+        reason.empty ()
+          ? "unable to serialize the qualified raw ACTIVE scene"
+          : reason);
+    }
+    if (! cuda_contact_raw_manhattan_build_scene (
+          raw_contact, scene_limits, contact_scene, &reason)) {
+      throw Active3Decline (
+        reason.empty ()
+          ? "unable to serialize the qualified raw CONTACT scene"
+          : reason);
+    }
+    if (! contact4_scenes_share_hierarchy (
+          active_scene, contact_scene)) {
+      throw Active3Decline (
+        "raw ACTIVE and CONTACT scenes do not share one hierarchy identity");
+    }
+
+    klayout_cuda_spatial_contact4_active_union_request_v1 request;
+    std::memset (&request, 0, sizeof (request));
+    request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+    request.struct_size = sizeof (request);
+    request.opcode =
+      KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_EMPTY;
+    request.option_flags =
+      KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_UNION_QUALIFIED_OPTIONS;
+    request.format_version = active_scene.format_version;
+    request.dbu_per_micron = active_scene.dbu_per_micron;
+    request.device = int32_t (device);
+    request.distance = qualified_contact4_distance;
+    request.grid_cell_size = qualified_grid_cell;
+    fill_contact4_active_union_scene (
+      active_scene, KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_ROLE,
+      qualified_contact4_active_layer,
+      KLAYOUT_CUDA_SPATIAL_CONTACT4_ACTIVE_DIGEST_DOMAIN,
+      request.active);
+    fill_contact4_active_union_scene (
+      contact_scene, KLAYOUT_CUDA_SPATIAL_CONTACT4_CONTACT_ROLE,
+      qualified_contact4_contact_layer,
+      KLAYOUT_CUDA_SPATIAL_CONTACT4_CONTACT_DIGEST_DOMAIN,
+      request.contact);
+    request.max_contexts = scene_limits.max_contexts;
+    request.max_rectangles = max_rectangles;
+    request.max_x_slabs = max_x_slabs;
+    request.max_union_memberships = max_union_memberships;
+    request.max_events = max_events;
+    request.max_raw_segments = max_raw_segments;
+    request.max_boundary_segments = max_boundary_segments;
+    request.max_slabs_per_rectangle =
+      uint32_t (max_slabs_per_rectangle);
+    request.max_contact_edges = max_contact_edges;
+    request.max_grid_cells = max_grid_cells;
+    request.max_contact_memberships = max_contact_memberships;
+    request.max_boundary_cell_visits = max_boundary_cell_visits;
+    request.max_member_visits = max_member_visits;
+    request.max_pair_work = max_pair_work;
+    request.max_cells_per_contact_edge =
+      uint32_t (max_cells_per_contact_edge);
+    request.max_cells_per_boundary_edge =
+      uint32_t (max_cells_per_boundary_edge);
+
+    const std::chrono::steady_clock::time_point call_begin =
+      std::chrono::steady_clock::now ();
+    const db::CudaContact4ActiveUnionAttempt attempt =
+      db::cuda_spatial_try_contact4_active_union_empty (request);
+    const std::chrono::steady_clock::time_point done =
+      std::chrono::steady_clock::now ();
+    if (telemetry) {
+      tl::info << "CUDA CONTACT.4 fused ACTIVE-union live lowering:"
+               << " active_contexts=" << request.active.context_count
+               << " contact_contexts=" << request.contact.context_count
+               << " active_stored_polygons="
+               << request.active.polygon_count
+               << " active_flat_polygons="
+               << request.active.flat_polygon_count
+               << " active_flat_edges=" << request.active.flat_edge_count
+               << " contact_stored_polygons="
+               << request.contact.polygon_count
+               << " contact_flat_polygons="
+               << request.contact.flat_polygon_count
+               << " contact_flat_edges="
+               << request.contact.flat_edge_count
+               << " lower_ms="
+               << std::chrono::duration<double, std::milli> (
+                    call_begin - begin).count ()
+               << " call_ms="
+               << std::chrono::duration<double, std::milli> (
+                    done - call_begin).count ()
+               << " live_total_ms="
+               << std::chrono::duration<double, std::milli> (
+                    done - begin).count ();
+    }
+    return attempt.disposition ==
+      db::CudaContact4ActiveUnionAttempt::CertifiedEmpty;
+  } catch (const std::exception &ex) {
+    if (telemetry) {
+      try {
+        tl::info << "CUDA CONTACT.4 fused ACTIVE-union live lowering:"
+                 << " outcome=cpu-fallback message=" << ex.what ();
+      } catch (...) {
+        //  Telemetry must never turn a speculative decline into an error.
+      }
+    }
+  } catch (...) {
+    if (telemetry) {
+      try {
+        tl::info << "CUDA CONTACT.4 fused ACTIVE-union live lowering:"
+                 << " outcome=cpu-fallback message=unknown exception";
+      } catch (...) {
+        //  Telemetry must never turn a speculative decline into an error.
+      }
+    }
+  }
+  return false;
 }
 
 } // namespace db

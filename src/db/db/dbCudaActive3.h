@@ -60,6 +60,20 @@ DB_PUBLIC bool cuda_contact4_raw_active_try_empty (
   const db::RegionCheckOptions &options, const db::DeepLayer &raw_active,
   const db::DeepLayer &raw_contact);
 
+/**
+ * Try exact raw-ACTIVE union followed by CONTACT.4 on one resident device.
+ *
+ * This opt-in runs before constructing merged ACTIVE.  It serializes the two
+ * complete raw physical layers into separate, digest-bound compact scenes
+ * which share one hierarchy identity.  True is returned only when the exact
+ * ACTIVE integer-set union and complete CONTACT.4 scan both finish on the
+ * selected device with zero hits.  False preserves the established fallback.
+ */
+DB_PUBLIC bool cuda_contact4_active_union_try_empty (
+  db::edge_relation_type relation, bool different_polygons, db::Coord distance,
+  const db::RegionCheckOptions &options, const db::DeepLayer &raw_active,
+  const db::DeepLayer &raw_contact);
+
 } // namespace db
 
 #endif

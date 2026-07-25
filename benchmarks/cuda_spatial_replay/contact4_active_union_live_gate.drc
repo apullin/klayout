@@ -1,0 +1,43 @@
+# Focused live gate for the fused raw-ACTIVE-union/CONTACT.4 certificate.
+
+raise("missing -rd input=PATH") unless $input
+raise("missing -rd topcell=NAME") unless $topcell
+raise("missing -rd output=PATH") unless $output
+
+variant = ($variant || "qualified").to_s
+unless %w[qualified raw_primary changed_option wrong_order].include?(variant)
+  raise("unsupported variant #{variant}")
+end
+
+source($input, $topcell)
+report("CONTACT.4 fused ACTIVE-union CUDA gate", $output)
+deep
+
+# Match the production FreePDK45 physical layers.  `polygons` retains the
+# complete unmerged hierarchy on both layers so the pre-merge fused helper can
+# serialize ACTIVE and CONTACT from the same store/layout/root.
+active = polygons(1, 0)
+contact = polygons(10, 0)
+
+if variant == "raw_primary"
+  result = active.raw.enclosing(contact, 5.nm, euclidian)
+elsif variant == "changed_option"
+  result = active.enclosing(contact, 5.nm, projection)
+elsif variant == "wrong_order"
+  result = contact.enclosing(active, 5.nm, euclidian)
+else
+  result = active.enclosing(contact, 5.nm, euclidian)
+end
+
+raise("CONTACT.4 result is not an edge-pair layer") unless result.edge_pairs?
+result.output(
+  "CONTACT.4",
+  "CONTACT.4 : Minimum enclosure of active around contact : 5nm"
+)
+
+puts(
+  "CONTACT4_ACTIVE_UNION_LIVE_DECK ok" \
+  " variant=#{variant}" \
+  " top=#{$topcell}" \
+  " empty=#{result.is_empty? ? 1 : 0}"
+)

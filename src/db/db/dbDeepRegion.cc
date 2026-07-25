@@ -2904,17 +2904,23 @@ DeepRegion::run_check (db::edge_relation_type rel, bool different_polygons, cons
   }
 
   // CONTACT.4 historically needs a merged ACTIVE primary.  Before paying for
-  // that merge, an explicitly opt-in certificate may prove the complete raw
-  // ACTIVE/CONTACT superset has no unshielded hit.  Any hit, uncertainty,
-  // unsupported input, or backend error falls through first to the established
-  // merged CONTACT.4 certificate and then to the pristine CPU processor.
+  // that merge, the preferred opt-in path computes the exact ACTIVE union and
+  // complete CONTACT.4 scan as one resident GPU transaction.  When that
+  // capability is absent, the older conservative raw-superset certificate may
+  // still prove emptiness.  Any hit, uncertainty, unsupported input, or
+  // backend error falls through first to the established merged certificate
+  // and then to the pristine CPU processor.
   if (options.prop_constraint == db::IgnoreProperties &&
       needs_merged_primary && merged_semantics () && other_deep &&
-      ! merged_polygons_available () &&
-      db::cuda_contact4_raw_active_try_empty (
-        rel, different_polygons, d, options, deep_layer (),
-        other_deep->deep_layer ())) {
-    return new db::DeepEdgePairs (deep_layer ().derived ());
+      ! merged_polygons_available ()) {
+    if (db::cuda_contact4_active_union_try_empty (
+          rel, different_polygons, d, options, deep_layer (),
+          other_deep->deep_layer ()) ||
+        db::cuda_contact4_raw_active_try_empty (
+          rel, different_polygons, d, options, deep_layer (),
+          other_deep->deep_layer ())) {
+      return new db::DeepEdgePairs (deep_layer ().derived ());
+    }
   }
 
   const db::DeepLayer &polygons = needs_merged_primary ? merged_deep_layer () : deep_layer ();
