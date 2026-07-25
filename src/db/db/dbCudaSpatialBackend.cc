@@ -560,6 +560,10 @@ public:
       m_contact4_enabled (env_enabled ("KLAYOUT_CUDA_CONTACT4")),
       m_contact4_telemetry (
         env_enabled ("KLAYOUT_CUDA_CONTACT4_TELEMETRY")),
+      m_contact4_raw_active_enabled (
+        env_enabled ("KLAYOUT_CUDA_CONTACT4_RAW_ACTIVE")),
+      m_contact4_raw_active_telemetry (
+        env_enabled ("KLAYOUT_CUDA_CONTACT4_RAW_ACTIVE_TELEMETRY")),
       m_implant12_enabled (env_enabled ("KLAYOUT_CUDA_IMPLANT12")),
       m_implant12_telemetry (
         env_enabled ("KLAYOUT_CUDA_IMPLANT12_TELEMETRY")),
@@ -584,7 +588,8 @@ public:
       m_m1_contact_telemetry (
         env_enabled ("KLAYOUT_CUDA_M1_CONTACT_TELEMETRY")),
       m_handle (0), m_run_bipartite (0), m_run_self (0),
-      m_run_active3 (0), m_run_implant12 (0), m_run_m1_width_space (0),
+      m_run_active3 (0), m_run_contact4_raw_active (0),
+      m_run_implant12 (0), m_run_m1_width_space (0),
       m_run_m2_width_space (0), m_run_m2_union (0),
       m_release_m2_union (0), m_run_poly34 (0),
       m_run_via1_stack (0), m_release (0),
@@ -623,6 +628,12 @@ public:
         GetProcAddress (reinterpret_cast<HMODULE> (m_handle), "klayout_cuda_spatial_run_self_v1"));
       m_run_active3 = reinterpret_cast<klayout_cuda_spatial_run_active3_empty_v1_func> (
         GetProcAddress (reinterpret_cast<HMODULE> (m_handle), "klayout_cuda_spatial_run_active3_empty_v1"));
+      m_run_contact4_raw_active =
+        reinterpret_cast<
+          klayout_cuda_spatial_run_contact4_raw_active_empty_v1_func> (
+          GetProcAddress (
+            reinterpret_cast<HMODULE> (m_handle),
+            "klayout_cuda_spatial_run_contact4_raw_active_empty_v1"));
       m_run_implant12 =
         reinterpret_cast<klayout_cuda_spatial_run_implant12_empty_v1_func> (
           GetProcAddress (
@@ -679,6 +690,12 @@ public:
         dlsym (m_handle, "klayout_cuda_spatial_run_self_v1"));
       m_run_active3 = reinterpret_cast<klayout_cuda_spatial_run_active3_empty_v1_func> (
         dlsym (m_handle, "klayout_cuda_spatial_run_active3_empty_v1"));
+      m_run_contact4_raw_active =
+        reinterpret_cast<
+          klayout_cuda_spatial_run_contact4_raw_active_empty_v1_func> (
+          dlsym (
+            m_handle,
+            "klayout_cuda_spatial_run_contact4_raw_active_empty_v1"));
       m_run_implant12 =
         reinterpret_cast<klayout_cuda_spatial_run_implant12_empty_v1_func> (
           dlsym (
@@ -728,6 +745,7 @@ public:
       m_run_bipartite = 0;
       m_run_self = 0;
       m_run_active3 = 0;
+      m_run_contact4_raw_active = 0;
       m_run_implant12 = 0;
       m_run_m1_width_space = 0;
       m_run_m2_width_space = 0;
@@ -770,6 +788,16 @@ public:
   bool contact4_ready () const
   {
     return m_contact4_enabled && m_run_active3;
+  }
+
+  bool contact4_raw_active_ready () const
+  {
+    return m_contact4_raw_active_enabled && m_run_contact4_raw_active;
+  }
+
+  bool contact4_raw_active_enabled () const
+  {
+    return m_contact4_raw_active_enabled;
   }
 
   bool contact4_enabled () const
@@ -892,6 +920,11 @@ public:
     return m_contact4_telemetry;
   }
 
+  bool contact4_raw_active_telemetry () const
+  {
+    return m_contact4_raw_active_telemetry;
+  }
+
   bool via1_stack_telemetry () const
   {
     return m_via1_stack_telemetry;
@@ -920,6 +953,12 @@ public:
   klayout_cuda_spatial_run_active3_empty_v1_func run_active3 () const
   {
     return m_run_active3;
+  }
+
+  klayout_cuda_spatial_run_contact4_raw_active_empty_v1_func
+  run_contact4_raw_active () const
+  {
+    return m_run_contact4_raw_active;
   }
 
   klayout_cuda_spatial_run_implant12_empty_v1_func run_implant12 () const
@@ -973,6 +1012,8 @@ private:
   bool m_active3_telemetry;
   bool m_contact4_enabled;
   bool m_contact4_telemetry;
+  bool m_contact4_raw_active_enabled;
+  bool m_contact4_raw_active_telemetry;
   bool m_implant12_enabled;
   bool m_implant12_telemetry;
   bool m_m1_width_space_enabled;
@@ -991,6 +1032,8 @@ private:
   klayout_cuda_spatial_run_bipartite_v1_func m_run_bipartite;
   klayout_cuda_spatial_run_self_v1_func m_run_self;
   klayout_cuda_spatial_run_active3_empty_v1_func m_run_active3;
+  klayout_cuda_spatial_run_contact4_raw_active_empty_v1_func
+    m_run_contact4_raw_active;
   klayout_cuda_spatial_run_implant12_empty_v1_func m_run_implant12;
   klayout_cuda_spatial_run_m1_width_space_empty_v1_func m_run_m1_width_space;
   klayout_cuda_spatial_run_m2_width_space_empty_v1_func m_run_m2_width_space;
@@ -1070,10 +1113,12 @@ void log_active3_attempt (const CudaActive3Attempt &attempt)
            << (attempt.message.empty () ? "" : " message=") << attempt.message;
 }
 
-void log_contact4_attempt (const CudaActive3Attempt &attempt)
+void log_contact4_attempt (const CudaActive3Attempt &attempt, bool raw_active)
 {
   CudaSpatialModule &module = cuda_spatial_module ();
-  if (! module.contact4_telemetry ()) {
+  if (raw_active
+        ? ! module.contact4_raw_active_telemetry ()
+        : ! module.contact4_telemetry ()) {
     return;
   }
 
@@ -1087,7 +1132,9 @@ void log_contact4_attempt (const CudaActive3Attempt &attempt)
   case CudaActive3Attempt::Disabled: outcome = "disabled"; break;
   }
 
-  tl::info << "CUDA CONTACT.4 empty certificate:"
+  tl::info << (raw_active
+                ? "CUDA CONTACT.4 raw-ACTIVE empty certificate:"
+                : "CUDA CONTACT.4 empty certificate:")
            << " outcome=" << outcome
            << " contexts=" << attempt.context_count
            << " indexed_contact_edges=" << attempt.flat_well_edge_count
@@ -1102,10 +1149,10 @@ void log_contact4_attempt (const CudaActive3Attempt &attempt)
 }
 
 void log_active3_profile_attempt (const CudaActive3Attempt &attempt,
-                                  bool contact4)
+                                  bool contact4, bool raw_contact4)
 {
   if (contact4) {
-    log_contact4_attempt (attempt);
+    log_contact4_attempt (attempt, raw_contact4);
   } else {
     log_active3_attempt (attempt);
   }
@@ -1711,21 +1758,34 @@ bool cuda_spatial_requested ()
 }
 
 static CudaActive3Attempt cuda_spatial_try_active3_profile_empty (
-  const klayout_cuda_spatial_active3_request_v1 &request, bool contact4)
+  const klayout_cuda_spatial_active3_request_v1 &request, bool contact4,
+  bool raw_contact4)
 {
   CudaActive3Attempt attempt;
   CudaSpatialModule &module = cuda_spatial_module ();
-  const char *profile = contact4 ? "CONTACT.4" : "ACTIVE.3";
-  if (contact4 ? ! module.contact4_enabled () : ! module.active3_enabled ()) {
+  const char *profile = raw_contact4
+    ? "CONTACT.4 raw-ACTIVE"
+    : (contact4 ? "CONTACT.4" : "ACTIVE.3");
+  const bool profile_enabled = raw_contact4
+    ? module.contact4_raw_active_enabled ()
+    : (contact4 ? module.contact4_enabled () : module.active3_enabled ());
+  if (! profile_enabled) {
     return attempt;
   }
+  const bool qualified_contact4 = raw_contact4
+    ? request.opcode ==
+        KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_SUPERSET_EMPTY &&
+      request.option_flags ==
+        KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_QUALIFIED_OPTIONS &&
+      request.distance == 10
+    : request.opcode ==
+        KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_SUPERSET_EMPTY &&
+      request.option_flags ==
+        KLAYOUT_CUDA_SPATIAL_CONTACT4_QUALIFIED_OPTIONS &&
+      request.distance == 10;
   const bool qualified_profile =
     contact4
-      ? request.opcode ==
-          KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_SUPERSET_EMPTY &&
-        request.option_flags ==
-          KLAYOUT_CUDA_SPATIAL_CONTACT4_QUALIFIED_OPTIONS &&
-        request.distance == 10
+      ? qualified_contact4
       : request.opcode ==
           KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_SUPERSET_EMPTY &&
         request.option_flags ==
@@ -1739,7 +1799,7 @@ static CudaActive3Attempt cuda_spatial_try_active3_profile_empty (
       KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
     attempt.message = std::string ("unqualified CUDA ") + profile +
       " empty-certificate request";
-    log_active3_profile_attempt (attempt, contact4);
+    log_active3_profile_attempt (attempt, contact4, raw_contact4);
     return attempt;
   }
   if (! module.enabled ()) {
@@ -1747,16 +1807,19 @@ static CudaActive3Attempt cuda_spatial_try_active3_profile_empty (
     attempt.message = module.error ().empty ()
       ? "CUDA spatial backend is unavailable"
       : module.error ();
-    log_active3_profile_attempt (attempt, contact4);
+    log_active3_profile_attempt (attempt, contact4, raw_contact4);
     return attempt;
   }
-  if (contact4 ? ! module.contact4_ready () : ! module.active3_ready ()) {
+  const bool ready = raw_contact4
+    ? module.contact4_raw_active_ready ()
+    : (contact4 ? module.contact4_ready () : module.active3_ready ());
+  if (! ready) {
     attempt.disposition = CudaActive3Attempt::BackendFallback;
     attempt.fallback_flags =
       KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
     attempt.message = std::string ("CUDA spatial backend has no ") + profile +
       " empty-certificate entry point";
-    log_active3_profile_attempt (attempt, contact4);
+    log_active3_profile_attempt (attempt, contact4, raw_contact4);
     return attempt;
   }
 
@@ -1769,17 +1832,19 @@ static CudaActive3Attempt cuda_spatial_try_active3_profile_empty (
 
   int status = KLAYOUT_CUDA_SPATIAL_ERROR;
   try {
-    status = module.run_active3 () (&request, &result);
+    status = raw_contact4
+      ? module.run_contact4_raw_active () (&request, &result)
+      : module.run_active3 () (&request, &result);
   } catch (const std::exception &ex) {
     attempt.disposition = CudaActive3Attempt::BackendError;
     attempt.message = ex.what ();
-    log_active3_profile_attempt (attempt, contact4);
+    log_active3_profile_attempt (attempt, contact4, raw_contact4);
     return attempt;
   } catch (...) {
     attempt.disposition = CudaActive3Attempt::BackendError;
     attempt.message = std::string ("unknown exception while calling CUDA ") +
       profile + " backend";
-    log_active3_profile_attempt (attempt, contact4);
+    log_active3_profile_attempt (attempt, contact4, raw_contact4);
     return attempt;
   }
 
@@ -1807,7 +1872,7 @@ static CudaActive3Attempt cuda_spatial_try_active3_profile_empty (
     attempt.disposition = CudaActive3Attempt::InvalidResult;
     attempt.message = std::string ("CUDA ") + profile +
       " backend returned an incompatible result";
-    log_active3_profile_attempt (attempt, contact4);
+    log_active3_profile_attempt (attempt, contact4, raw_contact4);
     return attempt;
   }
 
@@ -1870,20 +1935,26 @@ static CudaActive3Attempt cuda_spatial_try_active3_profile_empty (
     attempt.disposition = CudaActive3Attempt::BackendError;
   }
 
-  log_active3_profile_attempt (attempt, contact4);
+  log_active3_profile_attempt (attempt, contact4, raw_contact4);
   return attempt;
 }
 
 CudaActive3Attempt cuda_spatial_try_active3_empty (
   const klayout_cuda_spatial_active3_request_v1 &request)
 {
-  return cuda_spatial_try_active3_profile_empty (request, false);
+  return cuda_spatial_try_active3_profile_empty (request, false, false);
 }
 
 CudaActive3Attempt cuda_spatial_try_contact4_empty (
   const klayout_cuda_spatial_active3_request_v1 &request)
 {
-  return cuda_spatial_try_active3_profile_empty (request, true);
+  return cuda_spatial_try_active3_profile_empty (request, true, false);
+}
+
+CudaActive3Attempt cuda_spatial_try_contact4_raw_active_empty (
+  const klayout_cuda_spatial_active3_request_v1 &request)
+{
+  return cuda_spatial_try_active3_profile_empty (request, true, true);
 }
 
 bool cuda_spatial_active3_requested ()
@@ -1896,6 +1967,12 @@ bool cuda_spatial_contact4_requested ()
 {
   CudaSpatialModule &module = cuda_spatial_module ();
   return module.enabled () && module.contact4_ready ();
+}
+
+bool cuda_spatial_contact4_raw_active_requested ()
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  return module.enabled () && module.contact4_raw_active_ready ();
 }
 
 CudaM1WidthSpaceAttempt cuda_spatial_try_m1_width_space_empty (

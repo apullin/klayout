@@ -2539,6 +2539,14 @@ bool active3_profile_qualified(
                klayout_cuda::active3::
                    kContact4QualifiedSceneCoordinateDistance;
   }
+  if (request.opcode ==
+          KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_SUPERSET_EMPTY) {
+    return request.option_flags ==
+               KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_QUALIFIED_OPTIONS &&
+           request.distance ==
+               klayout_cuda::active3::
+                   kContact4QualifiedSceneCoordinateDistance;
+  }
   return false;
 }
 
@@ -2924,7 +2932,9 @@ Active3PipelineResult run_active3_pipeline(
       thrust::raw_pointer_cast(offsets.data()),
       thrust::raw_pointer_cast(members.data()), request.distance,
       request.opcode ==
-          KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_SUPERSET_EMPTY,
+          KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_SUPERSET_EMPTY ||
+        request.opcode ==
+          KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_SUPERSET_EMPTY,
       thrust::raw_pointer_cast(counters.data()),
       thrust::raw_pointer_cast(status.data()));
   cuda_check(cudaGetLastError(), "ACTIVE.3 query launch");
@@ -2983,20 +2993,40 @@ void echo_active3_request(
 
 int run_active3_request(
     const klayout_cuda_spatial_active3_request_v1 *request,
-    klayout_cuda_spatial_active3_result_v1 *result) {
+    klayout_cuda_spatial_active3_result_v1 *result,
+    bool raw_contact4_export) {
   if (!result) return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
   std::memset(result, 0, sizeof(*result));
   result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
   result->struct_size = sizeof(*result);
   result->status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
   result->disposition = KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN;
-  if (!request || !valid_active3_request(*request)) {
+  const bool export_profile_matches =
+      request &&
+      (raw_contact4_export
+           ? request->opcode ==
+                 KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_SUPERSET_EMPTY
+           : request->opcode !=
+                 KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_SUPERSET_EMPTY);
+  if (!export_profile_matches || !valid_active3_request(*request)) {
     result->fallback_flags =
         KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
-    set_message(result, "unsupported or malformed ACTIVE.3 request");
+    set_message(
+        result,
+        raw_contact4_export
+            ? "unsupported or malformed raw-ACTIVE CONTACT.4 request"
+            : "unsupported or malformed ACTIVE.3/CONTACT.4 request");
     return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
   }
   echo_active3_request(*request, result);
+  const char *profile =
+      request->opcode ==
+              KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_SUPERSET_EMPTY
+          ? "raw-ACTIVE CONTACT.4"
+          : (request->opcode ==
+                     KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_SUPERSET_EMPTY
+                 ? "CONTACT.4"
+                 : "ACTIVE.3");
 
   const auto total_begin = Clock::now();
   try {
@@ -3018,20 +3048,32 @@ int run_active3_request(
     result->d2h_ns = pipeline.d2h_ns;
     if (pipeline.fallback_flags || pipeline.device_flags) {
       result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
-      set_message(result, "ACTIVE.3 device or capacity gate declined");
+      set_message(
+          result,
+          (std::string(profile) + " device or capacity gate declined")
+              .c_str());
       result->total_ns = elapsed_ns(total_begin, Clock::now());
       return KLAYOUT_CUDA_SPATIAL_FALLBACK;
     }
     result->status = KLAYOUT_CUDA_SPATIAL_OK;
     if (pipeline.uncertain) {
       result->disposition = KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN;
-      set_message(result, "ACTIVE.3 exact predicate reported uncertainty");
+      set_message(
+          result,
+          (std::string(profile) +
+           " exact predicate reported uncertainty").c_str());
     } else if (pipeline.raw_hits) {
       result->disposition = KLAYOUT_CUDA_SPATIAL_ACTIVE3_RAW_HITS;
-      set_message(result, "ACTIVE.3 raw hits require pristine CPU fallback");
+      set_message(
+          result,
+          (std::string(profile) +
+           " raw hits require pristine CPU fallback").c_str());
     } else {
       result->disposition = KLAYOUT_CUDA_SPATIAL_ACTIVE3_COMPLETE;
-      set_message(result, "complete empty ACTIVE.3 raw-superset certificate");
+      set_message(
+          result,
+          (std::string("complete empty ") + profile +
+           " raw-superset certificate").c_str());
     }
     result->total_ns = elapsed_ns(total_begin, Clock::now());
     return KLAYOUT_CUDA_SPATIAL_OK;
@@ -3040,7 +3082,10 @@ int run_active3_request(
     set_message(result, ex.what());
   } catch (...) {
     result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
-    set_message(result, "unknown CUDA ACTIVE.3 backend exception");
+    set_message(
+        result,
+        (std::string("unknown CUDA ") + profile +
+         " backend exception").c_str());
   }
   result->total_ns = elapsed_ns(total_begin, Clock::now());
   return KLAYOUT_CUDA_SPATIAL_ERROR;
@@ -5207,7 +5252,7 @@ klayout_cuda_spatial_run_active3_empty_v1(
     const klayout_cuda_spatial_active3_request_v1 *request,
     klayout_cuda_spatial_active3_result_v1 *result) {
   try {
-    return run_active3_request(request, result);
+    return run_active3_request(request, result, false);
   } catch (...) {
     if (result) {
       std::memset(result, 0, sizeof(*result));
@@ -5219,6 +5264,29 @@ klayout_cuda_spatial_run_active3_empty_v1(
           KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
       set_message(
           result, "exception escaped the ACTIVE.3 request boundary");
+    }
+    return KLAYOUT_CUDA_SPATIAL_ERROR;
+  }
+}
+
+extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_contact4_raw_active_empty_v1(
+    const klayout_cuda_spatial_active3_request_v1 *request,
+    klayout_cuda_spatial_active3_result_v1 *result) {
+  try {
+    return run_active3_request(request, result, true);
+  } catch (...) {
+    if (result) {
+      std::memset(result, 0, sizeof(*result));
+      result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+      result->struct_size = sizeof(*result);
+      result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+      result->disposition = KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN;
+      result->fallback_flags =
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+      set_message(
+          result,
+          "exception escaped the raw-ACTIVE CONTACT.4 request boundary");
     }
     return KLAYOUT_CUDA_SPATIAL_ERROR;
   }

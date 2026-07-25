@@ -1655,6 +1655,39 @@ not just wall time.
         reports retained canonical SHA-256
         `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
 
+        - [x] **Bound the pre-merge raw-ACTIVE certificate:** a distinct,
+          independently opt-in ABI now tests complete raw ACTIVE against raw
+          CONTACT before `merged_deep_layer()`.  The finite-segment superset
+          proof passes abutting-edge concatenation, overlap, containment,
+          duplicate, T-junction, hole, strict 9/10-DBU, 18,225 exhaustive
+          lattice, and 1,000 deterministic-random union cases.  The live gate
+          passes clean early completion, conservative raw-hit fallback,
+          true-hit CPU publication, semantics/options/order/DBU declines,
+          capacity, missing/stale backend, and canonical CPU-report equality.
+
+          This is intentionally recorded as a bounded experiment rather than a
+          speedup.  On the production x2 owner it lowered 98,754,896 raw ACTIVE
+          and 41,414,424 raw CONTACT edges in **1.924 s**, but found 10,624,360
+          conservative raw hits and therefore executed the established
+          merged-ACTIVE CUDA/CPU path.  The measured owner was 89.78 s; there
+          is no paired performance claim.  Retain the disabled-by-default
+          transport and gates as groundwork for exact device-side ACTIVE
+          union/boundary filtering, but do not enable the raw-only lane in the
+          production launcher.
+
+        - [ ] **Replace CONTACT.4's CPU ACTIVE merge with one resident exact
+          Manhattan-union/check transaction:** reuse the qualified M2 integer
+          union core, consume canonical ACTIVE boundary spans on device, and
+          run the exact CONTACT.4 predicate before any D2H boundary or KLayout
+          `Region` materialization.  Zero hits may publish empty; every hit,
+          uncertainty, unsupported raw polygon, kissing topology, capacity,
+          digest, callback, or CUDA failure must fall through to the untouched
+          merged certificate and CPU rule.  Production scale is approximately
+          24.69 million raw ACTIVE rectangles, 41.41 million flat CONTACT
+          edges, and 10.74 million merged ACTIVE edges.  Phase memory so union
+          temporaries and a fully expanded CONTACT index do not coexist on the
+          10-GiB device.
+
       - [x] **Fuse IMPLANT.1 and IMPLANT.2 as one atomic CUDA transaction:**
         rewrite only the two fixed projection-separation expressions into one
         exact batch, lower the merged implant primary plus gate and raw CONTACT

@@ -292,9 +292,11 @@ KLAYOUT_CUDA_SPATIAL_EXPORT void klayout_cuda_spatial_release_m1_result_v1 (
  * operand in the historical ACTIVE fields is streamed from templates on the
  * device and is never materialized as one flat array.
  *
- * ACTIVE.3 indexes merged WELL and streams raw ACTIVE.  CONTACT.4 indexes raw
- * CONTACT (its secondary operand) and streams merged ACTIVE (its primary).
- * In either profile, a raw hit is not an exact publishable KLayout marker and
+ * ACTIVE.3 indexes merged WELL and streams raw ACTIVE.  The original
+ * CONTACT.4 profile indexes raw CONTACT (its secondary operand) and streams
+ * merged ACTIVE (its primary).  The early CONTACT.4 profile streams raw
+ * ACTIVE as a conservative superset before KLayout constructs merged ACTIVE.
+ * In every profile, a raw hit is not an exact publishable KLayout marker and
  * must only request pristine CPU fallback.  COMPLETE is the sole consumable
  * outcome and means that the complete qualified raw superset had zero hits
  * and zero uncertainty.
@@ -307,7 +309,13 @@ enum klayout_cuda_spatial_active3_opcode
    * the indexed raw-CONTACT secondary operand and the ACTIVE fields holding
    * the streamed merged-ACTIVE primary operand.
    */
-  KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_SUPERSET_EMPTY = 2
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_SUPERSET_EMPTY = 2,
+  /*
+   * The indexed operand remains raw CONTACT, while the streamed primary is
+   * complete raw ACTIVE.  Zero unshielded raw hits soundly certifies the
+   * later merged-ACTIVE check empty; any hit or uncertainty falls back.
+   */
+  KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_SUPERSET_EMPTY = 3
 };
 
 enum klayout_cuda_spatial_active3_option_flag
@@ -338,6 +346,9 @@ enum klayout_cuda_spatial_active3_option_flag
 
 #define KLAYOUT_CUDA_SPATIAL_CONTACT4_QUALIFIED_OPTIONS \
   (((1u << 13) - 1u) | KLAYOUT_CUDA_SPATIAL_ACTIVE3_INDEXED_SECONDARY)
+
+#define KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_QUALIFIED_OPTIONS \
+  ((1u << 15) - 1u)
 
 enum klayout_cuda_spatial_active3_disposition
 {
@@ -457,6 +468,22 @@ typedef int (*klayout_cuda_spatial_run_active3_empty_v1_func) (
   struct klayout_cuda_spatial_active3_result_v1 *);
 
 KLAYOUT_CUDA_SPATIAL_EXPORT int klayout_cuda_spatial_run_active3_empty_v1 (
+  const struct klayout_cuda_spatial_active3_request_v1 *request,
+  struct klayout_cuda_spatial_active3_result_v1 *result);
+
+/*
+ * Optional early CONTACT.4 entry point.  Keeping this distinct from the
+ * established ACTIVE.3/merged-ACTIVE symbol lets the host prove capability
+ * before serializing the much larger raw-ACTIVE scene.  This entry point
+ * accepts only KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_SUPERSET_EMPTY.
+ */
+typedef int
+(*klayout_cuda_spatial_run_contact4_raw_active_empty_v1_func) (
+  const struct klayout_cuda_spatial_active3_request_v1 *,
+  struct klayout_cuda_spatial_active3_result_v1 *);
+
+KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_contact4_raw_active_empty_v1 (
   const struct klayout_cuda_spatial_active3_request_v1 *request,
   struct klayout_cuda_spatial_active3_result_v1 *result);
 

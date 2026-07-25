@@ -403,6 +403,20 @@ DB_PUBLIC CudaActive3Attempt cuda_spatial_try_contact4_empty (
 DB_PUBLIC bool cuda_spatial_contact4_requested ();
 
 /**
+ * Invoke the optional early CONTACT.4 raw-ACTIVE empty certificate.
+ *
+ * This uses a distinct backend symbol so capability is established before the
+ * complete raw-ACTIVE hierarchy is serialized.  Only CertifiedEmpty is
+ * consumable; every other outcome retains the established merged certificate
+ * and pristine CPU fallbacks.
+ */
+DB_PUBLIC CudaActive3Attempt cuda_spatial_try_contact4_raw_active_empty (
+  const klayout_cuda_spatial_active3_request_v1 &request);
+
+/** Return true only when the early raw-ACTIVE CONTACT.4 symbol exists. */
+DB_PUBLIC bool cuda_spatial_contact4_raw_active_requested ();
+
+/**
  * Invoke the optional atomic METAL1.1/METAL1.2 empty certificate.
  *
  * Only CertifiedEmpty is consumable.  Raw hits and every uncertain, malformed,

@@ -813,31 +813,53 @@ bool cuda_active3_try_empty (
   return false;
 }
 
-bool cuda_contact4_try_empty (
+static bool cuda_contact4_try_empty_impl (
   db::edge_relation_type relation, bool different_polygons,
   db::Coord distance, const db::RegionCheckOptions &options,
-  const db::DeepLayer &merged_active, const db::DeepLayer &raw_active,
-  const db::DeepLayer &raw_contact)
+  const db::DeepLayer &active, const db::DeepLayer &raw_active,
+  const db::DeepLayer &raw_contact, uint32_t opcode, uint32_t option_flags,
+  const char *primary_kind, bool raw_primary)
 {
-  const bool telemetry = env_enabled ("KLAYOUT_CUDA_CONTACT4_TELEMETRY");
+  const bool telemetry = env_enabled (
+    raw_primary
+      ? "KLAYOUT_CUDA_CONTACT4_RAW_ACTIVE_TELEMETRY"
+      : "KLAYOUT_CUDA_CONTACT4_TELEMETRY");
+  const char *telemetry_prefix = raw_primary
+    ? "CUDA CONTACT.4 raw-ACTIVE live lowering:"
+    : "CUDA CONTACT.4 live lowering:";
   const std::chrono::steady_clock::time_point begin =
     std::chrono::steady_clock::now ();
   try {
-    if (! db::cuda_spatial_contact4_requested () ||
+    const bool backend_ready = raw_primary
+      ? db::cuda_spatial_contact4_raw_active_requested ()
+      : db::cuda_spatial_contact4_requested ();
+    if (! backend_ready ||
         ! eligible_contact4 (
           relation, different_polygons, distance, options,
-          merged_active, raw_active, raw_contact)) {
+          active, raw_active, raw_contact)) {
       return false;
     }
 
     const uint64_t max_contexts = env_u64 (
-      "KLAYOUT_CUDA_CONTACT4_MAX_CONTEXTS", default_max_contexts);
+      raw_primary
+        ? "KLAYOUT_CUDA_CONTACT4_RAW_ACTIVE_MAX_CONTEXTS"
+        : "KLAYOUT_CUDA_CONTACT4_MAX_CONTEXTS",
+      default_max_contexts);
     const uint64_t max_grid_cells = env_u64 (
-      "KLAYOUT_CUDA_CONTACT4_MAX_GRID_CELLS", default_max_grid_cells);
+      raw_primary
+        ? "KLAYOUT_CUDA_CONTACT4_RAW_ACTIVE_MAX_GRID_CELLS"
+        : "KLAYOUT_CUDA_CONTACT4_MAX_GRID_CELLS",
+      default_max_grid_cells);
     const uint64_t max_memberships = env_u64 (
-      "KLAYOUT_CUDA_CONTACT4_MAX_MEMBERSHIPS", default_max_memberships);
+      raw_primary
+        ? "KLAYOUT_CUDA_CONTACT4_RAW_ACTIVE_MAX_MEMBERSHIPS"
+        : "KLAYOUT_CUDA_CONTACT4_MAX_MEMBERSHIPS",
+      default_max_memberships);
     const uint64_t max_pair_work = env_u64 (
-      "KLAYOUT_CUDA_CONTACT4_MAX_PAIR_WORK", default_max_pair_work);
+      raw_primary
+        ? "KLAYOUT_CUDA_CONTACT4_RAW_ACTIVE_MAX_PAIR_WORK"
+        : "KLAYOUT_CUDA_CONTACT4_MAX_PAIR_WORK",
+      default_max_pair_work);
     if (! max_contexts || ! max_grid_cells || ! max_memberships ||
         ! max_pair_work) {
       throw Active3Decline ("a CONTACT.4 capacity is zero");
@@ -845,16 +867,17 @@ bool cuda_contact4_try_empty (
 
     //  Reuse the proven hierarchical transport in its indexed/streamed
     //  order: historical "well" records carry the raw CONTACT secondary,
-    //  while historical "active" records carry the merged ACTIVE primary.
+    //  while historical "active" records carry either the merged ACTIVE
+    //  primary or its complete raw superset.
     LiveScene scene = serialize_live_scene (
-      raw_contact, merged_active, max_contexts);
+      raw_contact, active, max_contexts);
 
     klayout_cuda_spatial_active3_request_v1 request;
     std::memset (&request, 0, sizeof (request));
     request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
     request.struct_size = sizeof (request);
-    request.opcode = KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_SUPERSET_EMPTY;
-    request.option_flags = KLAYOUT_CUDA_SPATIAL_CONTACT4_QUALIFIED_OPTIONS;
+    request.opcode = opcode;
+    request.option_flags = option_flags;
     request.dbu_per_micron = qualified_dbu_per_micron;
     request.distance = qualified_contact4_distance;
     request.grid_cell_size = qualified_grid_cell;
@@ -889,10 +912,20 @@ bool cuda_contact4_try_empty (
     const double lower_ms =
       std::chrono::duration<double, std::milli> (
         std::chrono::steady_clock::now () - begin).count ();
-    const db::CudaActive3Attempt attempt =
-      db::cuda_spatial_try_contact4_empty (request);
+    const std::chrono::steady_clock::time_point call_begin =
+      std::chrono::steady_clock::now ();
+    const db::CudaActive3Attempt attempt = raw_primary
+      ? db::cuda_spatial_try_contact4_raw_active_empty (request)
+      : db::cuda_spatial_try_contact4_empty (request);
+    const std::chrono::steady_clock::time_point done =
+      std::chrono::steady_clock::now ();
+    const double call_ms =
+      std::chrono::duration<double, std::milli> (done - call_begin).count ();
+    const double live_total_ms =
+      std::chrono::duration<double, std::milli> (done - begin).count ();
     if (telemetry) {
-      tl::info << "CUDA CONTACT.4 live lowering:"
+      tl::info << telemetry_prefix
+               << " primary=" << primary_kind
                << " contexts=" << request.context_count
                << " indexed_contact_contexts=" << request.well_context_count
                << " streamed_active_contexts=" << request.active_context_count
@@ -900,13 +933,15 @@ bool cuda_contact4_try_empty (
                << " stored_edges=" << request.edge_count
                << " indexed_contact_edges=" << request.flat_well_edge_count
                << " streamed_active_edges=" << request.flat_active_edge_count
-               << " lower_ms=" << lower_ms;
+               << " lower_ms=" << lower_ms
+               << " call_ms=" << call_ms
+               << " live_total_ms=" << live_total_ms;
     }
     return attempt.disposition == db::CudaActive3Attempt::CertifiedEmpty;
   } catch (const std::exception &ex) {
     if (telemetry) {
       try {
-        tl::info << "CUDA CONTACT.4 live lowering:"
+        tl::info << telemetry_prefix
                  << " outcome=cpu-fallback message=" << ex.what ();
       } catch (...) {
         //  Telemetry must never turn a speculative decline into an error.
@@ -915,7 +950,7 @@ bool cuda_contact4_try_empty (
   } catch (...) {
     if (telemetry) {
       try {
-        tl::info << "CUDA CONTACT.4 live lowering:"
+        tl::info << telemetry_prefix
                  << " outcome=cpu-fallback message=unknown exception";
       } catch (...) {
         //  Telemetry must never turn a speculative decline into an error.
@@ -923,6 +958,34 @@ bool cuda_contact4_try_empty (
     }
   }
   return false;
+}
+
+bool cuda_contact4_try_empty (
+  db::edge_relation_type relation, bool different_polygons,
+  db::Coord distance, const db::RegionCheckOptions &options,
+  const db::DeepLayer &merged_active, const db::DeepLayer &raw_active,
+  const db::DeepLayer &raw_contact)
+{
+  return cuda_contact4_try_empty_impl (
+    relation, different_polygons, distance, options,
+    merged_active, raw_active, raw_contact,
+    KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_SUPERSET_EMPTY,
+    KLAYOUT_CUDA_SPATIAL_CONTACT4_QUALIFIED_OPTIONS, "merged", false);
+}
+
+bool cuda_contact4_raw_active_try_empty (
+  db::edge_relation_type relation, bool different_polygons,
+  db::Coord distance, const db::RegionCheckOptions &options,
+  const db::DeepLayer &raw_active, const db::DeepLayer &raw_contact)
+{
+  if (! env_enabled ("KLAYOUT_CUDA_CONTACT4_RAW_ACTIVE")) {
+    return false;
+  }
+  return cuda_contact4_try_empty_impl (
+    relation, different_polygons, distance, options,
+    raw_active, raw_active, raw_contact,
+    KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_SUPERSET_EMPTY,
+    KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_QUALIFIED_OPTIONS, "raw", true);
 }
 
 } // namespace db

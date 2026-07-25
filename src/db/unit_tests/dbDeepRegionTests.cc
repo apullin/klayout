@@ -26,6 +26,7 @@
 #include "dbTestSupport.h"
 #include "dbRegion.h"
 #include "dbEdges.h"
+#include "dbEdgePairRelations.h"
 #include "dbRegionUtils.h"
 #include "dbRegionProcessors.h"
 #include "dbEdgesUtils.h"
@@ -40,8 +41,91 @@
 #include "tlUnitTest.h"
 #include "tlStream.h"
 
+#include <initializer_list>
+#include <random>
+#include <vector>
+
 namespace
 {
+
+typedef std::vector<db::Polygon> Contact4RawLayer;
+
+struct Contact4SupersetResult
+{
+  bool merged_hit;
+  bool raw_hit;
+};
+
+static Contact4RawLayer
+contact4_boxes (std::initializer_list<db::Box> boxes)
+{
+  Contact4RawLayer polygons;
+  polygons.reserve (boxes.size ());
+  for (std::initializer_list<db::Box>::const_iterator b = boxes.begin (); b != boxes.end (); ++b) {
+    polygons.push_back (db::Polygon (*b));
+  }
+  return polygons;
+}
+
+static db::Region
+contact4_region (const Contact4RawLayer &polygons)
+{
+  db::Region region;
+  for (Contact4RawLayer::const_iterator p = polygons.begin (); p != polygons.end (); ++p) {
+    region.insert (*p);
+  }
+  return region;
+}
+
+static bool
+contact4_raw_unshielded_hit (const Contact4RawLayer &active,
+                             const Contact4RawLayer &contact,
+                             db::Coord distance,
+                             const db::RegionCheckOptions &options)
+{
+  db::EdgeRelationFilter filter (db::OverlapRelation, distance, options);
+
+  //  This is intentionally just the complete Cartesian product.  There is no
+  //  shielding, spatial pruning or unioning here: it is the conservative raw
+  //  edge superset consumed by the early-empty certificate.
+  for (Contact4RawLayer::const_iterator a = active.begin (); a != active.end (); ++a) {
+    for (db::Polygon::polygon_edge_iterator ae = a->begin_edge (); ! ae.at_end (); ++ae) {
+      for (Contact4RawLayer::const_iterator c = contact.begin (); c != contact.end (); ++c) {
+        for (db::Polygon::polygon_edge_iterator ce = c->begin_edge (); ! ce.at_end (); ++ce) {
+          if (filter.check (*ae, *ce, 0)) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+static Contact4SupersetResult
+contact4_superset_result (const Contact4RawLayer &active,
+                          const Contact4RawLayer &contact,
+                          db::Coord distance)
+{
+  db::Region merged_active = contact4_region (active);
+  db::Region merged_contact = contact4_region (contact);
+  merged_active.merge ();
+  merged_contact.merge ();
+
+  db::RegionCheckOptions options;
+  //  Removing shielding makes this premise a superset of the production
+  //  CONTACT.4 result.  Proving the implication for this stronger premise
+  //  also proves it for the normal shielded check.
+  options.shielded = false;
+
+  Contact4SupersetResult result;
+  result.merged_hit =
+    ! merged_active.enclosing_check (merged_contact, distance, options).empty ();
+  result.raw_hit =
+    contact4_raw_unshielded_hit (active, contact, distance, options);
+  return result;
+}
 
 class GridCheckSpoofedRegularArray
   : public db::regular_array<db::Coord>
@@ -1205,6 +1289,194 @@ TEST(18_MultiPolygonChecks)
     CHECKPOINT();
     db::compare_layouts (_this, target, tl::testdata () + "/algo/deep_region_au18.gds");
   }
+}
+
+TEST(contact4_raw_active_superset_proof)
+{
+  const db::Coord distance = 10;
+
+  //  Two abutting ACTIVE rectangles merge into one boundary whose long edge
+  //  is assembled from raw edge pieces.
+  {
+    Contact4SupersetResult r = contact4_superset_result (
+      contact4_boxes ({
+        db::Box (0, 0, 50, 100), db::Box (50, 0, 100, 100)
+      }),
+      contact4_boxes ({
+        db::Box (20, 9, 80, 40)
+      }),
+      distance
+    );
+    EXPECT_EQ (r.merged_hit, true);
+    EXPECT_EQ (r.raw_hit, true);
+  }
+
+  //  Overlap removes the two close internal ACTIVE edges.  The merged check
+  //  is clean, while the raw superset deliberately reports a conservative
+  //  hit and therefore forces the CUDA certificate to fall back.
+  {
+    Contact4SupersetResult r = contact4_superset_result (
+      contact4_boxes ({
+        db::Box (0, 0, 60, 100), db::Box (40, 0, 100, 100)
+      }),
+      contact4_boxes ({
+        db::Box (45, 20, 55, 80)
+      }),
+      distance
+    );
+    EXPECT_EQ (r.merged_hit, false);
+    EXPECT_EQ (r.raw_hit, true);
+  }
+
+  //  Containment and duplicate polygons exercise raw edges that disappear
+  //  completely during unioning.
+  {
+    Contact4SupersetResult r = contact4_superset_result (
+      contact4_boxes ({
+        db::Box (0, 0, 100, 100), db::Box (20, 20, 80, 80),
+        db::Box (0, 0, 100, 100)
+      }),
+      contact4_boxes ({
+        db::Box (9, 30, 35, 70), db::Box (9, 30, 35, 70)
+      }),
+      distance
+    );
+    EXPECT_EQ (r.merged_hit, true);
+    EXPECT_EQ (r.raw_hit, true);
+  }
+
+  //  A T-junction creates split union-boundary segments.
+  {
+    Contact4SupersetResult r = contact4_superset_result (
+      contact4_boxes ({
+        db::Box (0, 0, 100, 40), db::Box (40, 40, 60, 100)
+      }),
+      contact4_boxes ({
+        db::Box (45, 45, 55, 80)
+      }),
+      distance
+    );
+    EXPECT_EQ (r.merged_hit, true);
+    EXPECT_EQ (r.raw_hit, true);
+  }
+
+  //  Four rectangles union into a ring.  The CONTACT is close to both the
+  //  exterior and the merged hole boundary.
+  {
+    Contact4SupersetResult r = contact4_superset_result (
+      contact4_boxes ({
+        db::Box (0, 0, 20, 100), db::Box (80, 0, 100, 100),
+        db::Box (20, 0, 80, 20), db::Box (20, 80, 80, 100)
+      }),
+      contact4_boxes ({
+        db::Box (5, 30, 15, 70)
+      }),
+      distance
+    );
+    EXPECT_EQ (r.merged_hit, true);
+    EXPECT_EQ (r.raw_hit, true);
+  }
+
+  //  CONTACT.4 is strict: 9 DBU is a hit and exactly 10 DBU is clean.
+  {
+    Contact4RawLayer active = contact4_boxes ({
+      db::Box (0, 0, 100, 100)
+    });
+    Contact4SupersetResult r9 = contact4_superset_result (
+      active, contact4_boxes ({ db::Box (9, 30, 40, 70) }), distance
+    );
+    Contact4SupersetResult r10 = contact4_superset_result (
+      active, contact4_boxes ({ db::Box (10, 30, 40, 70) }), distance
+    );
+    EXPECT_EQ (r9.merged_hit, true);
+    EXPECT_EQ (r9.raw_hit, true);
+    EXPECT_EQ (r10.merged_hit, false);
+    EXPECT_EQ (r10.raw_hit, false);
+  }
+
+  //  Exhaust every ordered pair of raw ACTIVE rectangles, every raw CONTACT
+  //  rectangle, and translations around the 9/10 DBU boundary on a 3x3
+  //  coordinate lattice.
+  Contact4RawLayer lattice;
+  const db::Coord lattice_coords[] = { 0, 10, 20 };
+  for (size_t x1 = 0; x1 + 1 < 3; ++x1) {
+    for (size_t x2 = x1 + 1; x2 < 3; ++x2) {
+      for (size_t y1 = 0; y1 + 1 < 3; ++y1) {
+        for (size_t y2 = y1 + 1; y2 < 3; ++y2) {
+          lattice.push_back (db::Polygon (db::Box (
+            lattice_coords [x1], lattice_coords [y1],
+            lattice_coords [x2], lattice_coords [y2]
+          )));
+        }
+      }
+    }
+  }
+
+  const db::Coord shifts[] = { -10, -9, 0, 9, 10 };
+  size_t exhaustive_cases = 0;
+  size_t exhaustive_merged_hits = 0;
+  size_t exhaustive_raw_only_hits = 0;
+  for (size_t a1 = 0; a1 < lattice.size (); ++a1) {
+    for (size_t a2 = 0; a2 < lattice.size (); ++a2) {
+      Contact4RawLayer active;
+      active.push_back (lattice [a1]);
+      active.push_back (lattice [a2]);
+      for (size_t c = 0; c < lattice.size (); ++c) {
+        for (size_t sx = 0; sx < sizeof (shifts) / sizeof (shifts [0]); ++sx) {
+          for (size_t sy = 0; sy < sizeof (shifts) / sizeof (shifts [0]); ++sy) {
+            Contact4RawLayer contact;
+            contact.push_back (lattice [c].transformed (
+              db::Trans (db::Vector (shifts [sx], shifts [sy]))
+            ));
+            Contact4SupersetResult r =
+              contact4_superset_result (active, contact, distance);
+            if (r.merged_hit && ! r.raw_hit) {
+              FAIL_ARG ("merged CONTACT.4 hit has no exhaustive raw witness", exhaustive_cases);
+            }
+            exhaustive_merged_hits += r.merged_hit ? 1 : 0;
+            exhaustive_raw_only_hits += (! r.merged_hit && r.raw_hit) ? 1 : 0;
+            ++exhaustive_cases;
+          }
+        }
+      }
+    }
+  }
+  EXPECT_EQ (exhaustive_cases, size_t (18225));
+  EXPECT_GT (exhaustive_merged_hits, size_t (0));
+  EXPECT_GT (exhaustive_raw_only_hits, size_t (0));
+
+  //  Fixed-seed random unions add larger connected components, containment,
+  //  duplicate opportunities and multi-polygon CONTACT layers.
+  std::mt19937 random (0xc04ac7u);
+  size_t random_merged_hits = 0;
+  size_t random_raw_only_hits = 0;
+  for (size_t case_id = 0; case_id < 1000; ++case_id) {
+    Contact4RawLayer active, contact;
+    const size_t na = 1 + random () % 5;
+    const size_t nc = 1 + random () % 4;
+    for (size_t i = 0; i < na + nc; ++i) {
+      const db::Coord x = (int (random () % 13) - 6) * 5;
+      const db::Coord y = (int (random () % 13) - 6) * 5;
+      const db::Coord w = (1 + random () % 5) * 5;
+      const db::Coord h = (1 + random () % 5) * 5;
+      db::Polygon polygon (db::Box (x, y, x + w, y + h));
+      if (i < na) {
+        active.push_back (polygon);
+      } else {
+        contact.push_back (polygon);
+      }
+    }
+
+    Contact4SupersetResult r =
+      contact4_superset_result (active, contact, distance);
+    if (r.merged_hit && ! r.raw_hit) {
+      FAIL_ARG ("merged CONTACT.4 hit has no random raw witness", case_id);
+    }
+    random_merged_hits += r.merged_hit ? 1 : 0;
+    random_raw_only_hits += (! r.merged_hit && r.raw_hit) ? 1 : 0;
+  }
+  EXPECT_GT (random_merged_hits, size_t (0));
+  EXPECT_GT (random_raw_only_hits, size_t (0));
 }
 
 TEST(19_GridCheck)

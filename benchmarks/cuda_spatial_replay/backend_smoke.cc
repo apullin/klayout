@@ -1204,10 +1204,94 @@ bool run_contact4_abi_smoke() {
   }
   good = wrong_distance_good && good;
 
+  // The early raw-ACTIVE profile has a distinct optional symbol.  This lets a
+  // host reject a stale backend before lowering the much larger raw scene and
+  // prevents either entry point from silently accepting the other's profile.
+  edges[0] = {200, 200, 200, 800};
+  edges[1] = {200, 800, 800, 800};
+  edges[2] = {800, 800, 800, 200};
+  edges[3] = {800, 200, 200, 200};
+  request.well_left = 200;
+  request.well_bottom = 200;
+  request.well_right = 800;
+  request.well_top = 800;
+  request.opcode =
+      KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_SUPERSET_EMPTY;
+  request.option_flags =
+      KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_QUALIFIED_OPTIONS;
+  request.distance = 10;
+  const bool raw_active_digest_good = set_active3_digest(request);
+  klayout_cuda_spatial_active3_result_v1 raw_active_clean{};
+  const int raw_active_status =
+      raw_active_digest_good
+          ? klayout_cuda_spatial_run_contact4_raw_active_empty_v1(
+                &request, &raw_active_clean)
+          : KLAYOUT_CUDA_SPATIAL_ERROR;
+  const bool raw_active_good =
+      raw_active_digest_good &&
+      raw_active_status == KLAYOUT_CUDA_SPATIAL_OK &&
+      raw_active_clean.status == KLAYOUT_CUDA_SPATIAL_OK &&
+      raw_active_clean.disposition ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_COMPLETE &&
+      raw_active_clean.opcode ==
+          KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_SUPERSET_EMPTY &&
+      raw_active_clean.option_flags ==
+          KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_BOTH_QUALIFIED_OPTIONS &&
+      raw_active_clean.fallback_flags == 0 &&
+      raw_active_clean.device_flags == 0 &&
+      raw_active_clean.raw_hit_count == 0 &&
+      raw_active_clean.uncertain_count == 0;
+  if (!raw_active_good) {
+    report_active3_failure(
+        "CUDA CONTACT.4 raw-ACTIVE symbol smoke",
+        raw_active_status, raw_active_clean);
+  }
+  good = raw_active_good && good;
+
+  klayout_cuda_spatial_active3_result_v1 raw_through_old{};
+  const int raw_through_old_status =
+      klayout_cuda_spatial_run_active3_empty_v1(
+          &request, &raw_through_old);
+  const bool raw_through_old_good =
+      raw_through_old_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      raw_through_old.status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      raw_through_old.disposition ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN;
+  if (!raw_through_old_good) {
+    report_active3_failure(
+        "CUDA CONTACT.4 raw profile rejected by established symbol",
+        raw_through_old_status, raw_through_old);
+  }
+  good = raw_through_old_good && good;
+
+  request.opcode =
+      KLAYOUT_CUDA_SPATIAL_CONTACT4_RAW_SUPERSET_EMPTY;
+  request.option_flags =
+      KLAYOUT_CUDA_SPATIAL_CONTACT4_QUALIFIED_OPTIONS;
+  const bool merged_digest_good = set_active3_digest(request);
+  klayout_cuda_spatial_active3_result_v1 merged_through_raw{};
+  const int merged_through_raw_status =
+      merged_digest_good
+          ? klayout_cuda_spatial_run_contact4_raw_active_empty_v1(
+                &request, &merged_through_raw)
+          : KLAYOUT_CUDA_SPATIAL_ERROR;
+  const bool merged_through_raw_good =
+      merged_digest_good &&
+      merged_through_raw_status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      merged_through_raw.status == KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT &&
+      merged_through_raw.disposition ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_UNCERTAIN;
+  if (!merged_through_raw_good) {
+    report_active3_failure(
+        "CUDA CONTACT.4 merged profile rejected by raw symbol",
+        merged_through_raw_status, merged_through_raw);
+  }
+  good = merged_through_raw_good && good;
+
   if (good) {
     std::cout << "CUDA CONTACT.4 additive profile smoke passed: "
                  "clean, reversed-operand raw hit, actual-candidate cap, "
-                 "strict options/distance\n";
+                 "strict options/distance, distinct raw-ACTIVE symbol\n";
   }
   return good;
 }

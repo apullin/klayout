@@ -47,6 +47,19 @@ DB_PUBLIC bool cuda_contact4_try_empty (
   const db::RegionCheckOptions &options, const db::DeepLayer &merged_active,
   const db::DeepLayer &raw_active, const db::DeepLayer &raw_contact);
 
+/**
+ * Try CONTACT.4 before constructing merged ACTIVE.
+ *
+ * This opt-in indexes the complete raw CONTACT secondary and streams the
+ * complete raw ACTIVE primary.  A certified zero-hit raw superset permits an
+ * empty return; every other outcome leaves the established merged-CUDA/CPU
+ * path untouched.
+ */
+DB_PUBLIC bool cuda_contact4_raw_active_try_empty (
+  db::edge_relation_type relation, bool different_polygons, db::Coord distance,
+  const db::RegionCheckOptions &options, const db::DeepLayer &raw_active,
+  const db::DeepLayer &raw_contact);
+
 } // namespace db
 
 #endif
