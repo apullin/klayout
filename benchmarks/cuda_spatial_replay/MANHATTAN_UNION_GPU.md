@@ -28,6 +28,13 @@ orthogonal transforms to boxes in device code.  A resident production path can
 write this 48-byte record directly to device memory and enter the union without
 a host round trip.
 
+The engine now lives in the independently linkable
+`manhattan_union_gpu.cu`/`.cuh` core.  `manhattan_union_replay.cu` is only a
+qualification and production driver linked against that core; a live backend
+does not compile or include executable-source code.  The public entry points
+preserve the historical checked host-vector path and additionally accept
+ownership of an already-resident `thrust::device_vector<RectI64>`.
+
 ## GPU pipeline
 
 1. Copy expanded rectangles and sort/unique all x endpoints.
@@ -48,14 +55,29 @@ a host round trip.
    already canonical, so copy them to the host in axis order without a final
    full-output device sort or concatenation buffer.
 
+An optional resident-strip callback receives an explicit CUDA stream after the
+strip status has passed and exact x endpoints, intervals, offsets, and counts
+are live.  The callback is synchronous and may not retain those pointers.  A
+consumer requesting no host boundary takes an early branch before horizontal
+compaction and vertical XOR; the result explicitly reports
+`resident_consumer_completed` instead of masquerading as an empty boundary.
+
 All device allocation and teardown, H2D/D2H transfers, sorting, scanning,
 compaction, and output hashing are charged in `total_ms`.  The first run also
 charges CUDA context initialization.  Later process-local runs model a warm
 server retaining the CUDA runtime, but this milestone intentionally does not
 retain scene buffers between calls.
 
-Any rectangle, event, membership, segment, arithmetic or internal coverage
-invariant failure returns a fallback with no partial result.
+For the already-resident entry point, upstream compact upload/expansion time is
+reported separately as `input_prepare_ms`: `total_ms` begins at the union call,
+`h2d_ms` is zero, and `charged_total_ms` is their sum.  The historical host
+entry retains its original H2D and total-time accounting.
+
+Rectangle, x-slab, membership, event, raw-segment, canonical-segment, and
+per-rectangle slab limits are independent.  Any capacity, arithmetic, or
+internal coverage invariant failure returns a fallback with no partial result.
+The production qualification explicitly sets 100M memberships, 200M events,
+12M raw segments, 8M canonical segments, and 64 slabs per rectangle.
 
 `sampled_live_allocation_delta_mib` is the largest live-allocation delta seen
 at explicit phase boundaries.  It is not an allocator high-water mark:
@@ -66,6 +88,9 @@ samples.
 
 `run_manhattan_union_replay.sh` builds and runs:
 
+- a link-level shared-core smoke covering host and resident ownership,
+  stream-ordered strip consumption, early stop, callback rejection, bound
+  rejection, charged resident timing, and independent raw/final caps;
 - 15 directed fixtures: overlap, duplicate, nesting, edge/corner touch,
   T-junction, plus, hole, covered seams, a containment bridge, negative
   coordinates and large signed-int64 coordinates;
@@ -109,7 +134,9 @@ The qualified raw FreePDK45 M2 capture contains:
 - 22,946,444 exact rectangle records after deterministic decomposition;
 - 46,384 unique world x coordinates;
 - 92,386,704 rectangle/slab memberships, maximum span 43;
-- 184,773,408 y events before equal-key reduction.
+- 184,773,408 y events before equal-key reduction;
+- 9,575,624 raw boundary fragments before canonical compaction;
+- 4,385,384 canonical directed boundary segments.
 
 The capture is
 `/tmp/m2-via1-x2.39i7kG/m2-via1-x2.kact`; the existing merged contour oracle is

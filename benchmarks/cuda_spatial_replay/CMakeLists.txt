@@ -33,6 +33,34 @@ set_target_properties(manhattan_union_replay PROPERTIES
   CUDA_RESOLVE_DEVICE_SYMBOLS OFF
 )
 
+add_library(manhattan_union_gpu_core STATIC
+  manhattan_union_gpu.cu
+)
+target_compile_options(manhattan_union_gpu_core PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(manhattan_union_gpu_core PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+  POSITION_INDEPENDENT_CODE ON
+)
+
+add_executable(manhattan_union_gpu_core_smoke
+  manhattan_union_gpu_core_smoke.cu
+)
+target_compile_options(manhattan_union_gpu_core_smoke PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(manhattan_union_gpu_core_smoke PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+)
+target_link_libraries(manhattan_union_gpu_core_smoke PRIVATE
+  manhattan_union_gpu_core
+)
+
 add_executable(m2_via2_certificate
   m2_via2_certificate.cu
 )
@@ -295,6 +323,7 @@ if(KLAYOUT_QMAKE_BUILD_DIR)
 endif()
 
 target_link_libraries(manhattan_union_replay PRIVATE
+  manhattan_union_gpu_core
   m2_manhattan_production_loader
   m2_merged_boundary_oracle
   Threads::Threads
