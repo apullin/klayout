@@ -1931,6 +1931,35 @@ not just wall time.
           same-process repeated-layout A/B before converting those CPU
           residuals into a booked wall claim.
 
+          - [x] **Replace the CPU-residual estimate with contiguous wall
+            timers:** opt-in `steady_clock` telemetry now measures the actual
+            `merged_deep_layer` and multi-output phases without changing the
+            default log.  On the isolated x2 M2 owner, the first native merge
+            is **46.331706 s wall**: 17.984752 s building connectivity
+            clusters, 27.925069 s in `ClusterMerger`, and 0.421864 s
+            finalizing.  The following exact CUDA width/space transaction is
+            2.890375 s, making the complete `drc_batch` 49.237822 s.  A later
+            derived-layer merge in `classify_by_width` is another 21.279905 s.
+            External owner wall is 91.36 s; the report is byte-identical to
+            the prior gate at SHA-256
+            `55da1c410253ef51f00af69758bd899a67ce70fe6161d1711ef77271f5ca3a0a`.
+            Telemetry commit `0a0c2d1`; evidence:
+            `.scratchpad/cuda-runs/m2-merge-exact-telemetry.BuE1Rq`.
+
+          - [ ] **Replace the qualified raw-M2 merge with an exact resident
+            Manhattan union:** treat material coverage and canonical directed
+            boundaries as the contract, not the historical CPU contour-merger
+            algorithm.  The clean-only path must preserve clockwise
+            interior-right edges, detect holes and maximum-coherence
+            kissing-corner ambiguity, and fail closed on unsupported topology,
+            properties, transforms, capacities, or any nonempty/uncertain
+            result.  Validate against the 13,166-polygon/4,380,228-stored-edge
+            CPU-merged oracle before live integration.  A narrow M2.1/.2
+            bypass is insufficient because the later M2.5--.9 width
+            classification reuses the merged cache and can merely move the
+            46-second payment; either publish an equivalent exact merged layer
+            or extend the resident certificate through the whole M2 owner.
+
           Cache immutable merged M1/M2 geometry (or an equivalent canonical
           raw-layer scene), then the shared 273-cell/849,265-context hierarchy,
           cell-local layer templates, and device indexes.  Bind every reuse to
