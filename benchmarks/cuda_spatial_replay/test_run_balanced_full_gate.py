@@ -170,6 +170,7 @@ class BalancedFullGateStaticTest(unittest.TestCase):
             "--with-active3-well-union",
             "--with-contact4-active-union",
             "--with-m2-rules",
+            "--with-m1-5-9",
             "--with-m2-width-space",
             "--with-implant12",
             "--with-poly34",
@@ -194,6 +195,25 @@ class BalancedFullGateStaticTest(unittest.TestCase):
         )
         self.assertIn(
             "CUDA ACTIVE.3 exact resident WELL-union certificate:"
+            " outcome=certified-empty",
+            self.launcher_text,
+        )
+
+    def test_m1_5_9_control_and_candidate_share_one_deck(self) -> None:
+        self.assertIn(
+            "m1_5_9_generator_args=(--m1-5-9)",
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_CUDA_M1_5_9=${m1_5_9}"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_CUDA_M1_5_9_TELEMETRY=1"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            "CUDA M1 exact resident morphology certificate:"
             " outcome=certified-empty",
             self.launcher_text,
         )

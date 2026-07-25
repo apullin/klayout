@@ -14,6 +14,7 @@ Usage:
     [--with-active3-well-union|--without-active3-well-union] \
     [--with-contact4-active-union|--without-contact4-active-union] \
     [--with-m2-rules|--without-m2-rules] \
+    [--with-m1-5-9|--without-m1-5-9] \
     [--with-m2-width-space|--without-m2-width-space] \
     [--with-implant12|--without-implant12] \
     [--with-poly34|--without-poly34] \
@@ -59,6 +60,11 @@ its runtime environment. The default omits that deck rewrite and preserves
 the older qualified gate. The enabled M2-rules owner and the independent
 M2-width/space certificate cannot run together; use --without-m2-width-space
 for an explicit same-deck M2-rules candidate or control.
+
+--with-m1-5-9 and --without-m1-5-9 both generate the identical fail-closed
+raw-M1 resident-morphology transaction inside the exact m1_via_class owner,
+then toggle only its runtime environment.  The sole bypass is a complete,
+all-five-bit empty proof; every decline runs the literal M1.5-.9 CPU block.
 
 --with-m2-width-space and --without-m2-width-space preserve the same deck and
 toggle only the separately qualified METAL2.1/.2 runtime transaction.  The
@@ -113,6 +119,7 @@ active3_well_union=-1
 contact4_active_union=-1
 implant12=-1
 m2_rules=-1
+m1_5_9=-1
 m2_width_space=-1
 poly34=-1
 prune_poly2=0
@@ -232,6 +239,18 @@ while (($#)); do
       ((m2_rules == -1)) ||
         die "choose exactly one M2-rules runtime mode"
       m2_rules=0
+      shift
+      ;;
+    --with-m1-5-9)
+      ((m1_5_9 == -1)) ||
+        die "choose exactly one M1.5-.9 runtime mode"
+      m1_5_9=1
+      shift
+      ;;
+    --without-m1-5-9)
+      ((m1_5_9 == -1)) ||
+        die "choose exactly one M1.5-.9 runtime mode"
+      m1_5_9=0
       shift
       ;;
     --with-m2-width-space)
@@ -392,6 +411,15 @@ if ((m2_rules >= 0)); then
     "KLAYOUT_CUDA_M2_RULES_TELEMETRY=${m2_rules}"
   )
 fi
+m1_5_9_generator_args=()
+m1_5_9_env=()
+if ((m1_5_9 >= 0)); then
+  m1_5_9_generator_args=(--m1-5-9)
+  m1_5_9_env=(
+    "KLAYOUT_CUDA_M1_5_9=${m1_5_9}"
+    "KLAYOUT_CUDA_M1_5_9_TELEMETRY=1"
+  )
+fi
 m2_width_space_env=()
 if ((m2_width_space >= 0)); then
   m2_width_space_env=(
@@ -430,6 +458,7 @@ run_transform "live CUDA deck generation" \
   "${python}" "${deck_generator}" \
     --input "${source_deck}" --output "${generator_deck}" --m1-contact \
     "${active3_well_union_generator_args[@]}" \
+    "${m1_5_9_generator_args[@]}" \
     "${m2_rules_generator_args[@]}" \
     "${implant12_generator_args[@]}" \
     "${poly34_generator_args[@]}"
@@ -565,6 +594,7 @@ set +e
       "${active3_well_union_env[@]}" \
       KLAYOUT_CUDA_M1_WIDTH_SPACE=1 \
       KLAYOUT_CUDA_M1_WIDTH_SPACE_TELEMETRY=1 \
+      "${m1_5_9_env[@]}" \
       "${m2_rules_env[@]}" \
       "${m2_width_space_env[@]}" \
       KLAYOUT_CUDA_VIA1_STACK=1 \
@@ -653,6 +683,22 @@ fi
 require_telemetry \
   "CUDA M1 width/space empty certificate: outcome=certified-empty" \
   "M1 width/space certified-empty"
+if ((m1_5_9 == 1)); then
+  require_telemetry \
+    "CUDA M1 exact resident morphology certificate: outcome=certified-empty" \
+    "M1.5-.9 exact resident morphology certified-empty"
+  require_telemetry \
+    "CUDA M1.5-.9 exact live lowering: outcome=certified-empty" \
+    "M1.5-.9 exact live lowering"
+  require_telemetry \
+    "CUDA M1.5-.9 transaction: certified-empty" \
+    "M1.5-.9 empty-output transaction"
+elif ((m1_5_9 == 0)) &&
+     grep -R -Eq --include='*.log' -- \
+       'CUDA M1(\.5-\.9 exact| exact resident morphology)' \
+       "${shard_dir}"; then
+  die "M1.5-.9-off control unexpectedly invoked the exact CUDA path"
+fi
 if ((m2_width_space == 1)); then
   require_telemetry \
     "CUDA M2 width/space empty certificate: outcome=certified-empty" \
@@ -743,7 +789,7 @@ if ! cmp -s -- "${reference_canonical}" "${report_canonical}"; then
 fi
 
 grep -R -nE --include='*.log' -- \
-  'CUDA ACTIVE\.3 exact resident WELL-union certificate:|CUDA ACTIVE\.3 exact WELL-union live lowering:|CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M2 width/space empty certificate:|CUDA M2 width/space live lowering:|CUDA M2 exact union boundary:|CUDA M2 live flat operands:|CUDA M2 rules transaction:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA CONTACT\.4 fused ACTIVE-union empty certificate:|CUDA CONTACT\.4 fused ACTIVE-union live lowering:|CUDA CONTACT\.4 empty certificate:|CUDA CONTACT\.4 live lowering:|CUDA IMPLANT\.1/\.2 transaction:|CUDA IMPLANT\.1/\.2 empty certificate:|CUDA IMPLANT\.1/\.2 live lowering:|CUDA POLY\.3/\.4 transaction:|CUDA POLY\.3/\.4 live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_EDGE_CERT ' \
+  'CUDA ACTIVE\.3 exact resident WELL-union certificate:|CUDA ACTIVE\.3 exact WELL-union live lowering:|CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M1 exact resident morphology certificate:|CUDA M1\.5-\.9 exact live lowering:|CUDA M1\.5-\.9 transaction:|CUDA M2 width/space empty certificate:|CUDA M2 width/space live lowering:|CUDA M2 exact union boundary:|CUDA M2 live flat operands:|CUDA M2 rules transaction:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA CONTACT\.4 fused ACTIVE-union empty certificate:|CUDA CONTACT\.4 fused ACTIVE-union live lowering:|CUDA CONTACT\.4 empty certificate:|CUDA CONTACT\.4 live lowering:|CUDA IMPLANT\.1/\.2 transaction:|CUDA IMPLANT\.1/\.2 empty certificate:|CUDA IMPLANT\.1/\.2 live lowering:|CUDA POLY\.3/\.4 transaction:|CUDA POLY\.3/\.4 live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_EDGE_CERT ' \
   "${shard_dir}" >"${work}/cuda-telemetry.txt"
 
 grep -E \
@@ -785,4 +831,4 @@ cat -- "${work}/launcher-summary.txt"
 cat -- "${work}/canonical-report-sha256.txt"
 cat -- "${work}/cuda-telemetry.txt"
 echo \
-  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} active3_well_union=${active3_well_union} contact4_active_union=${contact4_active_union} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} poly34=${poly34} prune_poly2=${prune_poly2} split_lower_antenna=${split_lower_antenna} split_upper_antenna=${split_upper_antenna} split_implant_contact=${split_implant_contact} split_active12=${split_active12}"
+  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} active3_well_union=${active3_well_union} contact4_active_union=${contact4_active_union} m1_5_9=${m1_5_9} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} poly34=${poly34} prune_poly2=${prune_poly2} split_lower_antenna=${split_lower_antenna} split_upper_antenna=${split_upper_antenna} split_implant_contact=${split_implant_contact} split_active12=${split_active12}"

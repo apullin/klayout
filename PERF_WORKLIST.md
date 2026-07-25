@@ -2658,6 +2658,33 @@ not just wall time.
         rejected, so this port will expose antenna as the next independent
         roof after roughly the first 1.4--1.7 seconds of full-wall gain.
 
+        In progress: the dedicated default-off scalar ABI, KM1RAW01 host
+        serializer, exact F90/F270 backend reuse, Ruby/GSI hook, same-deck
+        launcher mode, strict result validator, and focused live probe are
+        implemented.  Six adversarial contract tests pass in both editable
+        and non-editable modes (16/16 selected tests), and the reused CUDA
+        engine still passes all 248 exact morphology differentials.  The
+        union front end now releases dead rectangle/membership staging before
+        sort, reclaiming exactly 2.451 GiB at the production rectangle census
+        while preserving all 86 union self-tests.
+
+        The first fail-closed live census preserved the canonical owner report
+        and pinned digest
+        `02742f05428d84769f0bcdd2eb2878df6530e6abbc04f3445875ce81b071c118`:
+        849,265 contexts, 830,950 M1 contexts, 1,099,662 stored polygons,
+        41,093,878 flat polygons, and 164,386,520 flat edges.  A bounded
+        high-slab/one-membership probe then corrected the earlier memory model:
+        exact raw M1 requires **767,933,902 slab memberships / 1,535,867,804
+        events**, not roughly 166M/331M.  The current all-at-once event
+        representation therefore cannot fit a 10-GiB device and declines
+        safely before allocation; no speedup is booked.  The next required
+        implementation is an exact bounded x-slab-window union producer (or
+        equivalent lower-peak stream) feeding the already-proved resident
+        morphology consumer.  Evidence:
+        `.scratchpad/cuda-runs/m1-resident-morph-census.N7asak`,
+        `.scratchpad/cuda-runs/m1-resident-morph-production.bkyw9Z`, and
+        `.scratchpad/cuda-runs/m1-resident-morph-probe.MhYkgL`.
+
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
         second and third reusable compositions, separate canonical

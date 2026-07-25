@@ -3714,6 +3714,16 @@ CODE
       end
     end
 
+    # Internal, fail-closed acceleration hook for exact FreePDK45 M1.5-.9.
+    # The receiver remains the pristine physical M1 input.  False requires the
+    # complete historical classify-by-width and spacing transaction.
+    def cuda_m1_5_9_clean?
+      @engine._context("cuda_m1_5_9_clean?") do
+        requires_region
+        self.data.cuda_m1_5_9_clean?
+      end
+    end
+
     # Internal, fail-closed acceleration hook for ACTIVE.3 before the WELL
     # union is constructed.  The receiver is pristine physical NWELL; PWELL
     # and ACTIVE are also pristine.  False requires the exact historical WELL

@@ -201,6 +201,65 @@ struct DB_PUBLIC CudaM1WidthSpaceAttempt
   std::string message;
 };
 
+struct DB_PUBLIC CudaM1ResidentMorphologyAttempt
+{
+  enum Disposition
+  {
+    Disabled,
+    CertifiedEmpty,
+    NotEmpty,
+    BackendFallback,
+    BackendError,
+    InvalidResult
+  };
+
+  CudaM1ResidentMorphologyAttempt ();
+
+  Disposition disposition;
+  uint32_t certified_empty_mask;
+  uint32_t fallback_flags;
+  uint32_t device_flags;
+  uint64_t context_count;
+  uint64_t metal_context_count;
+  uint64_t cell_count;
+  uint64_t polygon_count;
+  uint64_t edge_count;
+  uint64_t flat_polygon_count;
+  uint64_t flat_edge_count;
+  uint64_t rectangle_count;
+  uint64_t x_slab_count;
+  uint64_t union_membership_count;
+  uint64_t union_event_count;
+  uint64_t strip_interval_count;
+  uint64_t erode89_output_interval_count;
+  uint64_t erode89_source_visit_count;
+  uint64_t dilate90_output_interval_count;
+  uint64_t dilate90_source_visit_count;
+  uint64_t boundary_source_visit_count;
+  uint64_t erode269_source_visit_count;
+  uint64_t f90_boundary_segment_count;
+  uint64_t f90_long_segment_count;
+  uint64_t f90_space_pair_count;
+  uint64_t f90_space_violation_count;
+  uint64_t f90_space_uncertain_count;
+  uint64_t f270_eroded_interval_count;
+  uint64_t union_device_total_bytes;
+  uint64_t union_device_free_begin_bytes;
+  uint64_t union_device_free_low_bytes;
+  uint64_t morph_device_total_bytes;
+  uint64_t morph_device_free_begin_bytes;
+  uint64_t morph_device_free_low_bytes;
+  uint64_t setup_ns;
+  uint64_t h2d_ns;
+  uint64_t rectangle_expand_ns;
+  uint64_t x_membership_ns;
+  uint64_t strip_scan_ns;
+  uint64_t morphology_ns;
+  uint64_t d2h_ns;
+  uint64_t total_ns;
+  std::string message;
+};
+
 struct DB_PUBLIC CudaM2UnionAttempt
 {
   enum Disposition
@@ -583,6 +642,26 @@ DB_PUBLIC bool cuda_spatial_m1_width_space_requested ();
 
 /** Return true only when the independent M2 width/space opt-in and symbol exist. */
 DB_PUBLIC bool cuda_spatial_m2_width_space_requested ();
+
+/**
+ * Invoke the exact raw-M1 union / resident M1.5-.9 certificate.
+ *
+ * Only CertifiedEmpty is consumable.  No geometry is returned: exact union
+ * strips remain device-resident across the fixed F90/F270 morphology and the
+ * result carries only a strictly validated scalar proof plus telemetry.
+ */
+DB_PUBLIC CudaM1ResidentMorphologyAttempt
+cuda_spatial_try_m1_resident_morphology_empty (
+  const klayout_cuda_spatial_m1_resident_morphology_request_v1 &request);
+
+/** Return true only when the independent default-off opt-in and symbol exist. */
+DB_PUBLIC bool cuda_spatial_m1_resident_morphology_requested ();
+
+/** Strict request-echo/capacity/disposition validator shared with tests. */
+DB_PUBLIC bool cuda_spatial_validate_m1_resident_morphology_result (
+  const klayout_cuda_spatial_m1_resident_morphology_request_v1 &request,
+  const klayout_cuda_spatial_m1_resident_morphology_result_v1 &result,
+  int backend_status, std::string *error = 0);
 
 /**
  * Invoke the optional exact raw-M2 Manhattan-union boundary.

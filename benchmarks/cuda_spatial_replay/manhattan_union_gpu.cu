@@ -1206,13 +1206,19 @@ UnionOutput gpu_union_prepared(
         thrust::raw_pointer_cast(event_keys.data()),
         thrust::raw_pointer_cast(event_deltas.data()));
     cuda_require(cudaGetLastError(), "fill slab events");
-    thrust::sort_by_key(
-        thrust::device, event_keys.begin(), event_keys.end(),
-        event_deltas.begin());
+    cuda_require(
+        cudaDeviceSynchronize(), "fill slab events synchronize");
+    // Preserve the historical sampled-live-allocation accounting before
+    // reclaiming the fill-only inputs.  The following radix sort allocates an
+    // event-sized alternate key/value pair, so retaining these three vectors
+    // across it needlessly overlaps that temporary high-water mark.
     sample_device_memory(&output);
     release_device_vector(&device_rectangles);
     release_device_vector(&membership_counts);
     release_device_vector(&membership_offsets);
+    thrust::sort_by_key(
+        thrust::device, event_keys.begin(), event_keys.end(),
+        event_deltas.begin());
 
     thrust::device_vector<PackedEventKey> unique_event_keys(event_count);
     thrust::device_vector<std::int32_t> unique_event_deltas(event_count);

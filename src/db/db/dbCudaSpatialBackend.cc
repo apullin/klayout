@@ -100,6 +100,13 @@ static_assert (
      offsetof (
        klayout_cuda_spatial_active3_well_union_result_v1, active) == 272),
   "ACTIVE.3 WELL-union request/result ABI layout changed");
+static_assert (
+  sizeof (void *) != 8 ||
+    (sizeof (
+       klayout_cuda_spatial_m1_resident_morphology_request_v1) == 408 &&
+     sizeof (
+       klayout_cuda_spatial_m1_resident_morphology_result_v1) == 744),
+  "M1 resident morphology request/result ABI layout changed");
 
 CudaSpatialAttempt::CudaSpatialAttempt ()
   : disposition (Disabled), fallback_flags (0), membership_count (0),
@@ -158,6 +165,28 @@ CudaM1WidthSpaceAttempt::CudaM1WidthSpaceAttempt ()
     pair_work_count (0), unique_edge_pair_count (0), width_pair_count (0),
     space_pair_count (0), width_hit_count (0), space_hit_count (0),
     width_uncertain_count (0), space_uncertain_count (0), total_ns (0)
+{
+  //  nothing yet
+}
+
+CudaM1ResidentMorphologyAttempt::CudaM1ResidentMorphologyAttempt ()
+  : disposition (Disabled), certified_empty_mask (0), fallback_flags (0),
+    device_flags (0), context_count (0), metal_context_count (0),
+    cell_count (0), polygon_count (0), edge_count (0),
+    flat_polygon_count (0), flat_edge_count (0), rectangle_count (0),
+    x_slab_count (0), union_membership_count (0), union_event_count (0),
+    strip_interval_count (0), erode89_output_interval_count (0),
+    erode89_source_visit_count (0), dilate90_output_interval_count (0),
+    dilate90_source_visit_count (0), boundary_source_visit_count (0),
+    erode269_source_visit_count (0), f90_boundary_segment_count (0),
+    f90_long_segment_count (0), f90_space_pair_count (0),
+    f90_space_violation_count (0), f90_space_uncertain_count (0),
+    f270_eroded_interval_count (0), union_device_total_bytes (0),
+    union_device_free_begin_bytes (0), union_device_free_low_bytes (0),
+    morph_device_total_bytes (0), morph_device_free_begin_bytes (0),
+    morph_device_free_low_bytes (0), setup_ns (0), h2d_ns (0),
+    rectangle_expand_ns (0), x_membership_ns (0), strip_scan_ns (0),
+    morphology_ns (0), d2h_ns (0), total_ns (0)
 {
   //  nothing yet
 }
@@ -394,6 +423,85 @@ bool qualified_m2_union_request (
       sizeof (klayout_cuda_spatial_m2_union_segment_v1)) &&
     request.max_segments <=
       uint64_t (std::numeric_limits<std::ptrdiff_t>::max ()) &&
+    strictly_increasing_context_ids (
+      request.metal_contexts, request.metal_context_count,
+      request.context_count);
+}
+
+bool qualified_m1_resident_morphology_request (
+  const klayout_cuda_spatial_m1_resident_morphology_request_v1 &request)
+{
+  return
+    request.abi_version == KLAYOUT_CUDA_SPATIAL_ABI_VERSION &&
+    request.struct_size == sizeof (request) &&
+    request.opcode ==
+      KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M15_9_EMPTY &&
+    request.option_flags ==
+      KLAYOUT_CUDA_SPATIAL_M1_MORPH_QUALIFIED_OPTIONS &&
+    request.format_version == 1 && request.dbu_per_micron == 2000 &&
+    request.device >= 0 &&
+    request.requested_mask ==
+      KLAYOUT_CUDA_SPATIAL_M1_MORPH_ALL_EMPTY &&
+    request.reserved0 == 0 && request.context_reserved == 0 &&
+    request.cell_reserved == 0 && request.polygon_reserved == 0 &&
+    request.edge_reserved == 0 && request.union_reserved == 0 &&
+    request.morph_reserved == 0 &&
+    request.reserved1 [0] == 0 && request.reserved1 [1] == 0 &&
+    request.context_count && request.contexts &&
+    request.context_record_bytes ==
+      sizeof (klayout_cuda_spatial_m1_width_space_context_v1) &&
+    request.metal_context_count && request.metal_contexts &&
+    request.context_polygon_offset_count == request.metal_context_count &&
+    request.context_polygon_offsets &&
+    request.context_edge_offset_count == request.metal_context_count &&
+    request.context_edge_offsets &&
+    request.cell_count && request.cells &&
+    request.cell_record_bytes ==
+      sizeof (klayout_cuda_spatial_m1_width_space_cell_v1) &&
+    request.polygon_count && request.polygons &&
+    request.polygon_record_bytes ==
+      sizeof (klayout_cuda_spatial_m1_width_space_polygon_v1) &&
+    request.edge_count && request.edges &&
+    request.edge_record_bytes ==
+      sizeof (klayout_cuda_spatial_m1_width_space_edge_v1) &&
+    request.root_cell < request.cell_count &&
+    request.flat_polygon_count && request.flat_edge_count &&
+    request.scene_left < request.scene_right &&
+    request.scene_bottom < request.scene_top &&
+    request.max_contexts && request.max_rectangles &&
+    request.max_x_slabs && request.max_union_memberships &&
+    request.max_union_events && request.max_union_raw_segments &&
+    request.max_union_segments && request.max_slabs_per_rectangle &&
+    request.max_morph_output_slabs &&
+    request.max_morph_output_intervals &&
+    request.max_morph_raw_boundary_segments &&
+    request.max_morph_boundary_segments &&
+    request.max_morph_source_visits_per_pass &&
+    request.max_morph_source_visits_per_band &&
+    request.max_morph_long_segments &&
+    request.max_morph_active_slabs &&
+    request.context_count <= request.max_contexts &&
+    request.flat_polygon_count <= request.max_rectangles &&
+    request.context_count <= std::numeric_limits<uint32_t>::max () &&
+    request.metal_context_count <= std::numeric_limits<uint32_t>::max () &&
+    request.cell_count <= std::numeric_limits<uint32_t>::max () &&
+    request.polygon_count <= std::numeric_limits<uint32_t>::max () &&
+    request.edge_count <= std::numeric_limits<uint32_t>::max () &&
+    request.flat_polygon_count <= std::numeric_limits<uint32_t>::max () &&
+    request.flat_edge_count <= std::numeric_limits<uint32_t>::max () &&
+    request.max_x_slabs <= std::numeric_limits<uint32_t>::max () &&
+    request.max_morph_output_slabs <=
+      std::numeric_limits<uint32_t>::max () &&
+    array_bytes_fit (request.context_count, request.context_record_bytes) &&
+    array_bytes_fit (
+      request.metal_context_count, sizeof (uint32_t)) &&
+    array_bytes_fit (
+      request.context_polygon_offset_count, sizeof (uint64_t)) &&
+    array_bytes_fit (
+      request.context_edge_offset_count, sizeof (uint64_t)) &&
+    array_bytes_fit (request.cell_count, request.cell_record_bytes) &&
+    array_bytes_fit (request.polygon_count, request.polygon_record_bytes) &&
+    array_bytes_fit (request.edge_count, request.edge_record_bytes) &&
     strictly_increasing_context_ids (
       request.metal_contexts, request.metal_context_count,
       request.context_count);
@@ -848,6 +956,10 @@ public:
         env_enabled ("KLAYOUT_CUDA_M1_WIDTH_SPACE")),
       m_m1_width_space_telemetry (
         env_enabled ("KLAYOUT_CUDA_M1_WIDTH_SPACE_TELEMETRY")),
+      m_m1_resident_morphology_enabled (
+        env_enabled ("KLAYOUT_CUDA_M1_5_9")),
+      m_m1_resident_morphology_telemetry (
+        env_enabled ("KLAYOUT_CUDA_M1_5_9_TELEMETRY")),
       m_m2_width_space_enabled (
         env_enabled ("KLAYOUT_CUDA_M2_WIDTH_SPACE")),
       m_m2_width_space_telemetry (
@@ -869,6 +981,7 @@ public:
       m_run_contact4_active_union (0),
       m_run_active3_well_union (0),
       m_run_implant12 (0), m_run_m1_width_space (0),
+      m_run_m1_resident_morphology (0),
       m_run_m2_width_space (0), m_run_m2_union (0),
       m_release_m2_union (0), m_run_poly34 (0),
       m_run_via1_stack (0), m_release (0),
@@ -935,6 +1048,12 @@ public:
           GetProcAddress (
             reinterpret_cast<HMODULE> (m_handle),
             "klayout_cuda_spatial_run_m1_width_space_empty_v1"));
+      m_run_m1_resident_morphology =
+        reinterpret_cast<
+          klayout_cuda_spatial_run_m1_resident_morphology_empty_v1_func> (
+          GetProcAddress (
+            reinterpret_cast<HMODULE> (m_handle),
+            "klayout_cuda_spatial_run_m1_resident_morphology_empty_v1"));
       m_run_m2_width_space =
         reinterpret_cast<klayout_cuda_spatial_run_m2_width_space_empty_v1_func> (
           GetProcAddress (
@@ -1008,6 +1127,12 @@ public:
           dlsym (
             m_handle,
             "klayout_cuda_spatial_run_m1_width_space_empty_v1"));
+      m_run_m1_resident_morphology =
+        reinterpret_cast<
+          klayout_cuda_spatial_run_m1_resident_morphology_empty_v1_func> (
+          dlsym (
+            m_handle,
+            "klayout_cuda_spatial_run_m1_resident_morphology_empty_v1"));
       m_run_m2_width_space =
         reinterpret_cast<klayout_cuda_spatial_run_m2_width_space_empty_v1_func> (
           dlsym (
@@ -1053,6 +1178,7 @@ public:
       m_run_active3_well_union = 0;
       m_run_implant12 = 0;
       m_run_m1_width_space = 0;
+      m_run_m1_resident_morphology = 0;
       m_run_m2_width_space = 0;
       m_run_m2_union = 0;
       m_release_m2_union = 0;
@@ -1173,6 +1299,22 @@ public:
   bool m1_width_space_telemetry () const
   {
     return m_m1_width_space_telemetry;
+  }
+
+  bool m1_resident_morphology_ready () const
+  {
+    return m_m1_resident_morphology_enabled &&
+           m_run_m1_resident_morphology;
+  }
+
+  bool m1_resident_morphology_enabled () const
+  {
+    return m_m1_resident_morphology_enabled;
+  }
+
+  bool m1_resident_morphology_telemetry () const
+  {
+    return m_m1_resident_morphology_telemetry;
   }
 
   bool m2_width_space_ready () const
@@ -1334,6 +1476,12 @@ public:
     return m_run_m1_width_space;
   }
 
+  klayout_cuda_spatial_run_m1_resident_morphology_empty_v1_func
+  run_m1_resident_morphology () const
+  {
+    return m_run_m1_resident_morphology;
+  }
+
   klayout_cuda_spatial_run_m2_width_space_empty_v1_func
   run_m2_width_space () const
   {
@@ -1386,6 +1534,8 @@ private:
   bool m_implant12_telemetry;
   bool m_m1_width_space_enabled;
   bool m_m1_width_space_telemetry;
+  bool m_m1_resident_morphology_enabled;
+  bool m_m1_resident_morphology_telemetry;
   bool m_m2_width_space_enabled;
   bool m_m2_width_space_telemetry;
   bool m_m2_union_enabled;
@@ -1408,6 +1558,8 @@ private:
     m_run_active3_well_union;
   klayout_cuda_spatial_run_implant12_empty_v1_func m_run_implant12;
   klayout_cuda_spatial_run_m1_width_space_empty_v1_func m_run_m1_width_space;
+  klayout_cuda_spatial_run_m1_resident_morphology_empty_v1_func
+    m_run_m1_resident_morphology;
   klayout_cuda_spatial_run_m2_width_space_empty_v1_func m_run_m2_width_space;
   klayout_cuda_spatial_run_m2_union_boundary_v1_func m_run_m2_union;
   klayout_cuda_spatial_release_m2_union_boundary_v1_func
@@ -1724,6 +1876,72 @@ void log_m2_union_attempt (const CudaM2UnionAttempt &attempt)
            << " raw_segments=" << attempt.raw_segment_count
            << " segments=" << attempt.segments.size ()
            << " fnv64=" << attempt.boundary_fnv64
+           << " total_ms=" << (double (attempt.total_ns) / 1.0e6)
+           << " fallback_flags=" << attempt.fallback_flags
+           << " device_flags=" << attempt.device_flags
+           << (attempt.message.empty () ? "" : " message=")
+           << attempt.message;
+}
+
+void log_m1_resident_morphology_attempt (
+  const CudaM1ResidentMorphologyAttempt &attempt)
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  if (! module.m1_resident_morphology_telemetry ()) {
+    return;
+  }
+
+  const char *outcome = "unknown";
+  switch (attempt.disposition) {
+  case CudaM1ResidentMorphologyAttempt::CertifiedEmpty:
+    outcome = "certified-empty";
+    break;
+  case CudaM1ResidentMorphologyAttempt::NotEmpty:
+    outcome = "not-empty-cpu-fallback";
+    break;
+  case CudaM1ResidentMorphologyAttempt::BackendFallback:
+    outcome = "fallback";
+    break;
+  case CudaM1ResidentMorphologyAttempt::BackendError:
+    outcome = "error";
+    break;
+  case CudaM1ResidentMorphologyAttempt::InvalidResult:
+    outcome = "invalid-result";
+    break;
+  case CudaM1ResidentMorphologyAttempt::Disabled:
+    outcome = "disabled";
+    break;
+  }
+
+  tl::info << "CUDA M1 exact resident morphology certificate:"
+           << " outcome=" << outcome
+           << " contexts=" << attempt.context_count
+           << " metal_contexts=" << attempt.metal_context_count
+           << " flat_polygons=" << attempt.flat_polygon_count
+           << " flat_edges=" << attempt.flat_edge_count
+           << " rectangles=" << attempt.rectangle_count
+           << " slabs=" << attempt.x_slab_count
+           << " union_memberships=" << attempt.union_membership_count
+           << " strip_intervals=" << attempt.strip_interval_count
+           << " erode89_intervals="
+           << attempt.erode89_output_interval_count
+           << " dilate90_intervals="
+           << attempt.dilate90_output_interval_count
+           << " f90_boundary_segments="
+           << attempt.f90_boundary_segment_count
+           << " f90_long_segments=" << attempt.f90_long_segment_count
+           << " f90_pairs=" << attempt.f90_space_pair_count
+           << " f90_violations=" << attempt.f90_space_violation_count
+           << " f90_uncertain=" << attempt.f90_space_uncertain_count
+           << " f270_intervals="
+           << attempt.f270_eroded_interval_count
+           << " union_free_low_bytes="
+           << attempt.union_device_free_low_bytes
+           << " morph_free_low_bytes="
+           << attempt.morph_device_free_low_bytes
+           << " certified_mask=" << attempt.certified_empty_mask
+           << " morphology_ms="
+           << (double (attempt.morphology_ns) / 1.0e6)
            << " total_ms=" << (double (attempt.total_ns) / 1.0e6)
            << " fallback_flags=" << attempt.fallback_flags
            << " device_flags=" << attempt.device_flags
@@ -3342,6 +3560,398 @@ bool cuda_spatial_m2_width_space_requested ()
 {
   CudaSpatialModule &module = cuda_spatial_module ();
   return module.enabled () && module.m2_width_space_ready ();
+}
+
+bool cuda_spatial_validate_m1_resident_morphology_result (
+  const klayout_cuda_spatial_m1_resident_morphology_request_v1 &request,
+  const klayout_cuda_spatial_m1_resident_morphology_result_v1 &result,
+  int backend_status, std::string *error)
+{
+  const auto fail = [error] (const char *message) {
+    if (error) {
+      try {
+        *error = message;
+      } catch (...) {
+        // Diagnostics cannot turn a fail-closed result into an exception.
+      }
+    }
+    return false;
+  };
+
+  try {
+    if (! qualified_m1_resident_morphology_request (request)) {
+      return fail (
+        "host supplied an unqualified M1 resident morphology request");
+    }
+    if (result.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+        result.struct_size != sizeof (result) ||
+        result.reserved0 != 0 || result.union_reserved != 0 ||
+        result.morph_reserved != 0) {
+      return fail (
+        "CUDA M1 resident morphology backend returned an incompatible "
+        "result");
+    }
+    if (backend_status != int (result.status)) {
+      return fail (
+        "CUDA M1 resident morphology backend returned inconsistent "
+        "statuses");
+    }
+    if (backend_status != KLAYOUT_CUDA_SPATIAL_OK) {
+      return fail (
+        "CUDA M1 resident morphology backend did not return a proof");
+    }
+
+    if (result.opcode != request.opcode ||
+        result.option_flags != request.option_flags ||
+        result.format_version != request.format_version ||
+        result.dbu_per_micron != request.dbu_per_micron ||
+        result.root_cell != request.root_cell ||
+        result.requested_mask != request.requested_mask ||
+        result.scene_left != request.scene_left ||
+        result.scene_bottom != request.scene_bottom ||
+        result.scene_right != request.scene_right ||
+        result.scene_top != request.scene_top ||
+        ! std::equal (
+          result.scene_digest, result.scene_digest + 32,
+          request.scene_digest) ||
+        result.context_count != request.context_count ||
+        result.metal_context_count != request.metal_context_count ||
+        result.cell_count != request.cell_count ||
+        result.polygon_count != request.polygon_count ||
+        result.edge_count != request.edge_count ||
+        result.flat_polygon_count != request.flat_polygon_count ||
+        result.flat_edge_count != request.flat_edge_count ||
+        result.max_contexts != request.max_contexts ||
+        result.max_rectangles != request.max_rectangles ||
+        result.max_x_slabs != request.max_x_slabs ||
+        result.max_union_memberships !=
+          request.max_union_memberships ||
+        result.max_union_events != request.max_union_events ||
+        result.max_union_raw_segments !=
+          request.max_union_raw_segments ||
+        result.max_union_segments != request.max_union_segments ||
+        result.max_slabs_per_rectangle !=
+          request.max_slabs_per_rectangle ||
+        result.max_morph_output_slabs !=
+          request.max_morph_output_slabs ||
+        result.max_morph_output_intervals !=
+          request.max_morph_output_intervals ||
+        result.max_morph_raw_boundary_segments !=
+          request.max_morph_raw_boundary_segments ||
+        result.max_morph_boundary_segments !=
+          request.max_morph_boundary_segments ||
+        result.max_morph_source_visits_per_pass !=
+          request.max_morph_source_visits_per_pass ||
+        result.max_morph_source_visits_per_band !=
+          request.max_morph_source_visits_per_band ||
+        result.max_morph_long_segments !=
+          request.max_morph_long_segments ||
+        result.max_morph_active_slabs !=
+          request.max_morph_active_slabs ||
+        result.fallback_flags != KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE ||
+        result.device_flags != 0 ||
+        (result.certified_empty_mask & ~request.requested_mask) != 0) {
+      return fail (
+        "CUDA M1 resident morphology backend returned a mismatched proof "
+        "echo");
+    }
+
+    uint64_t expected_union_events = 0;
+    uint64_t expected_space_pairs_twice = 0;
+    if (! checked_multiply_u64 (
+          result.union_membership_count, UINT64_C (2),
+          expected_union_events) ||
+        ! checked_multiply_u64 (
+          result.f90_long_segment_count,
+          result.f90_long_segment_count
+            ? result.f90_long_segment_count - 1
+            : 0,
+          expected_space_pairs_twice) ||
+        result.rectangle_count < request.flat_polygon_count ||
+        result.rectangle_count > request.max_rectangles ||
+        ! result.x_slab_count ||
+        result.x_slab_count > request.max_x_slabs ||
+        ! result.union_membership_count ||
+        result.union_membership_count >
+          request.max_union_memberships ||
+        result.union_event_count != expected_union_events ||
+        result.union_event_count > request.max_union_events ||
+        ! result.strip_interval_count ||
+        result.strip_interval_count > result.union_membership_count ||
+        result.erode89_output_interval_count >
+          request.max_morph_output_intervals ||
+        result.dilate90_output_interval_count >
+          request.max_morph_output_intervals ||
+        result.f270_eroded_interval_count >
+          request.max_morph_output_intervals ||
+        result.f90_boundary_segment_count >
+          request.max_morph_boundary_segments ||
+        result.f90_long_segment_count >
+          result.f90_boundary_segment_count ||
+        result.f90_long_segment_count >
+          request.max_morph_long_segments ||
+        result.f90_space_pair_count !=
+          expected_space_pairs_twice / 2 ||
+        result.f90_space_violation_count >
+          result.f90_space_pair_count ||
+        result.f90_space_uncertain_count >
+          result.f90_space_pair_count ||
+        result.f90_space_violation_count >
+          result.f90_space_pair_count -
+            result.f90_space_uncertain_count ||
+        // The reusable morphology engine applies this legacy-named limit
+        // independently to each pass, not to their overlapping sum.
+        result.erode89_source_visit_count >
+          request.max_morph_source_visits_per_pass ||
+        result.dilate90_source_visit_count >
+          request.max_morph_source_visits_per_pass ||
+        result.boundary_source_visit_count >
+          request.max_morph_source_visits_per_pass ||
+        result.erode269_source_visit_count >
+          request.max_morph_source_visits_per_pass) {
+      return fail (
+        "CUDA M1 resident morphology backend returned impossible proof "
+        "counters");
+    }
+
+    if (! result.union_device_total_bytes ||
+        ! result.union_device_free_begin_bytes ||
+        ! result.union_device_free_low_bytes ||
+        result.union_device_free_begin_bytes >
+          result.union_device_total_bytes ||
+        result.union_device_free_low_bytes >
+          result.union_device_free_begin_bytes ||
+        ! result.morph_device_total_bytes ||
+        result.morph_device_total_bytes !=
+          result.union_device_total_bytes ||
+        ! result.morph_device_free_begin_bytes ||
+        ! result.morph_device_free_low_bytes ||
+        result.morph_device_free_begin_bytes >
+          result.morph_device_total_bytes ||
+        result.morph_device_free_low_bytes >
+          result.morph_device_free_begin_bytes) {
+      return fail (
+        "CUDA M1 resident morphology backend returned impossible memory "
+        "telemetry");
+    }
+
+    const uint64_t component_times [] = {
+      result.setup_ns,
+      result.h2d_ns,
+      result.rectangle_expand_ns,
+      result.x_membership_ns,
+      result.strip_scan_ns,
+      result.morphology_ns,
+      result.d2h_ns
+    };
+    if (! result.total_ns) {
+      return fail (
+        "CUDA M1 resident morphology backend returned impossible timing "
+        "telemetry");
+    }
+    for (size_t index = 0;
+         index < sizeof (component_times) / sizeof (component_times [0]);
+         ++index) {
+      if (component_times [index] > result.total_ns) {
+        return fail (
+          "CUDA M1 resident morphology backend returned impossible timing "
+          "telemetry");
+      }
+    }
+
+    if (result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_M1_MORPH_COMPLETE &&
+        result.certified_empty_mask == request.requested_mask &&
+        result.f90_space_violation_count == 0 &&
+        result.f90_space_uncertain_count == 0 &&
+        result.f270_eroded_interval_count == 0 &&
+        result.d2h_ns == 0) {
+      // Sole consumable outcome.
+    } else if (
+      result.disposition ==
+        KLAYOUT_CUDA_SPATIAL_M1_MORPH_NOT_EMPTY &&
+      (result.f90_space_violation_count != 0 ||
+       result.f270_eroded_interval_count != 0) &&
+      result.f90_space_uncertain_count == 0) {
+      // Valid positive diagnostic; the caller retains the CPU transaction.
+    } else if (
+      result.disposition ==
+        KLAYOUT_CUDA_SPATIAL_M1_MORPH_UNCERTAIN &&
+      result.f90_space_uncertain_count != 0) {
+      // Valid bounded uncertainty; the caller retains the CPU transaction.
+    } else {
+      return fail (
+        "CUDA M1 resident morphology backend returned an inconsistent "
+        "disposition");
+    }
+
+    if (error) {
+      error->clear ();
+    }
+    return true;
+  } catch (...) {
+    return fail (
+      "exception while validating the CUDA M1 resident morphology proof");
+  }
+}
+
+CudaM1ResidentMorphologyAttempt
+cuda_spatial_try_m1_resident_morphology_empty (
+  const klayout_cuda_spatial_m1_resident_morphology_request_v1 &request)
+{
+  CudaM1ResidentMorphologyAttempt attempt;
+  CudaSpatialModule &module = cuda_spatial_module ();
+  if (! module.m1_resident_morphology_enabled ()) {
+    return attempt;
+  }
+  if (! module.enabled ()) {
+    attempt.disposition = CudaM1ResidentMorphologyAttempt::BackendError;
+    attempt.message = module.error ().empty ()
+      ? "CUDA spatial backend is unavailable"
+      : module.error ();
+    log_m1_resident_morphology_attempt (attempt);
+    return attempt;
+  }
+  if (! module.m1_resident_morphology_ready ()) {
+    attempt.disposition = CudaM1ResidentMorphologyAttempt::BackendFallback;
+    attempt.fallback_flags =
+      KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+    attempt.message =
+      "CUDA spatial backend has no M1 resident morphology entry point";
+    log_m1_resident_morphology_attempt (attempt);
+    return attempt;
+  }
+  if (! qualified_m1_resident_morphology_request (request)) {
+    attempt.disposition = CudaM1ResidentMorphologyAttempt::InvalidResult;
+    attempt.message =
+      "host supplied an unqualified M1 resident morphology request";
+    log_m1_resident_morphology_attempt (attempt);
+    return attempt;
+  }
+
+  klayout_cuda_spatial_m1_resident_morphology_result_v1 result;
+  std::memset (&result, 0, sizeof (result));
+  result.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  result.struct_size = sizeof (result);
+  result.status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  result.disposition = KLAYOUT_CUDA_SPATIAL_M1_MORPH_UNCERTAIN;
+
+  int status = KLAYOUT_CUDA_SPATIAL_ERROR;
+  try {
+    status = module.run_m1_resident_morphology () (&request, &result);
+  } catch (const std::exception &ex) {
+    attempt.disposition = CudaM1ResidentMorphologyAttempt::BackendError;
+    attempt.message = ex.what ();
+    log_m1_resident_morphology_attempt (attempt);
+    return attempt;
+  } catch (...) {
+    attempt.disposition = CudaM1ResidentMorphologyAttempt::BackendError;
+    attempt.message =
+      "unknown exception while calling CUDA M1 resident morphology backend";
+    log_m1_resident_morphology_attempt (attempt);
+    return attempt;
+  }
+
+  attempt.certified_empty_mask = result.certified_empty_mask;
+  attempt.fallback_flags = result.fallback_flags;
+  attempt.device_flags = result.device_flags;
+  attempt.context_count = result.context_count;
+  attempt.metal_context_count = result.metal_context_count;
+  attempt.cell_count = result.cell_count;
+  attempt.polygon_count = result.polygon_count;
+  attempt.edge_count = result.edge_count;
+  attempt.flat_polygon_count = result.flat_polygon_count;
+  attempt.flat_edge_count = result.flat_edge_count;
+  attempt.rectangle_count = result.rectangle_count;
+  attempt.x_slab_count = result.x_slab_count;
+  attempt.union_membership_count = result.union_membership_count;
+  attempt.union_event_count = result.union_event_count;
+  attempt.strip_interval_count = result.strip_interval_count;
+  attempt.erode89_output_interval_count =
+    result.erode89_output_interval_count;
+  attempt.erode89_source_visit_count =
+    result.erode89_source_visit_count;
+  attempt.dilate90_output_interval_count =
+    result.dilate90_output_interval_count;
+  attempt.dilate90_source_visit_count =
+    result.dilate90_source_visit_count;
+  attempt.boundary_source_visit_count =
+    result.boundary_source_visit_count;
+  attempt.erode269_source_visit_count =
+    result.erode269_source_visit_count;
+  attempt.f90_boundary_segment_count =
+    result.f90_boundary_segment_count;
+  attempt.f90_long_segment_count = result.f90_long_segment_count;
+  attempt.f90_space_pair_count = result.f90_space_pair_count;
+  attempt.f90_space_violation_count =
+    result.f90_space_violation_count;
+  attempt.f90_space_uncertain_count =
+    result.f90_space_uncertain_count;
+  attempt.f270_eroded_interval_count =
+    result.f270_eroded_interval_count;
+  attempt.union_device_total_bytes = result.union_device_total_bytes;
+  attempt.union_device_free_begin_bytes =
+    result.union_device_free_begin_bytes;
+  attempt.union_device_free_low_bytes =
+    result.union_device_free_low_bytes;
+  attempt.morph_device_total_bytes = result.morph_device_total_bytes;
+  attempt.morph_device_free_begin_bytes =
+    result.morph_device_free_begin_bytes;
+  attempt.morph_device_free_low_bytes =
+    result.morph_device_free_low_bytes;
+  attempt.setup_ns = result.setup_ns;
+  attempt.h2d_ns = result.h2d_ns;
+  attempt.rectangle_expand_ns = result.rectangle_expand_ns;
+  attempt.x_membership_ns = result.x_membership_ns;
+  attempt.strip_scan_ns = result.strip_scan_ns;
+  attempt.morphology_ns = result.morphology_ns;
+  attempt.d2h_ns = result.d2h_ns;
+  attempt.total_ns = result.total_ns;
+  attempt.message.assign (
+    result.message,
+    std::find (
+      result.message, result.message + sizeof (result.message), '\0'));
+
+  if (result.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      result.struct_size != sizeof (result) ||
+      result.reserved0 != 0 || result.union_reserved != 0 ||
+      result.morph_reserved != 0) {
+    attempt.disposition = CudaM1ResidentMorphologyAttempt::InvalidResult;
+    attempt.message =
+      "CUDA M1 resident morphology backend returned an incompatible result";
+  } else if (status != int (result.status)) {
+    attempt.disposition = CudaM1ResidentMorphologyAttempt::InvalidResult;
+    attempt.message =
+      "CUDA M1 resident morphology backend returned inconsistent statuses";
+  } else if (status == KLAYOUT_CUDA_SPATIAL_FALLBACK) {
+    attempt.disposition = CudaM1ResidentMorphologyAttempt::BackendFallback;
+  } else if (status != KLAYOUT_CUDA_SPATIAL_OK) {
+    attempt.disposition = CudaM1ResidentMorphologyAttempt::BackendError;
+  } else {
+    std::string validation_error;
+    if (! cuda_spatial_validate_m1_resident_morphology_result (
+          request, result, status, &validation_error)) {
+      attempt.disposition = CudaM1ResidentMorphologyAttempt::InvalidResult;
+      attempt.message = validation_error;
+    } else if (
+      result.disposition == KLAYOUT_CUDA_SPATIAL_M1_MORPH_COMPLETE) {
+      attempt.disposition = CudaM1ResidentMorphologyAttempt::CertifiedEmpty;
+    } else if (
+      result.disposition == KLAYOUT_CUDA_SPATIAL_M1_MORPH_NOT_EMPTY) {
+      attempt.disposition = CudaM1ResidentMorphologyAttempt::NotEmpty;
+    } else {
+      attempt.disposition = CudaM1ResidentMorphologyAttempt::BackendFallback;
+    }
+  }
+
+  log_m1_resident_morphology_attempt (attempt);
+  return attempt;
+}
+
+bool cuda_spatial_m1_resident_morphology_requested ()
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  return module.enabled () && module.m1_resident_morphology_ready ();
 }
 
 bool cuda_spatial_validate_m2_union_boundary (

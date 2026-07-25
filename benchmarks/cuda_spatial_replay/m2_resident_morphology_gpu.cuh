@@ -25,6 +25,8 @@ inline constexpr std::uint64_t kUniversalSourceVisitCap =
     UINT64_C(2000000000);
 inline constexpr std::uint64_t kQualifiedProductionSourceVisitCap =
     UINT64_C(8000000000);
+inline constexpr std::uint64_t kQualifiedM1ProductionSourceVisitCap =
+    UINT64_C(12000000000);
 inline constexpr std::uint64_t kQualifiedF90BoundarySegments =
     UINT64_C(4254384);
 inline constexpr std::uint64_t kQualifiedF90BoundaryFnv64 =
@@ -96,8 +98,12 @@ struct Request
 {
   Limits limits;
   bool copy_f90_boundary_to_host = false;
-  // The 8B allowance is qualified only for the pinned production scene.
+  // The 8B allowance is qualified only for the pinned M2 production scene.
   bool allow_qualified_production_work_cap = false;
+  // The distinct 12B allowance is qualified only for a pinned M1 production
+  // scene by its owning adapter.  It must never be enabled together with the
+  // M2 allowance or for an arbitrary caller-selected census.
+  bool allow_qualified_m1_production_work_cap = false;
 };
 
 // Exact synchronous API.  The fixed operation is:

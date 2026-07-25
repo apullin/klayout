@@ -363,6 +363,56 @@ if run_m1_via_class""",
     return text
 
 
+def add_m1_5_9(text: str) -> str:
+    """Add the fail-closed exact raw-M1 M1.5-.9 certificate transaction."""
+
+    return replace_once(
+        text,
+        """metal1_gt90, metal1_gt270, metal1_gt500, metal1_gt900, metal1_gt1500 = classify_by_width(metal1, 90.nm, 270.nm, 500.nm, 900.nm, 1500.nm)
+metal1_gt90.edges.with_length(300.nm,nil).space(90.nm,euclidian).output("METAL1.5", "METAL1.5 : Minimum spacing of metal1 wider than 90 nm and longer than 300 nm : 90nm")
+metal1_gt270.edges.with_length(900.nm,nil).space(270.nm,euclidian).output("METAL1.6", "METAL1.6 : Minimum spacing of metal1 wider than 270 nm and longer than 900 nm : 270nm")
+metal1_gt500.edges.with_length(1.8.um,nil).space(500.nm,euclidian).output("METAL1.7", "METAL1.7 : Minimum spacing of metal1 wider than 500 nm and longer than 1.8 um : 500nm")
+metal1_gt900.edges.with_length(2.7.um,nil).space(900.nm,euclidian).output("METAL1.8", "METAL1.8 : Minimum spacing of metal1 wider than 900 nm and longer than 2.7 um : 900nm")
+metal1_gt1500.edges.with_length(4.um,nil).space(1500.nm,euclidian).output("METAL1.9", "METAL1.9 : Minimum spacing of metal1 wider than 1500 nm and longer than 4.0 um : 1500nm")
+[ metal1_gt90, metal1_gt270, metal1_gt500, metal1_gt900, metal1_gt1500 ].each { |l| l.forget }""",
+        """# The optional certificate serializes pristine physical M1, expands and
+# unions it exactly on the selected device, and evaluates the unchanged
+# M1.5-.9 morphology sequence without returning geometry.  Any unavailable
+# method, exception, capacity miss, rule hit, or proof-validation failure
+# executes the five historical CPU expressions below byte-for-byte.
+m1_5_9_request = ENV["KLAYOUT_CUDA_M1_5_9"].to_s
+m1_5_9_requested = !m1_5_9_request.empty? &amp;&amp; m1_5_9_request != "0" &amp;&amp; m1_5_9_request != "false" &amp;&amp; m1_5_9_request != "off"
+m1_5_9_clean = false
+if m1_5_9_requested
+  begin
+    m1_5_9_clean = metal1.respond_to?(:cuda_m1_5_9_clean?) &amp;&amp; metal1.cuda_m1_5_9_clean?
+  rescue StandardError =&gt; m1_5_9_error
+    m1_5_9_clean = false
+    info("CUDA M1.5-.9 Ruby fallback: #{m1_5_9_error}")
+  end
+  info("CUDA M1.5-.9 transaction: #{m1_5_9_clean ? 'certified-empty' : 'full-cpu-fallback'}")
+end
+m1_5_9_empty = polygon_layer if m1_5_9_clean
+
+if m1_5_9_clean
+  m1_5_9_empty.output("METAL1.5", "METAL1.5 : Minimum spacing of metal1 wider than 90 nm and longer than 300 nm : 90nm")
+  m1_5_9_empty.output("METAL1.6", "METAL1.6 : Minimum spacing of metal1 wider than 270 nm and longer than 900 nm : 270nm")
+  m1_5_9_empty.output("METAL1.7", "METAL1.7 : Minimum spacing of metal1 wider than 500 nm and longer than 1.8 um : 500nm")
+  m1_5_9_empty.output("METAL1.8", "METAL1.8 : Minimum spacing of metal1 wider than 900 nm and longer than 2.7 um : 900nm")
+  m1_5_9_empty.output("METAL1.9", "METAL1.9 : Minimum spacing of metal1 wider than 1500 nm and longer than 4.0 um : 1500nm")
+else
+  metal1_gt90, metal1_gt270, metal1_gt500, metal1_gt900, metal1_gt1500 = classify_by_width(metal1, 90.nm, 270.nm, 500.nm, 900.nm, 1500.nm)
+  metal1_gt90.edges.with_length(300.nm,nil).space(90.nm,euclidian).output("METAL1.5", "METAL1.5 : Minimum spacing of metal1 wider than 90 nm and longer than 300 nm : 90nm")
+  metal1_gt270.edges.with_length(900.nm,nil).space(270.nm,euclidian).output("METAL1.6", "METAL1.6 : Minimum spacing of metal1 wider than 270 nm and longer than 900 nm : 270nm")
+  metal1_gt500.edges.with_length(1.8.um,nil).space(500.nm,euclidian).output("METAL1.7", "METAL1.7 : Minimum spacing of metal1 wider than 500 nm and longer than 1.8 um : 500nm")
+  metal1_gt900.edges.with_length(2.7.um,nil).space(900.nm,euclidian).output("METAL1.8", "METAL1.8 : Minimum spacing of metal1 wider than 900 nm and longer than 2.7 um : 900nm")
+  metal1_gt1500.edges.with_length(4.um,nil).space(1500.nm,euclidian).output("METAL1.9", "METAL1.9 : Minimum spacing of metal1 wider than 1500 nm and longer than 4.0 um : 1500nm")
+  [ metal1_gt90, metal1_gt270, metal1_gt500, metal1_gt900, metal1_gt1500 ].each { |l| l.forget }
+end""",
+        "M1.5-.9 exact resident morphology transaction",
+    )
+
+
 def add_implant12(text: str) -> str:
     return replace_once(
         text,
@@ -548,6 +598,11 @@ def main() -> int:
         help="also add the fail-closed live M2.1/.2/.4-.9 transaction",
     )
     parser.add_argument(
+        "--m1-5-9",
+        action="store_true",
+        help="also add the fail-closed exact raw-M1 M1.5-.9 transaction",
+    )
+    parser.add_argument(
         "--poly34",
         action="store_true",
         help="also add the fail-closed POLY.3/.4 transaction",
@@ -583,6 +638,8 @@ def main() -> int:
         output = add_active3_well_union(output)
     if args.m2_rules:
         output = add_m2_rules(output)
+    if args.m1_5_9:
+        output = add_m1_5_9(output)
     if args.implant12:
         output = add_implant12(output)
     if args.poly34:

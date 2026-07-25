@@ -65,6 +65,24 @@ const uint64_t backend_max_flat_polygons = UINT64_C (50000000);
 const uint64_t backend_max_flat_edges = UINT64_C (100000000);
 const int64_t qualified_grid_cell = 512;
 
+const uint64_t m1_morph_max_contexts = UINT64_C (4000000);
+const uint64_t m1_morph_max_rectangles = UINT64_C (64000000);
+const uint64_t m1_morph_max_x_slabs = UINT64_C (32000000);
+const uint64_t m1_morph_max_union_memberships = UINT64_C (256000000);
+const uint64_t m1_morph_max_union_events = UINT64_C (512000000);
+const uint64_t m1_morph_max_union_raw_segments = UINT64_C (64000000);
+const uint64_t m1_morph_max_union_segments = UINT64_C (64000000);
+const uint64_t m1_morph_max_slabs_per_rectangle = UINT64_C (64);
+const uint64_t m1_morph_max_output_slabs = UINT64_C (1000000);
+const uint64_t m1_morph_max_output_intervals = UINT64_C (64000000);
+const uint64_t m1_morph_max_raw_boundary_segments = UINT64_C (256000000);
+const uint64_t m1_morph_max_boundary_segments = UINT64_C (64000000);
+const uint64_t m1_morph_max_source_visits_per_pass =
+  UINT64_C (12000000000);
+const uint64_t m1_morph_max_source_visits_per_band = UINT64_C (4000000);
+const uint64_t m1_morph_max_long_segments = UINT64_C (4096);
+const uint64_t m1_morph_max_active_slabs = UINT64_C (128);
+
 struct RawManhattanProfile
 {
   int layer;
@@ -76,6 +94,11 @@ struct RawManhattanProfile
 const RawManhattanProfile raw_m2_profile = {
   13, 0, "raw M2",
   { 'K', 'M', '2', 'R', 'A', 'W', '0', '1' }
+};
+
+const RawManhattanProfile raw_m1_profile = {
+  11, 0, "raw M1",
+  { 'K', 'M', '1', 'R', 'A', 'W', '0', '1' }
 };
 
 const RawManhattanProfile raw_active_profile = {
@@ -134,6 +157,17 @@ bool env_enabled (const char *name)
   return value && *value && std::strcmp (value, "0") != 0 &&
          std::strcmp (value, "false") != 0 &&
          std::strcmp (value, "off") != 0;
+}
+
+std::string digest_hex (const std::array<uint8_t, 32> &digest)
+{
+  static const char alphabet [] = "0123456789abcdef";
+  std::string result (64, '0');
+  for (size_t index = 0; index < digest.size (); ++index) {
+    result [index * 2] = alphabet [digest [index] >> 4];
+    result [index * 2 + 1] = alphabet [digest [index] & 0xf];
+  }
+  return result;
 }
 
 bool checked_add_u64 (uint64_t a, uint64_t b, uint64_t &result)
@@ -1469,6 +1503,18 @@ bool cuda_m2_raw_manhattan_scene_digest (
   }
 }
 
+bool cuda_m1_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest)
+{
+  try {
+    return raw_manhattan_scene_digest (
+      scene, raw_m1_profile, digest);
+  } catch (...) {
+    return false;
+  }
+}
+
 bool cuda_active_raw_manhattan_scene_digest (
   const CudaRawManhattanScene &scene,
   std::array<uint8_t, 32> &digest)
@@ -1545,6 +1591,16 @@ bool cuda_m2_raw_manhattan_build_scene (
     raw_metal2, limits, raw_m2_profile, scene, decline_reason);
 }
 
+bool cuda_m1_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_metal1,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason)
+{
+  return build_raw_manhattan_scene (
+    raw_metal1, limits, raw_m1_profile, scene, decline_reason);
+}
+
 bool cuda_active_raw_manhattan_build_scene (
   const db::DeepLayer &raw_active,
   const CudaM1WidthSpaceSceneLimits &limits,
@@ -1593,6 +1649,256 @@ bool cuda_well_union_raw_manhattan_build_scene (
     set_reason (decline_reason, ex.what ());
   } catch (...) {
     set_reason (decline_reason, "unknown exception");
+  }
+  return false;
+}
+
+bool cuda_m1_5_9_try_empty (const db::DeepLayer &raw_metal1)
+{
+  const bool telemetry =
+    env_enabled ("KLAYOUT_CUDA_M1_5_9_TELEMETRY");
+  const std::chrono::steady_clock::time_point begin =
+    std::chrono::steady_clock::now ();
+  try {
+    // Establish the complete optional capability before paying the
+    // multi-million-polygon hierarchy-lowering cost.
+    if (! db::cuda_spatial_m1_resident_morphology_requested ()) {
+      return false;
+    }
+
+    CudaM1WidthSpaceSceneLimits scene_limits;
+    scene_limits.max_cells = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_CELLS",
+      scene_limits.max_cells);
+    scene_limits.max_contexts = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_CONTEXTS",
+      m1_morph_max_contexts);
+    scene_limits.max_stored_polygons = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_STORED_POLYGONS",
+      scene_limits.max_stored_polygons);
+    scene_limits.max_stored_edges = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_STORED_EDGES",
+      scene_limits.max_stored_edges);
+    scene_limits.max_flat_polygons = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_FLAT_POLYGONS",
+      m1_morph_max_rectangles);
+    scene_limits.max_flat_edges = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_FLAT_EDGES",
+      scene_limits.max_flat_edges);
+
+    const uint64_t max_rectangles = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_RECTANGLES",
+      m1_morph_max_rectangles);
+    const uint64_t max_x_slabs = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_X_SLABS",
+      m1_morph_max_x_slabs);
+    const uint64_t max_union_memberships = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_UNION_MEMBERSHIPS",
+      m1_morph_max_union_memberships);
+    const uint64_t max_union_events = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_UNION_EVENTS",
+      m1_morph_max_union_events);
+    const uint64_t max_union_raw_segments = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_UNION_RAW_SEGMENTS",
+      m1_morph_max_union_raw_segments);
+    const uint64_t max_union_segments = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_UNION_SEGMENTS",
+      m1_morph_max_union_segments);
+    const uint64_t max_slabs_per_rectangle = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_SLABS_PER_RECTANGLE",
+      m1_morph_max_slabs_per_rectangle);
+    const uint64_t max_morph_output_slabs = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_MORPH_OUTPUT_SLABS",
+      m1_morph_max_output_slabs);
+    const uint64_t max_morph_output_intervals = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_MORPH_OUTPUT_INTERVALS",
+      m1_morph_max_output_intervals);
+    const uint64_t max_morph_raw_boundary_segments = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_MORPH_RAW_BOUNDARY_SEGMENTS",
+      m1_morph_max_raw_boundary_segments);
+    const uint64_t max_morph_boundary_segments = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_MORPH_BOUNDARY_SEGMENTS",
+      m1_morph_max_boundary_segments);
+    const uint64_t max_morph_source_visits_per_pass = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_MORPH_SOURCE_VISITS_PER_PASS",
+      m1_morph_max_source_visits_per_pass);
+    const uint64_t max_morph_source_visits_per_band = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_MORPH_SOURCE_VISITS_PER_BAND",
+      m1_morph_max_source_visits_per_band);
+    const uint64_t max_morph_long_segments = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_MORPH_LONG_SEGMENTS",
+      m1_morph_max_long_segments);
+    const uint64_t max_morph_active_slabs = env_u64 (
+      "KLAYOUT_CUDA_M1_5_9_MAX_MORPH_ACTIVE_SLABS",
+      m1_morph_max_active_slabs);
+    const uint64_t device =
+      env_u64 ("KLAYOUT_CUDA_SPATIAL_DEVICE", 0);
+
+    if (! scene_limits.max_cells || ! scene_limits.max_contexts ||
+        ! scene_limits.max_stored_polygons ||
+        ! scene_limits.max_stored_edges ||
+        ! scene_limits.max_flat_polygons ||
+        ! scene_limits.max_flat_edges ||
+        ! max_rectangles || ! max_x_slabs ||
+        ! max_union_memberships || ! max_union_events ||
+        ! max_union_raw_segments || ! max_union_segments ||
+        ! max_slabs_per_rectangle ||
+        max_slabs_per_rectangle >
+          std::numeric_limits<uint32_t>::max () ||
+        ! max_morph_output_slabs ||
+        max_morph_output_slabs >
+          std::numeric_limits<uint32_t>::max () ||
+        ! max_morph_output_intervals ||
+        ! max_morph_raw_boundary_segments ||
+        ! max_morph_boundary_segments ||
+        ! max_morph_source_visits_per_pass ||
+        ! max_morph_source_visits_per_band ||
+        ! max_morph_long_segments ||
+        ! max_morph_active_slabs ||
+        max_morph_active_slabs >
+          std::numeric_limits<uint32_t>::max () ||
+        device > uint64_t (std::numeric_limits<int32_t>::max ())) {
+      throw M1WidthSpaceDecline (
+        "an M1.5-.9 capacity or device is invalid");
+    }
+
+    CudaRawManhattanScene scene;
+    std::string reason;
+    if (! cuda_m1_raw_manhattan_build_scene (
+          raw_metal1, scene_limits, scene, &reason)) {
+      throw M1WidthSpaceDecline (
+        reason.empty ()
+          ? "unable to serialize the qualified raw physical M1 scene"
+          : reason);
+    }
+
+    klayout_cuda_spatial_m1_resident_morphology_request_v1 request;
+    std::memset (&request, 0, sizeof (request));
+    request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+    request.struct_size = sizeof (request);
+    request.opcode =
+      KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M15_9_EMPTY;
+    request.option_flags =
+      KLAYOUT_CUDA_SPATIAL_M1_MORPH_QUALIFIED_OPTIONS;
+    request.format_version = scene.format_version;
+    request.dbu_per_micron = scene.dbu_per_micron;
+    request.root_cell = scene.root_cell;
+    request.device = int32_t (device);
+    request.requested_mask =
+      KLAYOUT_CUDA_SPATIAL_M1_MORPH_ALL_EMPTY;
+    request.contexts = scene.contexts.data ();
+    request.context_count = scene.contexts.size ();
+    request.context_record_bytes = sizeof (CudaM1WidthSpaceContext);
+    request.metal_contexts = scene.metal_contexts.data ();
+    request.metal_context_count = scene.metal_contexts.size ();
+    request.context_polygon_offsets =
+      scene.context_polygon_offsets.data ();
+    request.context_polygon_offset_count =
+      scene.context_polygon_offsets.size ();
+    request.context_edge_offsets =
+      scene.context_edge_offsets.data ();
+    request.context_edge_offset_count =
+      scene.context_edge_offsets.size ();
+    request.cells = scene.cells.data ();
+    request.cell_count = scene.cells.size ();
+    request.cell_record_bytes = sizeof (CudaM1WidthSpaceCell);
+    request.polygons = scene.polygons.data ();
+    request.polygon_count = scene.polygons.size ();
+    request.polygon_record_bytes = sizeof (CudaM1WidthSpacePolygon);
+    request.edges = scene.edges.data ();
+    request.edge_count = scene.edges.size ();
+    request.edge_record_bytes = sizeof (CudaM1WidthSpaceEdge);
+    request.flat_polygon_count = scene.flat_polygon_count;
+    request.flat_edge_count = scene.flat_edge_count;
+    request.scene_left = scene.scene_left;
+    request.scene_bottom = scene.scene_bottom;
+    request.scene_right = scene.scene_right;
+    request.scene_top = scene.scene_top;
+    request.max_contexts = scene_limits.max_contexts;
+    request.max_rectangles = max_rectangles;
+    request.max_x_slabs = max_x_slabs;
+    request.max_union_memberships = max_union_memberships;
+    request.max_union_events = max_union_events;
+    request.max_union_raw_segments = max_union_raw_segments;
+    request.max_union_segments = max_union_segments;
+    request.max_slabs_per_rectangle =
+      uint32_t (max_slabs_per_rectangle);
+    request.max_morph_output_slabs = max_morph_output_slabs;
+    request.max_morph_output_intervals =
+      max_morph_output_intervals;
+    request.max_morph_raw_boundary_segments =
+      max_morph_raw_boundary_segments;
+    request.max_morph_boundary_segments =
+      max_morph_boundary_segments;
+    request.max_morph_source_visits_per_pass =
+      max_morph_source_visits_per_pass;
+    request.max_morph_source_visits_per_band =
+      max_morph_source_visits_per_band;
+    request.max_morph_long_segments = max_morph_long_segments;
+    request.max_morph_active_slabs =
+      uint32_t (max_morph_active_slabs);
+    std::copy (
+      scene.digest.begin (), scene.digest.end (),
+      request.scene_digest);
+
+    const std::chrono::steady_clock::time_point call_begin =
+      std::chrono::steady_clock::now ();
+    const db::CudaM1ResidentMorphologyAttempt attempt =
+      db::cuda_spatial_try_m1_resident_morphology_empty (request);
+    const std::chrono::steady_clock::time_point done =
+      std::chrono::steady_clock::now ();
+    if (telemetry) {
+      tl::info << "CUDA M1.5-.9 exact live lowering:"
+               << " outcome="
+               << (attempt.disposition ==
+                     db::CudaM1ResidentMorphologyAttempt::CertifiedEmpty
+                     ? "certified-empty" : "cpu-fallback")
+               << " digest=" << digest_hex (scene.digest)
+               << " contexts=" << request.context_count
+               << " metal_contexts=" << request.metal_context_count
+               << " cells=" << request.cell_count
+               << " stored_polygons=" << request.polygon_count
+               << " stored_edges=" << request.edge_count
+               << " flat_polygons=" << request.flat_polygon_count
+               << " flat_edges=" << request.flat_edge_count
+               << " bounds=" << request.scene_left << ","
+               << request.scene_bottom << ","
+               << request.scene_right << ","
+               << request.scene_top
+               << " lower_ms="
+               << std::chrono::duration<double, std::milli> (
+                    call_begin - begin).count ()
+               << " call_ms="
+               << std::chrono::duration<double, std::milli> (
+                    done - call_begin).count ()
+               << " live_total_ms="
+               << std::chrono::duration<double, std::milli> (
+                    done - begin).count ()
+               << " message="
+               << (attempt.message.empty () ? "none" : attempt.message);
+    }
+    return attempt.disposition ==
+      db::CudaM1ResidentMorphologyAttempt::CertifiedEmpty;
+  } catch (const std::exception &ex) {
+    if (telemetry) {
+      try {
+        tl::info << "CUDA M1.5-.9 exact live lowering:"
+                 << " outcome=cpu-fallback digest=unavailable"
+                 << " message=" << ex.what ();
+      } catch (...) {
+        // Telemetry cannot turn a speculative decline into an error.
+      }
+    }
+  } catch (...) {
+    if (telemetry) {
+      try {
+        tl::info << "CUDA M1.5-.9 exact live lowering:"
+                 << " outcome=cpu-fallback digest=unavailable"
+                 << " message=unknown exception";
+      } catch (...) {
+        // Telemetry cannot turn a speculative decline into an error.
+      }
+    }
   }
   return false;
 }

@@ -1657,7 +1657,8 @@ namespace m2_resident_morphology {
 
 namespace {
 
-void validate_limits(const Limits &limits, bool production_cap)
+void validate_limits(const Limits &limits, bool m2_production_cap,
+                     bool m1_production_cap)
 {
   if (!limits.max_input_x_slabs || !limits.max_input_intervals ||
       !limits.max_output_slabs || !limits.max_output_intervals ||
@@ -1674,11 +1675,21 @@ void validate_limits(const Limits &limits, bool production_cap)
           limits.max_raw_boundary_segments) {
     throw std::runtime_error("invalid resident morphology limits");
   }
-  if (production_cap) {
+  if (m2_production_cap && m1_production_cap) {
+    throw std::runtime_error(
+        "resident morphology production work-cap domains overlap");
+  }
+  if (m2_production_cap) {
     if (limits.max_total_source_visits !=
         kQualifiedProductionSourceVisitCap) {
       throw std::runtime_error(
-          "qualified production work cap must be exactly 8B");
+          "qualified M2 production work cap must be exactly 8B");
+    }
+  } else if (m1_production_cap) {
+    if (limits.max_total_source_visits !=
+        kQualifiedM1ProductionSourceVisitCap) {
+      throw std::runtime_error(
+          "qualified M1 production work cap must be exactly 12B");
     }
   } else if (limits.max_total_source_visits >
              kUniversalSourceVisitCap) {
@@ -1709,7 +1720,7 @@ qualification_boundary(
     QualificationOperation operation, std::int64_t first_radius,
     std::int64_t second_radius, const Limits &limits)
 {
-  validate_limits(limits, false);
+  validate_limits(limits, false, false);
   validate_source(source, limits);
   validate_device_source(source, stream);
   if (first_radius < 0 || second_radius < 0) {
@@ -1754,7 +1765,8 @@ Result consume_f90_f270(cudaStream_t stream,
                         const Request &request)
 {
   validate_limits(
-      request.limits, request.allow_qualified_production_work_cap);
+      request.limits, request.allow_qualified_production_work_cap,
+      request.allow_qualified_m1_production_work_cap);
   validate_source(source, request.limits);
   validate_device_source(source, stream);
   const auto begin = Clock::now();

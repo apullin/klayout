@@ -1,0 +1,59 @@
+# Focused live host gate for the exact raw-M1 resident M1.5-.9 certificate.
+#
+# mode=probe calls the fail-closed transaction but intentionally does not run
+# the historical CPU fallback.  It exists for bounded capacity/census
+# diagnostics only and never claims a rule result.  mode=cpu and mode=cuda
+# exercise the complete stock-versus-certificate report transaction.
+
+raise("missing -rd input=PATH") unless $input
+raise("missing -rd topcell=NAME") unless $topcell
+raise("missing -rd output=PATH") unless $output
+
+mode = ($mode || "cpu").to_s
+raise("unsupported mode #{mode}") unless %w[cpu cuda probe].include?(mode)
+
+source($input, $topcell)
+report("M1.5-.9 exact resident morphology CUDA gate", $output)
+deep
+
+def classify_by_width(layer, *dimensions)
+  dimensions.collect { |d| layer = layer.sized(-0.5 * (d - 1.dbu)).sized(0.5 * (d - 1.dbu)) }
+end
+
+metal1 = polygons(11, 0)
+clean = false
+available = metal1.respond_to?(:cuda_m1_5_9_clean?)
+if mode != "cpu"
+  clean = available && metal1.cuda_m1_5_9_clean?
+end
+
+unless mode == "probe"
+  if clean
+    empty = polygon_layer
+    empty.output("METAL1.5", "M1.5 exact resident morphology gate")
+    empty.output("METAL1.6", "M1.6 exact resident morphology gate")
+    empty.output("METAL1.7", "M1.7 exact resident morphology gate")
+    empty.output("METAL1.8", "M1.8 exact resident morphology gate")
+    empty.output("METAL1.9", "M1.9 exact resident morphology gate")
+  else
+    gt90, gt270, gt500, gt900, gt1500 =
+      classify_by_width(metal1, 90.nm, 270.nm, 500.nm, 900.nm, 1500.nm)
+    gt90.edges.with_length(300.nm, nil).space(90.nm, euclidian)
+      .output("METAL1.5", "M1.5 exact resident morphology gate")
+    gt270.edges.with_length(900.nm, nil).space(270.nm, euclidian)
+      .output("METAL1.6", "M1.6 exact resident morphology gate")
+    gt500.edges.with_length(1.8.um, nil).space(500.nm, euclidian)
+      .output("METAL1.7", "M1.7 exact resident morphology gate")
+    gt900.edges.with_length(2.7.um, nil).space(900.nm, euclidian)
+      .output("METAL1.8", "M1.8 exact resident morphology gate")
+    gt1500.edges.with_length(4.um, nil).space(1500.nm, euclidian)
+      .output("METAL1.9", "M1.9 exact resident morphology gate")
+  end
+end
+
+puts(
+  "M1_RESIDENT_MORPH_LIVE_GATE" \
+  " mode=#{mode} top=#{$topcell}" \
+  " available=#{available ? 1 : 0}" \
+  " certified=#{clean ? 1 : 0}"
+)

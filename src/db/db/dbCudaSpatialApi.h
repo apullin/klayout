@@ -1210,6 +1210,239 @@ klayout_cuda_spatial_release_m2_union_boundary_v1 (
   struct klayout_cuda_spatial_m2_union_result_v1 *result);
 
 /*
+ * Optional exact raw-M1 resident-morphology certificate.
+ *
+ * This is deliberately a distinct, additive transaction rather than another
+ * opcode on the raw-M2 boundary ABI.  The input hierarchy describes complete
+ * raw FreePDK45 METAL1 (11/0) contours and is bound to the KM1RAW01 digest
+ * domain.  The backend constructs the exact Manhattan union, retains its
+ * canonical strip representation on the selected device and certifies the
+ * fixed M1.5-.9 suffix:
+ *
+ *   F90  = size(+90, size(-89, union(M1)))
+ *   M1.5 = F90.space(180, projection, length > 600)
+ *   F270 = size(-269, F90)
+ *   M1.6-.9 are the four directional F270 extents.
+ *
+ * COMPLETE is consumable only when every requested rule bit is certified,
+ * every request/census/capacity echo matches, the exact F90 space predicate
+ * has zero violations and uncertainty, F270 is empty, and device_flags is
+ * zero.  No geometry pointer crosses this ABI and no full union/F90 boundary
+ * is returned: the result is a scalar proof/telemetry record.  The current
+ * exact F90 space predicate does copy its explicitly capped >=600-DBU segment
+ * subset to the host; f90_long_segment_count exposes that census and d2h_ns
+ * below remains the full-boundary/result-geometry D2H time (therefore zero).
+ * Missing capability, a positive rule, bounded-capacity exhaustion, malformed
+ * input, or any proof mismatch retains the complete historical CPU
+ * transaction.
+ */
+enum klayout_cuda_spatial_m1_resident_morphology_opcode
+{
+  KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M15_9_EMPTY = 1
+};
+
+enum klayout_cuda_spatial_m1_resident_morphology_rule
+{
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_5_EMPTY = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_6_EMPTY = 1u << 1,
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_7_EMPTY = 1u << 2,
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_8_EMPTY = 1u << 3,
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_9_EMPTY = 1u << 4
+};
+
+#define KLAYOUT_CUDA_SPATIAL_M1_MORPH_ALL_EMPTY ((1u << 5) - 1u)
+
+enum klayout_cuda_spatial_m1_resident_morphology_option_flag
+{
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_RAW_HIERARCHY = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_SAME_STORE_LAYOUT_TOP_LAYER = 1u << 1,
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_NO_BREAKOUT = 1u << 2,
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_ORTHOGONAL_UNIT_TRANSFORMS = 1u << 3,
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_NO_PROPERTIES = 1u << 4,
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_CLOCKWISE_MANHATTAN_CONTOURS = 1u << 5,
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_EXACT_INTEGER_SET_UNION = 1u << 6,
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_DEVICE_RESIDENT_F90_F270 = 1u << 7
+};
+
+#define KLAYOUT_CUDA_SPATIAL_M1_MORPH_QUALIFIED_OPTIONS \
+  ((1u << 8) - 1u)
+
+enum klayout_cuda_spatial_m1_resident_morphology_disposition
+{
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_COMPLETE = 0,
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_NOT_EMPTY = 1,
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_UNCERTAIN = 2
+};
+
+/*
+ * The compact hierarchy records use the pointer-free layouts already shared
+ * by the raw-M2 adapter.  Byte strides are nevertheless carried and checked
+ * independently so neither endpoint relies on C++ cross-type aliasing.
+ */
+struct klayout_cuda_spatial_m1_resident_morphology_request_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  uint32_t root_cell;
+  int32_t device;
+  uint32_t requested_mask;
+  uint32_t reserved0;
+
+  const void *contexts;
+  uint64_t context_count;
+  uint32_t context_record_bytes;
+  uint32_t context_reserved;
+  const uint32_t *metal_contexts;
+  uint64_t metal_context_count;
+  const uint64_t *context_polygon_offsets;
+  uint64_t context_polygon_offset_count;
+  const uint64_t *context_edge_offsets;
+  uint64_t context_edge_offset_count;
+  const void *cells;
+  uint64_t cell_count;
+  uint32_t cell_record_bytes;
+  uint32_t cell_reserved;
+  const void *polygons;
+  uint64_t polygon_count;
+  uint32_t polygon_record_bytes;
+  uint32_t polygon_reserved;
+  const void *edges;
+  uint64_t edge_count;
+  uint32_t edge_record_bytes;
+  uint32_t edge_reserved;
+
+  uint64_t flat_polygon_count;
+  uint64_t flat_edge_count;
+  int64_t scene_left;
+  int64_t scene_bottom;
+  int64_t scene_right;
+  int64_t scene_top;
+
+  uint64_t max_contexts;
+  uint64_t max_rectangles;
+  uint64_t max_x_slabs;
+  uint64_t max_union_memberships;
+  uint64_t max_union_events;
+  uint64_t max_union_raw_segments;
+  uint64_t max_union_segments;
+  uint32_t max_slabs_per_rectangle;
+  uint32_t union_reserved;
+
+  uint64_t max_morph_output_slabs;
+  uint64_t max_morph_output_intervals;
+  uint64_t max_morph_raw_boundary_segments;
+  uint64_t max_morph_boundary_segments;
+  /* Legacy engine limit, applied independently to every morphology pass. */
+  uint64_t max_morph_source_visits_per_pass;
+  uint64_t max_morph_source_visits_per_band;
+  uint64_t max_morph_long_segments;
+  uint32_t max_morph_active_slabs;
+  uint32_t morph_reserved;
+
+  uint8_t scene_digest[32];
+  uint64_t reserved1[2];
+};
+
+struct klayout_cuda_spatial_m1_resident_morphology_result_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t status;
+  uint32_t fallback_flags;
+  uint32_t disposition;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  uint32_t root_cell;
+  uint32_t requested_mask;
+  uint32_t certified_empty_mask;
+  uint32_t device_flags;
+  uint32_t reserved0;
+  int64_t scene_left;
+  int64_t scene_bottom;
+  int64_t scene_right;
+  int64_t scene_top;
+  uint8_t scene_digest[32];
+
+  uint64_t context_count;
+  uint64_t metal_context_count;
+  uint64_t cell_count;
+  uint64_t polygon_count;
+  uint64_t edge_count;
+  uint64_t flat_polygon_count;
+  uint64_t flat_edge_count;
+
+  uint64_t max_contexts;
+  uint64_t max_rectangles;
+  uint64_t max_x_slabs;
+  uint64_t max_union_memberships;
+  uint64_t max_union_events;
+  uint64_t max_union_raw_segments;
+  uint64_t max_union_segments;
+  uint32_t max_slabs_per_rectangle;
+  uint32_t union_reserved;
+  uint64_t max_morph_output_slabs;
+  uint64_t max_morph_output_intervals;
+  uint64_t max_morph_raw_boundary_segments;
+  uint64_t max_morph_boundary_segments;
+  uint64_t max_morph_source_visits_per_pass;
+  uint64_t max_morph_source_visits_per_band;
+  uint64_t max_morph_long_segments;
+  uint32_t max_morph_active_slabs;
+  uint32_t morph_reserved;
+
+  uint64_t rectangle_count;
+  uint64_t x_slab_count;
+  uint64_t union_membership_count;
+  uint64_t union_event_count;
+  uint64_t strip_interval_count;
+  uint64_t erode89_output_interval_count;
+  uint64_t erode89_source_visit_count;
+  uint64_t dilate90_output_interval_count;
+  uint64_t dilate90_source_visit_count;
+  uint64_t boundary_source_visit_count;
+  uint64_t erode269_source_visit_count;
+  uint64_t f90_boundary_segment_count;
+  uint64_t f90_long_segment_count;
+  uint64_t f90_space_pair_count;
+  uint64_t f90_space_violation_count;
+  uint64_t f90_space_uncertain_count;
+  uint64_t f270_eroded_interval_count;
+  uint64_t union_device_total_bytes;
+  uint64_t union_device_free_begin_bytes;
+  uint64_t union_device_free_low_bytes;
+  uint64_t morph_device_total_bytes;
+  uint64_t morph_device_free_begin_bytes;
+  uint64_t morph_device_free_low_bytes;
+
+  uint64_t setup_ns;
+  uint64_t h2d_ns;
+  uint64_t rectangle_expand_ns;
+  uint64_t x_membership_ns;
+  uint64_t strip_scan_ns;
+  uint64_t morphology_ns;
+  /* Full-boundary/result-geometry D2H only; see the capped predicate above. */
+  uint64_t d2h_ns;
+  uint64_t total_ns;
+  char message[192];
+};
+
+typedef int
+(*klayout_cuda_spatial_run_m1_resident_morphology_empty_v1_func) (
+  const struct klayout_cuda_spatial_m1_resident_morphology_request_v1 *,
+  struct klayout_cuda_spatial_m1_resident_morphology_result_v1 *);
+
+KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_m1_resident_morphology_empty_v1 (
+  const struct klayout_cuda_spatial_m1_resident_morphology_request_v1 *request,
+  struct klayout_cuda_spatial_m1_resident_morphology_result_v1 *result);
+
+/*
  * Optional atomic FreePDK45 POLY.3/POLY.4 terminal-empty certificate.
  *
  * The caller supplies three exact merged hierarchical domains: POLY, ACTIVE

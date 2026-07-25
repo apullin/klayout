@@ -38,6 +38,7 @@
 #include "dbCompoundOperation.h"
 #include "dbCudaActive3.h"
 #include "dbCudaImplant12.h"
+#include "dbCudaM1WidthSpace.h"
 #include "dbCudaM2Rules.h"
 #include "dbCudaPoly34.h"
 #include "dbCudaSpatialBackend.h"
@@ -1710,6 +1711,34 @@ static bool cuda_m1_contact_clean (
          contact->merged_semantics () && metal1->merged_semantics () &&
          db::cuda_m1_contact_try_empty (
            deep_metal1->deep_layer (), deep_contact->deep_layer ());
+}
+
+static bool cuda_m1_5_9_clean (const db::Region *metal1)
+{
+  // Resolve the optional capability before touching the large hierarchy.
+  if (! db::cuda_spatial_m1_resident_morphology_requested ()) {
+    return false;
+  }
+  const db::DeepRegion *deep_metal1 =
+    dynamic_cast<const db::DeepRegion *> (metal1->delegate ());
+  if (! deep_metal1 || ! metal1->merged_semantics ()) {
+    return false;
+  }
+
+  const db::DeepLayer &raw_metal1 = deep_metal1->deep_layer ();
+  if (raw_metal1.layer () >= raw_metal1.layout ().layers () ||
+      ! raw_metal1.layout ().get_properties (
+          raw_metal1.layer ()).log_equal (
+            db::LayerProperties (11, 0))) {
+    return false;
+  }
+
+  try {
+    return db::cuda_m1_5_9_try_empty (raw_metal1);
+  } catch (...) {
+    // No speculative failure may bypass the historical M1.5-.9 transaction.
+    return false;
+  }
 }
 
 static bool cuda_active3_raw_wells_clean (
@@ -4933,6 +4962,16 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "contact size and spacing, full M1 containment, and two-opposite-side M1 "
     "enclosure rules are all certified empty. False requires every historical "
     "CPU rule.\n"
+  ) +
+  method_ext (
+    "cuda_m1_5_9_clean?", &cuda_m1_5_9_clean,
+    "@brief Tries the exact raw-M1 resident M1.5-.9 certificate\n"
+    "\n"
+    "This internal default-off hook serializes pristine FreePDK45 M1, forms "
+    "its exact integer-set union, and retains the union strips on the selected "
+    "device across the fixed F90/F270 morphology. True means all five "
+    "historical rule categories are empty. False requires the unchanged "
+    "classify-by-width and spacing expressions.\n"
   ) +
   method_ext (
     "cuda_active3_raw_wells_clean?", &cuda_active3_raw_wells_clean,

@@ -81,6 +81,14 @@ M2_OWNER_BLOCK = (
     f"{M2_3_OWNER}\n\n{M2_CPU49}\n\nend\n\n\n{VIA2_OWNER}"
 )
 
+M1_CPU59 = """metal1_gt90, metal1_gt270, metal1_gt500, metal1_gt900, metal1_gt1500 = classify_by_width(metal1, 90.nm, 270.nm, 500.nm, 900.nm, 1500.nm)
+metal1_gt90.edges.with_length(300.nm,nil).space(90.nm,euclidian).output("METAL1.5", "METAL1.5 : Minimum spacing of metal1 wider than 90 nm and longer than 300 nm : 90nm")
+metal1_gt270.edges.with_length(900.nm,nil).space(270.nm,euclidian).output("METAL1.6", "METAL1.6 : Minimum spacing of metal1 wider than 270 nm and longer than 900 nm : 270nm")
+metal1_gt500.edges.with_length(1.8.um,nil).space(500.nm,euclidian).output("METAL1.7", "METAL1.7 : Minimum spacing of metal1 wider than 500 nm and longer than 1.8 um : 500nm")
+metal1_gt900.edges.with_length(2.7.um,nil).space(900.nm,euclidian).output("METAL1.8", "METAL1.8 : Minimum spacing of metal1 wider than 900 nm and longer than 2.7 um : 900nm")
+metal1_gt1500.edges.with_length(4.um,nil).space(1500.nm,euclidian).output("METAL1.9", "METAL1.9 : Minimum spacing of metal1 wider than 1500 nm and longer than 4.0 um : 1500nm")
+[ metal1_gt90, metal1_gt270, metal1_gt500, metal1_gt900, metal1_gt1500 ].each { |l| l.forget }"""
+
 
 def indent(block: str, spaces: int = 2) -> str:
     prefix = " " * spaces
@@ -327,6 +335,80 @@ class M2RulesTransformTest(unittest.TestCase):
             r"expected one source block, found 2",
         ):
             generator.add_m2_rules(duplicated)
+
+
+class M1ResidentMorphologyTransformTest(unittest.TestCase):
+    def test_rewrites_only_exact_suffix_and_is_deterministic(self) -> None:
+        source = f"before\nif run_m1_via_class\n{M1_CPU59}\nend\nafter\n"
+
+        first = generator.add_m1_5_9(source)
+        second = generator.add_m1_5_9(source)
+
+        self.assertEqual(first, second)
+        self.assertTrue(first.startswith("before\n"))
+        self.assertTrue(first.endswith("\nafter\n"))
+        self.assertEqual(
+            first.count(
+                'ENV["KLAYOUT_CUDA_M1_5_9"].to_s'
+            ),
+            1,
+        )
+        self.assertEqual(
+            first.count(
+                "metal1.respond_to?(:cuda_m1_5_9_clean?)"
+            ),
+            1,
+        )
+        self.assertEqual(
+            first.count("metal1.cuda_m1_5_9_clean?"), 1
+        )
+        self.assertEqual(first.count("m1_5_9_empty.output"), 5)
+        self.assertEqual(first.count("classify_by_width(metal1,"), 1)
+        self.assertEqual(first.count("].each { |l| l.forget }"), 1)
+
+    def test_clean_path_publishes_only_empty_categories(self) -> None:
+        transformed = generator.add_m1_5_9(M1_CPU59)
+        clean = transformed.split(
+            "if m1_5_9_clean\n", 1
+        )[1].split("\nelse", 1)[0]
+
+        self.assertNotIn("classify_by_width", clean)
+        self.assertNotIn(".edges", clean)
+        self.assertNotIn(".space", clean)
+        self.assertEqual(
+            re.findall(
+                r'm1_5_9_empty\.output\("(METAL1\.[5-9])"',
+                clean,
+            ),
+            [f"METAL1.{rule}" for rule in range(5, 10)],
+        )
+
+    def test_false_path_retains_literal_cpu_sequence(self) -> None:
+        transformed = generator.add_m1_5_9(M1_CPU59)
+        fallback = transformed.split(
+            "if m1_5_9_clean\n", 1
+        )[1].split("\nelse\n", 1)[1].rsplit("\nend", 1)[0]
+
+        self.assertEqual(fallback, indent(M1_CPU59))
+        self.assertIn("rescue StandardError", transformed)
+        self.assertIn("m1_5_9_clean = false", transformed)
+
+    def test_rejects_source_drift_or_duplicates(self) -> None:
+        changed = M1_CPU59.replace("with_length(4.um,nil)", "with_length(4.1.um,nil)")
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"M1\.5-\.9 exact resident morphology transaction: "
+            r"expected one source block, found 0",
+        ):
+            generator.add_m1_5_9(changed)
+
+        duplicated = f"{M1_CPU59}\n{M1_CPU59}"
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"M1\.5-\.9 exact resident morphology transaction: "
+            r"expected one source block, found 2",
+        ):
+            generator.add_m1_5_9(duplicated)
 
 
 class Poly34TransformTest(unittest.TestCase):

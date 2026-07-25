@@ -79,6 +79,10 @@ using Active3WellRequest =
     klayout_cuda_spatial_active3_well_union_request_v1;
 using Active3WellResult =
     klayout_cuda_spatial_active3_well_union_result_v1;
+using M1MorphRequest =
+    klayout_cuda_spatial_m1_resident_morphology_request_v1;
+using M1MorphResult =
+    klayout_cuda_spatial_m1_resident_morphology_result_v1;
 using Clock = std::chrono::steady_clock;
 
 static_assert(std::is_trivially_copyable<Context>::value,
@@ -108,6 +112,10 @@ static_assert(sizeof(Active3WellRequest) == 776,
               "unexpected ACTIVE3 WELL-union request ABI padding");
 static_assert(sizeof(Active3WellResult) == 960,
               "unexpected ACTIVE3 WELL-union result ABI padding");
+static_assert(sizeof(M1MorphRequest) == 408,
+              "unexpected M1 resident-morphology request ABI padding");
+static_assert(sizeof(M1MorphResult) == 744,
+              "unexpected M1 resident-morphology result ABI padding");
 static_assert(sizeof(a3::DirectedEdge) == sizeof(Edge),
               "CONTACT4 and raw-scene edge layouts diverged");
 static_assert(sizeof(mu::DirectedSegmentI64) == sizeof(Segment),
@@ -124,6 +132,8 @@ constexpr std::uint32_t kExpandThreads = 256;
 constexpr std::uint32_t kMaximumBlocks = 65535;
 constexpr char kM2RawDigestMagic[8] =
     {'K', 'M', '2', 'R', 'A', 'W', '0', '1'};
+constexpr char kM1RawDigestMagic[8] =
+    {'K', 'M', '1', 'R', 'A', 'W', '0', '1'};
 constexpr char kActiveRawDigestMagic[8] =
     {'K', 'A', 'R', 'A', 'W', '0', '0', '1'};
 constexpr char kContactRawDigestMagic[8] =
@@ -142,6 +152,18 @@ constexpr std::array<std::uint8_t, 32>
         0xcd, 0x06, 0xfd, 0x71, 0xce, 0x0f, 0x50, 0x2d,
         0x8a, 0x18, 0xce, 0x08, 0x72, 0x7a, 0x1d, 0xf7,
         0x46, 0x35, 0x57, 0x73, 0xe3, 0x09, 0x96, 0x27};
+constexpr std::array<std::uint8_t, 32>
+    kQualifiedLiveM1MorphSceneDigest = {
+        0x02, 0x74, 0x2f, 0x05, 0x42, 0x8d, 0x84, 0x76,
+        0x9f, 0x0b, 0xcd, 0xd2, 0xeb, 0x28, 0x78, 0xdf,
+        0x65, 0x30, 0xe6, 0xab, 0xbc, 0x04, 0xf3, 0x44,
+        0x58, 0x75, 0xce, 0x81, 0xb0, 0x71, 0xc1, 0x18};
+constexpr std::array<std::uint8_t, 32>
+    kQualifiedFocusedM1MorphSceneDigest = {
+        0xb8, 0x1e, 0xb8, 0x97, 0x44, 0x85, 0x54, 0x4c,
+        0xf4, 0xc9, 0xea, 0xe0, 0x5b, 0x9b, 0x44, 0xd5,
+        0x79, 0x0b, 0xa6, 0xdb, 0xfc, 0xa0, 0xa9, 0x24,
+        0x50, 0x4b, 0xad, 0xac, 0xc9, 0x09, 0x59, 0xea};
 
 enum ExpandFlag : std::uint32_t {
   kExpandTransformOverflow = 1u << 0,
@@ -419,6 +441,13 @@ void set_message(Active3WellResult *result, const char *message)
       message ? message : "");
 }
 
+void set_message(M1MorphResult *result, const char *message)
+{
+  std::snprintf(
+      result->message, sizeof(result->message), "%s",
+      message ? message : "");
+}
+
 bool coordinate_qualified(std::int64_t value)
 {
   return value >= -kCoordinateLimit && value <= kCoordinateLimit;
@@ -496,6 +525,65 @@ T load_scalar(const T *records, std::uint64_t index)
       DeclineKind::coordinate,
       KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW,
       message);
+}
+
+Request m1_morph_as_union_request(const M1MorphRequest &request)
+{
+  Request adapted{};
+  adapted.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  adapted.struct_size = sizeof(adapted);
+  adapted.opcode =
+      KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY;
+  adapted.option_flags =
+      KLAYOUT_CUDA_SPATIAL_M2_UNION_QUALIFIED_OPTIONS;
+  adapted.format_version = request.format_version;
+  adapted.dbu_per_micron = request.dbu_per_micron;
+  adapted.root_cell = request.root_cell;
+  adapted.device = request.device;
+  adapted.contexts = request.contexts;
+  adapted.context_count = request.context_count;
+  adapted.context_record_bytes = request.context_record_bytes;
+  adapted.context_reserved = request.context_reserved;
+  adapted.metal_contexts = request.metal_contexts;
+  adapted.metal_context_count = request.metal_context_count;
+  adapted.context_polygon_offsets =
+      request.context_polygon_offsets;
+  adapted.context_polygon_offset_count =
+      request.context_polygon_offset_count;
+  adapted.context_edge_offsets = request.context_edge_offsets;
+  adapted.context_edge_offset_count =
+      request.context_edge_offset_count;
+  adapted.cells = request.cells;
+  adapted.cell_count = request.cell_count;
+  adapted.cell_record_bytes = request.cell_record_bytes;
+  adapted.cell_reserved = request.cell_reserved;
+  adapted.polygons = request.polygons;
+  adapted.polygon_count = request.polygon_count;
+  adapted.polygon_record_bytes = request.polygon_record_bytes;
+  adapted.polygon_reserved = request.polygon_reserved;
+  adapted.edges = request.edges;
+  adapted.edge_count = request.edge_count;
+  adapted.edge_record_bytes = request.edge_record_bytes;
+  adapted.edge_reserved = request.edge_reserved;
+  adapted.flat_polygon_count = request.flat_polygon_count;
+  adapted.flat_edge_count = request.flat_edge_count;
+  adapted.scene_left = request.scene_left;
+  adapted.scene_bottom = request.scene_bottom;
+  adapted.scene_right = request.scene_right;
+  adapted.scene_top = request.scene_top;
+  adapted.max_contexts = request.max_contexts;
+  adapted.max_rectangles = request.max_rectangles;
+  adapted.max_x_slabs = request.max_x_slabs;
+  adapted.max_memberships = request.max_union_memberships;
+  adapted.max_events = request.max_union_events;
+  adapted.max_raw_segments = request.max_union_raw_segments;
+  adapted.max_segments = request.max_union_segments;
+  adapted.max_slabs_per_rectangle =
+      request.max_slabs_per_rectangle;
+  std::copy(
+      request.scene_digest, request.scene_digest + 32,
+      adapted.scene_digest);
+  return adapted;
 }
 
 bool valid_basic_request(const Request &request)
@@ -583,6 +671,70 @@ bool valid_basic_request(const Request &request)
       coordinate_qualified(request.scene_top);
 }
 
+bool valid_m1_morph_request(const M1MorphRequest &request)
+{
+  if (request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      request.struct_size != sizeof(request) ||
+      request.opcode !=
+          KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M15_9_EMPTY ||
+      request.option_flags !=
+          KLAYOUT_CUDA_SPATIAL_M1_MORPH_QUALIFIED_OPTIONS ||
+      request.format_version != 1 ||
+      request.dbu_per_micron != 2000 ||
+      request.device < 0 ||
+      request.requested_mask !=
+          KLAYOUT_CUDA_SPATIAL_M1_MORPH_ALL_EMPTY ||
+      request.reserved0 ||
+      request.context_reserved || request.cell_reserved ||
+      request.polygon_reserved || request.edge_reserved ||
+      request.union_reserved || request.morph_reserved ||
+      request.reserved1[0] || request.reserved1[1] ||
+      !request.max_morph_output_slabs ||
+      !request.max_morph_output_intervals ||
+      !request.max_morph_raw_boundary_segments ||
+      !request.max_morph_boundary_segments ||
+      !request.max_morph_source_visits_per_pass ||
+      !request.max_morph_source_visits_per_band ||
+      !request.max_morph_long_segments ||
+      !request.max_morph_active_slabs ||
+      request.max_morph_boundary_segments >
+          request.max_morph_raw_boundary_segments) {
+    return false;
+  }
+
+  const m2m::Limits qualified_limits;
+  if (request.max_morph_output_slabs >
+          qualified_limits.max_output_slabs ||
+      request.max_morph_output_intervals >
+          qualified_limits.max_output_intervals ||
+      request.max_morph_raw_boundary_segments >
+          qualified_limits.max_raw_boundary_segments ||
+      request.max_morph_boundary_segments >
+          qualified_limits.max_boundary_segments ||
+      request.max_morph_source_visits_per_band >
+          qualified_limits.max_source_visits_per_band ||
+      request.max_morph_long_segments >
+          qualified_limits.max_long_segments ||
+      request.max_morph_active_slabs >
+          qualified_limits.max_active_slabs ||
+      (request.max_morph_source_visits_per_pass >
+           m2m::kUniversalSourceVisitCap &&
+       request.max_morph_source_visits_per_pass !=
+           m2m::kQualifiedM1ProductionSourceVisitCap)) {
+    return false;
+  }
+
+  Request structural = m1_morph_as_union_request(request);
+  // A bounded cap below the supplied census is a valid transaction which
+  // must decline as FALLBACK/CAPACITY rather than BAD_ARGUMENT.  Raise only
+  // the cap-dependent fields for the pointer/record-shape precheck.
+  structural.max_rectangles = std::max(
+      structural.max_rectangles, structural.flat_polygon_count);
+  structural.max_memberships = std::max(
+      structural.max_memberships, structural.edge_count);
+  return valid_basic_request(structural);
+}
+
 bool qualified_production_m2_suffix_scene(const Request &request)
 {
   const bool compact_scene =
@@ -607,6 +759,32 @@ bool qualified_production_m2_suffix_scene(const Request &request)
       request.scene_bottom == INT64_C(6225) &&
       request.scene_right == INT64_C(1788415) &&
       request.scene_top == INT64_C(1487300);
+}
+
+bool qualified_production_m1_morph_scene(
+    const M1MorphRequest &request)
+{
+  const bool full_deck_scene =
+      std::equal(
+          request.scene_digest, request.scene_digest + 32,
+          kQualifiedLiveM1MorphSceneDigest.begin()) &&
+      request.context_count == UINT64_C(849265);
+  const bool focused_scene =
+      std::equal(
+          request.scene_digest, request.scene_digest + 32,
+          kQualifiedFocusedM1MorphSceneDigest.begin()) &&
+      request.context_count == UINT64_C(848497);
+  return (full_deck_scene || focused_scene) &&
+      request.metal_context_count == UINT64_C(830950) &&
+      request.cell_count == UINT64_C(273) &&
+      request.polygon_count == UINT64_C(1099662) &&
+      request.edge_count == UINT64_C(4398792) &&
+      request.flat_polygon_count == UINT64_C(41093878) &&
+      request.flat_edge_count == UINT64_C(164386520) &&
+      request.scene_left == INT64_C(6165) &&
+      request.scene_bottom == INT64_C(6230) &&
+      request.scene_right == INT64_C(1788420) &&
+      request.scene_top == INT64_C(1486245);
 }
 
 Request scene_as_union_request(
@@ -910,6 +1088,58 @@ void echo_request(const Request &request, Result *result)
   result->edge_count = request.edge_count;
   result->flat_polygon_count = request.flat_polygon_count;
   result->flat_edge_count = request.flat_edge_count;
+}
+
+void echo_m1_morph_request(
+    const M1MorphRequest &request, M1MorphResult *result)
+{
+  result->opcode = request.opcode;
+  result->option_flags = request.option_flags;
+  result->format_version = request.format_version;
+  result->dbu_per_micron = request.dbu_per_micron;
+  result->root_cell = request.root_cell;
+  result->requested_mask = request.requested_mask;
+  result->scene_left = request.scene_left;
+  result->scene_bottom = request.scene_bottom;
+  result->scene_right = request.scene_right;
+  result->scene_top = request.scene_top;
+  std::copy(
+      request.scene_digest, request.scene_digest + 32,
+      result->scene_digest);
+  result->context_count = request.context_count;
+  result->metal_context_count = request.metal_context_count;
+  result->cell_count = request.cell_count;
+  result->polygon_count = request.polygon_count;
+  result->edge_count = request.edge_count;
+  result->flat_polygon_count = request.flat_polygon_count;
+  result->flat_edge_count = request.flat_edge_count;
+  result->max_contexts = request.max_contexts;
+  result->max_rectangles = request.max_rectangles;
+  result->max_x_slabs = request.max_x_slabs;
+  result->max_union_memberships =
+      request.max_union_memberships;
+  result->max_union_events = request.max_union_events;
+  result->max_union_raw_segments =
+      request.max_union_raw_segments;
+  result->max_union_segments = request.max_union_segments;
+  result->max_slabs_per_rectangle =
+      request.max_slabs_per_rectangle;
+  result->max_morph_output_slabs =
+      request.max_morph_output_slabs;
+  result->max_morph_output_intervals =
+      request.max_morph_output_intervals;
+  result->max_morph_raw_boundary_segments =
+      request.max_morph_raw_boundary_segments;
+  result->max_morph_boundary_segments =
+      request.max_morph_boundary_segments;
+  result->max_morph_source_visits_per_pass =
+      request.max_morph_source_visits_per_pass;
+  result->max_morph_source_visits_per_band =
+      request.max_morph_source_visits_per_band;
+  result->max_morph_long_segments =
+      request.max_morph_long_segments;
+  result->max_morph_active_slabs =
+      request.max_morph_active_slabs;
 }
 
 std::array<std::uint8_t, 32>
@@ -3222,6 +3452,406 @@ int run_active3_well_union_request(
   return result->status;
 }
 
+struct M1MorphCallbackContext
+{
+  m2m::Request request;
+  bool invoked = false;
+  bool complete = false;
+  m2m::Result result;
+  std::string error;
+};
+
+void consume_m1_morphology_strips(
+    cudaStream_t stream, const std::int64_t *xs,
+    std::uint32_t x_slabs,
+    const mu::StripInterval *intervals,
+    std::uint64_t interval_count,
+    const std::uint64_t *slab_offsets,
+    const std::uint32_t *slab_counts, void *opaque)
+{
+  M1MorphCallbackContext *context =
+      static_cast<M1MorphCallbackContext *>(opaque);
+  if (!context || context->invoked) {
+    throw std::runtime_error(
+        "M1 resident-morphology callback contract");
+  }
+  context->invoked = true;
+  try {
+    context->result = m2m::consume_f90_f270(
+        stream,
+        m2m::DeviceStripView{
+            xs, x_slabs, intervals, interval_count,
+            slab_offsets, slab_counts},
+        context->request);
+    context->complete = true;
+  } catch (const std::exception &error) {
+    context->error = error.what();
+  } catch (...) {
+    context->error =
+        "unknown M1 resident-morphology callback exception";
+  }
+}
+
+mu::ResidentStripHook make_m1_morphology_hook(
+    M1MorphCallbackContext *context)
+{
+  if (!context) {
+    throw std::runtime_error(
+        "invalid M1 resident-morphology callback context");
+  }
+  mu::ResidentStripHook hook;
+  hook.consume = &consume_m1_morphology_strips;
+  hook.context = context;
+  hook.stop_before_boundary = true;
+  return hook;
+}
+
+bool morphology_capacity_error(const std::string &message)
+{
+  return message.find("capacity") != std::string::npos ||
+         message.find("work cap") != std::string::npos ||
+         message.find("exceeds") != std::string::npos;
+}
+
+bool morphology_known_not_empty(const std::string &message)
+{
+  return message.find(
+             "F270 count-only erosion is not empty") !=
+         std::string::npos;
+}
+
+void copy_m1_union_telemetry(
+    const mu::GpuUnionOutput &output, M1MorphResult *result)
+{
+  result->rectangle_count = output.rectangle_count;
+  result->x_slab_count = output.x_slabs;
+  result->union_membership_count = output.memberships;
+  result->union_event_count = output.event_count;
+  result->strip_interval_count = output.strip_intervals;
+  result->x_membership_ns =
+      milliseconds_to_ns(output.x_membership_ms);
+  result->strip_scan_ns =
+      milliseconds_to_ns(output.strip_scan_ms);
+  result->d2h_ns = milliseconds_to_ns(output.d2h_ms);
+  result->union_device_total_bytes =
+      output.device_total_bytes;
+  result->union_device_free_begin_bytes =
+      output.device_free_begin_bytes;
+  result->union_device_free_low_bytes =
+      output.device_free_low_bytes;
+}
+
+void copy_m1_morph_telemetry(
+    const m2m::Result &morph, M1MorphResult *result)
+{
+  result->erode89_output_interval_count =
+      morph.erode89.output_intervals;
+  result->erode89_source_visit_count =
+      morph.erode89.source_visits;
+  result->dilate90_output_interval_count =
+      morph.dilate90.output_intervals;
+  result->dilate90_source_visit_count =
+      morph.dilate90.source_visits;
+  result->boundary_source_visit_count =
+      morph.boundary.source_visits;
+  result->erode269_source_visit_count =
+      morph.erode269_count.source_visits;
+  result->f90_boundary_segment_count =
+      morph.f90_boundary_segments;
+  result->f90_long_segment_count =
+      morph.f90_long_segments;
+  result->f90_space_pair_count =
+      morph.f90_space_pairs_checked;
+  result->f90_space_violation_count =
+      morph.f90_space_violations;
+  result->f90_space_uncertain_count =
+      morph.f90_space_uncertain;
+  result->f270_eroded_interval_count =
+      morph.f270_eroded_intervals;
+  result->morph_device_total_bytes =
+      morph.device_total_bytes;
+  result->morph_device_free_begin_bytes =
+      morph.device_free_begin_bytes;
+  result->morph_device_free_low_bytes =
+      morph.device_free_low_bytes;
+  result->morphology_ns =
+      milliseconds_to_ns(morph.total_ms);
+}
+
+void validate_m1_morph_complete(
+    const M1MorphRequest &request,
+    const LoweredScene &lowered,
+    const mu::GpuUnionOutput &output,
+    const M1MorphCallbackContext &callback)
+{
+  const m2m::Result &morph = callback.result;
+  std::uint64_t expected_events = 0;
+  std::uint64_t expected_pairs = 0;
+  if (!callback.invoked || !callback.complete ||
+      !callback.error.empty() ||
+      !output.resident_consumer_completed ||
+      output.resident_boundary_consumer_completed ||
+      !output.segments.empty() || output.raw_segments ||
+      output.digest || output.boundary_ms != 0.0 ||
+      output.d2h_ms != 0.0 ||
+      output.rectangle_count != lowered.flat_rectangles ||
+      output.rectangle_count < request.flat_polygon_count ||
+      output.rectangle_count > request.max_rectangles ||
+      !output.x_slabs ||
+      output.x_slabs > request.max_x_slabs ||
+      !output.memberships ||
+      output.memberships > request.max_union_memberships ||
+      !checked_multiply_u64(
+          output.memberships, 2, &expected_events) ||
+      output.event_count != expected_events ||
+      output.event_count > request.max_union_events ||
+      !output.strip_intervals ||
+      output.strip_intervals > output.memberships ||
+      morph.source_x_slabs != output.x_slabs ||
+      morph.source_intervals != output.strip_intervals ||
+      !morph.erode89.output_intervals ||
+      morph.erode89.output_intervals >
+          request.max_morph_output_intervals ||
+      !morph.dilate90.output_intervals ||
+      morph.dilate90.output_intervals >
+          request.max_morph_output_intervals ||
+      morph.erode89.source_visits >
+          request.max_morph_source_visits_per_pass ||
+      morph.dilate90.source_visits >
+          request.max_morph_source_visits_per_pass ||
+      morph.boundary.source_visits >
+          request.max_morph_source_visits_per_pass ||
+      morph.erode269_count.source_visits >
+          request.max_morph_source_visits_per_pass ||
+      morph.erode89.max_active_slabs >
+          request.max_morph_active_slabs ||
+      morph.dilate90.max_active_slabs >
+          request.max_morph_active_slabs ||
+      morph.erode269_count.max_active_slabs >
+          request.max_morph_active_slabs ||
+      !morph.f90_boundary_segments ||
+      morph.f90_boundary_segments >
+          request.max_morph_boundary_segments ||
+      morph.f90_long_segments >
+          request.max_morph_long_segments ||
+      !checked_multiply_u64(
+          morph.f90_long_segments,
+          morph.f90_long_segments
+              ? morph.f90_long_segments - 1
+              : 0,
+          &expected_pairs) ||
+      (expected_pairs /= 2) !=
+          morph.f90_space_pairs_checked ||
+      morph.f90_space_violations ||
+      morph.f90_space_uncertain ||
+      morph.f270_eroded_intervals ||
+      !morph.f90_boundary.empty() ||
+      morph.f90_boundary_fnv64 ||
+      !output.device_total_bytes ||
+      !output.device_free_begin_bytes ||
+      !output.device_free_low_bytes ||
+      output.device_free_begin_bytes >
+          output.device_total_bytes ||
+      output.device_free_low_bytes >
+          output.device_free_begin_bytes ||
+      !morph.device_total_bytes ||
+      morph.device_total_bytes != output.device_total_bytes ||
+      !morph.device_free_begin_bytes ||
+      !morph.device_free_low_bytes ||
+      morph.device_free_begin_bytes >
+          morph.device_total_bytes ||
+      morph.device_free_low_bytes >
+          morph.device_free_begin_bytes) {
+    throw std::runtime_error(
+        "M1 resident-morphology completion invariant failed");
+  }
+}
+
+int run_m1_morph_request(
+    const M1MorphRequest *request, M1MorphResult *result)
+{
+  if (!result) return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  std::memset(result, 0, sizeof(*result));
+  result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  result->struct_size = sizeof(*result);
+  result->status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  result->fallback_flags =
+      KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+  result->disposition =
+      KLAYOUT_CUDA_SPATIAL_M1_MORPH_UNCERTAIN;
+  if (!request || !valid_m1_morph_request(*request)) {
+    set_message(
+        result,
+        "unsupported or malformed raw M1 morphology request");
+    return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  }
+  echo_m1_morph_request(*request, result);
+
+  const auto total_begin = Clock::now();
+  try {
+    std::lock_guard<std::mutex> lock(pipeline_mutex());
+    const auto setup_begin = Clock::now();
+    const Request raw = m1_morph_as_union_request(*request);
+    const LoweredScene lowered =
+        validate_and_lower(raw, kM1RawDigestMagic);
+    result->setup_ns = elapsed_ns(setup_begin, Clock::now());
+
+    const bool qualified_production_scene =
+        qualified_production_m1_morph_scene(*request);
+    if (request->max_morph_source_visits_per_pass >
+            m2m::kUniversalSourceVisitCap &&
+        !qualified_production_scene) {
+      result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      result->fallback_flags =
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+      set_message(
+          result,
+          "raw M1 scene is not qualified for the 12B morphology work cap");
+      result->total_ns = elapsed_ns(total_begin, Clock::now());
+      return result->status;
+    }
+
+    ExpandedRectangles expanded =
+        expand_rectangles_resident(raw, lowered);
+    result->h2d_ns = expanded.h2d_ns;
+    result->rectangle_expand_ns = expanded.expand_ns;
+    if (expanded.status) {
+      result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      result->fallback_flags =
+          expanded.status & kExpandTransformOverflow
+              ? KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW
+              : KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+      set_message(
+          result,
+          "raw M1 device expansion failed its exact bounds gate");
+      result->total_ns = elapsed_ns(total_begin, Clock::now());
+      return result->status;
+    }
+
+    mu::GpuUnionLimits union_limits;
+    union_limits.max_rectangles = request->max_rectangles;
+    union_limits.max_x_slabs = request->max_x_slabs;
+    union_limits.max_memberships =
+        request->max_union_memberships;
+    union_limits.max_events = request->max_union_events;
+    union_limits.max_raw_segments =
+        request->max_union_raw_segments;
+    union_limits.max_segments = request->max_union_segments;
+    union_limits.max_slabs_per_rectangle =
+        request->max_slabs_per_rectangle;
+
+    M1MorphCallbackContext callback;
+    callback.request.limits.max_input_x_slabs =
+        request->max_x_slabs;
+    callback.request.limits.max_input_intervals =
+        request->max_union_memberships;
+    callback.request.limits.max_output_slabs =
+        request->max_morph_output_slabs;
+    callback.request.limits.max_output_intervals =
+        request->max_morph_output_intervals;
+    callback.request.limits.max_raw_boundary_segments =
+        request->max_morph_raw_boundary_segments;
+    callback.request.limits.max_boundary_segments =
+        request->max_morph_boundary_segments;
+    callback.request.limits.max_total_source_visits =
+        request->max_morph_source_visits_per_pass;
+    callback.request.limits.max_source_visits_per_band =
+        request->max_morph_source_visits_per_band;
+    callback.request.limits.max_active_slabs =
+        request->max_morph_active_slabs;
+    callback.request.limits.max_long_segments =
+        request->max_morph_long_segments;
+    callback.request.allow_qualified_m1_production_work_cap =
+        qualified_production_scene &&
+        request->max_morph_source_visits_per_pass ==
+            m2m::kQualifiedM1ProductionSourceVisitCap;
+    const mu::ResidentStripHook hook =
+        make_m1_morphology_hook(&callback);
+    const double input_prepare_ms =
+        static_cast<double>(
+            result->h2d_ns + result->rectangle_expand_ns) /
+        1000000.0;
+    const mu::GpuUnionOutput output = mu::gpu_union_resident(
+        std::move(expanded.rectangles), raw.scene_bottom,
+        raw.scene_top, union_limits, raw.device,
+        input_prepare_ms, &hook);
+    copy_m1_union_telemetry(output, result);
+
+    if (output.fallback) {
+      result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      result->fallback_flags = fallback_flags_for_union(output);
+      set_message(result, output.message.c_str());
+      result->total_ns = elapsed_ns(total_begin, Clock::now());
+      return result->status;
+    }
+    if (!callback.complete) {
+      if (morphology_known_not_empty(callback.error)) {
+        result->status = KLAYOUT_CUDA_SPATIAL_OK;
+        result->fallback_flags =
+            KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE;
+        result->disposition =
+            KLAYOUT_CUDA_SPATIAL_M1_MORPH_NOT_EMPTY;
+      } else {
+        result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+        result->fallback_flags =
+            morphology_capacity_error(callback.error)
+                ? KLAYOUT_CUDA_SPATIAL_FALLBACK_MEMBERSHIP_CAPACITY
+                : KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+      }
+      set_message(result, callback.error.c_str());
+      result->total_ns = elapsed_ns(total_begin, Clock::now());
+      return result->status;
+    }
+
+    copy_m1_morph_telemetry(callback.result, result);
+    validate_m1_morph_complete(
+        *request, lowered, output, callback);
+    result->certified_empty_mask =
+        KLAYOUT_CUDA_SPATIAL_M1_MORPH_ALL_EMPTY;
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE;
+    result->device_flags = 0;
+    result->disposition =
+        KLAYOUT_CUDA_SPATIAL_M1_MORPH_COMPLETE;
+    result->status = KLAYOUT_CUDA_SPATIAL_OK;
+    set_message(
+        result,
+        "complete exact raw M1 resident M1.5-.9 empty certificate");
+    result->total_ns = elapsed_ns(total_begin, Clock::now());
+    return result->status;
+  } catch (const M2Decline &decline) {
+    result->certified_empty_mask = 0;
+    result->fallback_flags = decline.fallback_flags();
+    result->disposition =
+        KLAYOUT_CUDA_SPATIAL_M1_MORPH_UNCERTAIN;
+    result->status =
+        decline.kind() == DeclineKind::bad_argument
+            ? KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT
+            : KLAYOUT_CUDA_SPATIAL_FALLBACK;
+    set_message(result, decline.what());
+  } catch (const std::exception &error) {
+    result->certified_empty_mask = 0;
+    result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    result->disposition =
+        KLAYOUT_CUDA_SPATIAL_M1_MORPH_UNCERTAIN;
+    set_message(result, error.what());
+  } catch (...) {
+    result->certified_empty_mask = 0;
+    result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    result->disposition =
+        KLAYOUT_CUDA_SPATIAL_M1_MORPH_UNCERTAIN;
+    set_message(
+        result,
+        "unknown exact raw M1 resident-morphology exception");
+  }
+  result->total_ns = elapsed_ns(total_begin, Clock::now());
+  return result->status;
+}
+
 int run_request(const Request *request, Result *result)
 {
   if (!result) return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
@@ -3456,6 +4086,31 @@ klayout_cuda_spatial_run_m2_union_boundary_v1(
       set_message(
           result,
           "exception escaped the exact raw M2 union boundary");
+    }
+    return KLAYOUT_CUDA_SPATIAL_ERROR;
+  }
+}
+
+extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_m1_resident_morphology_empty_v1(
+    const klayout_cuda_spatial_m1_resident_morphology_request_v1 *request,
+    klayout_cuda_spatial_m1_resident_morphology_result_v1 *result)
+{
+  try {
+    return run_m1_morph_request(request, result);
+  } catch (...) {
+    if (result) {
+      std::memset(result, 0, sizeof(*result));
+      result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+      result->struct_size = sizeof(*result);
+      result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+      result->fallback_flags =
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+      result->disposition =
+          KLAYOUT_CUDA_SPATIAL_M1_MORPH_UNCERTAIN;
+      set_message(
+          result,
+          "exception escaped exact raw M1 resident morphology");
     }
     return KLAYOUT_CUDA_SPATIAL_ERROR;
   }

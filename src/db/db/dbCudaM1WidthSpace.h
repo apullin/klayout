@@ -210,6 +210,17 @@ DB_PUBLIC bool cuda_m2_raw_manhattan_scene_digest (
   std::array<uint8_t, 32> &digest);
 
 /**
+ * Compute the canonical KM1RAW01 digest of a structurally valid raw-M1 scene.
+ *
+ * The hashed field order after the magic is identical to KM2RAW01.  The
+ * distinct domain prevents a valid M2 serialization from being replayed as
+ * the raw physical M1 operand of the resident morphology certificate.
+ */
+DB_PUBLIC bool cuda_m1_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest);
+
+/**
  * Compute the canonical KARAW001 digest of a structurally valid raw-ACTIVE
  * scene.  The hashed field order after the magic is identical to KM2RAW01.
  */
@@ -269,6 +280,21 @@ DB_PUBLIC bool cuda_m2_raw_manhattan_build_scene (
   std::string *decline_reason = 0);
 
 /**
+ * Serialize the supplied raw physical FreePDK45 M1 layer verbatim.
+ *
+ * The caller must pass DeepRegion::deep_layer(), never merged_deep_layer().
+ * This builder requires physical layer 11/0 and otherwise applies the same
+ * exact hierarchy, contour, property, DBU and capacity contract as raw M2.
+ * Success publishes a KM1RAW01 digest; every decline leaves "scene"
+ * unchanged.
+ */
+DB_PUBLIC bool cuda_m1_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_metal1,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason = 0);
+
+/**
  * Serialize the supplied raw physical FreePDK45 ACTIVE layer verbatim.
  *
  * This fixed-domain builder accepts only physical layer 1/0 at 0.5-nm DBU.
@@ -310,6 +336,16 @@ DB_PUBLIC bool cuda_well_union_raw_manhattan_build_scene (
   const CudaM1WidthSpaceSceneLimits &limits,
   CudaRawManhattanScene &scene,
   std::string *decline_reason = 0);
+
+/**
+ * Try the exact default-off raw-M1 / resident M1.5-.9 certificate.
+ *
+ * True is returned only when all five unchanged FreePDK45 morphology rules
+ * are strictly validated empty.  False is a normal decline and requires the
+ * caller to execute the literal historical classify/space transaction.
+ */
+DB_PUBLIC bool cuda_m1_5_9_try_empty (
+  const db::DeepLayer &raw_metal1);
 
 /**
  * Try the live atomic M1 width/spacing empty certificate.
