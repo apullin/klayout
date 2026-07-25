@@ -1441,6 +1441,7 @@ run_projection_plan(const ProjectionOptions &options, Clock::time_point total_be
 
 } // namespace
 
+#ifndef KLAYOUT_CUDA_PROJECTION_ENCLOSURE_NO_MAIN
 int
 main(int argc, char **argv)
 {
@@ -1453,3 +1454,4 @@ main(int argc, char **argv)
         return 2;
     }
 }
+#endif

@@ -33,6 +33,18 @@ set_target_properties(manhattan_union_replay PROPERTIES
   CUDA_RESOLVE_DEVICE_SYMBOLS OFF
 )
 
+add_executable(m2_via2_certificate
+  m2_via2_certificate.cu
+)
+target_compile_options(m2_via2_certificate PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(m2_via2_certificate PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+)
+
 add_library(klayout_cuda_spatial_backend SHARED
   poly34_backend.cu
   spatial_backend.cu

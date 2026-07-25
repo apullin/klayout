@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<klayout-macro>
+ <description>Exact CPU oracle for FreePDK45 METAL2.4</description>
+ <version/>
+ <category>drc</category>
+ <prolog/>
+ <epilog/>
+ <doc/>
+ <autorun>false</autorun>
+ <autorun-early>false</autorun-early>
+ <shortcut/>
+ <show-in-menu>false</show-in-menu>
+ <group-name>drc_scripts</group-name>
+ <menu-path>tools_menu.drc.end</menu-path>
+ <interpreter>dsl</interpreter>
+ <dsl-interpreter-name>drc-dsl-xml</dsl-interpreter-name>
+ <text>
+input_path = $input
+top_name = $topcell
+report_path = $output
+
+raise("missing -rd input=PATH") unless input_path &amp;&amp; !input_path.to_s.empty?
+raise("missing -rd topcell=NAME") unless top_name &amp;&amp; !top_name.to_s.empty?
+raise("missing -rd output=PATH") unless report_path &amp;&amp; !report_path.to_s.empty?
+
+source(File.realpath(File.expand_path(input_path.to_s)), top_name.to_s)
+report("FreePDK45 METAL2.4 oracle", File.expand_path(report_path.to_s))
+deep
+threads(2)
+verbose(true)
+
+metal2 = polygons(101, 0)
+via2 = polygons(102, 0)
+bad = metal2.enclosing(via2, 35.nm, projection).second_edges
+corners = bad.width(angle_limit(100.0), 1.dbu)
+markers = via2.interacting(corners.polygons(1.dbu))
+
+info(
+  "M2_VIA2_CPU_ORACLE " \
+  "bad_flat=#{bad.count} bad_hier=#{bad.hier_count} " \
+  "corners_flat=#{corners.count} corners_hier=#{corners.hier_count} " \
+  "markers_flat=#{markers.count} markers_hier=#{markers.hier_count}"
+)
+
+markers.output(
+  "METAL2.4",
+  "METAL2.4 : Minimum enclosure around via2 on two opposite sides : 35nm"
+)
+
+[metal2, via2, bad, corners, markers].each { |layer| layer.forget }
+ </text>
+</klayout-macro>
