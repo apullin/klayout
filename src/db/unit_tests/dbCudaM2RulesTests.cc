@@ -13,6 +13,7 @@
 #include "dbCudaM2Rules.h"
 
 #include "dbBox.h"
+#include "dbDeepShapeStore.h"
 #include "dbRegion.h"
 #include "tlUnitTest.h"
 
@@ -333,4 +334,20 @@ TEST(5_OppositeSideCollinearDegeneraciesFailClosed)
   expect_decline_unchanged (
     _this, touching,
     "M2 boundary has a repeated or kissing outgoing vertex");
+}
+
+TEST(6_MissingCapabilityPrecedesRawGeometryAccess)
+{
+  const db::DeepLayer deliberately_invalid;
+  db::Region output (db::Box (100, 200, 300, 400));
+  const db::CudaM2FlatUnionAttempt attempt =
+    db::cuda_m2_raw_manhattan_try_flat_union (
+      deliberately_invalid, output);
+  EXPECT_EQ (
+    attempt.disposition, db::CudaM2FlatUnionAttempt::Disabled);
+  EXPECT_EQ (attempt.lowering_ns, uint64_t (0));
+  EXPECT_EQ (attempt.boundary_segment_count, uint64_t (0));
+  EXPECT_EQ (attempt.message, "");
+  EXPECT_EQ (output.count (), size_t (1));
+  EXPECT_EQ (output.bbox (), db::Box (100, 200, 300, 400));
 }

@@ -147,6 +147,21 @@ klayout_cuda_spatial_run_m2_union_boundary_v1 (
     result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
     return KLAYOUT_CUDA_SPATIAL_ERROR;
   }
+  if (std::strcmp (mode, "live_caps") == 0 &&
+      (request->max_contexts != UINT64_C (4000000) ||
+       request->max_rectangles != UINT64_C (32000000) ||
+       request->max_x_slabs != UINT64_C (32000000) ||
+       request->max_memberships != UINT64_C (100000000) ||
+       request->max_events != UINT64_C (200000000) ||
+       request->max_raw_segments != UINT64_C (12000000) ||
+       request->max_segments != UINT64_C (8000000) ||
+       request->max_slabs_per_rectangle != 64)) {
+    result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+    std::strncpy (
+      result->message, "live host used unexpected M2 union capacities",
+      sizeof (result->message) - 1);
+    return KLAYOUT_CUDA_SPATIAL_ERROR;
+  }
   if (std::strcmp (mode, "fallback") == 0) {
     result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
     result->fallback_flags =
