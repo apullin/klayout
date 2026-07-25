@@ -124,7 +124,7 @@ grep -Fq \
   "${work}/logs/cuda-ACTIVE3_RAW_WELLS_CLEAN-normal.log" ||
   die "clean scene was not certified"
 grep -Eq \
-  'nwell_edges=4 pwell_edges=4 active_edges=4 pair_bound=32 .*candidates=' \
+  'nwell_edges=4 pwell_edges=4 active_edges=4 cartesian_bound=32 cartesian_bound_overflow=0 .*candidates=' \
   "${work}/logs/cuda-ACTIVE3_RAW_WELLS_CLEAN-normal.log" ||
   die "clean split-edge/candidate census is missing"
 grep -Fq "outcome=raw-hits-cpu-fallback" \
