@@ -243,6 +243,9 @@ source_deck=$(readlink -f -- "${source_deck}")
 manifest=$(readlink -f -- "${manifest}")
 input=$(readlink -f -- "${input}")
 reference=$(readlink -f -- "${reference}")
+klayout_dir=$(dirname -- "${klayout}")
+backend_dir=$(dirname -- "${backend}")
+runtime_ld_library_path="${backend_dir}:${klayout_dir}"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/klayout-balanced-full-cuda-gate.XXXXXX")
 cleanup() {
@@ -397,7 +400,11 @@ set +e
       LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC \
       PYTHONDONTWRITEBYTECODE=1 \
       QT_QPA_PLATFORM=offscreen \
+      CUDA_VISIBLE_DEVICES=0 \
+      KLAYOUT_CUDA_SPATIAL_DEVICE=0 \
+      KLAYOUT_CUDA_SPATIAL_TELEMETRY=1 \
       "KLAYOUT_CUDA_SPATIAL_BACKEND=${backend}" \
+      "LD_LIBRARY_PATH=${runtime_ld_library_path}" \
       KLAYOUT_CUDA_ACTIVE3=1 \
       KLAYOUT_CUDA_ACTIVE3_TELEMETRY=1 \
       KLAYOUT_CUDA_M1_WIDTH_SPACE=1 \

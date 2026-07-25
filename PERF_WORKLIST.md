@@ -1708,12 +1708,29 @@ not just wall time.
         budget from 40 to 30 on the 32-core host and is the accounting-safe
         default for subsequent ten-owner work.
 
-      - [ ] **Break the post-implant three-owner plateau as one coordinated
+      - [x] **Break the post-implant three-owner plateau as one coordinated
         campaign:** the stable ten-owner launch now has `m2_rules`,
         `antenna_m3_m10`, and `m1_enclosure` clustered at roughly 92--96 s.
         No isolated reduction can produce a 5% full-wall win while the other
         two remain.  Preserve independent owner A/B measurements, but require
         the combined full gate before booking an end-to-end improvement.
+
+        - [x] **Book the coordinated live M2 plus POLY.3/.4 full-launch
+          reduction:** one same-host, same-generated-deck, same-manifest
+          control/candidate pair measured external wall at **101.57 s versus
+          94.86 s**, removing **6.71 wall-seconds / 6.61%** (`N=1` paired
+          full-launch A/B).  The launcher's internal accounting moved
+          101.325 -> 94.644 s.  M2 fell from 96.608 to 36.974 s and
+          `m1_enclosure` from 91.745 to 67.215 s; `implant_contact` is now the
+          89.945-second pole, followed by `antenna_m1_m2` at 85.631 s.  Both
+          merged reports exactly match canonical SHA-256
+          `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+          Exact M2/POLY transactions certified once in their owners; the
+          executable, linked DB/DRC libraries, backend, deck, manifest,
+          reference, and input hashes remained stable.  Evidence:
+          `.scratchpad/cuda-runs/combined-m2-poly-balanced-full-ab.ZHcCRr`,
+          `klayout-balanced-full-cuda-gate.XKf2ll`, and
+          `klayout-balanced-full-cuda-gate.GWqXXc`.
 
         - [x] **Split the cumulative M3 and M4 antenna checks into exact CPU
           owners:** `antenna_m3` builds and evaluates the prefix through M3;
