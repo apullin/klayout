@@ -288,8 +288,16 @@ std::string raw_hex(const std::uint8_t *bytes, std::size_t count)
 
 RawScene build_raw_scene(const LoadedScene &source,
                          const LoweredScene &hierarchy,
-                         int device)
+                         int device,
+                         std::uint32_t opcode =
+                             KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY)
 {
+  gate_require(
+      opcode ==
+              KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY ||
+          opcode ==
+              KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_M25_9_EMPTY,
+      "production gate received an unsupported M2 opcode");
   RawScene scene;
   gate_require(
       source.header.cell_count <=
@@ -365,8 +373,7 @@ RawScene build_raw_scene(const LoadedScene &source,
   Request &request = scene.request;
   request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
   request.struct_size = sizeof(request);
-  request.opcode =
-      KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY;
+  request.opcode = opcode;
   request.option_flags =
       KLAYOUT_CUDA_SPATIAL_M2_UNION_QUALIFIED_OPTIONS;
   request.format_version = 1;
@@ -488,7 +495,9 @@ int run_gate(const std::string &kact_path,
       "production KACT logical M2 source is not 101/0");
   LoweredScene hierarchy =
       lower_hierarchy(source, UINT64_C(4000000));
-  RawScene raw = build_raw_scene(source, hierarchy, device);
+  RawScene raw = build_raw_scene(
+      source, hierarchy, device,
+      KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_M25_9_EMPTY);
   raw.bind();
   const double raw_build_ms =
       gate_ms(source_begin, GateClock::now());
@@ -516,6 +525,10 @@ int run_gate(const std::string &kact_path,
         << " stored_edges=" << raw.edges.size()
         << " flat_polygons=" << raw.request.flat_polygon_count
         << " flat_edges=" << raw.request.flat_edge_count
+        << " bounds=" << raw.request.scene_left << ","
+        << raw.request.scene_bottom << ","
+        << raw.request.scene_right << ","
+        << raw.request.scene_top
         << " raw_scene_sha256="
         << raw_hex(raw.request.scene_digest, 32)
         << " oracle_segments=" << expected.segments.size()
@@ -561,6 +574,14 @@ int run_gate(const std::string &kact_path,
                   result.scene_digest + 32,
                   raw.request.scene_digest),
           "production backend proof echo differs from raw scene");
+      gate_require(
+          result.certified_empty_mask ==
+                  KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY &&
+              result.certificate_reserved == 0 &&
+              result.suffix_total_ns > 0 &&
+              result.suffix_total_ns <= result.total_ns,
+          "production backend did not publish the complete M2.5-.9 "
+          "empty certificate");
       std::cout
           << "M2_UNION_PRODUCTION_BACKEND run=" << run
           << " setup_ms=" << std::fixed << std::setprecision(3)
@@ -573,6 +594,8 @@ int run_gate(const std::string &kact_path,
           << " strip_scan_ms=" << ns_ms(result.strip_scan_ns)
           << " boundary_ms=" << ns_ms(result.boundary_ns)
           << " d2h_ms=" << ns_ms(result.d2h_ns)
+          << " suffix_mask=" << result.certified_empty_mask
+          << " suffix_ms=" << ns_ms(result.suffix_total_ns)
           << " backend_total_ms=" << ns_ms(result.total_ns)
           << " observed_call_ms=" << call_ms << "\n";
       if (run) warm_total_ms.push_back(call_ms);
@@ -597,6 +620,10 @@ int run_gate(const std::string &kact_path,
       << " stored_edges=" << raw.edges.size()
       << " flat_polygons=" << kFlatPolygons
       << " flat_edges=" << kFlatEdges
+      << " bounds=" << raw.request.scene_left << ","
+      << raw.request.scene_bottom << ","
+      << raw.request.scene_right << ","
+      << raw.request.scene_top
       << " rectangles=" << kRectangles
       << " memberships=" << kMemberships
       << " events=" << kEvents
@@ -605,6 +632,8 @@ int run_gate(const std::string &kact_path,
       << " raw_segments=" << kRawSegments
       << " segments=" << kSegments
       << " boundary_fnv64=" << kBoundaryFnv64
+      << " suffix_mask="
+      << KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY
       << " raw_scene_sha256=" << raw_sha
       << " raw_build_ms=" << std::fixed << std::setprecision(3)
       << raw_build_ms

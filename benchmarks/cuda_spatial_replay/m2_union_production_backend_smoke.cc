@@ -300,6 +300,52 @@ Scene make_scene()
   return scene;
 }
 
+Scene make_rectangle_scene(std::int64_t width, std::int64_t height)
+{
+  Scene scene;
+  scene.contexts.push_back({0, 0, 0, 0});
+  scene.metal_contexts.push_back(0);
+  scene.polygon_offsets.push_back(0);
+  scene.edge_offsets.push_back(0);
+  scene.cells.push_back({7, 0, 0, 1, 4});
+  scene.polygons.push_back(
+      {0, 0, 0, width, height, 0, 4});
+  scene.edges = {
+      {0, 0, 0, height},
+      {0, height, width, height},
+      {width, height, width, 0},
+      {width, 0, 0, 0}};
+
+  Request &request = scene.request;
+  request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  request.struct_size = sizeof(request);
+  request.opcode =
+      KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_M25_9_EMPTY;
+  request.option_flags =
+      KLAYOUT_CUDA_SPATIAL_M2_UNION_QUALIFIED_OPTIONS;
+  request.format_version = 1;
+  request.dbu_per_micron = 2000;
+  request.root_cell = 0;
+  request.device = 0;
+  request.context_record_bytes = sizeof(Context);
+  request.cell_record_bytes = sizeof(Cell);
+  request.polygon_record_bytes = sizeof(Polygon);
+  request.edge_record_bytes = sizeof(Edge);
+  request.flat_polygon_count = 1;
+  request.flat_edge_count = 4;
+  request.max_contexts = 1;
+  request.max_rectangles = 1;
+  request.max_x_slabs = 16;
+  request.max_memberships = 64;
+  request.max_events = 128;
+  request.max_raw_segments = 64;
+  request.max_segments = 32;
+  request.max_slabs_per_rectangle = 16;
+  update_bounds(&scene);
+  scene.digest();
+  return scene;
+}
+
 std::vector<Segment>
 independent_boundary(const Scene &scene)
 {
@@ -376,7 +422,10 @@ void expect_decline(Scene scene, const std::string &label,
           result.status != KLAYOUT_CUDA_SPATIAL_OK &&
           result.disposition ==
               KLAYOUT_CUDA_SPATIAL_M2_UNION_UNCERTAIN &&
-          !result.segments && !result.segment_count,
+          !result.segments && !result.segment_count &&
+          result.certified_empty_mask == 0 &&
+          result.certificate_reserved == 0 &&
+          result.suffix_total_ns == 0,
       label + " did not fail closed");
   if (expected_status != UINT32_MAX) {
     require(
@@ -451,6 +500,11 @@ int main()
             boundary_fnv64(expected.data(), expected.size()),
         "clean boundary digest differs from independent oracle");
     require(
+        result.certified_empty_mask == 0 &&
+            result.certificate_reserved == 0 &&
+            result.suffix_total_ns == 0,
+        "geometry-only opcode published an M2 suffix certificate");
+    require(
         result.setup_ns && result.h2d_ns &&
             result.rectangle_expand_ns &&
             result.x_membership_ns && result.strip_scan_ns &&
@@ -463,6 +517,34 @@ int main()
         owned && !result.segments && !result.segment_count,
         "release did not clear backend-owned output");
     klayout_cuda_spatial_release_m2_union_boundary_v1(&result);
+
+    Scene suffix_clean = make_rectangle_scene(200, 500);
+    suffix_clean.bind();
+    Result suffix_result{};
+    const int suffix_status =
+        klayout_cuda_spatial_run_m2_union_boundary_v1(
+            &suffix_clean.request, &suffix_result);
+    require(
+        suffix_status == KLAYOUT_CUDA_SPATIAL_OK &&
+            suffix_result.status == KLAYOUT_CUDA_SPATIAL_OK &&
+            suffix_result.disposition ==
+                KLAYOUT_CUDA_SPATIAL_M2_UNION_COMPLETE &&
+            suffix_result.certified_empty_mask ==
+                KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY &&
+            suffix_result.certificate_reserved == 0 &&
+            suffix_result.suffix_total_ns &&
+            suffix_result.suffix_total_ns <= suffix_result.total_ns &&
+            suffix_result.segment_count == 4 &&
+            suffix_result.segments,
+        std::string("clean M2 suffix scene declined: ") +
+            suffix_result.message);
+    klayout_cuda_spatial_release_m2_union_boundary_v1(
+        &suffix_result);
+
+    Scene suffix_hit = make_rectangle_scene(600, 600);
+    expect_decline(
+        suffix_hit, "M2 suffix F270 hit",
+        KLAYOUT_CUDA_SPATIAL_FALLBACK);
 
     Scene malformed_stride = clean;
     --malformed_stride.request.context_record_bytes;
@@ -554,7 +636,8 @@ int main()
         << expected.size()
         << " fnv64="
         << boundary_fnv64(expected.data(), expected.size())
-        << " adversarial=11 release_idempotent=1\n";
+        << " adversarial=11 release_idempotent=1"
+        << " suffix_clean=1 suffix_hit_fallback=1\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr

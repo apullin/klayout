@@ -14,6 +14,7 @@
 #include "dbCudaSpatialApi.h"
 #include "contact4_union_resident.cuh"
 #include "m2_manhattan_decompose.h"
+#include "m2_resident_morphology_gpu.cuh"
 #include "manhattan_union_gpu.cuh"
 
 #include <cuda_runtime.h>
@@ -43,6 +44,7 @@ namespace {
 
 namespace mu = klayout_cuda::manhattan_union;
 namespace md = klayout_cuda::m2_manhattan_decompose;
+namespace m2m = klayout_cuda::m2_resident_morphology;
 namespace c4 = klayout_cuda::contact4_union_resident;
 namespace a3 = klayout_cuda::active3;
 
@@ -113,6 +115,18 @@ constexpr char kActiveRawDigestMagic[8] =
     {'K', 'A', 'R', 'A', 'W', '0', '0', '1'};
 constexpr char kContactRawDigestMagic[8] =
     {'K', 'C', 'R', 'A', 'W', '0', '0', '1'};
+constexpr std::array<std::uint8_t, 32>
+    kQualifiedCompactM2SceneDigest = {
+        0x66, 0xec, 0x73, 0xea, 0xf6, 0x86, 0xc6, 0xf6,
+        0x30, 0xeb, 0x91, 0xe6, 0x39, 0x49, 0xb7, 0x03,
+        0x01, 0xca, 0x2f, 0x24, 0x72, 0x6e, 0xe4, 0x03,
+        0x3d, 0xd7, 0x7a, 0x5f, 0x89, 0x08, 0xc1, 0xc3};
+constexpr std::array<std::uint8_t, 32>
+    kQualifiedLiveM2SceneDigest = {
+        0x08, 0x8c, 0xf4, 0x59, 0xf9, 0xea, 0xa6, 0x21,
+        0xcd, 0x06, 0xfd, 0x71, 0xce, 0x0f, 0x50, 0x2d,
+        0x8a, 0x18, 0xce, 0x08, 0x72, 0x7a, 0x1d, 0xf7,
+        0x46, 0x35, 0x57, 0x73, 0xe3, 0x09, 0x96, 0x27};
 
 enum ExpandFlag : std::uint32_t {
   kExpandTransformOverflow = 1u << 0,
@@ -454,8 +468,10 @@ bool valid_basic_request(const Request &request)
   return
       request.abi_version == KLAYOUT_CUDA_SPATIAL_ABI_VERSION &&
       request.struct_size == sizeof(request) &&
-      request.opcode ==
-          KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY &&
+      (request.opcode ==
+           KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY ||
+       request.opcode ==
+           KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_M25_9_EMPTY) &&
       request.option_flags ==
           KLAYOUT_CUDA_SPATIAL_M2_UNION_QUALIFIED_OPTIONS &&
       request.format_version == 1 &&
@@ -530,6 +546,32 @@ bool valid_basic_request(const Request &request)
       coordinate_qualified(request.scene_bottom) &&
       coordinate_qualified(request.scene_right) &&
       coordinate_qualified(request.scene_top);
+}
+
+bool qualified_production_m2_suffix_scene(const Request &request)
+{
+  const bool compact_scene =
+      std::equal(
+          request.scene_digest, request.scene_digest + 32,
+          kQualifiedCompactM2SceneDigest.begin()) &&
+      request.context_count == UINT64_C(587201) &&
+      request.cell_count == UINT64_C(143);
+  const bool live_scene =
+      std::equal(
+          request.scene_digest, request.scene_digest + 32,
+          kQualifiedLiveM2SceneDigest.begin()) &&
+      request.context_count == UINT64_C(849265) &&
+      request.cell_count == UINT64_C(273);
+  return (compact_scene || live_scene) &&
+      request.metal_context_count == UINT64_C(568632) &&
+      request.polygon_count == UINT64_C(45960) &&
+      request.edge_count == UINT64_C(183852) &&
+      request.flat_polygon_count == UINT64_C(22945976) &&
+      request.flat_edge_count == UINT64_C(91784840) &&
+      request.scene_left == INT64_C(6230) &&
+      request.scene_bottom == INT64_C(6225) &&
+      request.scene_right == INT64_C(1788415) &&
+      request.scene_top == INT64_C(1487300);
 }
 
 Request scene_as_union_request(
@@ -2648,10 +2690,32 @@ int run_request(const Request *request, Result *result)
         static_cast<double>(
             result->h2d_ns + result->rectangle_expand_ns) /
         1000000.0;
+    m2m::ResidentContext suffix_context;
+    mu::ResidentStripHook suffix_hook;
+    const mu::ResidentStripHook *suffix_hook_ptr = nullptr;
+    const bool suffix_requested =
+        request->opcode ==
+        KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_M25_9_EMPTY;
+    const bool qualified_production_suffix =
+        suffix_requested &&
+        qualified_production_m2_suffix_scene(*request);
+    if (suffix_requested) {
+      if (qualified_production_suffix) {
+        suffix_context.request.allow_qualified_production_work_cap =
+            true;
+        suffix_context.request.limits.max_total_source_visits =
+            m2m::kQualifiedProductionSourceVisitCap;
+      }
+      suffix_hook = m2m::make_resident_hook(&suffix_context);
+      // The same transaction still needs the canonical boundary for the
+      // checked host FlatRegion bridge used by M2.1/.2/.4.
+      suffix_hook.stop_before_boundary = false;
+      suffix_hook_ptr = &suffix_hook;
+    }
     const mu::GpuUnionOutput output = mu::gpu_union_resident(
         std::move(expanded.rectangles), request->scene_bottom,
         request->scene_top, limits, request->device,
-        input_prepare_ms);
+        input_prepare_ms, suffix_hook_ptr);
     result->x_membership_ns =
         milliseconds_to_ns(output.x_membership_ms);
     result->strip_scan_ns =
@@ -2674,6 +2738,40 @@ int run_request(const Request *request, Result *result)
       return KLAYOUT_CUDA_SPATIAL_FALLBACK;
     }
 
+    if (suffix_requested) {
+      const m2m::Result &suffix = suffix_context.result;
+      const bool suffix_clean =
+          suffix_context.invoked &&
+          output.resident_consumer_completed &&
+          suffix.source_x_slabs == output.x_slabs &&
+          suffix.source_intervals == output.strip_intervals &&
+          suffix.f90_space_violations == 0 &&
+          suffix.f90_space_uncertain == 0 &&
+          suffix.f270_eroded_intervals == 0;
+      const bool production_census_matches =
+          !qualified_production_suffix ||
+          (suffix.f90_boundary_segments ==
+               m2m::kQualifiedF90BoundarySegments &&
+           suffix.f90_long_segments ==
+               m2m::kQualifiedF90LongSegments &&
+           suffix.f90_space_pairs_checked ==
+               m2m::kQualifiedF90LongPairs);
+      if (!suffix_clean || !production_census_matches) {
+        result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+        result->fallback_flags =
+            KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+        set_message(
+            result,
+            "resident M2.5-.9 certificate failed its exact integrity gate");
+        result->total_ns = elapsed_ns(total_begin, Clock::now());
+        return KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      }
+      result->certified_empty_mask =
+          KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY;
+      result->suffix_total_ns =
+          milliseconds_to_ns(suffix.total_ms);
+    }
+
     fill_success_result(*request, lowered, output, result);
     result->fallback_flags =
         KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE;
@@ -2683,7 +2781,9 @@ int run_request(const Request *request, Result *result)
     result->status = KLAYOUT_CUDA_SPATIAL_OK;
     set_message(
         result,
-        "complete exact raw M2 Manhattan-union boundary");
+        suffix_requested
+            ? "complete exact raw M2 union and M2.5-.9 empty certificate"
+            : "complete exact raw M2 Manhattan-union boundary");
     result->total_ns = elapsed_ns(total_begin, Clock::now());
     return KLAYOUT_CUDA_SPATIAL_OK;
   } catch (const M2Decline &decline) {

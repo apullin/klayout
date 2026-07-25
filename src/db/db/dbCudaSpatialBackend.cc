@@ -305,8 +305,10 @@ bool qualified_m2_union_request (
   return
     request.abi_version == KLAYOUT_CUDA_SPATIAL_ABI_VERSION &&
     request.struct_size == sizeof (request) &&
-    request.opcode ==
-      KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY &&
+    (request.opcode ==
+       KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY ||
+     request.opcode ==
+       KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_M25_9_EMPTY) &&
     request.option_flags == KLAYOUT_CUDA_SPATIAL_M2_UNION_QUALIFIED_OPTIONS &&
     request.format_version == 1 && request.dbu_per_micron == 2000 &&
     request.device >= 0 && request.context_reserved == 0 &&
@@ -2838,7 +2840,9 @@ bool cuda_spatial_validate_m2_union_boundary (
 
 static CudaM2UnionAttempt cuda_spatial_try_m2_union_impl (
   const klayout_cuda_spatial_m2_union_request_v1 &request,
-  CudaM2UnionTiming *timing, uint32_t timing_struct_size)
+  CudaM2UnionTiming *timing, uint32_t timing_struct_size,
+  CudaM2SuffixCertificate *certificate,
+  uint32_t certificate_struct_size)
 {
   CudaM2UnionAttempt attempt;
   if (timing) {
@@ -2851,6 +2855,27 @@ static CudaM2UnionAttempt cuda_spatial_try_m2_union_impl (
     std::memset (timing, 0, sizeof (*timing));
     timing->format_version = CudaM2UnionTiming::FormatVersion;
     timing->struct_size = sizeof (*timing);
+  }
+  if (certificate) {
+    if (certificate_struct_size != sizeof (CudaM2SuffixCertificate)) {
+      attempt.disposition = CudaM2UnionAttempt::InvalidResult;
+      attempt.message =
+        "host supplied an incompatible M2 suffix certificate record";
+      log_m2_union_attempt (attempt);
+      return attempt;
+    }
+    std::memset (certificate, 0, sizeof (*certificate));
+    certificate->format_version =
+      CudaM2SuffixCertificate::FormatVersion;
+    certificate->struct_size = sizeof (*certificate);
+    if (request.opcode !=
+          KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_M25_9_EMPTY) {
+      attempt.disposition = CudaM2UnionAttempt::InvalidResult;
+      attempt.message =
+        "M2 suffix certificate wrapper requires the suffix opcode";
+      log_m2_union_attempt (attempt);
+      return attempt;
+    }
   }
   CudaSpatialModule &module = cuda_spatial_module ();
   if (! module.m2_union_enabled ()) {
@@ -2959,11 +2984,26 @@ static CudaM2UnionAttempt cuda_spatial_try_m2_union_impl (
     result.message,
     std::find (result.message, result.message + sizeof (result.message), '\0'));
 
+  const bool backend_ok =
+    status == KLAYOUT_CUDA_SPATIAL_OK &&
+    result.status == KLAYOUT_CUDA_SPATIAL_OK;
+  const bool suffix_fields_match =
+    result.certificate_reserved == 0 &&
+    (request.opcode ==
+       KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY
+       ? result.certified_empty_mask == 0 &&
+         result.suffix_total_ns == 0
+       : backend_ok
+           ? result.certified_empty_mask ==
+               KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY &&
+             result.suffix_total_ns <= result.total_ns
+           : result.certified_empty_mask == 0 &&
+             result.suffix_total_ns == 0);
   if (result.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
       result.struct_size != sizeof (result) ||
       result.segment_record_bytes !=
         sizeof (klayout_cuda_spatial_m2_union_segment_v1) ||
-      result.reserved0 [0] != 0 || result.reserved0 [1] != 0) {
+      ! suffix_fields_match) {
     attempt.disposition = CudaM2UnionAttempt::InvalidResult;
     attempt.message =
       "CUDA M2 union backend returned an incompatible result";
@@ -2971,8 +3011,7 @@ static CudaM2UnionAttempt cuda_spatial_try_m2_union_impl (
     return attempt;
   }
 
-  if (status == KLAYOUT_CUDA_SPATIAL_OK &&
-      result.status == KLAYOUT_CUDA_SPATIAL_OK) {
+  if (backend_ok) {
     const bool echo_matches =
       result.opcode == request.opcode &&
       result.option_flags == request.option_flags &&
@@ -3037,6 +3076,11 @@ static CudaM2UnionAttempt cuda_spatial_try_m2_union_impl (
             attempt.message = boundary_error;
           } else {
             attempt.disposition = CudaM2UnionAttempt::Complete;
+            if (certificate) {
+              certificate->certified_empty_mask =
+                result.certified_empty_mask;
+              certificate->total_ns = result.suffix_total_ns;
+            }
           }
         } catch (const std::exception &ex) {
           attempt.segments.clear ();
@@ -3065,7 +3109,7 @@ static CudaM2UnionAttempt cuda_spatial_try_m2_union_impl (
 CudaM2UnionAttempt cuda_spatial_try_m2_union (
   const klayout_cuda_spatial_m2_union_request_v1 &request)
 {
-  return cuda_spatial_try_m2_union_impl (request, 0, 0);
+  return cuda_spatial_try_m2_union_impl (request, 0, 0, 0, 0);
 }
 
 CudaM2UnionAttempt cuda_spatial_try_m2_union_with_timing (
@@ -3073,7 +3117,16 @@ CudaM2UnionAttempt cuda_spatial_try_m2_union_with_timing (
   CudaM2UnionTiming *timing, uint32_t timing_struct_size)
 {
   return cuda_spatial_try_m2_union_impl (
-    request, timing, timing_struct_size);
+    request, timing, timing_struct_size, 0, 0);
+}
+
+CudaM2UnionAttempt cuda_spatial_try_m2_union_with_certificate (
+  const klayout_cuda_spatial_m2_union_request_v1 &request,
+  CudaM2SuffixCertificate *certificate,
+  uint32_t certificate_struct_size)
+{
+  return cuda_spatial_try_m2_union_impl (
+    request, 0, 0, certificate, certificate_struct_size);
 }
 
 bool cuda_spatial_m2_union_requested ()

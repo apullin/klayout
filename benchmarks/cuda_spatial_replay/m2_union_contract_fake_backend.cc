@@ -110,6 +110,13 @@ void fill_echo (
   result.segments = s_rectangle;
   result.segment_count = 4;
   result.boundary_fnv64 = boundary_fnv64 (s_rectangle, 4);
+  result.total_ns = 1000;
+  if (request.opcode ==
+        KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_M25_9_EMPTY) {
+    result.certified_empty_mask =
+      KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY;
+    result.suffix_total_ns = 500;
+  }
 }
 
 } // anonymous namespace
@@ -179,6 +186,8 @@ klayout_cuda_spatial_run_m2_union_boundary_v1 (
     result->disposition = KLAYOUT_CUDA_SPATIAL_M2_UNION_UNCERTAIN;
     result->segments = 0;
     result->segment_count = 0;
+    result->certified_empty_mask = 0;
+    result->suffix_total_ns = 0;
     return KLAYOUT_CUDA_SPATIAL_FALLBACK;
   }
   if (std::strcmp (mode, "deck_clean") == 0) {
@@ -210,6 +219,17 @@ klayout_cuda_spatial_run_m2_union_boundary_v1 (
     result->segment_count = request->max_segments;
     result->raw_segment_count = request->max_segments;
     result->boundary_fnv64 = 0;
+  } else if (std::strcmp (mode, "suffix_old_backend") == 0) {
+    result->certified_empty_mask = 0;
+    result->suffix_total_ns = 0;
+  } else if (std::strcmp (mode, "suffix_partial") == 0) {
+    result->certified_empty_mask =
+      KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY &
+      ~KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_M2_9_EMPTY;
+  } else if (std::strcmp (mode, "suffix_reserved") == 0) {
+    result->certificate_reserved = 1;
+  } else if (std::strcmp (mode, "suffix_time_overflow") == 0) {
+    result->suffix_total_ns = result->total_ns + 1;
   }
   return KLAYOUT_CUDA_SPATIAL_OK;
 }

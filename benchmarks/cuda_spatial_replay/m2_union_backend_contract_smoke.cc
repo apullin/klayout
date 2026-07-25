@@ -7,6 +7,7 @@
 
 #include "dbCudaSpatialBackend.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -108,6 +109,10 @@ klayout_cuda_spatial_m2_union_request_v1 make_request (
   request.struct_size = sizeof (request);
   request.opcode =
     KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY;
+  if (std::strncmp (mode, "suffix_", 7) == 0) {
+    request.opcode =
+      KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_M25_9_EMPTY;
+  }
   request.option_flags = KLAYOUT_CUDA_SPATIAL_M2_UNION_QUALIFIED_OPTIONS;
   request.format_version = 1;
   request.dbu_per_micron = 2000;
@@ -248,17 +253,51 @@ int main (int argc, char **argv)
       argv [2], contexts, metal_contexts, polygon_offsets, edge_offsets,
       cells, polygons, edges);
 
+  db::CudaM2SuffixCertificate certificate;
+  std::memset (&certificate, 0xa5, sizeof (certificate));
+  const bool suffix_case =
+    std::strncmp (argv [2], "suffix_", 7) == 0;
+  const bool bad_host_size =
+    std::strcmp (argv [2], "suffix_bad_host_size") == 0;
   const db::CudaM2UnionAttempt attempt =
-    db::cuda_spatial_try_m2_union (request);
+    suffix_case
+      ? db::cuda_spatial_try_m2_union_with_certificate (
+          request, &certificate,
+          bad_host_size ? sizeof (certificate) - 1
+                        : sizeof (certificate))
+      : db::cuda_spatial_try_m2_union (request);
   const int run_count = counters.run_count ();
   const int release_count = counters.release_count ();
   const bool side_order = std::strcmp (argv [2], "side_order") == 0;
   const uint64_t expected_fnv64 =
     side_order ? UINT64_C (11131890132215870808)
                : UINT64_C (11447980897846940057);
+  const unsigned char *certificate_bytes =
+    reinterpret_cast<const unsigned char *> (&certificate);
+  const bool untouched_bad_size =
+    std::find_if (
+      certificate_bytes, certificate_bytes + sizeof (certificate),
+      [] (unsigned char value) { return value != 0xa5; }) ==
+    certificate_bytes + sizeof (certificate);
+  const bool certificate_good =
+    ! suffix_case ||
+    (bad_host_size
+       ? untouched_bad_size
+       : certificate.format_version ==
+           db::CudaM2SuffixCertificate::FormatVersion &&
+         certificate.struct_size == sizeof (certificate) &&
+         certificate.reserved == 0 &&
+         (expected == "complete"
+            ? certificate.certified_empty_mask ==
+                KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY &&
+              certificate.total_ns == 500
+            : certificate.certified_empty_mask == 0 &&
+              certificate.total_ns == 0));
+  const int expected_calls = bad_host_size ? 0 : 1;
   const bool good =
     expected_disposition (attempt, expected) &&
-    run_count == 1 && release_count == 1 &&
+    run_count == expected_calls && release_count == expected_calls &&
+    certificate_good &&
     (expected == "complete"
        ? attempt.segments.size () == (side_order ? 2 : 4) &&
          attempt.boundary_fnv64 == expected_fnv64
@@ -272,6 +311,8 @@ int main (int argc, char **argv)
       << " segments=" << attempt.segments.size ()
       << " run_count=" << run_count
       << " release_count=" << release_count
+      << " certificate_mask=" << certificate.certified_empty_mask
+      << " certificate_total_ns=" << certificate.total_ns
       << " message=" << attempt.message << "\n";
     return 1;
   }

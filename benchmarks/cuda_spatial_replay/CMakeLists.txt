@@ -137,6 +137,7 @@ set_target_properties(klayout_cuda_spatial_backend PROPERTIES
 target_link_libraries(klayout_cuda_spatial_backend PRIVATE
   contact4_union_resident_gpu
   manhattan_union_gpu_core
+  m2_resident_morphology_gpu
 )
 
 add_executable(cuda_spatial_backend_smoke backend_smoke.cc)
@@ -566,6 +567,24 @@ if(KLAYOUT_QMAKE_BUILD_DIR)
     COMMAND m2_union_backend_contract_smoke
       $<TARGET_FILE:m2_union_contract_backend_full>
       copy_throw error
+    COMMAND m2_union_backend_contract_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      suffix_ok complete
+    COMMAND m2_union_backend_contract_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      suffix_old_backend invalid
+    COMMAND m2_union_backend_contract_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      suffix_partial invalid
+    COMMAND m2_union_backend_contract_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      suffix_reserved invalid
+    COMMAND m2_union_backend_contract_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      suffix_time_overflow invalid
+    COMMAND m2_union_backend_contract_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      suffix_bad_host_size invalid
     DEPENDS
       m2_union_backend_contract_smoke
       m2_union_contract_backend_full

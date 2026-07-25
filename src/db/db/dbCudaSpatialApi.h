@@ -1001,8 +1001,27 @@ klayout_cuda_spatial_run_m2_width_space_empty_v1 (
  */
 enum klayout_cuda_spatial_m2_union_opcode
 {
-  KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY = 1
+  KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY = 1,
+  /*
+   * Additive clean-only transaction: return the same exact boundary and also
+   * certify the fixed FreePDK45 M2.5-.9 suffix from the device-resident union
+   * strips.  A backend which knows only opcode 1 must reject this opcode; the
+   * host then executes the complete historical CPU rule block.
+   */
+  KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_M25_9_EMPTY = 2
 };
+
+enum klayout_cuda_spatial_m2_suffix_rule_mask
+{
+  KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_M2_5_EMPTY = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_M2_6_EMPTY = 1u << 1,
+  KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_M2_7_EMPTY = 1u << 2,
+  KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_M2_8_EMPTY = 1u << 3,
+  KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_M2_9_EMPTY = 1u << 4
+};
+
+#define KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY \
+  ((1u << 5) - 1u)
 
 enum klayout_cuda_spatial_m2_union_option_flag
 {
@@ -1142,7 +1161,15 @@ struct klayout_cuda_spatial_m2_union_result_v1
   uint64_t boundary_ns;
   uint64_t d2h_ns;
   uint64_t total_ns;
-  uint64_t reserved0[2];
+  /*
+   * These 16 bytes replace the ABI-v1 reserved tail without changing the
+   * result size.  They must all be zero for opcode 1 and for every non-OK
+   * result.  Opcode 2 is consumable only when certified_empty_mask is exactly
+   * KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY and certificate_reserved is zero.
+   */
+  uint32_t certified_empty_mask;
+  uint32_t certificate_reserved;
+  uint64_t suffix_total_ns;
   char message[192];
 };
 

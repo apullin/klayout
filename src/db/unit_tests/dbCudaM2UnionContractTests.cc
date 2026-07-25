@@ -21,6 +21,7 @@ namespace
 {
 
 typedef klayout_cuda_spatial_m2_union_segment_v1 Segment;
+typedef klayout_cuda_spatial_m2_union_result_v1 Result;
 
 static_assert (sizeof (Segment) == 32, "M2 boundary ABI size changed");
 static_assert (offsetof (Segment, fixed) == 0, "M2 fixed offset changed");
@@ -28,6 +29,25 @@ static_assert (offsetof (Segment, lo) == 8, "M2 lo offset changed");
 static_assert (offsetof (Segment, hi) == 16, "M2 hi offset changed");
 static_assert (offsetof (Segment, side) == 24, "M2 side offset changed");
 static_assert (offsetof (Segment, axis) == 28, "M2 axis offset changed");
+static_assert (sizeof (Result) == 480, "M2 result ABI size changed");
+static_assert (
+  offsetof (Result, certified_empty_mask) == 272,
+  "M2 suffix mask offset changed");
+static_assert (
+  offsetof (Result, certificate_reserved) == 276,
+  "M2 suffix reserved offset changed");
+static_assert (
+  offsetof (Result, suffix_total_ns) == 280,
+  "M2 suffix timing offset changed");
+static_assert (
+  offsetof (Result, message) == 288,
+  "M2 result message offset changed");
+static_assert (
+  KLAYOUT_CUDA_SPATIAL_M2_SUFFIX_ALL_EMPTY == 31,
+  "M2 suffix complete mask changed");
+static_assert (
+  sizeof (db::CudaM2SuffixCertificate) == 24,
+  "M2 host suffix certificate size changed");
 
 } // anonymous namespace
 

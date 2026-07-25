@@ -221,6 +221,25 @@ struct DB_PUBLIC CudaM2UnionTiming
   uint64_t total_ns;
 };
 
+/**
+ * Additive M2.5-.9 clean certificate returned only by the explicit suffix
+ * wrapper.  Keeping this POD separate preserves the established
+ * returned-by-value CudaM2UnionAttempt binary layout.
+ */
+struct DB_PUBLIC CudaM2SuffixCertificate
+{
+  enum
+  {
+    FormatVersion = 1
+  };
+
+  uint32_t format_version;
+  uint32_t struct_size;
+  uint32_t certified_empty_mask;
+  uint32_t reserved;
+  uint64_t total_ns;
+};
+
 struct DB_PUBLIC CudaPoly34Attempt
 {
   enum Disposition
@@ -515,6 +534,19 @@ DB_PUBLIC CudaM2UnionAttempt cuda_spatial_try_m2_union (
 DB_PUBLIC CudaM2UnionAttempt cuda_spatial_try_m2_union_with_timing (
   const klayout_cuda_spatial_m2_union_request_v1 &request,
   CudaM2UnionTiming *timing, uint32_t timing_struct_size);
+
+/**
+ * Invoke the exact boundary wrapper and copy the independently validated
+ * M2.5-.9 clean certificate into a size-checked additive POD.
+ *
+ * The request must use the suffix opcode.  Complete is returned only when the
+ * backend proves every fixed suffix bit; zero/partial masks, old backends,
+ * malformed telemetry and every non-OK outcome fail closed.
+ */
+DB_PUBLIC CudaM2UnionAttempt cuda_spatial_try_m2_union_with_certificate (
+  const klayout_cuda_spatial_m2_union_request_v1 &request,
+  CudaM2SuffixCertificate *certificate,
+  uint32_t certificate_struct_size);
 
 /** Return true only when the M2-rules opt-in and both union symbols exist. */
 DB_PUBLIC bool cuda_spatial_m2_union_requested ();
