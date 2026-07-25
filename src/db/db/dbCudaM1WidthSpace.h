@@ -150,12 +150,14 @@ struct DB_PUBLIC CudaM1WidthSpaceScene
 };
 
 /**
- * Exact compact serialization of the supplied raw physical M2 DeepLayer.
+ * Exact compact serialization of one qualified raw physical Manhattan layer.
  *
- * This is intentionally a distinct type and digest domain from
- * CudaM1WidthSpaceScene: no merged-input assertion or width/space profile is
- * encoded.  The records are the shared pointer-free Manhattan hierarchy ABI
- * records above, but they describe the DeepLayer exactly as supplied.
+ * The legacy type name is retained because M2 was the first consumer.  The
+ * same pointer-free storage is also used by the fixed raw-ACTIVE and
+ * raw-CONTACT builders below.  Role is bound by each builder's exact physical
+ * layer contract and by a distinct canonical digest domain, not by an
+ * additional field in this record.  This keeps the established KM2RAW01
+ * descriptor and digest payload byte-for-byte stable.
  */
 struct DB_PUBLIC CudaM2RawManhattanScene
 {
@@ -184,6 +186,13 @@ struct DB_PUBLIC CudaM2RawManhattanScene
 };
 
 /**
+ * Role-neutral spelling for the established raw-Manhattan scene storage.
+ *
+ * This alias deliberately adds no fields and changes no record layout.
+ */
+typedef CudaM2RawManhattanScene CudaRawManhattanScene;
+
+/**
  * Compute the canonical digest of a structurally valid scene.
  *
  * Fields are hashed explicitly in little-endian form, so padding and host
@@ -198,6 +207,22 @@ DB_PUBLIC bool cuda_m1_width_space_scene_digest (
  */
 DB_PUBLIC bool cuda_m2_raw_manhattan_scene_digest (
   const CudaM2RawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest);
+
+/**
+ * Compute the canonical KARAW001 digest of a structurally valid raw-ACTIVE
+ * scene.  The hashed field order after the magic is identical to KM2RAW01.
+ */
+DB_PUBLIC bool cuda_active_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest);
+
+/**
+ * Compute the canonical KCRAW001 digest of a structurally valid raw-CONTACT
+ * scene.  The hashed field order after the magic is identical to KM2RAW01.
+ */
+DB_PUBLIC bool cuda_contact_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
   std::array<uint8_t, 32> &digest);
 
 /**
@@ -232,6 +257,32 @@ DB_PUBLIC bool cuda_m2_raw_manhattan_build_scene (
   const db::DeepLayer &raw_metal2,
   const CudaM1WidthSpaceSceneLimits &limits,
   CudaM2RawManhattanScene &scene,
+  std::string *decline_reason = 0);
+
+/**
+ * Serialize the supplied raw physical FreePDK45 ACTIVE layer verbatim.
+ *
+ * This fixed-domain builder accepts only physical layer 1/0 at 0.5-nm DBU.
+ * It otherwise applies the same hierarchy, contour, property and capacity
+ * contract as the raw-M2 builder.  Success publishes a KARAW001 digest.
+ */
+DB_PUBLIC bool cuda_active_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_active,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason = 0);
+
+/**
+ * Serialize the supplied raw physical FreePDK45 CONTACT layer verbatim.
+ *
+ * This fixed-domain builder accepts only physical layer 10/0 at 0.5-nm DBU.
+ * It otherwise applies the same hierarchy, contour, property and capacity
+ * contract as the raw-M2 builder.  Success publishes a KCRAW001 digest.
+ */
+DB_PUBLIC bool cuda_contact_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_contact,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
   std::string *decline_reason = 0);
 
 /**

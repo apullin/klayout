@@ -65,6 +65,29 @@ const uint64_t backend_max_flat_polygons = UINT64_C (50000000);
 const uint64_t backend_max_flat_edges = UINT64_C (100000000);
 const int64_t qualified_grid_cell = 512;
 
+struct RawManhattanProfile
+{
+  int layer;
+  int datatype;
+  const char *label;
+  char digest_magic [8];
+};
+
+const RawManhattanProfile raw_m2_profile = {
+  13, 0, "raw M2",
+  { 'K', 'M', '2', 'R', 'A', 'W', '0', '1' }
+};
+
+const RawManhattanProfile raw_active_profile = {
+  1, 0, "raw ACTIVE",
+  { 'K', 'A', 'R', 'A', 'W', '0', '0', '1' }
+};
+
+const RawManhattanProfile raw_contact_profile = {
+  10, 0, "raw CONTACT",
+  { 'K', 'C', 'R', 'A', 'W', '0', '0', '1' }
+};
+
 class M1WidthSpaceDecline
   : public std::runtime_error
 {
@@ -720,28 +743,36 @@ void validate_inputs (
   }
 }
 
-void validate_raw_m2_input (
-  const db::DeepLayer &raw_metal2,
-  const CudaM1WidthSpaceSceneLimits &limits)
+void validate_raw_manhattan_input (
+  const db::DeepLayer &raw_layer,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  const RawManhattanProfile &profile)
 {
   validate_scene_limits (limits);
-  if (raw_metal2.breakout_cells () != 0) {
+  if (raw_layer.breakout_cells () != 0) {
     throw M1WidthSpaceDecline (
-      "raw M2 scene has hierarchy breakout cells");
+      std::string (profile.label) +
+      " scene has hierarchy breakout cells");
   }
-  if (raw_metal2.layout ().dbu () != 0.0005) {
+  if (raw_layer.layout ().dbu () != 0.0005) {
     throw M1WidthSpaceDecline (
-      "raw M2 scene DBU is not the qualified 0.5 nm");
+      std::string (profile.label) +
+      " scene DBU is not the qualified 0.5 nm");
   }
-  if (! raw_metal2.layout ().is_valid_layer (raw_metal2.layer ())) {
+  if (! raw_layer.layout ().is_valid_layer (raw_layer.layer ())) {
     throw M1WidthSpaceDecline (
-      "raw M2 scene layer index is not a valid physical layer");
+      std::string (profile.label) +
+      " scene layer index is not a valid physical layer");
   }
   const db::LayerProperties &properties =
-    raw_metal2.layout ().get_properties (raw_metal2.layer ());
-  if (! properties.log_equal (db::LayerProperties (13, 0))) {
+    raw_layer.layout ().get_properties (raw_layer.layer ());
+  if (! properties.log_equal (
+        db::LayerProperties (profile.layer, profile.datatype))) {
     throw M1WidthSpaceDecline (
-      "raw M2 scene is not physical FreePDK45 layer 13/0");
+      std::string (profile.label) +
+      " scene is not physical FreePDK45 layer " +
+      std::to_string (profile.layer) + "/" +
+      std::to_string (profile.datatype));
   }
 }
 
@@ -1060,6 +1091,26 @@ void digest_geometry_payload (
   }
 }
 
+bool raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  const RawManhattanProfile &profile,
+  std::array<uint8_t, 32> &digest)
+{
+  if (! structurally_valid (scene)) {
+    return false;
+  }
+
+  CanonicalDigest sha;
+  sha.bytes (profile.digest_magic, sizeof (profile.digest_magic));
+  sha.u32 (scene.format_version);
+  sha.u32 (scene.dbu_per_micron);
+  sha.u32 (scene.root_cell);
+  sha.u32 (scene.reserved);
+  digest_geometry_payload (sha, scene);
+  digest = sha.finish ();
+  return true;
+}
+
 void set_reason (std::string *reason, const char *message)
 {
   if (! reason) {
@@ -1070,6 +1121,36 @@ void set_reason (std::string *reason, const char *message)
   } catch (...) {
     //  Diagnostics cannot turn a fail-closed decline into an exception.
   }
+}
+
+bool build_raw_manhattan_scene (
+  const db::DeepLayer &raw_layer,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  const RawManhattanProfile &profile,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason)
+{
+  try {
+    validate_raw_manhattan_input (raw_layer, limits, profile);
+    CudaRawManhattanScene candidate =
+      serialize_layer_scene<CudaRawManhattanScene> (
+        raw_layer, limits);
+    std::array<uint8_t, 32> digest;
+    if (! raw_manhattan_scene_digest (candidate, profile, digest)) {
+      throw M1WidthSpaceDecline (
+        std::string ("serialized ") + profile.label +
+        " scene failed structural digest validation");
+    }
+    candidate.digest = digest;
+    scene.swap (candidate);
+    set_reason (decline_reason, "");
+    return true;
+  } catch (const std::exception &ex) {
+    set_reason (decline_reason, ex.what ());
+  } catch (...) {
+    set_reason (decline_reason, "unknown exception");
+  }
+  return false;
 }
 
 static_assert (
@@ -1241,21 +1322,32 @@ bool cuda_m2_raw_manhattan_scene_digest (
   std::array<uint8_t, 32> &digest)
 {
   try {
-    if (! structurally_valid (scene)) {
-      return false;
-    }
+    return raw_manhattan_scene_digest (
+      scene, raw_m2_profile, digest);
+  } catch (...) {
+    return false;
+  }
+}
 
-    static const char magic [8] =
-      { 'K', 'M', '2', 'R', 'A', 'W', '0', '1' };
-    CanonicalDigest sha;
-    sha.bytes (magic, sizeof (magic));
-    sha.u32 (scene.format_version);
-    sha.u32 (scene.dbu_per_micron);
-    sha.u32 (scene.root_cell);
-    sha.u32 (scene.reserved);
-    digest_geometry_payload (sha, scene);
-    digest = sha.finish ();
-    return true;
+bool cuda_active_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest)
+{
+  try {
+    return raw_manhattan_scene_digest (
+      scene, raw_active_profile, digest);
+  } catch (...) {
+    return false;
+  }
+}
+
+bool cuda_contact_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest)
+{
+  try {
+    return raw_manhattan_scene_digest (
+      scene, raw_contact_profile, digest);
   } catch (...) {
     return false;
   }
@@ -1297,26 +1389,28 @@ bool cuda_m2_raw_manhattan_build_scene (
   CudaM2RawManhattanScene &scene,
   std::string *decline_reason)
 {
-  try {
-    validate_raw_m2_input (raw_metal2, limits);
-    CudaM2RawManhattanScene candidate =
-      serialize_layer_scene<CudaM2RawManhattanScene> (
-        raw_metal2, limits);
-    std::array<uint8_t, 32> digest;
-    if (! cuda_m2_raw_manhattan_scene_digest (candidate, digest)) {
-      throw M1WidthSpaceDecline (
-        "serialized raw M2 scene failed structural digest validation");
-    }
-    candidate.digest = digest;
-    scene.swap (candidate);
-    set_reason (decline_reason, "");
-    return true;
-  } catch (const std::exception &ex) {
-    set_reason (decline_reason, ex.what ());
-  } catch (...) {
-    set_reason (decline_reason, "unknown exception");
-  }
-  return false;
+  return build_raw_manhattan_scene (
+    raw_metal2, limits, raw_m2_profile, scene, decline_reason);
+}
+
+bool cuda_active_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_active,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason)
+{
+  return build_raw_manhattan_scene (
+    raw_active, limits, raw_active_profile, scene, decline_reason);
+}
+
+bool cuda_contact_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_contact,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason)
+{
+  return build_raw_manhattan_scene (
+    raw_contact, limits, raw_contact_profile, scene, decline_reason);
 }
 
 bool cuda_m1_width_space_try_empty (
