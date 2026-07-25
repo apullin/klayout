@@ -79,25 +79,7 @@ struct Limits
   std::uint32_t max_slabs_per_rectangle = 4096;
 };
 
-struct EventKey
-{
-  std::int64_t y;
-  std::uint32_t slab;
-  std::uint32_t reserved;
-};
-
-struct BoundaryKey
-{
-  std::int64_t y;
-  std::uint32_t boundary;
-  std::uint32_t reserved;
-};
-
-struct SideDelta
-{
-  std::int32_t left;
-  std::int32_t right;
-};
+using PackedEventKey = std::uint64_t;
 
 struct Transition
 {
@@ -121,73 +103,16 @@ struct SegmentLine
   SegmentAxis axis;
 };
 
-static_assert(sizeof(EventKey) == 16, "unexpected event-key padding");
-static_assert(sizeof(BoundaryKey) == 16, "unexpected boundary-key padding");
-static_assert(sizeof(SideDelta) == 8, "unexpected side-delta padding");
 static_assert(sizeof(Transition) == 16, "unexpected transition padding");
 static_assert(sizeof(StripInterval) == 24,
               "unexpected strip-interval padding");
 static_assert(sizeof(SegmentLine) == 16, "unexpected segment-line padding");
 
-struct EventKeyLess
-{
-  MU_HD bool operator()(const EventKey &first, const EventKey &second) const
-  {
-    if (first.slab != second.slab) return first.slab < second.slab;
-    return first.y < second.y;
-  }
-};
-
-struct EventKeyEqual
-{
-  MU_HD bool operator()(const EventKey &first, const EventKey &second) const
-  {
-    return first.slab == second.slab && first.y == second.y;
-  }
-};
-
-struct BoundaryKeyLess
-{
-  MU_HD bool operator()(const BoundaryKey &first,
-                        const BoundaryKey &second) const
-  {
-    if (first.boundary != second.boundary)
-      return first.boundary < second.boundary;
-    return first.y < second.y;
-  }
-};
-
-struct BoundaryKeyEqual
-{
-  MU_HD bool operator()(const BoundaryKey &first,
-                        const BoundaryKey &second) const
-  {
-    return first.boundary == second.boundary && first.y == second.y;
-  }
-};
-
 struct EventSlab
 {
-  MU_HD std::uint32_t operator()(const EventKey &key) const
+  MU_HD std::uint32_t operator()(PackedEventKey key) const
   {
-    return key.slab;
-  }
-};
-
-struct BoundaryId
-{
-  MU_HD std::uint32_t operator()(const BoundaryKey &key) const
-  {
-    return key.boundary;
-  }
-};
-
-struct SideDeltaPlus
-{
-  MU_HD SideDelta operator()(const SideDelta &first,
-                             const SideDelta &second) const
-  {
-    return {first.left + second.left, first.right + second.right};
+    return static_cast<std::uint32_t>(key >> 32);
   }
 };
 
@@ -200,29 +125,11 @@ struct ZeroEventDelta
   }
 };
 
-struct ZeroSideDelta
-{
-  template <class Tuple>
-  MU_HD bool operator()(const Tuple &entry) const
-  {
-    const SideDelta delta = thrust::get<1>(entry);
-    return delta.left == 0 && delta.right == 0;
-  }
-};
-
 struct InvalidTransition
 {
   MU_HD bool operator()(const Transition &transition) const
   {
     return transition.kind == 0;
-  }
-};
-
-struct InvalidSegment
-{
-  MU_HD bool operator()(const DirectedSegmentI64 &segment) const
-  {
-    return segment.axis == SegmentAxis::invalid;
   }
 };
 
@@ -330,6 +237,13 @@ void cuda_require(cudaError_t status, const char *operation)
     throw std::runtime_error(std::string(operation) + ": " +
                              cudaGetErrorString(status));
   }
+}
+
+template <class T>
+void release_device_vector(thrust::device_vector<T> *values)
+{
+  thrust::device_vector<T> empty;
+  values->swap(empty);
 }
 
 std::uint32_t launch_blocks(std::uint64_t count)
@@ -617,6 +531,19 @@ __device__ std::uint64_t lower_bound_device(
   return first;
 }
 
+MU_HD PackedEventKey pack_event_key(
+    std::uint32_t slab, std::int64_t y, std::int64_t y_base)
+{
+  return (static_cast<std::uint64_t>(slab) << 32) |
+         static_cast<std::uint32_t>(y - y_base);
+}
+
+MU_HD std::int64_t unpack_event_y(
+    PackedEventKey key, std::int64_t y_base)
+{
+  return y_base + static_cast<std::uint32_t>(key);
+}
+
 __global__ void count_memberships_kernel(
     const RectI64 *rectangles, std::uint64_t rectangle_count,
     const std::int64_t *xs, std::uint64_t x_count,
@@ -655,7 +582,8 @@ __global__ void count_memberships_kernel(
 __global__ void fill_events_kernel(
     const RectI64 *rectangles, std::uint64_t rectangle_count,
     const std::int64_t *xs, std::uint64_t x_count,
-    const std::uint64_t *offsets, EventKey *keys, std::int32_t *deltas)
+    std::int64_t y_base, const std::uint64_t *offsets,
+    PackedEventKey *keys, std::int32_t *deltas)
 {
   for (std::uint64_t index =
            static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
@@ -669,20 +597,20 @@ __global__ void fill_events_kernel(
         lower_bound_device(xs, x_count, rectangle.right);
     std::uint64_t output = offsets[index] * 2;
     for (std::uint64_t slab = first; slab < last; ++slab) {
-      keys[output] = {rectangle.bottom,
-                      static_cast<std::uint32_t>(slab), 0};
+      keys[output] = pack_event_key(
+          static_cast<std::uint32_t>(slab), rectangle.bottom, y_base);
       deltas[output++] = 1;
-      keys[output] = {rectangle.top,
-                      static_cast<std::uint32_t>(slab), 0};
+      keys[output] = pack_event_key(
+          static_cast<std::uint32_t>(slab), rectangle.top, y_base);
       deltas[output++] = -1;
     }
   }
 }
 
 __global__ void extract_transitions_kernel(
-    const EventKey *keys, const std::int32_t *coverage,
-    std::uint64_t event_count, Transition *transitions,
-    std::uint32_t *status)
+    const PackedEventKey *keys, const std::int32_t *coverage,
+    std::uint64_t event_count, std::int64_t y_base,
+    Transition *transitions, std::uint32_t *status)
 {
   for (std::uint64_t index =
            static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
@@ -690,8 +618,11 @@ __global__ void extract_transitions_kernel(
        index < event_count;
        index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
     const std::int32_t after = coverage[index];
+    const std::uint32_t slab =
+        static_cast<std::uint32_t>(keys[index] >> 32);
     const std::int32_t before =
-        index && keys[index - 1].slab == keys[index].slab
+        index &&
+                static_cast<std::uint32_t>(keys[index - 1] >> 32) == slab
             ? coverage[index - 1]
             : 0;
     Transition transition = {0, 0, 0};
@@ -699,12 +630,12 @@ __global__ void extract_transitions_kernel(
       atomicOr(status,
                static_cast<std::uint32_t>(kStatusCoverageInvariant));
     } else if (!before && after > 0) {
-      transition = {keys[index].y, keys[index].slab, 1};
+      transition = {unpack_event_y(keys[index], y_base), slab, 1};
     } else if (before > 0 && !after) {
-      transition = {keys[index].y, keys[index].slab, -1};
+      transition = {unpack_event_y(keys[index], y_base), slab, -1};
     }
     if ((index + 1 == event_count ||
-         keys[index + 1].slab != keys[index].slab) &&
+         static_cast<std::uint32_t>(keys[index + 1] >> 32) != slab) &&
         after != 0) {
       atomicOr(status,
                static_cast<std::uint32_t>(kStatusCoverageInvariant));
@@ -741,60 +672,144 @@ __global__ void build_intervals_and_horizontal_kernel(
   }
 }
 
-__global__ void fill_boundary_events_kernel(
+__global__ void count_intervals_per_slab_kernel(
     const StripInterval *intervals, std::uint64_t interval_count,
-    BoundaryKey *keys, SideDelta *deltas)
+    std::uint32_t *counts)
 {
   for (std::uint64_t index =
            static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
            threadIdx.x;
        index < interval_count;
        index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
-    const StripInterval interval = intervals[index];
-    const std::uint64_t output = index * 4;
-    keys[output] = {interval.bottom, interval.slab, 0};
-    deltas[output] = {0, 1};
-    keys[output + 1] = {interval.top, interval.slab, 0};
-    deltas[output + 1] = {0, -1};
-    keys[output + 2] = {interval.bottom, interval.slab + 1, 0};
-    deltas[output + 2] = {1, 0};
-    keys[output + 3] = {interval.top, interval.slab + 1, 0};
-    deltas[output + 3] = {-1, 0};
+    atomicAdd(counts + intervals[index].slab, 1u);
   }
 }
 
-__global__ void extract_vertical_segments_kernel(
-    const BoundaryKey *keys, const SideDelta *coverage,
-    std::uint64_t event_count, const std::int64_t *xs,
-    DirectedSegmentI64 *segments, std::uint32_t *status)
+__device__ std::uint64_t interval_difference_count(
+    const StripInterval *primary, std::uint32_t primary_count,
+    const StripInterval *mask, std::uint32_t mask_count)
 {
-  for (std::uint64_t index =
+  std::uint64_t output_count = 0;
+  std::uint32_t mask_begin = 0;
+  for (std::uint32_t primary_id = 0;
+       primary_id < primary_count; ++primary_id) {
+    std::int64_t lo = primary[primary_id].bottom;
+    const std::int64_t hi = primary[primary_id].top;
+    while (mask_begin < mask_count &&
+           mask[mask_begin].top <= lo) {
+      ++mask_begin;
+    }
+    std::uint32_t mask_id = mask_begin;
+    while (mask_id < mask_count && mask[mask_id].bottom < hi) {
+      if (mask[mask_id].bottom > lo) ++output_count;
+      lo = max(lo, mask[mask_id].top);
+      if (lo >= hi) break;
+      ++mask_id;
+    }
+    if (lo < hi) ++output_count;
+    mask_begin = mask_id;
+  }
+  return output_count;
+}
+
+__device__ std::uint64_t emit_interval_difference(
+    const StripInterval *primary, std::uint32_t primary_count,
+    const StripInterval *mask, std::uint32_t mask_count,
+    std::int64_t fixed, std::int32_t side,
+    DirectedSegmentI64 *output)
+{
+  std::uint64_t output_count = 0;
+  std::uint32_t mask_begin = 0;
+  for (std::uint32_t primary_id = 0;
+       primary_id < primary_count; ++primary_id) {
+    std::int64_t lo = primary[primary_id].bottom;
+    const std::int64_t hi = primary[primary_id].top;
+    while (mask_begin < mask_count &&
+           mask[mask_begin].top <= lo) {
+      ++mask_begin;
+    }
+    std::uint32_t mask_id = mask_begin;
+    while (mask_id < mask_count && mask[mask_id].bottom < hi) {
+      const std::int64_t end = min(mask[mask_id].bottom, hi);
+      if (lo < end) {
+        output[output_count++] = {
+            fixed, lo, end, side, SegmentAxis::vertical};
+      }
+      lo = max(lo, mask[mask_id].top);
+      if (lo >= hi) break;
+      ++mask_id;
+    }
+    if (lo < hi) {
+      output[output_count++] = {
+          fixed, lo, hi, side, SegmentAxis::vertical};
+    }
+    mask_begin = mask_id;
+  }
+  return output_count;
+}
+
+__global__ void count_vertical_xor_kernel(
+    const StripInterval *intervals, const std::uint64_t *slab_offsets,
+    const std::uint32_t *slab_counts, std::uint32_t x_slabs,
+    std::uint64_t *vertical_counts)
+{
+  const StripInterval *empty = intervals;
+  for (std::uint64_t boundary =
            static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
            threadIdx.x;
-       index < event_count;
-       index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
-    DirectedSegmentI64 segment = {
-        0, 0, 0, 0, SegmentAxis::invalid};
-    const SideDelta after = coverage[index];
-    if (after.left < 0 || after.right < 0) {
+       boundary <= x_slabs;
+       boundary += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const bool has_left = boundary > 0;
+    const bool has_right = boundary < x_slabs;
+    const StripInterval *left =
+        has_left ? intervals + slab_offsets[boundary - 1] : empty;
+    const std::uint32_t left_count =
+        has_left ? slab_counts[boundary - 1] : 0;
+    const StripInterval *right =
+        has_right ? intervals + slab_offsets[boundary] : empty;
+    const std::uint32_t right_count =
+        has_right ? slab_counts[boundary] : 0;
+    vertical_counts[boundary] =
+        interval_difference_count(
+            left, left_count, right, right_count) +
+        interval_difference_count(
+            right, right_count, left, left_count);
+  }
+}
+
+__global__ void emit_vertical_xor_kernel(
+    const StripInterval *intervals, const std::uint64_t *slab_offsets,
+    const std::uint32_t *slab_counts, std::uint32_t x_slabs,
+    const std::int64_t *xs, const std::uint64_t *vertical_counts,
+    const std::uint64_t *vertical_offsets, DirectedSegmentI64 *vertical,
+    std::uint32_t *status)
+{
+  const StripInterval *empty = intervals;
+  for (std::uint64_t boundary =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       boundary <= x_slabs;
+       boundary += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const bool has_left = boundary > 0;
+    const bool has_right = boundary < x_slabs;
+    const StripInterval *left =
+        has_left ? intervals + slab_offsets[boundary - 1] : empty;
+    const std::uint32_t left_count =
+        has_left ? slab_counts[boundary - 1] : 0;
+    const StripInterval *right =
+        has_right ? intervals + slab_offsets[boundary] : empty;
+    const std::uint32_t right_count =
+        has_right ? slab_counts[boundary] : 0;
+    DirectedSegmentI64 *output = vertical + vertical_offsets[boundary];
+    const std::uint64_t left_only = emit_interval_difference(
+        left, left_count, right, right_count, xs[boundary], 1, output);
+    const std::uint64_t right_only = emit_interval_difference(
+        right, right_count, left, left_count, xs[boundary], -1,
+        output + left_only);
+    if (left_only + right_only != vertical_counts[boundary]) {
       atomicOr(status,
-               static_cast<std::uint32_t>(kStatusCoverageInvariant));
+               static_cast<std::uint32_t>(kStatusTransitionInvariant));
     }
-    const bool same_boundary =
-        index + 1 < event_count &&
-        keys[index + 1].boundary == keys[index].boundary;
-    if (same_boundary && keys[index].y < keys[index + 1].y &&
-        static_cast<bool>(after.left) !=
-            static_cast<bool>(after.right)) {
-      segment = {
-          xs[keys[index].boundary], keys[index].y, keys[index + 1].y,
-          after.right ? -1 : 1, SegmentAxis::vertical};
-    }
-    if (!same_boundary && (after.left || after.right)) {
-      atomicOr(status,
-               static_cast<std::uint32_t>(kStatusCoverageInvariant));
-    }
-    segments[index] = segment;
   }
 }
 
@@ -914,12 +929,24 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
       output.digest = digest_segments(output.segments);
       return;
     }
+    std::int64_t y_base = rectangles.front().bottom;
+    std::int64_t y_high = rectangles.front().top;
     for (const auto &rectangle : rectangles) {
       if (!valid_rectangle(rectangle)) {
         output.fallback = true;
         output.message = "invalid or degenerate rectangle";
         return;
       }
+      y_base = std::min(y_base, rectangle.bottom);
+      y_high = std::max(y_high, rectangle.top);
+    }
+    if (static_cast<__int128>(y_high) -
+            static_cast<__int128>(y_base) >
+        static_cast<__int128>(
+            std::numeric_limits<std::uint32_t>::max())) {
+      output.fallback = true;
+      output.message = "packed y-coordinate range";
+      return;
     }
 
     cuda_require(cudaSetDevice(device), "cudaSetDevice");
@@ -957,6 +984,7 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
         thrust::unique(thrust::device, xs.begin(), xs.end());
     const std::uint64_t x_count = x_end - xs.begin();
     xs.resize(x_count);
+    xs.shrink_to_fit();
     if (x_count < 2) {
       output.fallback = true;
       output.message = "fewer than two x endpoints";
@@ -1024,28 +1052,34 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
     output.x_membership_ms = elapsed_ms(x_begin, Clock::now());
 
     const auto strip_begin = Clock::now();
-    thrust::device_vector<EventKey> event_keys(event_count);
+    thrust::device_vector<PackedEventKey> event_keys(event_count);
     thrust::device_vector<std::int32_t> event_deltas(event_count);
     fill_events_kernel<<<rectangle_blocks, kThreads>>>(
         thrust::raw_pointer_cast(device_rectangles.data()),
         rectangles.size(), thrust::raw_pointer_cast(xs.data()), x_count,
+        y_base,
         thrust::raw_pointer_cast(membership_offsets.data()),
         thrust::raw_pointer_cast(event_keys.data()),
         thrust::raw_pointer_cast(event_deltas.data()));
     cuda_require(cudaGetLastError(), "fill slab events");
     thrust::sort_by_key(
         thrust::device, event_keys.begin(), event_keys.end(),
-        event_deltas.begin(), EventKeyLess{});
+        event_deltas.begin());
+    release_device_vector(&device_rectangles);
+    release_device_vector(&membership_counts);
+    release_device_vector(&membership_offsets);
 
-    thrust::device_vector<EventKey> unique_event_keys(event_count);
+    thrust::device_vector<PackedEventKey> unique_event_keys(event_count);
     thrust::device_vector<std::int32_t> unique_event_deltas(event_count);
     auto reduced_events = thrust::reduce_by_key(
         thrust::device, event_keys.begin(), event_keys.end(),
         event_deltas.begin(), unique_event_keys.begin(),
-        unique_event_deltas.begin(), EventKeyEqual{},
+        unique_event_deltas.begin(), thrust::equal_to<PackedEventKey>{},
         thrust::plus<std::int32_t>{});
     std::uint64_t unique_event_count =
         reduced_events.first - unique_event_keys.begin();
+    release_device_vector(&event_keys);
+    release_device_vector(&event_deltas);
     auto zipped_events = thrust::make_zip_iterator(
         thrust::make_tuple(unique_event_keys.begin(),
                            unique_event_deltas.begin()));
@@ -1055,6 +1089,8 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
     unique_event_count = nonzero_event_end - zipped_events;
     unique_event_keys.resize(unique_event_count);
     unique_event_deltas.resize(unique_event_count);
+    unique_event_keys.shrink_to_fit();
+    unique_event_deltas.shrink_to_fit();
     if (!unique_event_count) {
       output.fallback = true;
       output.message = "empty event stream for nonempty input";
@@ -1073,7 +1109,7 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
     thrust::device_vector<Transition> transitions(unique_event_count);
     extract_transitions_kernel<<<launch_blocks(unique_event_count), kThreads>>>(
         thrust::raw_pointer_cast(unique_event_keys.data()),
-        thrust::raw_pointer_cast(coverage.data()), unique_event_count,
+        thrust::raw_pointer_cast(coverage.data()), unique_event_count, y_base,
         thrust::raw_pointer_cast(transitions.data()),
         thrust::raw_pointer_cast(status.data()));
     cuda_require(cudaGetLastError(), "extract strip transitions");
@@ -1083,6 +1119,10 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
     const std::uint64_t transition_count =
         transition_end - transitions.begin();
     transitions.resize(transition_count);
+    release_device_vector(&unique_event_keys);
+    release_device_vector(&unique_event_deltas);
+    release_device_vector(&coverage);
+    transitions.shrink_to_fit();
     if (transition_count % 2) {
       output.fallback = true;
       output.message = "odd transition count";
@@ -1090,12 +1130,7 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
     }
     output.strip_intervals = transition_count / 2;
     std::uint64_t horizontal_count = transition_count;
-    std::uint64_t boundary_event_count = 0;
-    if (!checked_multiply(
-            output.strip_intervals, UINT64_C(4),
-            &boundary_event_count) ||
-        boundary_event_count > limits.max_events ||
-        horizontal_count > limits.max_segments) {
+    if (horizontal_count > limits.max_segments) {
       output.fallback = true;
       output.message = "strip-output capacity";
       return;
@@ -1121,73 +1156,91 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
       output.message = status_message(strip_status);
       return;
     }
+    release_device_vector(&transitions);
     output.strip_scan_ms = elapsed_ms(strip_begin, Clock::now());
 
     const auto boundary_begin = Clock::now();
-    thrust::device_vector<BoundaryKey> boundary_keys(
-        boundary_event_count);
-    thrust::device_vector<SideDelta> boundary_deltas(
-        boundary_event_count);
+    thrust::device_vector<std::uint32_t> slab_interval_counts(
+        output.x_slabs, 0);
+    thrust::device_vector<std::uint64_t> slab_interval_offsets(
+        output.x_slabs);
     if (output.strip_intervals) {
-      fill_boundary_events_kernel<<<
+      count_intervals_per_slab_kernel<<<
           launch_blocks(output.strip_intervals), kThreads>>>(
           thrust::raw_pointer_cast(intervals.data()),
           output.strip_intervals,
-          thrust::raw_pointer_cast(boundary_keys.data()),
-          thrust::raw_pointer_cast(boundary_deltas.data()));
-      cuda_require(cudaGetLastError(), "fill boundary events");
+          thrust::raw_pointer_cast(slab_interval_counts.data()));
+      cuda_require(cudaGetLastError(), "count strip intervals per slab");
     }
-    thrust::sort_by_key(
-        thrust::device, boundary_keys.begin(), boundary_keys.end(),
-        boundary_deltas.begin(), BoundaryKeyLess{});
-    thrust::device_vector<BoundaryKey> unique_boundary_keys(
-        boundary_event_count);
-    thrust::device_vector<SideDelta> unique_boundary_deltas(
-        boundary_event_count);
-    const auto reduced_boundaries = thrust::reduce_by_key(
-        thrust::device, boundary_keys.begin(), boundary_keys.end(),
-        boundary_deltas.begin(), unique_boundary_keys.begin(),
-        unique_boundary_deltas.begin(), BoundaryKeyEqual{},
-        SideDeltaPlus{});
-    std::uint64_t unique_boundary_count =
-        reduced_boundaries.first - unique_boundary_keys.begin();
-    auto zipped_boundaries = thrust::make_zip_iterator(
-        thrust::make_tuple(unique_boundary_keys.begin(),
-                           unique_boundary_deltas.begin()));
-    const auto nonzero_boundary_end = thrust::remove_if(
-        thrust::device, zipped_boundaries,
-        zipped_boundaries + unique_boundary_count, ZeroSideDelta{});
-    unique_boundary_count = nonzero_boundary_end - zipped_boundaries;
-    unique_boundary_keys.resize(unique_boundary_count);
-    unique_boundary_deltas.resize(unique_boundary_count);
+    thrust::exclusive_scan(
+        thrust::device, slab_interval_counts.begin(),
+        slab_interval_counts.end(), slab_interval_offsets.begin(),
+        std::uint64_t{0});
 
-    thrust::device_vector<SideDelta> side_coverage(
-        unique_boundary_count);
-    const auto boundary_ids = thrust::make_transform_iterator(
-        unique_boundary_keys.begin(), BoundaryId{});
-    thrust::inclusive_scan_by_key(
-        thrust::device, boundary_ids,
-        boundary_ids + unique_boundary_count,
-        unique_boundary_deltas.begin(), side_coverage.begin(),
-        thrust::equal_to<std::uint32_t>{}, SideDeltaPlus{});
-    thrust::device_vector<DirectedSegmentI64> vertical(
-        unique_boundary_count);
-    if (unique_boundary_count) {
-      extract_vertical_segments_kernel<<<
-          launch_blocks(unique_boundary_count), kThreads>>>(
-          thrust::raw_pointer_cast(unique_boundary_keys.data()),
-          thrust::raw_pointer_cast(side_coverage.data()),
-          unique_boundary_count, thrust::raw_pointer_cast(xs.data()),
+    const std::uint64_t boundary_count = output.x_slabs + 1;
+    thrust::device_vector<std::uint64_t> vertical_counts(boundary_count);
+    thrust::device_vector<std::uint64_t> vertical_offsets(boundary_count);
+    count_vertical_xor_kernel<<<launch_blocks(boundary_count), kThreads>>>(
+        thrust::raw_pointer_cast(intervals.data()),
+        thrust::raw_pointer_cast(slab_interval_offsets.data()),
+        thrust::raw_pointer_cast(slab_interval_counts.data()),
+        static_cast<std::uint32_t>(output.x_slabs),
+        thrust::raw_pointer_cast(vertical_counts.data()));
+    cuda_require(cudaGetLastError(), "count adjacent-slab vertical XOR");
+    thrust::exclusive_scan(
+        thrust::device, vertical_counts.begin(), vertical_counts.end(),
+        vertical_offsets.begin(), std::uint64_t{0});
+    std::uint64_t final_vertical_offset = 0;
+    std::uint64_t final_vertical_count = 0;
+    cuda_require(
+        cudaMemcpy(
+            &final_vertical_offset,
+            thrust::raw_pointer_cast(vertical_offsets.data()) +
+                boundary_count - 1,
+            sizeof(final_vertical_offset), cudaMemcpyDeviceToHost),
+        "last vertical offset D2H");
+    cuda_require(
+        cudaMemcpy(
+            &final_vertical_count,
+            thrust::raw_pointer_cast(vertical_counts.data()) +
+                boundary_count - 1,
+            sizeof(final_vertical_count), cudaMemcpyDeviceToHost),
+        "last vertical count D2H");
+    const std::uint64_t vertical_count =
+        final_vertical_offset + final_vertical_count;
+    if (vertical_count > limits.max_segments - horizontal_count) {
+      output.fallback = true;
+      output.message = "segment capacity";
+      return;
+    }
+    thrust::device_vector<DirectedSegmentI64> vertical(vertical_count);
+    if (vertical_count) {
+      emit_vertical_xor_kernel<<<launch_blocks(boundary_count), kThreads>>>(
+          thrust::raw_pointer_cast(intervals.data()),
+          thrust::raw_pointer_cast(slab_interval_offsets.data()),
+          thrust::raw_pointer_cast(slab_interval_counts.data()),
+          static_cast<std::uint32_t>(output.x_slabs),
+          thrust::raw_pointer_cast(xs.data()),
+          thrust::raw_pointer_cast(vertical_counts.data()),
+          thrust::raw_pointer_cast(vertical_offsets.data()),
           thrust::raw_pointer_cast(vertical.data()),
           thrust::raw_pointer_cast(status.data()));
-      cuda_require(cudaGetLastError(), "extract vertical segments");
+      cuda_require(cudaGetLastError(), "emit adjacent-slab vertical XOR");
     }
-    const auto vertical_end = thrust::remove_if(
-        thrust::device, vertical.begin(), vertical.end(),
-        InvalidSegment{});
-    const std::uint64_t vertical_count =
-        vertical_end - vertical.begin();
-    vertical.resize(vertical_count);
+    cuda_require(cudaDeviceSynchronize(), "vertical XOR synchronize");
+    const std::uint32_t xor_status = copy_device_status(status);
+    if (xor_status) {
+      output.fallback = true;
+      output.message = status_message(xor_status);
+      return;
+    }
+    release_device_vector(&intervals);
+    release_device_vector(&slab_interval_counts);
+    release_device_vector(&slab_interval_offsets);
+    release_device_vector(&vertical_counts);
+    release_device_vector(&vertical_offsets);
+    release_device_vector(&xs);
+
     std::uint64_t raw_segment_count = 0;
     if (horizontal_count >
             std::numeric_limits<std::uint64_t>::max() - vertical_count) {
@@ -1211,6 +1264,8 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
     thrust::copy(
         thrust::device, vertical.begin(), vertical.end(),
         raw_segments.begin() + horizontal_count);
+    release_device_vector(&horizontal);
+    release_device_vector(&vertical);
     const std::uint64_t canonical_count =
         canonicalize_device_segments(&raw_segments);
     cuda_require(cudaDeviceSynchronize(), "boundary synchronize");
@@ -1472,9 +1527,21 @@ void run_self_test(int device)
   std::cout << "MANHATTAN_UNION_CAPACITY ok fallback=1 message='"
             << gpu_capacity.message << "'\n";
 
+  const std::vector<RectI64> wide_y = {
+      rectangle(0, INT64_MIN + 10, 10, INT64_MIN + 20),
+      rectangle(20, INT64_MAX - 20, 30, INT64_MAX - 10)};
+  const UnionOutput gpu_wide_y = gpu_union(wide_y, limits, device);
+  if (!gpu_wide_y.fallback || !gpu_wide_y.segments.empty() ||
+      gpu_wide_y.message != "packed y-coordinate range") {
+    throw std::runtime_error("packed y-range capacity did not fail closed");
+  }
+  ++checks;
+  std::cout
+      << "MANHATTAN_UNION_Y_RANGE ok fallback=1 packed_u32=1\n";
+
   std::cout << "MANHATTAN_UNION_SELF_TEST PASS checks=" << checks
             << " directed=" << directed_fixtures().size()
-            << " random=64 canonical=1 degeneracy=4 capacity=1\n";
+            << " random=64 canonical=1 degeneracy=4 capacity=2\n";
 }
 
 std::vector<RectI64> touching_grid(std::uint32_t dimension)

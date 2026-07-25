@@ -17,6 +17,11 @@ There is no floating point, tolerance, dense global raster, or image
 approximation.  Tensor cores do not apply: the useful primitives are integer
 radix/comparison sort, segmented scan, reduction and compaction.
 
+The current accelerated event key binds a uint32 slab ID and a checked uint32
+`y-y_base` offset into one uint64.  Signed-int64 absolute coordinates remain
+exact, but a scene whose total y span exceeds `UINT32_MAX` fails closed.  This
+bound covers the qualified M2 scene by more than three orders of magnitude.
+
 `RectI64` is deliberately the normalized output of hierarchy expansion.  The
 existing POLY34 and VIA1-stack CUDA paths already apply KLayout's eight
 orthogonal transforms to boxes in device code.  A resident production path can
@@ -28,13 +33,14 @@ a host round trip.
 1. Copy expanded rectangles and sort/unique all x endpoints.
 2. Map each rectangle to every exact x slab it covers.  A configured maximum
    span and total membership capacity make worst-case growth explicit.
-3. Emit signed y events per membership, sort/reduce identical `(slab,y)`
-   events, and segmented-scan coverage.
+3. Emit signed y events per membership into packed uint64 `(slab,y-y_base)`
+   keys, radix-sort/reduce identical events, and segmented-scan coverage.
 4. Compact only zero-to-positive and positive-to-zero transitions into
    disjoint covered strip intervals.
-5. Emit left/right coverage events at each slab boundary.  A second
-   sort/reduce/segmented scan emits a vertical boundary exactly where the
-   covered state differs on the two sides.
+5. Retain per-slab offsets into those already-sorted disjoint intervals.  One
+   count/prefix/emit pass directly XOR-merges the two interval lists adjacent
+   to each x boundary.  This emits exact vertical boundaries in linear work
+   without a second four-events-per-interval sort.
 6. Sort horizontal and vertical fragments and merge collinear intervals.
    Segment grouping uses a per-line segmented prefix maximum, which remains
    exact for nested fragments such as `[0,100], [10,20], [30,40], [100,120]`.
@@ -59,9 +65,10 @@ invariant failure returns a fallback with no partial result.
 - 64 fixed-seed randomized comparisons against an independent CPU sweep;
 - a direct nested-fragment canonicalization regression;
 - four invalid/degenerate fail-closed cases;
-- a forced per-rectangle membership-capacity fallback.
+- a forced per-rectangle membership-capacity fallback;
+- a forced packed-y-range fallback.
 
-The current gate is 85/85 CPU-identical.
+The current gate is 86/86 CPU-identical/fail-closed.
 
 The output boundary set is exact for point-touching inputs, but a live KLayout
 integration also needs its polygon/component identity and maximum-coherence
@@ -77,12 +84,12 @@ segments and digest as the CPU sweep:
 
 | path | charged time |
 |---|---:|
-| CPU oracle | 357.264 ms |
-| GPU first/cold call | 267.817 ms |
-| GPU warm median, four calls | 16.909 ms |
+| CPU oracle | 377.784 ms |
+| GPU first/cold call | 178.846 ms |
+| GPU warm median, four calls | 14.562 ms |
 
-The warm replay used **95.27% less time** than this CPU oracle
-(**+2012.84% throughput**).  This synthetic case demonstrates the mechanics;
+The warm replay used **96.15% less time** than this CPU oracle
+(**+2494.25% throughput**).  This synthetic case demonstrates the mechanics;
 it is not a claim of a 95% KLayout end-to-end reduction.
 
 ## Production M2 sizing and next gate
@@ -102,18 +109,16 @@ The capture is
 `/tmp/m2-via1-x2.39i7kG/m2-via1-x2.kact`; the existing merged contour oracle is
 `/tmp/m2-width-space-census-exact.km1ws`.
 
-The generic 16-byte event key plus Thrust input/output and sort scratch can
-exceed a 10 GB device at that volume.  The next production gate should retain
-the same math but either:
+The checked packed event key and linear adjacent-slab XOR are now implemented,
+and phase-dead buffers are explicitly released before the next full-volume
+allocation.  The immediate production gate is therefore the global scene:
+compare its canonical directed boundary multiset against the 4,385,384-edge
+merged KM1WS oracle.  If the measured sort scratch still exceeds 10 GB, the
+exact fallback design is bounded contiguous x-slab tiles with a one-slab halo.
 
-1. use a checked packed 64-bit `(slab, y-y_base)` key for the qualified M2
-   coordinate range and process the global scene; or
-2. process bounded contiguous x-slab tiles, retaining a one-slab halo for the
-   vertical XOR and canonically merging tile-edge horizontal fragments.
-
-It must then add exact component IDs, fail closed on kissing vertices, and feed
-the existing M2 width/spacing predicate without materializing KLayout polygons
-on the CPU.
+After that boundary proof, a live path must add exact component IDs, fail
+closed on kissing vertices, and feed the existing M2 width/spacing predicate
+without materializing KLayout polygons on the CPU.
 
 ## Build
 
