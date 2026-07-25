@@ -105,10 +105,11 @@ The request is accepted only for the complete qualified option mask, ABI and
 record sizes, 2000 DBU/micron, nonempty bounded arrays, strictly increasing
 M2-context IDs, checked byte products, and explicit capacity limits.  The
 future live builder must additionally enforce the proven raw-scene rules:
-physical M2 layer 13/0, same store/layout/top layer, no breakout, no
-properties, supported orthogonal unit transforms, clockwise Manhattan
-contours, structural spans, coordinate safety, census conservation, and a
-canonical scene digest.
+physical M2 layer 13/0 and physical VIA2 layer 14/0 (capture/remap slots
+101/0 and 102/0 are not live operands), same store/layout/top layer, no
+breakout, no properties, supported orthogonal unit transforms, clockwise
+Manhattan contours, structural spans, coordinate safety, census conservation,
+and a canonical scene digest.
 
 The loader returns `Complete` only after all of these result checks:
 

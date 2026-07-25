@@ -225,27 +225,30 @@ struct CellTemplate
   std::vector<InstanceTemplate> instances;
 };
 
+template <class Scene>
 void append_polygon (
   const db::Shape &shape, uint32_t polygon_id,
   const CudaM1WidthSpaceSceneLimits &limits,
-  CudaM1WidthSpaceScene &scene,
+  Scene &scene,
   cuda_manhattan_contour::TranslationValidationCache<
     CudaM1WidthSpaceEdge> &contour_cache)
 {
   if (shape.prop_id () != 0) {
-    throw M1WidthSpaceDecline ("M1 polygon has properties");
+    throw M1WidthSpaceDecline ("Manhattan scene polygon has properties");
   }
   if (! shape.is_box () && ! shape.is_polygon ()) {
-    throw M1WidthSpaceDecline ("M1 layer contains a non-polygon shape");
+    throw M1WidthSpaceDecline (
+      "Manhattan scene layer contains a non-polygon shape");
   }
 
   db::Polygon polygon;
   if (! shape.polygon (polygon)) {
-    throw M1WidthSpaceDecline ("M1 polygon is malformed");
+    throw M1WidthSpaceDecline ("Manhattan scene polygon is malformed");
   }
   if (polygon.holes () != 0) {
     throw M1WidthSpaceDecline (
-      "M1 polygon has holes, which are outside the first scene format");
+      "Manhattan scene polygon has holes, which are outside the first "
+      "scene format");
   }
 
   std::vector<CudaM1WidthSpaceEdge> contour;
@@ -260,7 +263,7 @@ void append_polygon (
     const int64_t y2 = narrow_i64 ((*edge).p2 ().y (), "polygon y2");
     if ((x1 == x2 && y1 == y2) || ! (x1 == x2 || y1 == y2)) {
       throw M1WidthSpaceDecline (
-        "M1 polygon has a degenerate or non-Manhattan edge");
+        "Manhattan scene polygon has a degenerate or non-Manhattan edge");
     }
     contour.push_back (CudaM1WidthSpaceEdge { x1, y1, x2, y2 });
     twice_area += __int128 (x1) * y2 - __int128 (x2) * y1;
@@ -280,22 +283,22 @@ void append_polygon (
   if (contour.size () < 4 || twice_area >= 0 || ! have_bounds ||
       left >= right || bottom >= top) {
     throw M1WidthSpaceDecline (
-      "M1 polygon is too small, empty, or not clockwise");
+      "Manhattan scene polygon is too small, empty, or not clockwise");
   }
   const cuda_manhattan_contour::ValidationResult contour_result =
     contour_cache.validate_contour (contour);
   if (contour_result ==
       cuda_manhattan_contour::ValidationResult::OpenContour) {
-    throw M1WidthSpaceDecline ("M1 polygon contour is open");
+    throw M1WidthSpaceDecline ("Manhattan scene polygon contour is open");
   }
   if (contour_result !=
       cuda_manhattan_contour::ValidationResult::Valid) {
     throw M1WidthSpaceDecline (
-      "M1 polygon contour self-intersects");
+      "Manhattan scene polygon contour self-intersects");
   }
   if (contour.size () > std::numeric_limits<uint32_t>::max ()) {
     throw M1WidthSpaceDecline (
-      "one M1 polygon has more than uint32 contour edges");
+      "one Manhattan scene polygon has more than uint32 contour edges");
   }
 
   const uint64_t stored_polygons =
@@ -310,7 +313,7 @@ void append_polygon (
   if (scene.polygons.size () == scene.polygons.max_size () ||
       contour.size () > scene.edges.max_size () - scene.edges.size ()) {
     throw M1WidthSpaceDecline (
-      "host vector capacity cannot represent the M1 scene");
+      "host vector capacity cannot represent the Manhattan scene");
   }
 
   CudaM1WidthSpacePolygon record;
@@ -325,10 +328,11 @@ void append_polygon (
   scene.edges.insert (scene.edges.end (), contour.begin (), contour.end ());
 }
 
+template <class Scene>
 void append_cell_layer (
   const db::Cell &cell, unsigned int layer, uint64_t source_cell_index,
   const CudaM1WidthSpaceSceneLimits &limits,
-  CudaM1WidthSpaceScene &scene, CudaM1WidthSpaceCell &record,
+  Scene &scene, CudaM1WidthSpaceCell &record,
   cuda_manhattan_contour::TranslationValidationCache<
     CudaM1WidthSpaceEdge> &contour_cache)
 {
@@ -345,7 +349,7 @@ void append_cell_layer (
        ! shape.at_end (); ++shape) {
     if (polygon_id == std::numeric_limits<uint32_t>::max ()) {
       throw M1WidthSpaceDecline (
-        "per-cell M1 polygon count exceeds uint32");
+        "per-cell Manhattan polygon count exceeds uint32");
     }
     append_polygon (
       *shape, polygon_id, limits, scene, contour_cache);
@@ -361,7 +365,7 @@ void append_cell_layer (
   if (polygon_count > std::numeric_limits<uint32_t>::max () ||
       edge_count > std::numeric_limits<uint32_t>::max ()) {
     throw M1WidthSpaceDecline (
-      "per-cell M1 polygon or edge count exceeds uint32");
+      "per-cell Manhattan polygon or edge count exceeds uint32");
   }
   record.polygon_count = uint32_t (polygon_count);
   record.edge_count = uint32_t (edge_count);
@@ -585,9 +589,10 @@ void add_world_polygon_bounds (
   }
 }
 
+template <class Scene>
 void derive_context_lists_and_bounds (
   const CudaM1WidthSpaceSceneLimits &limits,
-  CudaM1WidthSpaceScene &scene)
+  Scene &scene)
 {
   bool have_bounds = false;
   for (size_t context_id = 0;
@@ -614,14 +619,14 @@ void derive_context_lists_and_bounds (
           scene.flat_polygon_count) ||
         scene.flat_polygon_count > limits.max_flat_polygons) {
       throw M1WidthSpaceDecline (
-        "flattened M1 polygon count exceeds the configured capacity");
+        "flattened Manhattan polygon count exceeds the configured capacity");
     }
     if (! checked_add_u64 (
           scene.flat_edge_count, cell.edge_count,
           scene.flat_edge_count) ||
         scene.flat_edge_count > limits.max_flat_edges) {
       throw M1WidthSpaceDecline (
-        "flattened M1 edge count exceeds the configured capacity");
+        "flattened Manhattan edge count exceeds the configured capacity");
     }
 
     const uint64_t polygon_end =
@@ -640,7 +645,7 @@ void derive_context_lists_and_bounds (
   }
   if (! have_bounds || ! scene.flat_polygon_count ||
       ! scene.flat_edge_count) {
-    throw M1WidthSpaceDecline ("qualified M1 scene is empty");
+    throw M1WidthSpaceDecline ("qualified Manhattan scene is empty");
   }
 }
 
@@ -661,6 +666,16 @@ bool options_are_qualified (const db::RegionCheckOptions &options)
     options.zd_mode == db::IncludeZeroDistanceWhenTouching;
 }
 
+void validate_scene_limits (
+  const CudaM1WidthSpaceSceneLimits &limits)
+{
+  if (! limits.max_cells || ! limits.max_contexts ||
+      ! limits.max_stored_polygons || ! limits.max_stored_edges ||
+      ! limits.max_flat_polygons || ! limits.max_flat_edges) {
+    throw M1WidthSpaceDecline ("a Manhattan scene capacity is zero");
+  }
+}
+
 void validate_inputs (
   const db::DeepLayer &width_metal1,
   const db::DeepLayer &spacing_metal1,
@@ -678,11 +693,7 @@ void validate_inputs (
     throw M1WidthSpaceDecline (
       "M1 width/spacing distances or options are outside the qualified form");
   }
-  if (! limits.max_cells || ! limits.max_contexts ||
-      ! limits.max_stored_polygons || ! limits.max_stored_edges ||
-      ! limits.max_flat_polygons || ! limits.max_flat_edges) {
-    throw M1WidthSpaceDecline ("an M1 scene capacity is zero");
-  }
+  validate_scene_limits (limits);
   if (width_metal1.store () != spacing_metal1.store () ||
       &width_metal1.layout () != &spacing_metal1.layout () ||
       width_metal1.layout_index () != spacing_metal1.layout_index () ||
@@ -703,9 +714,34 @@ void validate_inputs (
   }
 }
 
-CudaM1WidthSpaceScene serialize_scene (
+void validate_raw_m2_input (
+  const db::DeepLayer &raw_metal2,
+  const CudaM1WidthSpaceSceneLimits &limits)
+{
+  validate_scene_limits (limits);
+  if (raw_metal2.breakout_cells () != 0) {
+    throw M1WidthSpaceDecline (
+      "raw M2 scene has hierarchy breakout cells");
+  }
+  if (raw_metal2.layout ().dbu () != 0.0005) {
+    throw M1WidthSpaceDecline (
+      "raw M2 scene DBU is not the qualified 0.5 nm");
+  }
+  if (! raw_metal2.layout ().is_valid_layer (raw_metal2.layer ())) {
+    throw M1WidthSpaceDecline (
+      "raw M2 scene layer index is not a valid physical layer");
+  }
+  const db::LayerProperties &properties =
+    raw_metal2.layout ().get_properties (raw_metal2.layer ());
+  if (! properties.log_equal (db::LayerProperties (13, 0))) {
+    throw M1WidthSpaceDecline (
+      "raw M2 scene is not physical FreePDK45 layer 13/0");
+  }
+}
+
+template <class Scene>
+Scene serialize_layer_scene (
   const db::DeepLayer &metal1,
-  const CudaM1WidthSpaceBuildSpec &spec,
   const CudaM1WidthSpaceSceneLimits &limits)
 {
   const db::Layout &layout = metal1.layout ();
@@ -733,11 +769,9 @@ CudaM1WidthSpaceScene serialize_scene (
       "initial cell is absent from the hierarchy census");
   }
 
-  CudaM1WidthSpaceScene scene;
+  Scene scene;
   cuda_manhattan_contour::TranslationValidationCache<
     CudaM1WidthSpaceEdge> contour_cache;
-  scene.width_distance = spec.width_distance;
-  scene.spacing_distance = spec.spacing_distance;
   scene.root_cell = root->second;
   scene.cells.resize (reachable.size ());
   std::vector<CellTemplate> templates (reachable.size ());
@@ -766,20 +800,28 @@ CudaM1WidthSpaceScene serialize_scene (
   return scene;
 }
 
+CudaM1WidthSpaceScene serialize_scene (
+  const db::DeepLayer &metal1,
+  const CudaM1WidthSpaceBuildSpec &spec,
+  const CudaM1WidthSpaceSceneLimits &limits)
+{
+  CudaM1WidthSpaceScene scene =
+    serialize_layer_scene<CudaM1WidthSpaceScene> (metal1, limits);
+  scene.width_distance = spec.width_distance;
+  scene.spacing_distance = spec.spacing_distance;
+  return scene;
+}
+
 bool checked_range (uint64_t begin, uint64_t count, uint64_t size)
 {
   uint64_t end = 0;
   return checked_add_u64 (begin, count, end) && end <= size;
 }
 
-bool structurally_valid (const CudaM1WidthSpaceScene &scene)
+template <class Scene>
+bool geometry_structurally_valid (const Scene &scene)
 {
-  if (scene.format_version != scene_format_version ||
-      scene.dbu_per_micron != qualified_dbu_per_micron ||
-      scene.reserved != 0 ||
-      ! scene_distance_is_qualified (
-          scene.width_distance, scene.spacing_distance) ||
-      scene.cells.empty () || scene.contexts.empty () ||
+  if (scene.cells.empty () || scene.contexts.empty () ||
       scene.polygons.empty () || scene.edges.empty () ||
       scene.root_cell >= scene.cells.size () ||
       scene.metal_contexts.size () !=
@@ -895,6 +937,26 @@ bool structurally_valid (const CudaM1WidthSpaceScene &scene)
     flat_polygons != 0 && flat_edges != 0;
 }
 
+bool structurally_valid (const CudaM1WidthSpaceScene &scene)
+{
+  return
+    scene.format_version == scene_format_version &&
+    scene.dbu_per_micron == qualified_dbu_per_micron &&
+    scene.reserved == 0 &&
+    scene_distance_is_qualified (
+      scene.width_distance, scene.spacing_distance) &&
+    geometry_structurally_valid (scene);
+}
+
+bool structurally_valid (const CudaM2RawManhattanScene &scene)
+{
+  return
+    scene.format_version == scene_format_version &&
+    scene.dbu_per_micron == qualified_dbu_per_micron &&
+    scene.reserved == 0 &&
+    geometry_structurally_valid (scene);
+}
+
 class CanonicalDigest
 {
 public:
@@ -934,6 +996,63 @@ public:
 private:
   db::cuda_active3_digest::Sha256 m_sha;
 };
+
+template <class Scene>
+void digest_geometry_payload (
+  CanonicalDigest &sha, const Scene &scene)
+{
+  sha.u64 (scene.contexts.size ());
+  sha.u64 (scene.metal_contexts.size ());
+  sha.u64 (scene.cells.size ());
+  sha.u64 (scene.polygons.size ());
+  sha.u64 (scene.edges.size ());
+  sha.u64 (scene.flat_polygon_count);
+  sha.u64 (scene.flat_edge_count);
+  sha.i64 (scene.scene_left);
+  sha.i64 (scene.scene_bottom);
+  sha.i64 (scene.scene_right);
+  sha.i64 (scene.scene_top);
+
+  for (std::vector<CudaM1WidthSpaceContext>::const_iterator context =
+         scene.contexts.begin (); context != scene.contexts.end ();
+       ++context) {
+    sha.i64 (context->tx);
+    sha.i64 (context->ty);
+    sha.u32 (context->cell_id);
+    sha.u32 (context->transform_code);
+  }
+  for (size_t i = 0; i < scene.metal_contexts.size (); ++i) {
+    sha.u32 (scene.metal_contexts [i]);
+    sha.u64 (scene.context_polygon_offsets [i]);
+    sha.u64 (scene.context_edge_offsets [i]);
+  }
+  for (std::vector<CudaM1WidthSpaceCell>::const_iterator cell =
+         scene.cells.begin (); cell != scene.cells.end (); ++cell) {
+    sha.u64 (cell->source_cell_index);
+    sha.u64 (cell->polygon_begin);
+    sha.u64 (cell->edge_begin);
+    sha.u32 (cell->polygon_count);
+    sha.u32 (cell->edge_count);
+  }
+  for (std::vector<CudaM1WidthSpacePolygon>::const_iterator polygon =
+         scene.polygons.begin (); polygon != scene.polygons.end ();
+       ++polygon) {
+    sha.u64 (polygon->edge_begin);
+    sha.i64 (polygon->left);
+    sha.i64 (polygon->bottom);
+    sha.i64 (polygon->right);
+    sha.i64 (polygon->top);
+    sha.u32 (polygon->polygon_id);
+    sha.u32 (polygon->edge_count);
+  }
+  for (std::vector<CudaM1WidthSpaceEdge>::const_iterator edge =
+         scene.edges.begin (); edge != scene.edges.end (); ++edge) {
+    sha.i64 (edge->x1);
+    sha.i64 (edge->y1);
+    sha.i64 (edge->x2);
+    sha.i64 (edge->y2);
+  }
+}
 
 void set_reason (std::string *reason, const char *message)
 {
@@ -1038,6 +1157,53 @@ void CudaM1WidthSpaceScene::swap (
   digest.swap (other.digest);
 }
 
+CudaM2RawManhattanScene::CudaM2RawManhattanScene ()
+  : format_version (scene_format_version),
+    dbu_per_micron (qualified_dbu_per_micron),
+    root_cell (0),
+    reserved (0),
+    flat_polygon_count (0),
+    flat_edge_count (0),
+    scene_left (0),
+    scene_bottom (0),
+    scene_right (0),
+    scene_top (0),
+    contexts (),
+    metal_contexts (),
+    context_polygon_offsets (),
+    context_edge_offsets (),
+    cells (),
+    polygons (),
+    edges (),
+    digest ()
+{
+  //  nothing yet
+}
+
+void CudaM2RawManhattanScene::swap (
+  CudaM2RawManhattanScene &other) noexcept
+{
+  using std::swap;
+  swap (format_version, other.format_version);
+  swap (dbu_per_micron, other.dbu_per_micron);
+  swap (root_cell, other.root_cell);
+  swap (reserved, other.reserved);
+  swap (flat_polygon_count, other.flat_polygon_count);
+  swap (flat_edge_count, other.flat_edge_count);
+  swap (scene_left, other.scene_left);
+  swap (scene_bottom, other.scene_bottom);
+  swap (scene_right, other.scene_right);
+  swap (scene_top, other.scene_top);
+  contexts.swap (other.contexts);
+  metal_contexts.swap (other.metal_contexts);
+  context_polygon_offsets.swap (other.context_polygon_offsets);
+  context_edge_offsets.swap (other.context_edge_offsets);
+  cells.swap (other.cells);
+  polygons.swap (other.polygons);
+  edges.swap (other.edges);
+  digest.swap (other.digest);
+}
+
 bool cuda_m1_width_space_scene_digest (
   const CudaM1WidthSpaceScene &scene, std::array<uint8_t, 32> &digest)
 {
@@ -1056,57 +1222,32 @@ bool cuda_m1_width_space_scene_digest (
     sha.u32 (scene.reserved);
     sha.i64 (scene.width_distance);
     sha.i64 (scene.spacing_distance);
-    sha.u64 (scene.contexts.size ());
-    sha.u64 (scene.metal_contexts.size ());
-    sha.u64 (scene.cells.size ());
-    sha.u64 (scene.polygons.size ());
-    sha.u64 (scene.edges.size ());
-    sha.u64 (scene.flat_polygon_count);
-    sha.u64 (scene.flat_edge_count);
-    sha.i64 (scene.scene_left);
-    sha.i64 (scene.scene_bottom);
-    sha.i64 (scene.scene_right);
-    sha.i64 (scene.scene_top);
+    digest_geometry_payload (sha, scene);
+    digest = sha.finish ();
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
 
-    for (std::vector<CudaM1WidthSpaceContext>::const_iterator context =
-           scene.contexts.begin (); context != scene.contexts.end ();
-         ++context) {
-      sha.i64 (context->tx);
-      sha.i64 (context->ty);
-      sha.u32 (context->cell_id);
-      sha.u32 (context->transform_code);
+bool cuda_m2_raw_manhattan_scene_digest (
+  const CudaM2RawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest)
+{
+  try {
+    if (! structurally_valid (scene)) {
+      return false;
     }
-    for (size_t i = 0; i < scene.metal_contexts.size (); ++i) {
-      sha.u32 (scene.metal_contexts [i]);
-      sha.u64 (scene.context_polygon_offsets [i]);
-      sha.u64 (scene.context_edge_offsets [i]);
-    }
-    for (std::vector<CudaM1WidthSpaceCell>::const_iterator cell =
-           scene.cells.begin (); cell != scene.cells.end (); ++cell) {
-      sha.u64 (cell->source_cell_index);
-      sha.u64 (cell->polygon_begin);
-      sha.u64 (cell->edge_begin);
-      sha.u32 (cell->polygon_count);
-      sha.u32 (cell->edge_count);
-    }
-    for (std::vector<CudaM1WidthSpacePolygon>::const_iterator polygon =
-           scene.polygons.begin (); polygon != scene.polygons.end ();
-         ++polygon) {
-      sha.u64 (polygon->edge_begin);
-      sha.i64 (polygon->left);
-      sha.i64 (polygon->bottom);
-      sha.i64 (polygon->right);
-      sha.i64 (polygon->top);
-      sha.u32 (polygon->polygon_id);
-      sha.u32 (polygon->edge_count);
-    }
-    for (std::vector<CudaM1WidthSpaceEdge>::const_iterator edge =
-           scene.edges.begin (); edge != scene.edges.end (); ++edge) {
-      sha.i64 (edge->x1);
-      sha.i64 (edge->y1);
-      sha.i64 (edge->x2);
-      sha.i64 (edge->y2);
-    }
+
+    static const char magic [8] =
+      { 'K', 'M', '2', 'R', 'A', 'W', '0', '1' };
+    CanonicalDigest sha;
+    sha.bytes (magic, sizeof (magic));
+    sha.u32 (scene.format_version);
+    sha.u32 (scene.dbu_per_micron);
+    sha.u32 (scene.root_cell);
+    sha.u32 (scene.reserved);
+    digest_geometry_payload (sha, scene);
     digest = sha.finish ();
     return true;
   } catch (...) {
@@ -1131,6 +1272,34 @@ bool cuda_m1_width_space_build_scene (
     if (! cuda_m1_width_space_scene_digest (candidate, digest)) {
       throw M1WidthSpaceDecline (
         "serialized M1 scene failed structural digest validation");
+    }
+    candidate.digest = digest;
+    scene.swap (candidate);
+    set_reason (decline_reason, "");
+    return true;
+  } catch (const std::exception &ex) {
+    set_reason (decline_reason, ex.what ());
+  } catch (...) {
+    set_reason (decline_reason, "unknown exception");
+  }
+  return false;
+}
+
+bool cuda_m2_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_metal2,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaM2RawManhattanScene &scene,
+  std::string *decline_reason)
+{
+  try {
+    validate_raw_m2_input (raw_metal2, limits);
+    CudaM2RawManhattanScene candidate =
+      serialize_layer_scene<CudaM2RawManhattanScene> (
+        raw_metal2, limits);
+    std::array<uint8_t, 32> digest;
+    if (! cuda_m2_raw_manhattan_scene_digest (candidate, digest)) {
+      throw M1WidthSpaceDecline (
+        "serialized raw M2 scene failed structural digest validation");
     }
     candidate.digest = digest;
     scene.swap (candidate);
