@@ -111,6 +111,21 @@ const RawManhattanProfile raw_contact_profile = {
   { 'K', 'C', 'R', 'A', 'W', '0', '0', '1' }
 };
 
+const RawManhattanProfile raw_poly_profile = {
+  9, 0, "raw POLY",
+  { 'K', 'P', 'O', 'L', 'Y', '0', '0', '1' }
+};
+
+const RawManhattanProfile raw_nplus_profile = {
+  4, 0, "raw NPLUS",
+  { 'K', 'N', 'P', 'L', 'S', '0', '0', '1' }
+};
+
+const RawManhattanProfile raw_nwell_profile = {
+  3, 0, "raw NWELL",
+  { 'K', 'N', 'W', 'E', 'L', '0', '0', '1' }
+};
+
 const RawManhattanProfile raw_well_union_profile = {
   3, 0, "combined raw WELL",
   { 'K', 'W', 'R', 'W', 'L', '0', '0', '1' }
@@ -609,7 +624,8 @@ uint64_t subtree_context_count (
 void expand_contexts (
   uint32_t root, const std::vector<CellTemplate> &templates,
   uint64_t max_contexts,
-  std::vector<CudaM1WidthSpaceContext> &contexts)
+  std::vector<CudaM1WidthSpaceContext> &contexts,
+  std::vector<uint32_t> *parents)
 {
   std::vector<uint8_t> state (templates.size (), 0);
   std::vector<uint64_t> memo (templates.size (), 0);
@@ -622,6 +638,14 @@ void expand_contexts (
   }
 
   contexts.reserve (size_t (expected));
+  if (parents) {
+    if (expected > parents->max_size ()) {
+      throw M1WidthSpaceDecline (
+        "context-parent sidecar exceeds its host vector capacity");
+    }
+    parents->reserve (size_t (expected));
+    parents->push_back (std::numeric_limits<uint32_t>::max ());
+  }
   contexts.push_back (CudaM1WidthSpaceContext { 0, 0, root, 0 });
   for (size_t parent_id = 0; parent_id < contexts.size (); ++parent_id) {
     const CudaM1WidthSpaceContext parent = contexts [parent_id];
@@ -653,11 +677,15 @@ void expand_contexts (
                 shifted.second + parent.ty, "world context translation y"),
               instance->child_cell, transform
             });
+          if (parents) {
+            parents->push_back (uint32_t (parent_id));
+          }
         }
       }
     }
   }
-  if (contexts.size () != expected) {
+  if (contexts.size () != expected ||
+      (parents && parents->size () != contexts.size ())) {
     throw M1WidthSpaceDecline (
       "expanded hierarchy disagrees with the checked context census");
   }
@@ -945,7 +973,7 @@ Scene serialize_layer_scene (
   }
 
   expand_contexts (
-    root->second, templates, limits.max_contexts, scene.contexts);
+    root->second, templates, limits.max_contexts, scene.contexts, 0);
   derive_context_lists_and_bounds (limits, scene);
   return scene;
 }
@@ -1006,7 +1034,7 @@ CudaRawManhattanScene serialize_layer_pair_scene (
   }
 
   expand_contexts (
-    root->second, templates, limits.max_contexts, scene.contexts);
+    root->second, templates, limits.max_contexts, scene.contexts, 0);
   derive_context_lists_and_bounds (limits, scene);
   return scene;
 }
@@ -1539,6 +1567,42 @@ bool cuda_contact_raw_manhattan_scene_digest (
   }
 }
 
+bool cuda_poly_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest)
+{
+  try {
+    return raw_manhattan_scene_digest (
+      scene, raw_poly_profile, digest);
+  } catch (...) {
+    return false;
+  }
+}
+
+bool cuda_nplus_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest)
+{
+  try {
+    return raw_manhattan_scene_digest (
+      scene, raw_nplus_profile, digest);
+  } catch (...) {
+    return false;
+  }
+}
+
+bool cuda_nwell_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest)
+{
+  try {
+    return raw_manhattan_scene_digest (
+      scene, raw_nwell_profile, digest);
+  } catch (...) {
+    return false;
+  }
+}
+
 bool cuda_well_union_raw_manhattan_scene_digest (
   const CudaRawManhattanScene &scene,
   std::array<uint8_t, 32> &digest)
@@ -1619,6 +1683,130 @@ bool cuda_contact_raw_manhattan_build_scene (
 {
   return build_raw_manhattan_scene (
     raw_contact, limits, raw_contact_profile, scene, decline_reason);
+}
+
+bool cuda_poly_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_poly,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason)
+{
+  return build_raw_manhattan_scene (
+    raw_poly, limits, raw_poly_profile, scene, decline_reason);
+}
+
+bool cuda_nplus_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_nplus,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason)
+{
+  return build_raw_manhattan_scene (
+    raw_nplus, limits, raw_nplus_profile, scene, decline_reason);
+}
+
+bool cuda_nwell_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_nwell,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason)
+{
+  return build_raw_manhattan_scene (
+    raw_nwell, limits, raw_nwell_profile, scene, decline_reason);
+}
+
+bool cuda_raw_manhattan_context_parents (
+  const db::DeepLayer &raw_layer,
+  const CudaRawManhattanScene &scene,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  std::vector<uint32_t> &parents,
+  std::string *decline_reason)
+{
+  try {
+    validate_scene_limits (limits);
+    if (raw_layer.breakout_cells () != 0) {
+      throw M1WidthSpaceDecline (
+        "raw Manhattan context hierarchy has breakout cells");
+    }
+    if (raw_layer.layout ().dbu () != 0.0005 ||
+        ! structurally_valid (scene)) {
+      throw M1WidthSpaceDecline (
+        "raw Manhattan context source or scene is not qualified");
+    }
+
+    const db::Layout &layout = raw_layer.layout ();
+    const db::cell_index_type top =
+      raw_layer.initial_cell ().cell_index ();
+    std::set<db::cell_index_type> reachable;
+    reachable.insert (top);
+    raw_layer.initial_cell ().collect_called_cells (reachable);
+    if (reachable.empty () ||
+        reachable.size () > std::numeric_limits<uint32_t>::max () ||
+        reachable.size () > limits.max_cells ||
+        reachable.size () != scene.cells.size ()) {
+      throw M1WidthSpaceDecline (
+        "raw Manhattan context hierarchy cell census is inconsistent");
+    }
+
+    std::map<db::cell_index_type, uint32_t> dense_cells;
+    uint32_t dense = 0;
+    for (std::set<db::cell_index_type>::const_iterator cell =
+           reachable.begin (); cell != reachable.end (); ++cell, ++dense) {
+      dense_cells.insert (std::make_pair (*cell, dense));
+    }
+    const std::map<db::cell_index_type, uint32_t>::const_iterator root =
+      dense_cells.find (top);
+    if (root == dense_cells.end () ||
+        root->second != scene.root_cell) {
+      throw M1WidthSpaceDecline (
+        "raw Manhattan context hierarchy root is inconsistent");
+    }
+
+    std::vector<CellTemplate> templates (reachable.size ());
+    for (std::set<db::cell_index_type>::const_iterator source =
+           reachable.begin (); source != reachable.end (); ++source) {
+      const uint32_t cell_id = dense_cells.find (*source)->second;
+      if (scene.cells [cell_id].source_cell_index != uint64_t (*source)) {
+        throw M1WidthSpaceDecline (
+          "raw Manhattan context source-cell identity is inconsistent");
+      }
+      const db::Cell &cell = layout.cell (*source);
+      for (db::Cell::const_iterator instance = cell.begin ();
+           ! instance.at_end (); ++instance) {
+        templates [cell_id].instances.push_back (
+          make_instance (*instance, dense_cells));
+      }
+    }
+
+    std::vector<CudaM1WidthSpaceContext> contexts;
+    std::vector<uint32_t> candidate;
+    expand_contexts (
+      root->second, templates, limits.max_contexts,
+      contexts, &candidate);
+    if (contexts.size () != scene.contexts.size ()) {
+      throw M1WidthSpaceDecline (
+        "raw Manhattan context occurrence census is inconsistent");
+    }
+    for (size_t context = 0; context < contexts.size (); ++context) {
+      const CudaM1WidthSpaceContext &expected = contexts [context];
+      const CudaM1WidthSpaceContext &actual = scene.contexts [context];
+      if (expected.tx != actual.tx || expected.ty != actual.ty ||
+          expected.cell_id != actual.cell_id ||
+          expected.transform_code != actual.transform_code) {
+        throw M1WidthSpaceDecline (
+          "raw Manhattan context transform census is inconsistent");
+      }
+    }
+
+    parents.swap (candidate);
+    set_reason (decline_reason, "");
+    return true;
+  } catch (const std::exception &ex) {
+    set_reason (decline_reason, ex.what ());
+  } catch (...) {
+    set_reason (decline_reason, "unknown exception");
+  }
+  return false;
 }
 
 bool cuda_well_union_raw_manhattan_build_scene (

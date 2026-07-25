@@ -64,6 +64,26 @@ const RawSceneProfile profiles [] = {
     10, 0, "raw CONTACT",
     db::cuda_contact_raw_manhattan_build_scene,
     db::cuda_contact_raw_manhattan_scene_digest
+  },
+  {
+    11, 0, "raw M1",
+    db::cuda_m1_raw_manhattan_build_scene,
+    db::cuda_m1_raw_manhattan_scene_digest
+  },
+  {
+    9, 0, "raw POLY",
+    db::cuda_poly_raw_manhattan_build_scene,
+    db::cuda_poly_raw_manhattan_scene_digest
+  },
+  {
+    4, 0, "raw NPLUS",
+    db::cuda_nplus_raw_manhattan_build_scene,
+    db::cuda_nplus_raw_manhattan_scene_digest
+  },
+  {
+    3, 0, "raw NWELL",
+    db::cuda_nwell_raw_manhattan_build_scene,
+    db::cuda_nwell_raw_manhattan_scene_digest
   }
 };
 
@@ -335,11 +355,13 @@ TEST(5_FixedRawDomainsShareGeometryButNotIdentity)
     scenes.push_back (scene);
   }
 
-  EXPECT_EQ (same_geometry (scenes [0], scenes [1]), true);
-  EXPECT_EQ (same_geometry (scenes [0], scenes [2]), true);
-  EXPECT_EQ (scenes [0].digest == scenes [1].digest, false);
-  EXPECT_EQ (scenes [0].digest == scenes [2].digest, false);
-  EXPECT_EQ (scenes [1].digest == scenes [2].digest, false);
+  for (size_t i = 1; i < scenes.size (); ++i) {
+    EXPECT_EQ (same_geometry (scenes [0], scenes [i]), true);
+    EXPECT_EQ (scenes [0].digest == scenes [i].digest, false);
+    for (size_t j = 1; j < i; ++j) {
+      EXPECT_EQ (scenes [j].digest == scenes [i].digest, false);
+    }
+  }
   EXPECT_EQ (
     digest_hex (scenes [0].digest),
     "a3417a95c51db78d4b1fed1209f825bea5b40afec75ff525a2fc0f0baf2bde89");
@@ -407,7 +429,7 @@ TEST(6_EachRawDomainRequiresItsExactPhysicalLayer)
   }
 }
 
-TEST(7_ActiveAndContactPreserveAllEightHierarchyTransforms)
+TEST(7_AllRawDomainsPreserveAllEightHierarchyTransforms)
 {
   db::DeepShapeStore store ("TOP", 0.0005);
   db::Region seed;
@@ -427,31 +449,32 @@ TEST(7_ActiveAndContactPreserveAllEightHierarchyTransforms)
   }
 
   db::CudaM1WidthSpaceSceneLimits limits;
-  db::CudaRawManhattanScene active;
-  mark_physical (raw, 1, 0);
-  EXPECT_EQ (
-    db::cuda_active_raw_manhattan_build_scene (
-      raw, limits, active, 0),
-    true);
-  db::CudaRawManhattanScene contact;
-  mark_physical (raw, 10, 0);
-  EXPECT_EQ (
-    db::cuda_contact_raw_manhattan_build_scene (
-      raw, limits, contact, 0),
-    true);
-
-  EXPECT_EQ (same_geometry (active, contact), true);
-  EXPECT_EQ (active.cells.size (), size_t (2));
-  EXPECT_EQ (active.contexts.size (), size_t (9));
-  EXPECT_EQ (active.flat_polygon_count, uint64_t (9));
-  EXPECT_EQ (active.flat_edge_count, uint64_t (36));
-  std::vector<uint32_t> codes;
-  for (size_t i = 1; i < active.contexts.size (); ++i) {
-    codes.push_back (active.contexts [i].transform_code);
-  }
-  std::sort (codes.begin (), codes.end ());
-  for (uint32_t code = 0; code < 8; ++code) {
-    EXPECT_EQ (codes [code], code);
+  db::CudaRawManhattanScene reference;
+  for (size_t profile = 0;
+       profile < sizeof (profiles) / sizeof (profiles [0]); ++profile) {
+    mark_physical (
+      raw, profiles [profile].layer, profiles [profile].datatype);
+    db::CudaRawManhattanScene scene;
+    EXPECT_EQ (
+      profiles [profile].build (raw, limits, scene, 0),
+      true);
+    EXPECT_EQ (scene.cells.size (), size_t (2));
+    EXPECT_EQ (scene.contexts.size (), size_t (9));
+    EXPECT_EQ (scene.flat_polygon_count, uint64_t (9));
+    EXPECT_EQ (scene.flat_edge_count, uint64_t (36));
+    std::vector<uint32_t> codes;
+    for (size_t i = 1; i < scene.contexts.size (); ++i) {
+      codes.push_back (scene.contexts [i].transform_code);
+    }
+    std::sort (codes.begin (), codes.end ());
+    for (uint32_t code = 0; code < 8; ++code) {
+      EXPECT_EQ (codes [code], code);
+    }
+    if (profile == 0) {
+      reference = scene;
+    } else {
+      EXPECT_EQ (same_geometry (reference, scene), true);
+    }
   }
 }
 

@@ -10,6 +10,7 @@ SOURCES = \
   dbCellInstanceSetHasherTests.cc \
   dbCompoundOperationTests.cc \
   dbCudaActive3WellUnionContractTests.cc \
+  dbCudaAntennaM1Tests.cc \
   dbCudaContact4ActiveUnionContractTests.cc \
   dbCudaImplant12Tests.cc \
   dbCudaM1WidthSpaceTests.cc \

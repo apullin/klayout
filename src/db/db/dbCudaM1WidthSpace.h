@@ -237,6 +237,30 @@ DB_PUBLIC bool cuda_contact_raw_manhattan_scene_digest (
   std::array<uint8_t, 32> &digest);
 
 /**
+ * Compute the canonical KPOLY001 digest of a structurally valid raw-POLY
+ * scene.  The hashed field order after the magic is identical to KM2RAW01.
+ */
+DB_PUBLIC bool cuda_poly_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest);
+
+/**
+ * Compute the canonical KNPLS001 digest of a structurally valid raw-NPLUS
+ * scene.  The hashed field order after the magic is identical to KM2RAW01.
+ */
+DB_PUBLIC bool cuda_nplus_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest);
+
+/**
+ * Compute the canonical KNWEL001 digest of a structurally valid raw-NWELL
+ * scene.  The hashed field order after the magic is identical to KM2RAW01.
+ */
+DB_PUBLIC bool cuda_nwell_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest);
+
+/**
  * Compute the canonical KWRWL001 digest of one combined raw-NWELL/PWELL
  * scene.  The scene contains both physical layers in deterministic
  * NWELL-then-PWELL order within every source cell.
@@ -318,6 +342,58 @@ DB_PUBLIC bool cuda_contact_raw_manhattan_build_scene (
   const db::DeepLayer &raw_contact,
   const CudaM1WidthSpaceSceneLimits &limits,
   CudaRawManhattanScene &scene,
+  std::string *decline_reason = 0);
+
+/**
+ * Serialize the supplied raw physical FreePDK45 POLY layer verbatim.
+ *
+ * This fixed-domain builder accepts only physical layer 9/0 at 0.5-nm DBU.
+ * It otherwise applies the established raw-Manhattan hierarchy, contour,
+ * property and capacity contract.
+ */
+DB_PUBLIC bool cuda_poly_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_poly,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason = 0);
+
+/**
+ * Serialize the supplied raw physical FreePDK45 NPLUS layer verbatim.
+ *
+ * This fixed-domain builder accepts only physical layer 4/0 at 0.5-nm DBU.
+ */
+DB_PUBLIC bool cuda_nplus_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_nplus,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason = 0);
+
+/**
+ * Serialize the supplied raw physical FreePDK45 NWELL layer verbatim.
+ *
+ * This fixed-domain builder accepts only physical layer 3/0 at 0.5-nm DBU.
+ */
+DB_PUBLIC bool cuda_nwell_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_nwell,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason = 0);
+
+/**
+ * Rebuild the parent occurrence of every established raw-scene context.
+ *
+ * The existing scene format intentionally remains byte-for-byte unchanged.
+ * This sidecar supplies the hierarchy edge needed by graph-oriented
+ * consumers such as antenna connectivity: entry zero is UINT32_MAX and every
+ * later entry names an earlier parent context.  The supplied DeepLayer must
+ * be the source hierarchy of "scene".  On every decline "parents" is left
+ * unchanged.
+ */
+DB_PUBLIC bool cuda_raw_manhattan_context_parents (
+  const db::DeepLayer &raw_layer,
+  const CudaRawManhattanScene &scene,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  std::vector<uint32_t> &parents,
   std::string *decline_reason = 0);
 
 /**
