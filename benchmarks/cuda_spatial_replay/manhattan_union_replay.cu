@@ -108,6 +108,19 @@ struct StripInterval
   std::uint32_t reserved;
 };
 
+struct ResidentStripHook
+{
+  using Consume = void (*)(
+      const std::int64_t *xs, std::uint32_t x_slabs,
+      const StripInterval *intervals, std::uint64_t interval_count,
+      const std::uint64_t *slab_offsets,
+      const std::uint32_t *slab_counts, void *context);
+
+  Consume consume = nullptr;
+  void *context = nullptr;
+  bool stop_before_boundary = false;
+};
+
 using PackedTransition = std::uint64_t;
 constexpr PackedTransition kInvalidTransition = UINT64_MAX;
 
@@ -1053,7 +1066,8 @@ std::string status_message(std::uint32_t status)
 }
 
 UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
-                      const Limits &limits, int device)
+                      const Limits &limits, int device,
+                      const ResidentStripHook *resident_hook = nullptr)
 {
   const auto total_begin = Clock::now();
   UnionOutput output;
@@ -1379,6 +1393,24 @@ UnionOutput gpu_union(const std::vector<RectI64> &rectangles,
         thrust::device, slab_interval_counts.begin(),
         slab_interval_counts.end(), slab_interval_offsets.begin(),
         std::uint64_t{0});
+
+    if (resident_hook && resident_hook->consume) {
+      resident_hook->consume(
+          thrust::raw_pointer_cast(xs.data()),
+          static_cast<std::uint32_t>(output.x_slabs),
+          thrust::raw_pointer_cast(intervals.data()),
+          output.strip_intervals,
+          thrust::raw_pointer_cast(slab_interval_offsets.data()),
+          thrust::raw_pointer_cast(slab_interval_counts.data()),
+          resident_hook->context);
+      cuda_require(cudaGetLastError(), "resident strip consumer");
+      cuda_require(
+          cudaDeviceSynchronize(), "resident strip consumer synchronize");
+      sample_device_memory(&output);
+      if (resident_hook->stop_before_boundary) {
+        return;
+      }
+    }
 
     const std::uint64_t boundary_count = output.x_slabs + 1;
     thrust::device_vector<std::uint64_t> vertical_counts(boundary_count);
@@ -2130,6 +2162,7 @@ void print_help(const char *program)
 
 }  // namespace
 
+#ifndef KLAYOUT_MANHATTAN_UNION_REPLAY_NO_MAIN
 int main(int argc, char **argv)
 {
   try {
@@ -2180,3 +2213,4 @@ int main(int argc, char **argv)
     return 1;
   }
 }
+#endif
