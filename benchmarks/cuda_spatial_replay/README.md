@@ -35,6 +35,12 @@ already-merged flat KLayout `Region`, and runs stock M2.1/.2 plus F90/F270.
 Serialization and read validation are charged; the heavyweight CPU oracle is
 qualification-only.
 
+The reusable no-host-geometry F90/F270 successor is documented in
+[`M2_RESIDENT_MORPHOLOGY_GPU.md`](M2_RESIDENT_MORPHOLOGY_GPU.md).  Its
+separately linked production gate consumes the union core's resident strip
+view, matches all 4,254,384 stock F90 edges, certifies the bounded eight-edge
+space(180) set, and proves the F270 erosion empty.
+
 ## KLayout-pointer-free record contract
 
 The on-disk/host replay record is an 80-byte POD with:
