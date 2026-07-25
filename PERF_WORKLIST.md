@@ -2065,7 +2065,7 @@ not just wall time.
               plan.  Commit `bff2236`; evidence:
               `.scratchpad/cuda-runs/m2-via2-certificate-production.5s2Ple`.
 
-            - [ ] **Wire one atomic fail-closed live M2 transaction before the
+            - [x] **Wire one atomic fail-closed live M2 transaction before the
               first native merge:** feed the exact GPU boundary vector into
               the checked flat bridge, run M2.1/.2/.4/.5-.9 as one clean
               certificate, and execute the untouched historical block on any
@@ -2204,6 +2204,25 @@ not just wall time.
                 only about 0.20 s less child wall; only a coordinated
                 multi-owner gate can book the larger work.  Evidence:
                 `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.jXRiJY`.
+
+              - [x] **Qualify the atomic transaction on the live production
+                owner:** a same-deck, same-runtime serialized A/B measured
+                `m2_rules` at **94.16 s control versus 37.53 s candidate**,
+                removing **56.63 wall-seconds / 60.14%** (`N=1` accepted
+                paired A/B; not a full-launcher result).  The candidate charged
+                1.795 s for the exact device union and 9.091 s through checked
+                flat-region publication, then certified all eight owned
+                M2.1/.2/.4-.9 categories empty.  Control, candidate, and the
+                production reference share canonical report SHA-256
+                `b817dc5b2158a5a04316daae8e27ec7fbf7e82341f961a3464c17937c8d9d77e`.
+                Runtime closure and pinned inputs remained unchanged; each
+                lane independently proved an idle GPU, exact DSO selection,
+                host-hook presence, ABI symbols, and ownership isolation.
+                The live hierarchy correctly retains 849,265 contexts rather
+                than the older compact offline census of 587,201; its 568,632
+                M2-bearing contexts and every geometry count/hash remain exact.
+                Evidence:
+                `.scratchpad/cuda-runs/klayout-m2-rules-production-owner.oSbILc`.
 
           Cache immutable merged M1/M2 geometry (or an equivalent canonical
           raw-layer scene), then the shared 273-cell/849,265-context hierarchy,

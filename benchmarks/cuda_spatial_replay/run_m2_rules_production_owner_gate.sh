@@ -452,7 +452,7 @@ capture_runtime_closure() {
 
   selected_backend=$(
     resolved_dependency \
-      "${device_smoke}" '^libklayout_cuda_spatial_backend\.so'
+      "${device_smoke}" '^libklayout_cuda_spatial_backend[.]so'
   )
   [[ -n "${selected_backend}" ]] ||
     die "${label}: device smoke has no loader-selected CUDA backend"
@@ -460,7 +460,7 @@ capture_runtime_closure() {
     die "${label}: device smoke selected ${selected_backend}, expected ${backend}"
 
   selected_db=$(
-    resolved_dependency "${klayout}" '^libklayout_db\.so'
+    resolved_dependency "${klayout}" '^libklayout_db[.]so'
   )
   [[ -n "${selected_db}" ]] ||
     die "${label}: KLayout has no loader-selected libklayout_db"
@@ -469,7 +469,7 @@ capture_runtime_closure() {
     die "${label}: KLayout selected ${selected_db} outside ${klayout_dir}"
 
   selected_drc=$(
-    resolved_dependency "${klayout}" '^libklayout_drc\.so'
+    resolved_dependency "${klayout}" '^libklayout_drc[.]so'
   )
   [[ -n "${selected_drc}" ]] ||
     die "${label}: KLayout has no loader-selected libklayout_drc"
@@ -488,7 +488,7 @@ capture_runtime_closure() {
       "LD_LIBRARY_PATH=${runtime_ld_library_path}" \
       /usr/bin/ldd "${klayout}" |
       awk \
-        '$1 ~ /^libklayout_.*\.so/ && $2 == "=>" {
+        '$1 ~ /^libklayout_.*[.]so/ && $2 == "=>" {
            print $3
          }'
   )
@@ -797,8 +797,12 @@ union_line=$(
   grep -F -- "CUDA M2 exact union boundary: outcome=complete" \
     "${work}/logs/candidate.log"
 )
+# The live DeepShapeStore retains the complete production hierarchy.  The
+# older standalone M2 exporter compacted empty contexts to 587201; every
+# M2-bearing context and geometry fingerprint below is identical, but that
+# compact-scene total is not the live owner census.
 for token in \
-  contexts=587201 \
+  contexts=849265 \
   metal_contexts=568632 \
   rectangles=22946444 \
   slabs=46383 \
