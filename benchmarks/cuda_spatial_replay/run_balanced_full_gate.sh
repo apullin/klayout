@@ -14,7 +14,8 @@ Usage:
     [--with-m2-rules|--without-m2-rules] \
     [--with-m2-width-space|--without-m2-width-space] \
     [--with-implant12|--without-implant12] \
-    [--with-poly34|--without-poly34] [--keep-work]
+    [--with-poly34|--without-poly34] \
+    [--prune-poly2] [--keep-work]
 
 Regenerates the qualified FreePDK45 live-CUDA deck, applies the antenna split,
 coalesces CONTACT.6 into the grid owner, and runs the exact balanced full-launch
@@ -57,6 +58,13 @@ default omits that deck rewrite and preserves the older qualified gate.
 POLY.3/.4 transaction deck, then toggle only its runtime environment. The
 default omits that deck rewrite and preserves the older qualified gate.
 
+--prune-poly2 applies the independently qualified, fail-closed source
+transform which removes FreePDK45's unreachable POLY.2 calculation.  The
+historical separation returns an EdgePairs layer, so its polygons? guard can
+never publish POLY.2.  The default preserves the source block byte-for-byte.
+Source drift, duplicates, an extra POLY.2 output, or an already-pruned input
+fail before any DRC child starts.
+
 All generated decks, reports, logs, homes, and caches live under a fresh
 TMPDIR directory. They are removed unless --keep-work is specified.
 EOF
@@ -70,6 +78,7 @@ die() {
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd -- "${here}/../.." && pwd)
 deck_generator="${here}/make_via1_stack_live_deck.py"
+poly2_prune="${root}/benchmarks/freepdk45_poly2_prune/prune_deck.py"
 antenna_split="${root}/benchmarks/freepdk45_antenna_split/split_deck.py"
 contact6_split="${root}/benchmarks/freepdk45_contact6_split/split_deck.py"
 runner="${root}/scripts/run_parallel_drc.py"
@@ -90,6 +99,7 @@ implant12=-1
 m2_rules=-1
 m2_width_space=-1
 poly34=-1
+prune_poly2=0
 jobs=8
 split_upper_antenna=0
 
@@ -213,6 +223,10 @@ while (($#)); do
       poly34=0
       shift
       ;;
+    --prune-poly2)
+      prune_poly2=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -253,6 +267,7 @@ fi
 [[ -s "${reference}" ]] ||
   die "reference report is missing or empty: ${reference}"
 [[ -f "${deck_generator}" ]] || die "live deck generator is missing"
+[[ -f "${poly2_prune}" ]] || die "POLY.2 prune transform is missing"
 [[ -f "${antenna_split}" ]] || die "antenna split transform is missing"
 [[ -f "${contact6_split}" ]] || die "CONTACT.6 split transform is missing"
 [[ -f "${runner}" ]] || die "parallel DRC runner is missing"
@@ -294,6 +309,10 @@ mkdir -p -- \
   "${runtime_tmp}"
 
 live_deck="${deck_dir}/freepdk45-m1-contact-live.lydrc"
+generator_deck="${live_deck}"
+if ((prune_poly2)); then
+  generator_deck="${deck_dir}/freepdk45-m1-contact-live-unpruned.lydrc"
+fi
 antenna_deck="${deck_dir}/freepdk45-m1-contact-antenna.lydrc"
 balanced_deck="${deck_dir}/freepdk45-balanced-cuda.lydrc"
 transform_log="${work}/deck-transform.log"
@@ -352,10 +371,14 @@ if ((contact4_active_union >= 0)); then
 fi
 run_transform "live CUDA deck generation" \
   "${python}" "${deck_generator}" \
-    --input "${source_deck}" --output "${live_deck}" --m1-contact \
+    --input "${source_deck}" --output "${generator_deck}" --m1-contact \
     "${m2_rules_generator_args[@]}" \
     "${implant12_generator_args[@]}" \
     "${poly34_generator_args[@]}"
+if ((prune_poly2)); then
+  run_transform "POLY.2 dead-computation prune" \
+    "${python}" "${poly2_prune}" "${generator_deck}" "${live_deck}"
+fi
 antenna_split_args=()
 if ((split_upper_antenna)); then
   antenna_split_args=(--split-upper)
@@ -368,6 +391,17 @@ run_transform "CONTACT.6 grid coalescing" \
     --owner grid "${antenna_deck}" "${balanced_deck}"
 
 [[ -s "${balanced_deck}" ]] || die "generated balanced deck is empty"
+if ((prune_poly2)); then
+  grep -Fq -- \
+    "# POLY.2 is intentionally absent.  DRC separation always returns EdgePairs," \
+    "${balanced_deck}" ||
+    die "POLY.2 prune marker did not survive deck composition"
+  if grep -Fq -- \
+       "poly.separation(active, 140.nm, projection)" "${balanced_deck}" ||
+     grep -Fq -- '.output("POLY.2"' "${balanced_deck}"; then
+    die "POLY.2 dead computation survived deck composition"
+  fi
+fi
 
 reference_canonical="${work}/reference.canonical.lyrdb"
 sed '/<generator>/d' "${reference}" >"${reference_canonical}"
@@ -610,10 +644,15 @@ grep -E \
   "${launcher_log}" >"${work}/launcher-summary.txt" ||
   die "launcher timing summary is missing"
 
+poly2_pins=()
+if ((prune_poly2)); then
+  poly2_pins=("${poly2_prune}" "${generator_deck}")
+fi
 sha256sum -- \
   "${klayout}" \
   "${backend}" \
   "${source_deck}" \
+  "${poly2_pins[@]}" \
   "${live_deck}" \
   "${antenna_deck}" \
   "${balanced_deck}" \
@@ -637,4 +676,4 @@ cat -- "${work}/launcher-summary.txt"
 cat -- "${work}/canonical-report-sha256.txt"
 cat -- "${work}/cuda-telemetry.txt"
 echo \
-  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} poly34=${poly34} split_upper_antenna=${split_upper_antenna}"
+  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} poly34=${poly34} prune_poly2=${prune_poly2} split_upper_antenna=${split_upper_antenna}"

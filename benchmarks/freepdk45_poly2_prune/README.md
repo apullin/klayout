@@ -34,6 +34,28 @@ The runtime gate proves `separation.edge_pairs?`, disproves
 `separation.polygons?`, and executes the historical conditional on a real DRC
 layer to ensure its body remains unreachable.
 
+## CUDA/balanced-deck composition
+
+The qualified balanced CUDA launcher keeps this optimization independently
+opt-in:
+
+```sh
+bash benchmarks/cuda_spatial_replay/run_balanced_full_gate.sh \
+  ... \
+  --prune-poly2
+```
+
+The live-CUDA rewrites are applied first.  The exact POLY.2 transform then
+accepts that generated deck only if the historical dead block is still present
+once, before the antenna and CONTACT.6 owner transforms run.  With no
+`--prune-poly2`, the generated deck retains the source block byte-for-byte.
+
+The launcher pins the prune implementation and the pre-prune generated deck in
+addition to its normal source, final decks, manifest, executable, backend,
+input, and report artifacts.  Its normal deck-bound manifest validation applies
+to the final pruned-and-balanced deck.  Source drift therefore stops before
+DRC, while a manifest for an unpruned deck cannot validate a pruned candidate.
+
 ## Qualified result
 
 An ABBA comparison on the current CUDA-aware FreePDK45 downstream-composed x2
