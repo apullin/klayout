@@ -56,6 +56,7 @@ namespace {
 using klayout_cuda::manhattan_union::DirectedSegmentI64;
 using klayout_cuda::manhattan_union::GpuUnionLimits;
 using klayout_cuda::manhattan_union::GpuUnionOutput;
+using klayout_cuda::manhattan_union::GpuUnionStripWindowLimits;
 using klayout_cuda::manhattan_union::RectI64;
 using klayout_cuda::manhattan_union::ResidentBoundaryHook;
 using klayout_cuda::manhattan_union::ResidentStripHook;
@@ -644,6 +645,115 @@ __global__ void count_memberships_kernel(
   }
 }
 
+/*
+ * Build the exact number of rectangle memberships in every canonical slab
+ * without materializing one count/offset pair per rectangle.  Unsigned
+ * two's-complement subtraction is intentional: after the inclusive scan each
+ * prefix is the nonnegative active-rectangle count for that slab, and the
+ * final endpoint prefix is exactly zero.
+ */
+__global__ void histogram_slab_memberships_kernel(
+    const RectI64 *rectangles, std::uint64_t rectangle_count,
+    const std::int64_t *xs, std::uint64_t x_count,
+    std::uint32_t max_slabs_per_rectangle,
+    unsigned long long *endpoint_differences, std::uint32_t *status)
+{
+  for (std::uint64_t index =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       index < rectangle_count;
+       index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const RectI64 rectangle = rectangles[index];
+    const std::uint64_t first =
+        lower_bound_device(xs, x_count, rectangle.left);
+    const std::uint64_t last =
+        lower_bound_device(xs, x_count, rectangle.right);
+    if (first >= x_count || last >= x_count ||
+        xs[first] != rectangle.left || xs[last] != rectangle.right ||
+        first >= last) {
+      atomicOr(status, static_cast<std::uint32_t>(kStatusEndpointLookup));
+      continue;
+    }
+    const std::uint64_t span = last - first;
+    if (span > max_slabs_per_rectangle) {
+      atomicOr(
+          status,
+          static_cast<std::uint32_t>(kStatusPerRectangleCapacity));
+      continue;
+    }
+    atomicAdd(endpoint_differences + first, 1ULL);
+    atomicAdd(endpoint_differences + last, ~0ULL);
+  }
+}
+
+__global__ void count_window_memberships_kernel(
+    const RectI64 *rectangles, std::uint64_t rectangle_count,
+    const std::int64_t *xs, std::uint64_t x_count,
+    std::uint32_t first_slab, std::uint32_t last_slab,
+    std::uint32_t *counts, std::uint32_t *status)
+{
+  for (std::uint64_t index =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       index < rectangle_count;
+       index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const RectI64 rectangle = rectangles[index];
+    const std::uint64_t first =
+        lower_bound_device(xs, x_count, rectangle.left);
+    const std::uint64_t last =
+        lower_bound_device(xs, x_count, rectangle.right);
+    if (first >= x_count || last >= x_count ||
+        xs[first] != rectangle.left || xs[last] != rectangle.right ||
+        first >= last) {
+      atomicOr(status, static_cast<std::uint32_t>(kStatusEndpointLookup));
+      counts[index] = 0;
+      continue;
+    }
+    const std::uint64_t clipped_first =
+        max(first, static_cast<std::uint64_t>(first_slab));
+    const std::uint64_t clipped_last =
+        min(last, static_cast<std::uint64_t>(last_slab));
+    counts[index] = clipped_first < clipped_last
+                        ? static_cast<std::uint32_t>(
+                              clipped_last - clipped_first)
+                        : 0;
+  }
+}
+
+__global__ void fill_window_events_kernel(
+    const RectI64 *rectangles, std::uint64_t rectangle_count,
+    const std::int64_t *xs, std::uint64_t x_count,
+    std::int64_t y_base, std::uint32_t first_slab,
+    std::uint32_t last_slab, const std::uint64_t *offsets,
+    PackedEventKey *keys, std::int32_t *deltas)
+{
+  for (std::uint64_t index =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       index < rectangle_count;
+       index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const RectI64 rectangle = rectangles[index];
+    const std::uint64_t first =
+        lower_bound_device(xs, x_count, rectangle.left);
+    const std::uint64_t last =
+        lower_bound_device(xs, x_count, rectangle.right);
+    const std::uint64_t clipped_first =
+        max(first, static_cast<std::uint64_t>(first_slab));
+    const std::uint64_t clipped_last =
+        min(last, static_cast<std::uint64_t>(last_slab));
+    std::uint64_t output = offsets[index] * 2;
+    for (std::uint64_t slab = clipped_first; slab < clipped_last;
+         ++slab) {
+      keys[output] = pack_event_key(
+          static_cast<std::uint32_t>(slab), rectangle.bottom, y_base);
+      deltas[output++] = 1;
+      keys[output] = pack_event_key(
+          static_cast<std::uint32_t>(slab), rectangle.top, y_base);
+      deltas[output++] = -1;
+    }
+  }
+}
+
 __global__ void fill_events_kernel(
     const RectI64 *rectangles, std::uint64_t rectangle_count,
     const std::int64_t *xs, std::uint64_t x_count,
@@ -1053,6 +1163,71 @@ struct PreparedDeviceRectangles
   thrust::device_vector<RectI64> rectangles;
   double input_ms = 0.0;
 };
+
+struct SlabWindow
+{
+  std::uint32_t first = 0;
+  std::uint32_t last = 0;
+  std::uint64_t memberships = 0;
+};
+
+bool plan_slab_windows(
+    const std::vector<std::uint64_t> &slab_memberships,
+    const GpuUnionStripWindowLimits &limits,
+    std::vector<SlabWindow> *windows, std::string *error)
+{
+  if (!windows || !error) return false;
+  windows->clear();
+  error->clear();
+  if (limits.max_window_events < 2) {
+    *error = "window event capacity";
+    return false;
+  }
+  if (!limits.max_windows || !limits.max_window_slabs ||
+      !limits.max_strip_intervals ||
+      limits.max_strip_intervals >
+          std::numeric_limits<std::uint32_t>::max()) {
+    *error = "invalid strip window limits";
+    return false;
+  }
+  if (slab_memberships.size() >
+      std::numeric_limits<std::uint32_t>::max()) {
+    *error = "window slab index capacity";
+    return false;
+  }
+
+  const std::uint64_t membership_capacity =
+      limits.max_window_events / 2;
+  std::size_t first = 0;
+  while (first < slab_memberships.size()) {
+    std::size_t last = first;
+    std::uint64_t memberships = 0;
+    while (last < slab_memberships.size() &&
+           last - first < limits.max_window_slabs) {
+      const std::uint64_t next = slab_memberships[last];
+      if (next > membership_capacity) {
+        *error = "single-slab window event capacity";
+        return false;
+      }
+      if (next > membership_capacity - memberships) break;
+      memberships += next;
+      ++last;
+    }
+    if (last == first) {
+      *error = "window planning made no progress";
+      return false;
+    }
+    if (windows->size() >= limits.max_windows) {
+      *error = "window count capacity";
+      return false;
+    }
+    windows->push_back(
+        {static_cast<std::uint32_t>(first),
+         static_cast<std::uint32_t>(last), memberships});
+    first = last;
+  }
+  return true;
+}
 
 template <class RectangleFactory>
 UnionOutput gpu_union_prepared(
@@ -1774,6 +1949,502 @@ UnionOutput gpu_union_resident_impl(
       });
 }
 
+UnionOutput gpu_union_resident_windowed_strips_impl(
+    thrust::device_vector<RectI64> &&rectangles,
+    std::int64_t y_base, std::int64_t y_high,
+    const Limits &limits,
+    const GpuUnionStripWindowLimits &window_limits, int device,
+    double input_prepare_ms, const ResidentStripHook *resident_hook)
+{
+  const auto total_begin = Clock::now();
+  UnionOutput output;
+  output.rectangle_count = rectangles.size();
+  output.input_prepare_ms = input_prepare_ms;
+  auto pipeline = [&]() {
+    if (!std::isfinite(input_prepare_ms) || input_prepare_ms < 0.0) {
+      output.fallback = true;
+      output.message = "invalid input preparation timing";
+      return;
+    }
+    if (!resident_hook || !resident_hook->consume ||
+        !resident_hook->stop_before_boundary) {
+      output.fallback = true;
+      output.message =
+          "windowed strip path requires a terminal resident hook";
+      return;
+    }
+    if (output.rectangle_count > limits.max_rectangles) {
+      output.fallback = true;
+      output.message = "rectangle capacity";
+      return;
+    }
+    if (!output.rectangle_count) {
+      output.digest = digest_segments(output.segments);
+      return;
+    }
+    if (y_base >= y_high ||
+        static_cast<__int128>(y_high) -
+                static_cast<__int128>(y_base) >
+            static_cast<__int128>(
+                std::numeric_limits<std::uint32_t>::max())) {
+      output.fallback = true;
+      output.message = "packed y-coordinate range";
+      return;
+    }
+    if (window_limits.max_window_events < 2 ||
+        !window_limits.max_strip_intervals ||
+        window_limits.max_strip_intervals >
+            std::numeric_limits<std::uint32_t>::max() ||
+        !window_limits.max_windows ||
+        !window_limits.max_window_slabs) {
+      output.fallback = true;
+      output.message = "invalid strip window limits";
+      return;
+    }
+
+    cuda_require(cudaSetDevice(device), "windowed cudaSetDevice");
+    sample_device_memory(&output);
+    thrust::device_vector<std::uint32_t> status(1, 0);
+    thrust::device_vector<RectI64> device_rectangles =
+        std::move(rectangles);
+    if (device_rectangles.size() != output.rectangle_count) {
+      output.fallback = true;
+      output.message = "prepared rectangle count";
+      return;
+    }
+
+    const auto x_begin = Clock::now();
+    std::uint64_t endpoint_count = 0;
+    if (!checked_multiply(
+            output.rectangle_count, UINT64_C(2), &endpoint_count)) {
+      output.fallback = true;
+      output.message = "endpoint count overflow";
+      return;
+    }
+    thrust::device_vector<std::int64_t> xs(endpoint_count);
+    const std::uint32_t rectangle_blocks =
+        launch_blocks(output.rectangle_count);
+    emit_x_endpoints_kernel<<<rectangle_blocks, kThreads>>>(
+        thrust::raw_pointer_cast(device_rectangles.data()),
+        output.rectangle_count, y_base, y_high,
+        thrust::raw_pointer_cast(xs.data()),
+        thrust::raw_pointer_cast(status.data()));
+    cuda_require(cudaGetLastError(), "windowed emit x endpoints");
+    thrust::sort(thrust::device, xs.begin(), xs.end());
+    const auto x_end =
+        thrust::unique(thrust::device, xs.begin(), xs.end());
+    const std::uint64_t x_count = x_end - xs.begin();
+    xs.resize(x_count);
+    xs.shrink_to_fit();
+    if (x_count < 2) {
+      output.fallback = true;
+      output.message = "fewer than two x endpoints";
+      return;
+    }
+    output.x_slabs = x_count - 1;
+    if (output.x_slabs > limits.max_x_slabs ||
+        output.x_slabs > UINT64_C(0x7fffffff)) {
+      output.fallback = true;
+      output.message = "x-slab capacity";
+      return;
+    }
+
+    thrust::device_vector<unsigned long long> slab_memberships(
+        x_count, 0);
+    histogram_slab_memberships_kernel<<<rectangle_blocks, kThreads>>>(
+        thrust::raw_pointer_cast(device_rectangles.data()),
+        output.rectangle_count, thrust::raw_pointer_cast(xs.data()),
+        x_count, limits.max_slabs_per_rectangle,
+        thrust::raw_pointer_cast(slab_memberships.data()),
+        thrust::raw_pointer_cast(status.data()));
+    cuda_require(
+        cudaGetLastError(), "histogram windowed slab memberships");
+    thrust::inclusive_scan(
+        thrust::device, slab_memberships.begin(),
+        slab_memberships.end(), slab_memberships.begin());
+    cuda_require(
+        cudaDeviceSynchronize(),
+        "windowed slab histogram synchronize");
+    const std::uint32_t histogram_status = copy_device_status(status);
+    if (histogram_status) {
+      output.fallback = true;
+      output.message = status_message(histogram_status);
+      return;
+    }
+    unsigned long long final_endpoint_memberships = 1;
+    cuda_require(
+        cudaMemcpy(
+            &final_endpoint_memberships,
+            thrust::raw_pointer_cast(slab_memberships.data()) +
+                x_count - 1,
+            sizeof(final_endpoint_memberships),
+            cudaMemcpyDeviceToHost),
+        "windowed final membership prefix D2H");
+    if (final_endpoint_memberships != 0) {
+      output.fallback = true;
+      output.message = "membership histogram invariant";
+      return;
+    }
+    std::vector<std::uint64_t> host_slab_memberships(
+        output.x_slabs);
+    cuda_require(
+        cudaMemcpy(
+            host_slab_memberships.data(),
+            thrust::raw_pointer_cast(slab_memberships.data()),
+            host_slab_memberships.size() *
+                sizeof(host_slab_memberships.front()),
+            cudaMemcpyDeviceToHost),
+        "windowed slab memberships D2H");
+    release_device_vector(&slab_memberships);
+
+    output.memberships = 0;
+    for (const std::uint64_t count : host_slab_memberships) {
+      if (count >
+          std::numeric_limits<std::uint64_t>::max() -
+              output.memberships) {
+        output.fallback = true;
+        output.message = "membership count overflow";
+        return;
+      }
+      output.memberships += count;
+    }
+    if (output.memberships > limits.max_memberships) {
+      output.fallback = true;
+      output.message = "membership capacity";
+      return;
+    }
+    if (!checked_multiply(
+            output.memberships, UINT64_C(2),
+            &output.event_count) ||
+        output.event_count > limits.max_events) {
+      output.fallback = true;
+      output.message = "event capacity";
+      return;
+    }
+
+    std::vector<SlabWindow> windows;
+    std::string plan_error;
+    if (!plan_slab_windows(
+            host_slab_memberships, window_limits, &windows,
+            &plan_error)) {
+      output.fallback = true;
+      output.message = plan_error;
+      return;
+    }
+    host_slab_memberships.clear();
+    host_slab_memberships.shrink_to_fit();
+    cuda_require(
+        cudaDeviceSynchronize(),
+        "windowed x/membership synchronize");
+    output.x_membership_ms = elapsed_ms(x_begin, Clock::now());
+
+    const auto strip_begin = Clock::now();
+    thrust::device_vector<StripInterval> intervals(
+        window_limits.max_strip_intervals);
+    thrust::device_vector<std::uint32_t> slab_interval_counts(
+        output.x_slabs, 0);
+    thrust::device_vector<std::uint64_t> slab_interval_offsets(
+        output.x_slabs);
+    sample_device_memory(&output);
+
+    /*
+     * These two O(rectangle_count) arrays are reused by every window.  The
+     * high-water event, delta, reduction and coverage vectors below are
+     * bounded by max_window_events instead of the whole-input event census.
+     */
+    thrust::device_vector<std::uint32_t> window_membership_counts(
+        output.rectangle_count);
+    thrust::device_vector<std::uint64_t> window_membership_offsets(
+        output.rectangle_count);
+    std::uint64_t transition_total = 0;
+    std::uint64_t interval_total = 0;
+
+    for (const SlabWindow &window : windows) {
+      if (!window.memberships) continue;
+      count_window_memberships_kernel<<<rectangle_blocks, kThreads>>>(
+          thrust::raw_pointer_cast(device_rectangles.data()),
+          output.rectangle_count, thrust::raw_pointer_cast(xs.data()),
+          x_count, window.first, window.last,
+          thrust::raw_pointer_cast(window_membership_counts.data()),
+          thrust::raw_pointer_cast(status.data()));
+      cuda_require(
+          cudaGetLastError(), "count window rectangle memberships");
+      thrust::exclusive_scan(
+          thrust::device, window_membership_counts.begin(),
+          window_membership_counts.end(),
+          window_membership_offsets.begin(), std::uint64_t{0});
+
+      std::uint64_t last_offset = 0;
+      std::uint32_t last_count = 0;
+      cuda_require(
+          cudaMemcpy(
+              &last_offset,
+              thrust::raw_pointer_cast(
+                  window_membership_offsets.data()) +
+                  output.rectangle_count - 1,
+              sizeof(last_offset), cudaMemcpyDeviceToHost),
+          "last window membership offset D2H");
+      cuda_require(
+          cudaMemcpy(
+              &last_count,
+              thrust::raw_pointer_cast(
+                  window_membership_counts.data()) +
+                  output.rectangle_count - 1,
+              sizeof(last_count), cudaMemcpyDeviceToHost),
+          "last window membership count D2H");
+      if (last_offset >
+              std::numeric_limits<std::uint64_t>::max() -
+                  last_count ||
+          last_offset + last_count != window.memberships) {
+        output.fallback = true;
+        output.message = "window membership census mismatch";
+        return;
+      }
+
+      std::uint64_t window_event_count = 0;
+      if (!checked_multiply(
+              window.memberships, UINT64_C(2),
+              &window_event_count) ||
+          window_event_count > window_limits.max_window_events) {
+        output.fallback = true;
+        output.message = "window event capacity";
+        return;
+      }
+      thrust::device_vector<PackedEventKey> event_keys(
+          window_event_count);
+      thrust::device_vector<std::int32_t> event_deltas(
+          window_event_count);
+      fill_window_events_kernel<<<rectangle_blocks, kThreads>>>(
+          thrust::raw_pointer_cast(device_rectangles.data()),
+          output.rectangle_count, thrust::raw_pointer_cast(xs.data()),
+          x_count, y_base, window.first, window.last,
+          thrust::raw_pointer_cast(window_membership_offsets.data()),
+          thrust::raw_pointer_cast(event_keys.data()),
+          thrust::raw_pointer_cast(event_deltas.data()));
+      cuda_require(cudaGetLastError(), "fill window slab events");
+      thrust::sort_by_key(
+          thrust::device, event_keys.begin(), event_keys.end(),
+          event_deltas.begin());
+
+      thrust::device_vector<PackedEventKey> unique_event_keys(
+          window_event_count);
+      thrust::device_vector<std::int32_t> unique_event_deltas(
+          window_event_count);
+      auto reduced_events = thrust::reduce_by_key(
+          thrust::device, event_keys.begin(), event_keys.end(),
+          event_deltas.begin(), unique_event_keys.begin(),
+          unique_event_deltas.begin(),
+          thrust::equal_to<PackedEventKey>{},
+          thrust::plus<std::int32_t>{});
+      sample_device_memory(&output);
+      std::uint64_t unique_event_count =
+          reduced_events.first - unique_event_keys.begin();
+      release_device_vector(&event_keys);
+      release_device_vector(&event_deltas);
+      auto zipped_events = thrust::make_zip_iterator(
+          thrust::make_tuple(
+              unique_event_keys.begin(),
+              unique_event_deltas.begin()));
+      const auto nonzero_event_end = thrust::remove_if(
+          thrust::device, zipped_events,
+          zipped_events + unique_event_count, ZeroEventDelta{});
+      unique_event_count = nonzero_event_end - zipped_events;
+      unique_event_keys.resize(unique_event_count);
+      unique_event_deltas.resize(unique_event_count);
+      unique_event_keys.shrink_to_fit();
+      unique_event_deltas.shrink_to_fit();
+      if (!unique_event_count) {
+        output.fallback = true;
+        output.message =
+            "empty window event stream for nonempty membership census";
+        return;
+      }
+
+      thrust::device_vector<std::int32_t> coverage(
+          unique_event_count);
+      const auto slab_ids = thrust::make_transform_iterator(
+          unique_event_keys.begin(), EventSlab{});
+      thrust::inclusive_scan_by_key(
+          thrust::device, slab_ids, slab_ids + unique_event_count,
+          unique_event_deltas.begin(), coverage.begin(),
+          thrust::equal_to<std::uint32_t>{},
+          thrust::plus<std::int32_t>{});
+
+      thrust::device_vector<PackedTransition> transitions(
+          unique_event_count);
+      extract_packed_transitions_kernel<<<
+          launch_blocks(unique_event_count), kThreads>>>(
+          thrust::raw_pointer_cast(unique_event_keys.data()),
+          thrust::raw_pointer_cast(coverage.data()),
+          unique_event_count,
+          thrust::raw_pointer_cast(transitions.data()),
+          thrust::raw_pointer_cast(status.data()));
+      cuda_require(
+          cudaGetLastError(), "extract window strip transitions");
+      const auto transition_end = thrust::remove_if(
+          thrust::device, transitions.begin(), transitions.end(),
+          InvalidTransition{});
+      const std::uint64_t transition_count =
+          transition_end - transitions.begin();
+      transitions.resize(transition_count);
+      release_device_vector(&unique_event_keys);
+      release_device_vector(&unique_event_deltas);
+      release_device_vector(&coverage);
+      transitions.shrink_to_fit();
+      if (transition_count % 2) {
+        output.fallback = true;
+        output.message = "odd window transition count";
+        return;
+      }
+      if (transition_count >
+          std::numeric_limits<std::uint32_t>::max()) {
+        output.fallback = true;
+        output.message = "window transition index capacity";
+        return;
+      }
+      if (transition_count >
+          limits.max_raw_segments - transition_total) {
+        output.fallback = true;
+        output.message = "raw segment capacity";
+        return;
+      }
+      const std::uint64_t window_intervals =
+          transition_count / 2;
+      if (window_intervals >
+          window_limits.max_strip_intervals - interval_total) {
+        output.fallback = true;
+        output.message = "strip interval capacity";
+        return;
+      }
+      if (window_intervals) {
+        build_intervals_kernel<<<
+            launch_blocks(window_intervals), kThreads>>>(
+            thrust::raw_pointer_cast(transitions.data()),
+            transition_count, y_base,
+            thrust::raw_pointer_cast(intervals.data()) +
+                interval_total,
+            thrust::raw_pointer_cast(status.data()));
+        cuda_require(
+            cudaGetLastError(), "build window strip intervals");
+        count_intervals_per_slab_kernel<<<
+            launch_blocks(window_intervals), kThreads>>>(
+            thrust::raw_pointer_cast(intervals.data()) +
+                interval_total,
+            window_intervals,
+            thrust::raw_pointer_cast(
+                slab_interval_counts.data()));
+        cuda_require(
+            cudaGetLastError(),
+            "count stitched strip intervals per slab");
+      }
+      transition_total += transition_count;
+      interval_total += window_intervals;
+    }
+
+    cuda_require(
+        cudaDeviceSynchronize(), "windowed strip sweep synchronize");
+    const std::uint32_t strip_status = copy_device_status(status);
+    if (strip_status) {
+      output.fallback = true;
+      output.message = status_message(strip_status);
+      return;
+    }
+    output.strip_intervals = interval_total;
+    intervals.resize(interval_total);
+    thrust::exclusive_scan(
+        thrust::device, slab_interval_counts.begin(),
+        slab_interval_counts.end(), slab_interval_offsets.begin(),
+        std::uint64_t{0});
+    std::uint64_t final_interval_offset = 0;
+    std::uint32_t final_interval_count = 0;
+    cuda_require(
+        cudaMemcpy(
+            &final_interval_offset,
+            thrust::raw_pointer_cast(slab_interval_offsets.data()) +
+                output.x_slabs - 1,
+            sizeof(final_interval_offset), cudaMemcpyDeviceToHost),
+        "last stitched strip offset D2H");
+    cuda_require(
+        cudaMemcpy(
+            &final_interval_count,
+            thrust::raw_pointer_cast(slab_interval_counts.data()) +
+                output.x_slabs - 1,
+            sizeof(final_interval_count), cudaMemcpyDeviceToHost),
+        "last stitched strip count D2H");
+    if (final_interval_offset >
+            std::numeric_limits<std::uint64_t>::max() -
+                final_interval_count ||
+        final_interval_offset + final_interval_count !=
+            interval_total) {
+      output.fallback = true;
+      output.message = "stitched strip offset invariant";
+      return;
+    }
+
+    /*
+     * Release the expanded source and per-rectangle staging before compacting
+     * the conservatively reserved strip array.  Compaction temporarily owns
+     * both the capacity allocation and the exact allocation, a high-water
+     * bounded by twice max_strip_intervals and sampled explicitly below.  The
+     * oversized reservation is then freed before the whole-source consumer
+     * allocates morphology output.
+     */
+    release_device_vector(&device_rectangles);
+    release_device_vector(&window_membership_counts);
+    release_device_vector(&window_membership_offsets);
+    sample_device_memory(&output);
+    thrust::device_vector<StripInterval> compact_intervals(
+        interval_total);
+    if (interval_total) {
+      thrust::copy(
+          thrust::device, intervals.begin(), intervals.end(),
+          compact_intervals.begin());
+    }
+    sample_device_memory(&output);
+    intervals.swap(compact_intervals);
+    release_device_vector(&compact_intervals);
+    sample_device_memory(&output);
+
+    cudaStream_t stream = nullptr;
+    resident_hook->consume(
+        stream, thrust::raw_pointer_cast(xs.data()),
+        static_cast<std::uint32_t>(output.x_slabs),
+        thrust::raw_pointer_cast(intervals.data()),
+        output.strip_intervals,
+        thrust::raw_pointer_cast(slab_interval_offsets.data()),
+        thrust::raw_pointer_cast(slab_interval_counts.data()),
+        resident_hook->context);
+    cuda_require(
+        cudaGetLastError(), "windowed resident strip consumer");
+    cuda_require(
+        cudaStreamSynchronize(stream),
+        "windowed resident strip consumer synchronize");
+    sample_device_memory(&output);
+    output.resident_consumer_completed = true;
+    output.strip_scan_ms = elapsed_ms(strip_begin, Clock::now());
+  };
+
+  try {
+    pipeline();
+  } catch (const std::exception &error) {
+    output.fallback = true;
+    output.message =
+        std::string("CUDA windowed pipeline exception: ") +
+        error.what();
+    output.segments.clear();
+    (void)cudaGetLastError();
+  } catch (...) {
+    output.fallback = true;
+    output.message = "unknown CUDA windowed pipeline exception";
+    output.segments.clear();
+    (void)cudaGetLastError();
+  }
+  output.total_ms = elapsed_ms(total_begin, Clock::now());
+  output.charged_total_ms =
+      output.total_ms + output.input_prepare_ms;
+  return output;
+}
+
 std::vector<DirectedSegmentI64> gpu_canonicalize_for_test(
     const std::vector<DirectedSegmentI64> &raw, int device)
 {
@@ -1878,6 +2549,18 @@ GpuUnionOutput gpu_union_resident(
   return ::gpu_union_resident_impl(
       std::move(rectangles), y_base, y_high, limits, device,
       input_prepare_ms, resident_hook, boundary_hook);
+}
+
+GpuUnionOutput gpu_union_resident_windowed_strips(
+    thrust::device_vector<RectI64> &&rectangles,
+    std::int64_t y_base, std::int64_t y_high,
+    const GpuUnionLimits &limits,
+    const GpuUnionStripWindowLimits &window_limits, int device,
+    double input_prepare_ms, const ResidentStripHook *resident_hook)
+{
+  return ::gpu_union_resident_windowed_strips_impl(
+      std::move(rectangles), y_base, y_high, limits, window_limits,
+      device, input_prepare_ms, resident_hook);
 }
 
 std::vector<DirectedSegmentI64> gpu_canonicalize_segments_for_test(

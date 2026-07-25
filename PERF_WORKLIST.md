@@ -2689,15 +2689,32 @@ not just wall time.
         differentials, and a 2x16 SRAM CPU/CUDA canonical-report equality gate
         pass.  This is a capacity reduction, not a booked wall-time win:
         radix-sort input and alternate storage still make the global event
-        representation unsafe on the 10-GiB device.  The next required
-        implementation remains an exact bounded sweep-slab-window producer
-        feeding the already-proved one-shot resident morphology consumer.
+        representation unsafe on the 10-GiB device.
+
+        The next exact bounded-memory foundation is implemented but remains
+        isolated and default-off.  It histograms canonical sweep slabs,
+        partitions them into ascending disjoint windows capped at 64 million
+        events, produces the same global `(slab, y)` strip ordering, and calls
+        the already-proved whole-source morphology hook exactly once.  A
+        byte-for-byte differential passes three directed seam cases, 24
+        randomized fixtures, and seven fail-closed capacity cases; the
+        historical core smoke remains unchanged.  The production transpose
+        needs a per-rectangle span cap of 256 (64 and 128 decline safely) and
+        should form about eight windows.  Before production enablement,
+        precompute packed rectangle slab endpoints once: the correctness-first
+        version repeats roughly 1.32 billion binary searches across those
+        windows and may trade its memory win for excess runtime.  No wall-time
+        speedup is booked until the exact live input passes with measured
+        transient memory headroom and report equality.
         Evidence:
         `.scratchpad/cuda-runs/m1-resident-morph-census.N7asak`,
         `.scratchpad/cuda-runs/m1-resident-morph-production.bkyw9Z`, and
         `.scratchpad/cuda-runs/m1-resident-morph-probe.MhYkgL`,
         `.scratchpad/cuda-runs/m1-resident-morph-probe.C7fVur`, and
-        `.scratchpad/cuda-runs/m1-resident-morph-small-transpose.QwiGpK`.
+        `.scratchpad/cuda-runs/m1-resident-morph-small-transpose.QwiGpK`,
+        `.scratchpad/cuda-runs/m1-resident-morph-probe.6Cdgrw`,
+        `.scratchpad/cuda-runs/m1-resident-morph-probe.TunPqf`, and
+        `.scratchpad/cuda-runs/m1-resident-morph-probe.d1s5lV`.
 
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the

@@ -68,6 +68,21 @@ target_link_libraries(manhattan_union_gpu_core_smoke PRIVATE
   manhattan_union_gpu_core
 )
 
+add_executable(manhattan_union_windowed_strips_test
+  manhattan_union_windowed_strips_test.cu
+)
+target_compile_options(manhattan_union_windowed_strips_test PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(manhattan_union_windowed_strips_test PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+)
+target_link_libraries(manhattan_union_windowed_strips_test PRIVATE
+  manhattan_union_gpu_core
+)
+
 add_library(contact4_union_resident_gpu STATIC
   contact4_union_resident.cu
 )

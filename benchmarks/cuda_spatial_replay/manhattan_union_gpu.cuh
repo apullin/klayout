@@ -96,6 +96,34 @@ struct GpuUnionLimits
   std::uint32_t max_slabs_per_rectangle = 4096;
 };
 
+/*
+ * Optional bounded high-water configuration for the resident strip-only
+ * producer.
+ *
+ * This is deliberately separate from GpuUnionLimits: max_memberships and
+ * max_events remain whole-input census gates, while max_window_events bounds
+ * only the event storage live during one x-slab window.  The producer keeps
+ * one exact global strip array because the existing ResidentStripHook is a
+ * one-shot whole-source contract.  max_strip_intervals is both its allocation
+ * bound and its fail-closed capacity and may not exceed UINT32_MAX.  Before
+ * the callback, the producer releases rectangle staging and compacts that
+ * allocation to the exact interval census; the explicitly sampled compaction
+ * high-water is bounded by twice max_strip_intervals.
+ *
+ * Windows partition canonical global x slabs.  Union coverage inside a slab
+ * is independent of adjacent slabs, so no geometry halo is required.  A
+ * downstream operation that consumes windows directly may require a
+ * coordinate halo; this API intentionally does not expose partial windows and
+ * invokes the existing hook only after all global strips have been stitched.
+ */
+struct GpuUnionStripWindowLimits
+{
+  std::uint64_t max_window_events = UINT64_C(64000000);
+  std::uint64_t max_strip_intervals = UINT64_C(64000000);
+  std::uint64_t max_windows = UINT64_C(4096);
+  std::uint32_t max_window_slabs = UINT32_MAX;
+};
+
 struct GpuUnionOutput
 {
   bool fallback = false;
@@ -147,6 +175,24 @@ GpuUnionOutput gpu_union_resident(
     double input_prepare_ms = 0.0,
     const ResidentStripHook *resident_hook = nullptr,
     const ResidentBoundaryHook *boundary_hook = nullptr);
+
+/*
+ * Exact bounded-event resident strip producer.
+ *
+ * This path is opt-in and terminal: resident_hook must be non-null and set
+ * stop_before_boundary.  It constructs the same canonical global x-slab
+ * intervals as gpu_union_resident, but partitions event generation/sort/scan
+ * by a histogram-planned sequence of slab windows.  The callback is still
+ * invoked exactly once with the whole source, so existing whole-source
+ * morphology consumers retain their semantics.  Boundary materialization is
+ * intentionally unsupported here.
+ */
+GpuUnionOutput gpu_union_resident_windowed_strips(
+    thrust::device_vector<RectI64> &&rectangles,
+    std::int64_t y_base, std::int64_t y_high,
+    const GpuUnionLimits &limits,
+    const GpuUnionStripWindowLimits &window_limits, int device,
+    double input_prepare_ms, const ResidentStripHook *resident_hook);
 
 // Retained as a direct unit-test seam for the parallel canonicalizer.
 std::vector<DirectedSegmentI64> gpu_canonicalize_segments_for_test(
