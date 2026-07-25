@@ -36,12 +36,15 @@ env TMPDIR="${build}/tmp" cmake \
   -DCMAKE_CUDA_ARCHITECTURES=86 \
   -DKLAYOUT_QMAKE_BUILD_DIR="${qmake_build}"
 env TMPDIR="${build}/tmp" cmake --build "${build}" --parallel 32 \
-  --target manhattan_union_replay m2_flat_region_bridge \
+  --target manhattan_union_replay manhattan_union_gpu_core_smoke \
+           m2_flat_region_bridge \
            m2_merged_boundary_oracle_cli \
            m2_merged_boundary_oracle_test
 
 export LD_LIBRARY_PATH="${qmake_build}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
+"${build}/manhattan_union_gpu_core_smoke" |
+  tee "${evidence}/union-core-smoke.log"
 "${build}/m2_merged_boundary_oracle_test" |
   tee "${evidence}/stream-self-test.log"
 "${build}/m2_flat_region_bridge" --self-test |

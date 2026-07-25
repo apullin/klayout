@@ -22,8 +22,9 @@ env TMPDIR="${build}/tmp" cmake \
   -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-13 \
   -DCMAKE_CUDA_ARCHITECTURES=86
 env TMPDIR="${build}/tmp" cmake --build "${build}" \
-  --target manhattan_union_replay
+  --target manhattan_union_replay manhattan_union_gpu_core_smoke
 
+"${build}/manhattan_union_gpu_core_smoke"
 "${build}/manhattan_union_replay" --self-test
 "${build}/manhattan_union_replay" \
   --benchmark-grid "${grid}" --repeat "${repeat}"
