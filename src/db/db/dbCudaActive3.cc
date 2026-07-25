@@ -64,16 +64,16 @@ const uint64_t contact4_union_max_rectangles = UINT64_C (32000000);
 const uint64_t contact4_union_max_x_slabs = UINT64_C (32000000);
 const uint64_t contact4_union_max_memberships = UINT64_C (128000000);
 const uint64_t contact4_union_max_events = UINT64_C (256000000);
-const uint64_t contact4_union_max_raw_segments = UINT64_C (32000000);
+const uint64_t contact4_union_max_raw_segments = UINT64_C (128000000);
 const uint64_t contact4_union_max_boundary_segments = UINT64_C (16000000);
 const uint64_t contact4_union_max_contact_edges = UINT64_C (64000000);
 const uint64_t contact4_union_max_contact_memberships = UINT64_C (200000000);
 const uint64_t contact4_union_max_boundary_cell_visits =
   UINT64_C (200000000);
-const uint64_t contact4_union_max_member_visits = UINT64_C (1000000000);
-const uint64_t contact4_union_max_pair_work = UINT64_C (1000000000);
+const uint64_t contact4_union_max_member_visits = UINT64_C (1200000000);
+const uint64_t contact4_union_max_pair_work = UINT64_C (1200000000);
 const uint64_t contact4_union_max_flat_edges = UINT64_C (128000000);
-const uint32_t contact4_union_max_slabs_per_rectangle = 64;
+const uint32_t contact4_union_max_slabs_per_rectangle = 4096;
 const uint32_t contact4_union_max_cells_per_edge = 4096;
 
 class Active3Decline
