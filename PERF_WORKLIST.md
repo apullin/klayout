@@ -2012,6 +2012,54 @@ not just wall time.
               guard unsupported kissing topology, and show same-process
               KLayout wall reduction.
 
+            - [x] **Eliminate component identity from the clean-only
+              certificate:** running both exact relations on every nearby
+              canonical boundary pair is a conservative superset of the stock
+              width/space eligibility rules.  The production diagnostic
+              tested 34,011,017 unique pairs as both width- and space-facing,
+              found zero hits and zero uncertainty in 397.052 ms, and retained
+              report SHA-256
+              `55da1c410253ef51f00af69758bd899a67ce70fe6161d1711ef77271f5ca3a0a`.
+              The same argument applies to the length-qualified gt90 boundary.
+              This timing is a semantic gate, not a performance comparison.
+              Commit `a6fcacc`; evidence:
+              `.scratchpad/m2-morph-certificate/both-relations-gpu.dRTeEO`.
+
+            - [x] **Prototype an exact flat KLayout bridge for the resident
+              boundary:** 4,385,384 canonical segments stitch through checked
+              degree-two topology into 14,222 already-merged flat contours.
+              Stock KLayout then reproduces 1,063,596 gt90 polygons,
+              4,254,384 merged edges, eight retained long edges, zero M2.1,
+              M2.2, and M2.5 pairs, and an empty gt270 erosion.  Five
+              independent fused runs gave 2.188 s median endpoint
+              stitch/materialization and 14.691 s median F90/F270
+              certificate.  Including the proven 1.707-second union pipeline
+              and 3.485-second stock M2.1/.2 checks yields a conservative
+              composed 22.077-second opportunity.  Against only the two
+              separately measured 67.612-second native merge payments, that
+              is **45.535 real seconds / 67.35% less**, deliberately not a
+              final like-for-like or whole-run claim.  Commits
+              `94a4942`/`af04465`; the post-cherry main gate passed.
+
+            - [x] **Prove the independent exact M2.4/VIA2 certificate:** exact
+              integer union coverage of each VIA2 plus either pair of 70-DBU
+              projection strips passes threshold, tiled-union, one-DBU-gap,
+              corner, all-eight-transform, corruption, topology, census, and
+              capacity gates.  Production certifies all 10,128 VIA2
+              occurrences, with at most seven candidate M2 rectangles per
+              query, a 2.606 ms exact kernel, and a 23.207 ms charged warm GPU
+              plan.  Commit `bff2236`; evidence:
+              `.scratchpad/cuda-runs/m2-via2-certificate-production.5s2Ple`.
+
+            - [ ] **Wire one atomic fail-closed live M2 transaction before the
+              first native merge:** feed the exact GPU boundary vector into
+              the checked flat bridge, run M2.1/.2/.4/.5-.9 as one clean
+              certificate, and execute the untouched historical block on any
+              hit, uncertainty, unsupported input, or integrity failure.
+              Measure the same-process owner and complete parallel launcher;
+              only those gates may convert the composed opportunity into a
+              booked end-to-end saving.
+
           Cache immutable merged M1/M2 geometry (or an equivalent canonical
           raw-layer scene), then the shared 273-cell/849,265-context hierarchy,
           cell-local layer templates, and device indexes.  Bind every reuse to
