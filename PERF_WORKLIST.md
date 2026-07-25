@@ -2122,20 +2122,22 @@ not just wall time.
                 the production M2 union, CUDA reproduces all 4,254,384 pinned
                 stock F90 boundary edges (FNV-64
                 `2057677162565968634`), retains exactly eight edges at least
-                600 DBU long, and proves the subsequent 269-DBU erosion empty.
-                A fresh four-run qualification measured about 0.569 s for the
-                resident morphology callback.  The fully charged compact load,
-                host expansion, union, and resident morphology path is about
-                2.028 s versus 18.592 s for the matched prior union, stitch,
-                Region construction, and stock F90/F270 geometry subtotal:
-                approximately **16.564
-                real seconds / 89.09% less**.  The callback alone is **14.122
-                seconds / 96.13% less** than stock F90/F270.  This closes the
-                exact morphology-engine proof, not the live rule certificate:
-                the final 180-DBU spacing check on the eight long edges, the
-                raw live serializer/DSO seam, and the complete atomic owner
-                remain open.  Qualification commits `8893e6f`, `45a4457`,
-                `ad18b4d`, and accounting correction `a62d700` on
+                600 DBU long, checks all 28 unordered pairs through the exact
+                KLayout-parity 180-DBU space predicate with zero violations or
+                uncertainty, and proves the subsequent 269-DBU erosion empty.
+                Symmetric near-`INT64` gates reject unsafe midpoint/window
+                arithmetic and accept exact just-inside cases.  A fresh
+                four-run qualification measured 0.575 s for the resident
+                callback.  The fully charged compact load, host expansion,
+                union, and resident morphology path is 2.049 s versus 18.592 s
+                for the matched prior union, stitch, Region construction, and
+                stock F90/F270 subtotal: **16.543 real seconds / 88.98%
+                less**.  The callback alone is **14.116 seconds / 96.09%
+                less** than stock F90/F270.  This closes the bounded pinned
+                morphology/rule proof, not the live transaction: the
+                reusable-core port, raw live DSO seam, and complete atomic
+                owner remain open.  Qualification commits `8893e6f`,
+                `45a4457`, `ad18b4d`, `8ad5405`, and `4a2c6d9` on
                 `m2-resident-f90`.
 
           Cache immutable merged M1/M2 geometry (or an equivalent canonical
