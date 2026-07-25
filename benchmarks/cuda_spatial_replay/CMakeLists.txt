@@ -487,4 +487,59 @@ if(KLAYOUT_QMAKE_BUILD_DIR)
       m2_union_contract_backend_release_only
     VERBATIM
   )
+
+  add_executable(m2_union_live_transaction_smoke
+    m2_union_live_transaction_smoke.cc
+  )
+  target_include_directories(m2_union_live_transaction_smoke PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/tl/tl
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/gsi/gsi
+  )
+  target_compile_options(m2_union_live_transaction_smoke PRIVATE
+    -O2 -Wall -Wextra
+  )
+  target_link_libraries(m2_union_live_transaction_smoke PRIVATE
+    "${KLAYOUT_DB_LIBRARY}"
+    "${KLAYOUT_TL_LIBRARY}"
+    "${KLAYOUT_GSI_LIBRARY}"
+    Threads::Threads
+    ${CMAKE_DL_LIBS}
+  )
+  set_target_properties(m2_union_live_transaction_smoke PROPERTIES
+    BUILD_RPATH "${KLAYOUT_QMAKE_BUILD_DIR}"
+  )
+
+  add_custom_target(m2_union_live_transaction_gate
+    COMMAND m2_union_live_transaction_smoke
+      $<TARGET_FILE:m2_union_contract_backend_run_only>
+      capability disabled
+    COMMAND m2_union_live_transaction_smoke
+      $<TARGET_FILE:m2_union_contract_backend_release_only>
+      capability disabled
+    COMMAND m2_union_live_transaction_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      invalid_scene host
+    COMMAND m2_union_live_transaction_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      live_caps complete
+    COMMAND m2_union_live_transaction_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      fallback fallback
+    COMMAND m2_union_live_transaction_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      bad_order invalid
+    COMMAND m2_union_live_transaction_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      side_order topology
+    COMMAND m2_union_live_transaction_smoke
+      $<TARGET_FILE:m2_union_contract_backend_full>
+      backend_throw error
+    DEPENDS
+      m2_union_live_transaction_smoke
+      m2_union_contract_backend_full
+      m2_union_contract_backend_run_only
+      m2_union_contract_backend_release_only
+    VERBATIM
+  )
 endif()

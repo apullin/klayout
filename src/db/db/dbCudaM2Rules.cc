@@ -12,6 +12,7 @@
 
 #include "dbCudaM2Rules.h"
 
+#include "dbCudaM1WidthSpace.h"
 #include "dbCudaManhattanContour.h"
 #include "dbCudaSpatialBackend.h"
 #include "dbFlatRegion.h"
@@ -20,11 +21,14 @@
 #include "dbShapes.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -39,8 +43,30 @@ CudaM2FlatUnionStats::CudaM2FlatUnionStats ()
   //  nothing yet
 }
 
+CudaM2FlatUnionAttempt::CudaM2FlatUnionAttempt ()
+  : disposition (Disabled), fallback_flags (0), device_flags (0),
+    context_count (0), metal_context_count (0), cell_count (0),
+    polygon_count (0), edge_count (0), flat_polygon_count (0),
+    flat_edge_count (0), rectangle_count (0), x_slab_count (0),
+    membership_count (0), event_count (0), strip_interval_count (0),
+    raw_segment_count (0), boundary_segment_count (0), boundary_fnv64 (0),
+    lowering_ns (0), backend_ns (0), materialize_ns (0),
+    live_total_ns (0), flat_stats (), message ()
+{
+  //  nothing yet
+}
+
 namespace
 {
+
+const uint64_t m2_union_max_contexts = UINT64_C (4000000);
+const uint64_t m2_union_max_rectangles = UINT64_C (32000000);
+const uint64_t m2_union_max_x_slabs = UINT64_C (32000000);
+const uint64_t m2_union_max_memberships = UINT64_C (100000000);
+const uint64_t m2_union_max_events = UINT64_C (200000000);
+const uint64_t m2_union_max_raw_segments = UINT64_C (12000000);
+const uint64_t m2_union_max_segments = UINT64_C (8000000);
+const uint32_t m2_union_max_slabs_per_rectangle = 64;
 
 class M2FlatUnionDecline
   : public std::runtime_error
@@ -234,6 +260,163 @@ void set_reason (std::string *reason, const char *message)
   }
 }
 
+static_assert (
+  std::is_standard_layout<CudaM1WidthSpaceContext>::value &&
+  std::is_trivially_copyable<CudaM1WidthSpaceContext>::value &&
+  sizeof (CudaM1WidthSpaceContext) ==
+    sizeof (klayout_cuda_spatial_m1_width_space_context_v1) &&
+  offsetof (CudaM1WidthSpaceContext, tx) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_context_v1, tx) &&
+  offsetof (CudaM1WidthSpaceContext, ty) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_context_v1, ty) &&
+  offsetof (CudaM1WidthSpaceContext, cell_id) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_context_v1, cell_id) &&
+  offsetof (CudaM1WidthSpaceContext, transform_code) ==
+    offsetof (
+      klayout_cuda_spatial_m1_width_space_context_v1, transform_code),
+  "raw M2 context ABI layout mismatch");
+static_assert (
+  std::is_standard_layout<CudaM1WidthSpaceCell>::value &&
+  std::is_trivially_copyable<CudaM1WidthSpaceCell>::value &&
+  sizeof (CudaM1WidthSpaceCell) ==
+    sizeof (klayout_cuda_spatial_m1_width_space_cell_v1) &&
+  offsetof (CudaM1WidthSpaceCell, source_cell_index) ==
+    offsetof (
+      klayout_cuda_spatial_m1_width_space_cell_v1, source_cell_index) &&
+  offsetof (CudaM1WidthSpaceCell, polygon_begin) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_cell_v1, polygon_begin) &&
+  offsetof (CudaM1WidthSpaceCell, edge_begin) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_cell_v1, edge_begin) &&
+  offsetof (CudaM1WidthSpaceCell, polygon_count) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_cell_v1, polygon_count) &&
+  offsetof (CudaM1WidthSpaceCell, edge_count) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_cell_v1, edge_count),
+  "raw M2 cell ABI layout mismatch");
+static_assert (
+  std::is_standard_layout<CudaM1WidthSpacePolygon>::value &&
+  std::is_trivially_copyable<CudaM1WidthSpacePolygon>::value &&
+  sizeof (CudaM1WidthSpacePolygon) ==
+    sizeof (klayout_cuda_spatial_m1_width_space_polygon_v1) &&
+  offsetof (CudaM1WidthSpacePolygon, edge_begin) ==
+    offsetof (
+      klayout_cuda_spatial_m1_width_space_polygon_v1, edge_begin) &&
+  offsetof (CudaM1WidthSpacePolygon, left) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_polygon_v1, left) &&
+  offsetof (CudaM1WidthSpacePolygon, bottom) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_polygon_v1, bottom) &&
+  offsetof (CudaM1WidthSpacePolygon, right) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_polygon_v1, right) &&
+  offsetof (CudaM1WidthSpacePolygon, top) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_polygon_v1, top) &&
+  offsetof (CudaM1WidthSpacePolygon, polygon_id) ==
+    offsetof (
+      klayout_cuda_spatial_m1_width_space_polygon_v1, polygon_id) &&
+  offsetof (CudaM1WidthSpacePolygon, edge_count) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_polygon_v1, edge_count),
+  "raw M2 polygon ABI layout mismatch");
+static_assert (
+  std::is_standard_layout<CudaM1WidthSpaceEdge>::value &&
+  std::is_trivially_copyable<CudaM1WidthSpaceEdge>::value &&
+  sizeof (CudaM1WidthSpaceEdge) ==
+    sizeof (klayout_cuda_spatial_m1_width_space_edge_v1) &&
+  offsetof (CudaM1WidthSpaceEdge, x1) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_edge_v1, x1) &&
+  offsetof (CudaM1WidthSpaceEdge, y1) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_edge_v1, y1) &&
+  offsetof (CudaM1WidthSpaceEdge, x2) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_edge_v1, x2) &&
+  offsetof (CudaM1WidthSpaceEdge, y2) ==
+    offsetof (klayout_cuda_spatial_m1_width_space_edge_v1, y2),
+  "raw M2 edge ABI layout mismatch");
+
+uint64_t elapsed_ns (
+  const std::chrono::steady_clock::time_point &begin,
+  const std::chrono::steady_clock::time_point &end)
+{
+  const std::chrono::nanoseconds elapsed =
+    std::chrono::duration_cast<std::chrono::nanoseconds> (end - begin);
+  return elapsed.count () > 0 ? uint64_t (elapsed.count ()) : 0;
+}
+
+void make_m2_union_request (
+  const CudaM2RawManhattanScene &scene, int32_t device,
+  klayout_cuda_spatial_m2_union_request_v1 &request)
+{
+  std::memset (&request, 0, sizeof (request));
+  request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  request.struct_size = sizeof (request);
+  request.opcode =
+    KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY;
+  request.option_flags =
+    KLAYOUT_CUDA_SPATIAL_M2_UNION_QUALIFIED_OPTIONS;
+  request.format_version = scene.format_version;
+  request.dbu_per_micron = scene.dbu_per_micron;
+  request.root_cell = scene.root_cell;
+  request.device = device;
+  request.contexts = scene.contexts.data ();
+  request.context_count = scene.contexts.size ();
+  request.context_record_bytes = sizeof (CudaM1WidthSpaceContext);
+  request.metal_contexts = scene.metal_contexts.data ();
+  request.metal_context_count = scene.metal_contexts.size ();
+  request.context_polygon_offsets =
+    scene.context_polygon_offsets.data ();
+  request.context_polygon_offset_count =
+    scene.context_polygon_offsets.size ();
+  request.context_edge_offsets = scene.context_edge_offsets.data ();
+  request.context_edge_offset_count = scene.context_edge_offsets.size ();
+  request.cells = scene.cells.data ();
+  request.cell_count = scene.cells.size ();
+  request.cell_record_bytes = sizeof (CudaM1WidthSpaceCell);
+  request.polygons = scene.polygons.data ();
+  request.polygon_count = scene.polygons.size ();
+  request.polygon_record_bytes = sizeof (CudaM1WidthSpacePolygon);
+  request.edges = scene.edges.data ();
+  request.edge_count = scene.edges.size ();
+  request.edge_record_bytes = sizeof (CudaM1WidthSpaceEdge);
+  request.flat_polygon_count = scene.flat_polygon_count;
+  request.flat_edge_count = scene.flat_edge_count;
+  request.scene_left = scene.scene_left;
+  request.scene_bottom = scene.scene_bottom;
+  request.scene_right = scene.scene_right;
+  request.scene_top = scene.scene_top;
+  request.max_contexts = m2_union_max_contexts;
+  request.max_rectangles = m2_union_max_rectangles;
+  request.max_x_slabs = m2_union_max_x_slabs;
+  request.max_memberships = m2_union_max_memberships;
+  request.max_events = m2_union_max_events;
+  request.max_raw_segments = m2_union_max_raw_segments;
+  request.max_segments = m2_union_max_segments;
+  request.max_slabs_per_rectangle =
+    m2_union_max_slabs_per_rectangle;
+  std::copy (
+    scene.digest.begin (), scene.digest.end (), request.scene_digest);
+}
+
+void copy_backend_telemetry (
+  const CudaM2UnionAttempt &backend,
+  CudaM2FlatUnionAttempt &attempt)
+{
+  attempt.fallback_flags = backend.fallback_flags;
+  attempt.device_flags = backend.device_flags;
+  attempt.context_count = backend.context_count;
+  attempt.metal_context_count = backend.metal_context_count;
+  attempt.cell_count = backend.cell_count;
+  attempt.polygon_count = backend.polygon_count;
+  attempt.edge_count = backend.edge_count;
+  attempt.flat_polygon_count = backend.flat_polygon_count;
+  attempt.flat_edge_count = backend.flat_edge_count;
+  attempt.rectangle_count = backend.rectangle_count;
+  attempt.x_slab_count = backend.x_slab_count;
+  attempt.membership_count = backend.membership_count;
+  attempt.event_count = backend.event_count;
+  attempt.strip_interval_count = backend.strip_interval_count;
+  attempt.raw_segment_count = backend.raw_segment_count;
+  attempt.boundary_segment_count = backend.segments.size ();
+  attempt.boundary_fnv64 = backend.boundary_fnv64;
+  attempt.backend_ns = backend.total_ns;
+  attempt.message = backend.message;
+}
+
 } // anonymous namespace
 
 bool cuda_m2_union_boundary_to_flat_region (
@@ -390,6 +573,141 @@ bool cuda_m2_union_boundary_to_flat_region (
       "unknown exception while materializing the M2 union boundary");
   }
   return false;
+}
+
+CudaM2FlatUnionAttempt cuda_m2_raw_manhattan_try_flat_union (
+  const db::DeepLayer &raw_metal2, db::Region &flat_union,
+  int32_t device)
+{
+  CudaM2FlatUnionAttempt attempt;
+
+  //  This check deliberately precedes every access to raw_metal2.  A host
+  //  must not pay for hierarchy lowering when the complete optional
+  //  run/release capability is absent.
+  if (! cuda_spatial_m2_union_requested ()) {
+    return attempt;
+  }
+
+  const std::chrono::steady_clock::time_point begin =
+    std::chrono::steady_clock::now ();
+  bool backend_called = false;
+  try {
+    if (device < 0) {
+      attempt.disposition = CudaM2FlatUnionAttempt::HostDeclined;
+      attempt.message = "the CUDA M2 union device must be nonnegative";
+      attempt.live_total_ns =
+        elapsed_ns (begin, std::chrono::steady_clock::now ());
+      return attempt;
+    }
+
+    CudaM1WidthSpaceSceneLimits scene_limits;
+    scene_limits.max_contexts = m2_union_max_contexts;
+    scene_limits.max_flat_polygons = m2_union_max_rectangles;
+
+    CudaM2RawManhattanScene scene;
+    std::string reason;
+    if (! cuda_m2_raw_manhattan_build_scene (
+          raw_metal2, scene_limits, scene, &reason)) {
+      attempt.disposition = CudaM2FlatUnionAttempt::HostDeclined;
+      attempt.message.swap (reason);
+      if (attempt.message.empty ()) {
+        attempt.message =
+          "unable to serialize the qualified raw physical M2 scene";
+      }
+      const std::chrono::steady_clock::time_point decline_end =
+        std::chrono::steady_clock::now ();
+      attempt.lowering_ns = elapsed_ns (begin, decline_end);
+      attempt.live_total_ns = attempt.lowering_ns;
+      return attempt;
+    }
+
+    klayout_cuda_spatial_m2_union_request_v1 request;
+    make_m2_union_request (scene, device, request);
+    const std::chrono::steady_clock::time_point lower_end =
+      std::chrono::steady_clock::now ();
+    attempt.lowering_ns = elapsed_ns (begin, lower_end);
+
+    backend_called = true;
+    const CudaM2UnionAttempt backend =
+      cuda_spatial_try_m2_union (request);
+    copy_backend_telemetry (backend, attempt);
+
+    switch (backend.disposition) {
+    case CudaM2UnionAttempt::BackendFallback:
+      attempt.disposition = CudaM2FlatUnionAttempt::BackendFallback;
+      break;
+    case CudaM2UnionAttempt::BackendError:
+      attempt.disposition = CudaM2FlatUnionAttempt::BackendError;
+      break;
+    case CudaM2UnionAttempt::InvalidResult:
+      attempt.disposition = CudaM2FlatUnionAttempt::InvalidResult;
+      break;
+    case CudaM2UnionAttempt::Disabled:
+      attempt.disposition = CudaM2FlatUnionAttempt::BackendError;
+      if (attempt.message.empty ()) {
+        attempt.message =
+          "the advertised CUDA M2 union capability was not invoked";
+      }
+      break;
+    case CudaM2UnionAttempt::Complete:
+      break;
+    }
+    if (backend.disposition != CudaM2UnionAttempt::Complete) {
+      attempt.live_total_ns =
+        elapsed_ns (begin, std::chrono::steady_clock::now ());
+      return attempt;
+    }
+
+    const std::chrono::steady_clock::time_point materialize_begin =
+      std::chrono::steady_clock::now ();
+    CudaM2FlatUnionStats flat_stats;
+    std::string topology_reason;
+    const bool materialized =
+      cuda_m2_union_boundary_to_flat_region (
+        backend.segments.data (), backend.segments.size (),
+        backend.boundary_fnv64, flat_union, &flat_stats,
+        &topology_reason);
+    const std::chrono::steady_clock::time_point end =
+      std::chrono::steady_clock::now ();
+    attempt.materialize_ns = elapsed_ns (materialize_begin, end);
+    attempt.live_total_ns = elapsed_ns (begin, end);
+    if (! materialized) {
+      attempt.disposition = CudaM2FlatUnionAttempt::TopologyDeclined;
+      attempt.message.swap (topology_reason);
+      if (attempt.message.empty ()) {
+        attempt.message =
+          "unable to materialize the validated CUDA M2 boundary";
+      }
+      return attempt;
+    }
+
+    attempt.flat_stats = flat_stats;
+    attempt.disposition = CudaM2FlatUnionAttempt::Complete;
+    attempt.message.clear ();
+    return attempt;
+  } catch (const std::exception &ex) {
+    attempt.disposition =
+      backend_called ? CudaM2FlatUnionAttempt::BackendError
+                     : CudaM2FlatUnionAttempt::HostDeclined;
+    try {
+      attempt.message = ex.what ();
+    } catch (...) {
+      //  Diagnostics cannot turn a fail-closed result into an exception.
+    }
+  } catch (...) {
+    attempt.disposition =
+      backend_called ? CudaM2FlatUnionAttempt::BackendError
+                     : CudaM2FlatUnionAttempt::HostDeclined;
+    try {
+      attempt.message =
+        "unknown exception in the raw M2 flat-union transaction";
+    } catch (...) {
+      //  Diagnostics cannot turn a fail-closed result into an exception.
+    }
+  }
+  attempt.live_total_ns =
+    elapsed_ns (begin, std::chrono::steady_clock::now ());
+  return attempt;
 }
 
 } // namespace db
