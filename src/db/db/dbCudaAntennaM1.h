@@ -74,7 +74,49 @@ struct DB_PUBLIC CudaAntennaM1CaptureLimits
 };
 
 /**
- * Per-domain census derived from one established CudaRawManhattanScene.
+ * One source-cell range for a domain in the shared antenna capture.
+ *
+ * Source-cell identity is held once by CudaAntennaM1Capture.  Keeping only
+ * domain-local geometry ranges here avoids repeating that identity six times.
+ */
+struct DB_PUBLIC CudaAntennaM1DomainCell
+{
+  uint64_t polygon_begin;
+  uint64_t edge_begin;
+  uint32_t polygon_count;
+  uint32_t edge_count;
+};
+
+/**
+ * Geometry owned by one physical domain in a shared antenna capture.
+ *
+ * Hierarchy contexts and the derived nonempty-context/offset streams are not
+ * stored here.  They are reconstructed exactly from the capture's one shared
+ * context stream and these cell ranges when a legacy raw scene is requested.
+ */
+struct DB_PUBLIC CudaAntennaM1DomainScene
+{
+  uint64_t flat_polygon_count;
+  uint64_t flat_edge_count;
+  int64_t scene_left;
+  int64_t scene_bottom;
+  int64_t scene_right;
+  int64_t scene_top;
+  std::vector<CudaAntennaM1DomainCell> cells;
+  std::vector<CudaM1WidthSpacePolygon> polygons;
+  std::vector<CudaM1WidthSpaceEdge> edges;
+  std::array<uint8_t, 32> digest;
+
+  CudaAntennaM1DomainScene ();
+  void swap (CudaAntennaM1DomainScene &other) noexcept;
+};
+
+/**
+ * Per-domain census derived from one compact shared-hierarchy domain.
+ *
+ * stored_bytes is the domain-local KANTM102 payload.  legacy_stored_bytes is
+ * the byte count of the byte-identical KANTM101 raw scene reconstructed from
+ * it, including the formerly duplicated hierarchy and offset streams.
  */
 struct DB_PUBLIC CudaAntennaM1DomainCensus
 {
@@ -90,6 +132,7 @@ struct DB_PUBLIC CudaAntennaM1DomainCensus
   uint64_t expanded_polygon_count;
   uint64_t expanded_edge_count;
   uint64_t stored_bytes;
+  uint64_t legacy_stored_bytes;
   uint64_t expanded_geometry_bytes;
   std::array<uint8_t, 32> scene_digest;
 
@@ -99,9 +142,10 @@ struct DB_PUBLIC CudaAntennaM1DomainCensus
 /**
  * Device-neutral census for a complete M1 antenna capture.
  *
- * The shared counts describe the one common hierarchy.  The stored-record
- * totals deliberately include the six copies currently owned by the six
- * raw-Manhattan scenes, so memory accounting cannot hide host duplication.
+ * The shared counts describe the one common hierarchy.  Current stored-record
+ * and byte totals describe the compact KANTM102 representation.  The explicit
+ * legacy totals describe the former six-scene KANTM101 representation and are
+ * retained both for auditability and byte-identical legacy digest replay.
  */
 struct DB_PUBLIC CudaAntennaM1Census
 {
@@ -122,8 +166,12 @@ struct DB_PUBLIC CudaAntennaM1Census
   uint64_t expanded_polygon_count;
   uint64_t expanded_edge_count;
   uint64_t total_stored_bytes;
+  uint64_t legacy_stored_cell_records;
+  uint64_t legacy_stored_context_records;
+  uint64_t legacy_total_stored_bytes;
   uint64_t total_expanded_geometry_bytes;
   uint64_t estimated_peak_bytes;
+  uint64_t legacy_estimated_peak_bytes;
   std::array<CudaAntennaM1DomainCensus, CudaAntennaM1DomainCount> domains;
   std::array<uint8_t, 32> hierarchy_digest;
   std::array<uint8_t, 32> capture_digest;
@@ -134,9 +182,10 @@ struct DB_PUBLIC CudaAntennaM1Census
 /**
  * Default-off host foundation for a future fused M1 antenna transaction.
  *
- * No CUDA backend is loaded and no production DRC path calls this type.  Each
- * domain reuses CudaRawManhattanScene byte-for-byte.  The additional header
- * binds the six physical/internal layer roles and their common hierarchy.
+ * No CUDA backend is loaded and no production DRC path calls this type.  One
+ * hierarchy/context stream and one parent stream are shared by all domains.
+ * Each domain owns only its source-cell geometry ranges and contours.  Legacy
+ * raw scenes and their KANTM101 digests remain exactly reconstructible.
  */
 struct DB_PUBLIC CudaAntennaM1Capture
 {
@@ -146,7 +195,9 @@ struct DB_PUBLIC CudaAntennaM1Capture
   uint32_t reserved;
   uint64_t source_root_cell_index;
   std::array<uint32_t, CudaAntennaM1DomainCount> source_layer_indices;
-  std::array<CudaRawManhattanScene, CudaAntennaM1DomainCount> domains;
+  std::vector<uint64_t> source_cell_indices;
+  std::vector<CudaM1WidthSpaceContext> contexts;
+  std::array<CudaAntennaM1DomainScene, CudaAntennaM1DomainCount> domains;
   std::vector<uint32_t> context_parent_ids;
   std::array<uint8_t, 32> hierarchy_digest;
   std::array<uint8_t, 32> digest;
@@ -178,10 +229,25 @@ DB_PUBLIC bool cuda_antenna_m1_build_capture (
   std::string *decline_reason = 0);
 
 /**
- * Recompute the canonical KANTM101 transaction digest.
+ * Materialize one byte-identical legacy raw-Manhattan scene.
  *
- * False means a domain, hierarchy, layer binding or count is structurally
- * inconsistent.  "digest" is unchanged on failure.
+ * The operation is explicit because it temporarily duplicates the shared
+ * hierarchy and derives the nonempty-context and offset streams.  On failure
+ * "scene" is unchanged.
+ */
+DB_PUBLIC bool cuda_antenna_m1_materialize_domain_scene (
+  const CudaAntennaM1Capture &capture,
+  CudaAntennaM1Domain domain,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason = 0);
+
+/**
+ * Recompute the canonical legacy KANTM101 transaction digest.
+ *
+ * KANTM102 changes physical ownership only: the digest is intentionally
+ * byte-identical to the six-scene KANTM101 representation.  False means a
+ * domain, hierarchy, layer binding or count is structurally inconsistent.
+ * "digest" is unchanged on failure.
  */
 DB_PUBLIC bool cuda_antenna_m1_capture_digest (
   const CudaAntennaM1Capture &capture,

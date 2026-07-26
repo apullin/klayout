@@ -140,39 +140,123 @@ struct AntennaFixture
   }
 };
 
-bool all_domain_hierarchies_match (
-  const db::CudaAntennaM1Capture &capture)
+bool same_context (
+  const db::CudaM1WidthSpaceContext &first,
+  const db::CudaM1WidthSpaceContext &second)
 {
-  const db::CudaRawManhattanScene &reference =
-    capture.domains [db::CudaAntennaM1Poly];
-  for (size_t domain = 1;
-       domain < db::CudaAntennaM1DomainCount; ++domain) {
-    const db::CudaRawManhattanScene &candidate =
-      capture.domains [domain];
-    if (candidate.cells.size () != reference.cells.size () ||
-        candidate.contexts.size () != reference.contexts.size ()) {
+  return
+    first.tx == second.tx && first.ty == second.ty &&
+    first.cell_id == second.cell_id &&
+    first.transform_code == second.transform_code;
+}
+
+bool same_cell (
+  const db::CudaM1WidthSpaceCell &first,
+  const db::CudaM1WidthSpaceCell &second)
+{
+  return
+    first.source_cell_index == second.source_cell_index &&
+    first.polygon_begin == second.polygon_begin &&
+    first.edge_begin == second.edge_begin &&
+    first.polygon_count == second.polygon_count &&
+    first.edge_count == second.edge_count;
+}
+
+bool same_polygon (
+  const db::CudaM1WidthSpacePolygon &first,
+  const db::CudaM1WidthSpacePolygon &second)
+{
+  return
+    first.edge_begin == second.edge_begin &&
+    first.left == second.left && first.bottom == second.bottom &&
+    first.right == second.right && first.top == second.top &&
+    first.polygon_id == second.polygon_id &&
+    first.edge_count == second.edge_count;
+}
+
+bool same_edge (
+  const db::CudaM1WidthSpaceEdge &first,
+  const db::CudaM1WidthSpaceEdge &second)
+{
+  return
+    first.x1 == second.x1 && first.y1 == second.y1 &&
+    first.x2 == second.x2 && first.y2 == second.y2;
+}
+
+bool same_raw_scene (
+  const db::CudaRawManhattanScene &first,
+  const db::CudaRawManhattanScene &second)
+{
+  if (first.format_version != second.format_version ||
+      first.dbu_per_micron != second.dbu_per_micron ||
+      first.root_cell != second.root_cell ||
+      first.reserved != second.reserved ||
+      first.flat_polygon_count != second.flat_polygon_count ||
+      first.flat_edge_count != second.flat_edge_count ||
+      first.scene_left != second.scene_left ||
+      first.scene_bottom != second.scene_bottom ||
+      first.scene_right != second.scene_right ||
+      first.scene_top != second.scene_top ||
+      first.contexts.size () != second.contexts.size () ||
+      first.metal_contexts != second.metal_contexts ||
+      first.context_polygon_offsets != second.context_polygon_offsets ||
+      first.context_edge_offsets != second.context_edge_offsets ||
+      first.cells.size () != second.cells.size () ||
+      first.polygons.size () != second.polygons.size () ||
+      first.edges.size () != second.edges.size () ||
+      first.digest != second.digest) {
+    return false;
+  }
+  for (size_t index = 0; index < first.contexts.size (); ++index) {
+    if (! same_context (first.contexts [index], second.contexts [index])) {
       return false;
     }
-    for (size_t cell = 0; cell < reference.cells.size (); ++cell) {
-      if (candidate.cells [cell].source_cell_index !=
-          reference.cells [cell].source_cell_index) {
-        return false;
-      }
+  }
+  for (size_t index = 0; index < first.cells.size (); ++index) {
+    if (! same_cell (first.cells [index], second.cells [index])) {
+      return false;
     }
-    for (size_t context = 0;
-         context < reference.contexts.size (); ++context) {
-      const db::CudaM1WidthSpaceContext &first =
-        reference.contexts [context];
-      const db::CudaM1WidthSpaceContext &second =
-        candidate.contexts [context];
-      if (first.tx != second.tx || first.ty != second.ty ||
-          first.cell_id != second.cell_id ||
-          first.transform_code != second.transform_code) {
-        return false;
-      }
+  }
+  for (size_t index = 0; index < first.polygons.size (); ++index) {
+    if (! same_polygon (first.polygons [index], second.polygons [index])) {
+      return false;
+    }
+  }
+  for (size_t index = 0; index < first.edges.size (); ++index) {
+    if (! same_edge (first.edges [index], second.edges [index])) {
+      return false;
     }
   }
   return true;
+}
+
+bool build_legacy_domain (
+  AntennaFixture &fixture, size_t domain,
+  db::CudaRawManhattanScene &scene, std::string *reason)
+{
+  const db::CudaM1WidthSpaceSceneLimits limits;
+  switch (domain) {
+  case db::CudaAntennaM1Poly:
+    return db::cuda_poly_raw_manhattan_build_scene (
+      fixture.poly, limits, scene, reason);
+  case db::CudaAntennaM1Active:
+    return db::cuda_active_raw_manhattan_build_scene (
+      fixture.active, limits, scene, reason);
+  case db::CudaAntennaM1Nplus:
+    return db::cuda_nplus_raw_manhattan_build_scene (
+      fixture.nplus, limits, scene, reason);
+  case db::CudaAntennaM1Nwell:
+    return db::cuda_nwell_raw_manhattan_build_scene (
+      fixture.nwell, limits, scene, reason);
+  case db::CudaAntennaM1Contact:
+    return db::cuda_contact_raw_manhattan_build_scene (
+      fixture.contact, limits, scene, reason);
+  case db::CudaAntennaM1Metal1:
+    return db::cuda_m1_raw_manhattan_build_scene (
+      fixture.metal1, limits, scene, reason);
+  default:
+    return false;
+  }
 }
 
 } // anonymous namespace
@@ -188,9 +272,10 @@ TEST(1_CaptureBindsSixDomainsHierarchyParentsCountsAndMemory)
       db::CudaAntennaM1CaptureLimits (), capture, &reason),
     true);
   EXPECT_EQ (reason, "");
-  EXPECT_EQ (capture.format_version, uint32_t (1));
+  EXPECT_EQ (capture.format_version, uint32_t (2));
   EXPECT_EQ (capture.dbu_per_micron, uint32_t (2000));
-  EXPECT_EQ (all_domain_hierarchies_match (capture), true);
+  EXPECT_EQ (capture.source_cell_indices.size (), size_t (3));
+  EXPECT_EQ (capture.contexts.size (), size_t (17));
   EXPECT_EQ (capture.context_parent_ids.size (), size_t (17));
   EXPECT_EQ (
     capture.context_parent_ids [0],
@@ -217,7 +302,9 @@ TEST(1_CaptureBindsSixDomainsHierarchyParentsCountsAndMemory)
     census.context_parent_bytes,
     uint64_t (17 * sizeof (uint32_t)));
   EXPECT_EQ (census.stored_cell_records, uint64_t (18));
-  EXPECT_EQ (census.stored_context_records, uint64_t (102));
+  EXPECT_EQ (census.stored_context_records, uint64_t (17));
+  EXPECT_EQ (census.legacy_stored_cell_records, uint64_t (18));
+  EXPECT_EQ (census.legacy_stored_context_records, uint64_t (102));
   EXPECT_EQ (census.nonempty_context_records, uint64_t (102));
   EXPECT_EQ (census.stored_polygon_count, uint64_t (18));
   EXPECT_EQ (census.stored_edge_count, uint64_t (72));
@@ -227,6 +314,27 @@ TEST(1_CaptureBindsSixDomainsHierarchyParentsCountsAndMemory)
     census.estimated_peak_bytes,
     census.total_stored_bytes +
       census.total_expanded_geometry_bytes);
+  EXPECT_EQ (
+    census.legacy_estimated_peak_bytes,
+    census.legacy_total_stored_bytes +
+      census.total_expanded_geometry_bytes);
+  EXPECT_EQ (
+    census.total_stored_bytes < census.legacy_total_stored_bytes,
+    true);
+  const uint64_t shared_bytes =
+    uint64_t (4 * sizeof (uint32_t) + sizeof (uint64_t) +
+              db::CudaAntennaM1DomainCount * sizeof (uint32_t) + 64) +
+    uint64_t (3 * sizeof (uint64_t)) +
+    uint64_t (17 * sizeof (db::CudaM1WidthSpaceContext)) +
+    uint64_t (17 * sizeof (uint32_t));
+  const uint64_t domain_bytes =
+    uint64_t (2 * sizeof (uint64_t) + 4 * sizeof (int64_t) + 32) +
+    uint64_t (3 * sizeof (db::CudaAntennaM1DomainCell)) +
+    uint64_t (3 * sizeof (db::CudaM1WidthSpacePolygon)) +
+    uint64_t (12 * sizeof (db::CudaM1WidthSpaceEdge));
+  EXPECT_EQ (
+    census.total_stored_bytes,
+    shared_bytes + db::CudaAntennaM1DomainCount * domain_bytes);
   EXPECT_EQ (census.capture_digest == capture.digest, true);
   EXPECT_EQ (
     census.hierarchy_digest == capture.hierarchy_digest, true);
@@ -249,6 +357,20 @@ TEST(1_CaptureBindsSixDomainsHierarchyParentsCountsAndMemory)
     EXPECT_EQ (record.expanded_edge_count, uint64_t (68));
     EXPECT_EQ (
       record.scene_digest == capture.domains [domain].digest, true);
+    EXPECT_EQ (record.stored_bytes < record.legacy_stored_bytes, true);
+
+    db::CudaRawManhattanScene legacy;
+    EXPECT_EQ (
+      build_legacy_domain (fixture, domain, legacy, &reason), true);
+    EXPECT_EQ (reason, "");
+    db::CudaRawManhattanScene materialized;
+    EXPECT_EQ (
+      db::cuda_antenna_m1_materialize_domain_scene (
+        capture, db::CudaAntennaM1Domain (domain),
+        materialized, &reason),
+      true);
+    EXPECT_EQ (reason, "");
+    EXPECT_EQ (same_raw_scene (legacy, materialized), true);
   }
 
   std::array<uint8_t, 32> recomputed;
@@ -259,7 +381,7 @@ TEST(1_CaptureBindsSixDomainsHierarchyParentsCountsAndMemory)
 
   const std::string text = db::cuda_antenna_m1_census_text (census);
   EXPECT_EQ (
-    text.find ("antenna_m1_capture format=1") != std::string::npos,
+    text.find ("antenna_m1_capture format=2") != std::string::npos,
     true);
   EXPECT_EQ (
     text.find ("shared_contexts=17") != std::string::npos, true);
@@ -475,6 +597,15 @@ TEST(4_CaptureDigestAndParentSidecarFailClosedOnDrift)
   EXPECT_EQ (
     db::cuda_antenna_m1_capture_digest (geometry, digest), false);
   EXPECT_EQ (digest == sentinel, true);
+  db::CudaRawManhattanScene materialize_sentinel;
+  materialize_sentinel.root_cell = 77;
+  std::string materialize_reason;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_materialize_domain_scene (
+      geometry, db::CudaAntennaM1Contact,
+      materialize_sentinel, &materialize_reason),
+    false);
+  EXPECT_EQ (materialize_sentinel.root_cell, uint32_t (77));
 
   db::CudaAntennaM1Capture parent = capture;
   parent.context_parent_ids [9] = 9;
@@ -509,10 +640,15 @@ TEST(4_CaptureDigestAndParentSidecarFailClosedOnDrift)
     true);
 
   std::vector<uint32_t> rebuilt;
+  db::CudaRawManhattanScene materialized_poly;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_materialize_domain_scene (
+      capture, db::CudaAntennaM1Poly, materialized_poly, &reason),
+    true);
   EXPECT_EQ (
     db::cuda_raw_manhattan_context_parents (
       fixture.poly,
-      capture.domains [db::CudaAntennaM1Poly],
+      materialized_poly,
       db::CudaM1WidthSpaceSceneLimits (), rebuilt, &reason),
     true);
   EXPECT_EQ (rebuilt == capture.context_parent_ids, true);
@@ -524,7 +660,7 @@ TEST(4_CaptureDigestAndParentSidecarFailClosedOnDrift)
   EXPECT_EQ (
     db::cuda_raw_manhattan_context_parents (
       fixture.poly,
-      capture.domains [db::CudaAntennaM1Poly],
+      materialized_poly,
       tight, rebuilt, &reason),
     false);
   EXPECT_EQ (rebuilt.size (), size_t (1));
