@@ -984,6 +984,24 @@ not just wall time.
       on this thread allocation.  Evidence:
       `.scratchpad/cuda-runs/composed-14-owner-full.2cYHCx`.
 
+    - [x] **Parallelize the read-only antenna metric scan — completed:** root
+      metrics now run through the existing LayoutToNetlist thread budget in
+      coarse, low-skew chunks, while diagnostics and result geometry remain a
+      deterministic serial publication.  Same-build M1-owner N=3 improved
+      from 57.233 s to 55.847 s: **1.387 real seconds / 2.42% less owner
+      wall**.  The metric phase itself improved from 4.910 s to 3.577 s:
+      **1.333 seconds / 27.16% less**.  All three pairs improved and every
+      report was byte-identical.
+
+      After composing commit `34648f9` into the CUDA branch, the exact
+      three-run full gate improved from the accepted 62.940 s mean to
+      61.940 s: **1.000 real second / 1.589% less full-launch wall**.  This
+      crosses the tied antenna roof but hands the pole between M1 width and
+      M3/M4 antenna, so it is a real low-risk CPU win rather than a new large
+      ceiling reduction.  Canonical report SHA-256 remains
+      `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+      Evidence: `.scratchpad/cuda-runs/composed-14-owner-full.aM1woP`.
+
     - [x] **Separate hierarchy reuse from the antenna compute ceiling —
       diagnostic completed, clone-specific optimization deferred:** the same
       executable and M3-owner deck measured the AREF-expanded one-macro input
