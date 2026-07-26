@@ -1852,9 +1852,10 @@ not just wall time.
           isolated box converter and interaction cache, joins them, and
           processes the selected top cell serially.  Eligibility is
           deliberately narrow: shared descendants, parents outside a cone,
-          breakout cells, attributes, global nets, soft connections, dirty
-          layouts, missing map entries, worker failures, and incomplete work
-          all retain or cleanly retry the serial implementation.
+          breakout cells, nonempty attribute-equivalence maps, global nets,
+          soft connections, dirty layouts, missing map entries, worker
+          failures, and incomplete work all retain or cleanly retry the serial
+          implementation.
 
           Three adversarial unit cases cover the accepted independent topology,
           a shared-descendant diamond, and a descendant with an external
@@ -1880,6 +1881,55 @@ not just wall time.
           Evidence:
           `.scratchpad/cuda-runs/antenna-hier-components-abba.2w7j5B` and
           `.scratchpad/cuda-runs/composed-14-owner-full.RXZP7I`.
+
+        - [x] **Reuse closed hierarchy components in exact DeepRegion
+          merges:** `DeepRegion::ensure_merged_polygons_valid` now passes the
+          deep store's ordinary thread budget into the same deliberately
+          narrow two-cone hierarchy builder.  Separate shape attributes are
+          accepted under the existing closed-cone guards: local attribute
+          construction remains serial, each worker owns its complete
+          descendant cone and isolated caches, cross-cone/top interactions
+          remain serial, and attribute-equivalence maps, global nets, soft
+          connections, breakout cells, shared descendants, and external
+          parents still fail closed.
+
+          The property-sensitive hierarchy signature now includes recursive
+          cluster attributes, transforms, and instance property IDs.  A new
+          adversarial case proves that `separate_attributes=true` retains two
+          overlapping property-bearing roots in both serial and parallel
+          execution while `false` collapses them.  The focused hierarchy suite
+          passes 10/10 across editable and noneditable layouts, and the
+          end-to-end DeepRegion property merge passes 2/2 while telemetry
+          proves the two-worker branch ran.
+
+          The exact focused `m1_enclosure` ABBA changed **52.535 -> 43.650
+          seconds**, removing **8.885 real seconds / 16.91% of owner wall**.
+          Within it, exact merged-ACTIVE construction changed about
+          24.241 -> 15.617 s (**35.57% less**) and its hierarchy-cluster phase
+          changed about 12.434 -> 6.765 s (**45.59% less**).  Every lane
+          retained canonical owner-report SHA-256
+          `d056b808e6f2134e60286e35247a92e3a2f6d2eaa26b463fd572aa7e0652146d`.
+
+          The exact three-run 14-owner gate then measured 50.34, 50.34, and
+          50.43 s, averaging **50.370 s**.  Against the immediately preceding
+          commit's 59.337-second mean, this removes **8.967 real seconds /
+          15.11% of full-launch wall**.  `m1_enclosure` averaged 44.514 s and
+          remains the roof; the next owners cluster near 41 s.  All 42 child
+          launches exited successfully, runtime inputs remained byte-stable,
+          and every merged/reference report retained canonical SHA-256
+          `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+          Evidence:
+          `.scratchpad/cuda-runs/m1-enclosure-deep-hier-abba.38siKr` and
+          `.scratchpad/cuda-runs/composed-14-owner-full.iz7d0o`.
+
+        - [ ] **Preserve local-cluster attributes through
+          `local_cluster::split`:** the hierarchy audit exposed a pre-existing
+          property-loss path: `split` copies shapes and layer membership but
+          not `m_attrs` (or global-net metadata).  Current serial and parallel
+          builders therefore agree, so this is not a blocker or claimed part
+          of the performance change above.  Repair and qualify it separately
+          with a property-sensitive serial oracle before broadening any
+          parallel eligibility.
 
       - [x] **Reuse the atomic M1-contact proof for CONTACT.1-.3 and
         METAL1.3:** commit `0c901b5` makes one stronger M1-containment,

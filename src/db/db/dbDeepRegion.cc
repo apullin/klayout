@@ -923,7 +923,12 @@ DeepRegion::ensure_merged_polygons_valid () const
       conn.connect (deep_layer ());
       hc.set_base_verbosity (base_verbosity () + 10);
       phase_prepared = deep_region_phase_now (phase_telemetry);
-      hc.build (layout, deep_layer ().initial_cell (), conn, 0, deep_layer ().breakout_cells (), ! join_properties_on_merge ());
+      const int store_threads = deep_layer ().store ()->threads ();
+      const unsigned int hierarchy_threads =
+        store_threads > 1 ? static_cast<unsigned int> (store_threads) : 1u;
+      hc.build (layout, deep_layer ().initial_cell (), conn, 0,
+                deep_layer ().breakout_cells (), ! join_properties_on_merge (),
+                hierarchy_threads);
       phase_clusters_built = deep_region_phase_now (phase_telemetry);
 
       //  collect the clusters and merge them into big polygons

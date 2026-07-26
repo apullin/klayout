@@ -2026,6 +2026,34 @@ private:
 };
 
 static std::string
+cluster_path_signature (
+  const db::Layout &ly, db::cell_index_type ci,
+  const std::vector<db::ClusterInstance> &path)
+{
+  std::string signature = ly.cell_name (ci);
+  for (std::vector<db::ClusterInstance>::const_iterator p = path.begin ();
+       p != path.end (); ++p) {
+    signature += "/" + std::string (ly.cell_name (p->inst_cell_index ()));
+    signature += "@" + p->inst_trans ().to_string ();
+    signature += "#" + tl::to_string (p->inst_prop_id ());
+  }
+  return signature;
+}
+
+static std::string
+cluster_attrs_signature (
+  const db::local_cluster<db::PolygonRef> &cluster)
+{
+  std::string signature = "attrs{";
+  for (db::local_cluster<db::PolygonRef>::attr_iterator a =
+         cluster.begin_attr (); a != cluster.end_attr (); ++a) {
+    signature += tl::to_string (*a) + ",";
+  }
+  signature += "}";
+  return signature;
+}
+
+static std::string
 hierarchy_signature (const db::Layout &ly,
                      const db::hier_clusters<db::PolygonRef> &hc,
                      unsigned int layer)
@@ -2048,12 +2076,20 @@ hierarchy_signature (const db::Layout &ly,
         db::Polygon poly = si->obj ();
         poly.transform (si->trans ());
         poly.transform (si.trans ());
-        shapes.push_back (path2string (ly, ci, si.inst_path ()) + ":" + poly.to_string ());
+        const db::local_cluster<db::PolygonRef> &shape_cluster =
+          hc.clusters_per_cell (si.cell_index ()).cluster_by_id (
+            si.cluster_id ());
+        shapes.push_back (
+          cluster_path_signature (ly, ci, si.inst_path ()) + ":" +
+          cluster_attrs_signature (shape_cluster) + ":" + poly.to_string ());
         ++si;
       }
       std::sort (shapes.begin (), shapes.end ());
 
-      std::string root = tl::to_string (shapes.size ()) + "{";
+      const db::local_cluster<db::PolygonRef> &cluster =
+        cc.cluster_by_id (*r);
+      std::string root = cluster_attrs_signature (cluster) +
+                         "shapes" + tl::to_string (shapes.size ()) + "{";
       for (std::vector<std::string>::const_iterator s = shapes.begin (); s != shapes.end (); ++s) {
         root += tl::to_string (s->size ()) + ":" + *s;
       }
@@ -2218,6 +2254,71 @@ TEST(123_HierClustersExternalParentFallback)
   EXPECT_EQ (root_nets (serial.clusters_per_cell (outside.cell_index ())), size_t (1));
   EXPECT_EQ (hierarchy_signature (ly, serial, l1),
              hierarchy_signature (ly, requested_parallel, l1));
+}
+
+TEST(124_HierClustersIndependentComponentsSeparateAttributes)
+{
+  db::Layout ly;
+  unsigned int l1 = ly.insert_layer (db::LayerProperties (1, 0));
+
+  db::PropertiesSet props1;
+  props1.insert (tl::Variant ("net"), tl::Variant ("one"));
+  const db::properties_id_type pid1 = db::properties_id (props1);
+  db::PropertiesSet props2;
+  props2.insert (tl::Variant ("net"), tl::Variant ("two"));
+  const db::properties_id_type pid2 = db::properties_id (props2);
+
+  db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+  db::Cell &a = ly.cell (ly.add_cell ("A"));
+  db::Cell &la = ly.cell (ly.add_cell ("LA"));
+  db::Cell &b = ly.cell (ly.add_cell ("B"));
+  db::Cell &lb = ly.cell (ly.add_cell ("LB"));
+
+  la.shapes (l1).insert (db::PolygonRefWithProperties (
+    make_box (ly, db::Box (0, 0, 100, 100)), pid1));
+  a.shapes (l1).insert (db::PolygonRefWithProperties (
+    make_box (ly, db::Box (50, 0, 150, 100)), pid1));
+  a.insert (db::CellInstArray (db::CellInst (la.cell_index ()), db::Trans ()));
+
+  lb.shapes (l1).insert (db::PolygonRefWithProperties (
+    make_box (ly, db::Box (0, 0, 100, 100)), pid2));
+  b.shapes (l1).insert (db::PolygonRefWithProperties (
+    make_box (ly, db::Box (50, 0, 150, 100)), pid2));
+  b.insert (db::CellInstArray (db::CellInst (lb.cell_index ()), db::Trans ()));
+
+  //  Both cones occupy the same top-level window.  Property separation must
+  //  keep them distinct even though each matching top shape touches both.
+  top.insert (db::CellInstArray (db::CellInst (a.cell_index ()), db::Trans ()));
+  top.insert (db::CellInstArray (db::CellInst (b.cell_index ()), db::Trans ()));
+  top.shapes (l1).insert (db::PolygonRefWithProperties (
+    make_box (ly, db::Box (100, 0, 180, 100)), pid1));
+  top.shapes (l1).insert (db::PolygonRefWithProperties (
+    make_box (ly, db::Box (100, 0, 180, 100)), pid2));
+
+  db::Connectivity conn;
+  conn.connect (l1, l1);
+
+  db::hier_clusters<db::PolygonRef> attributes_joined;
+  attributes_joined.build (ly, top, conn, 0, 0, false, 1u);
+  db::hier_clusters<db::PolygonRef> serial;
+  serial.build (ly, top, conn, 0, 0, true, 1u);
+  db::hier_clusters<db::PolygonRef> parallel;
+  std::string telemetry;
+  {
+    ScopedEnvironment enabled (
+      "KLAYOUT_HIER_NETWORK_COMPONENTS_TELEMETRY", "1");
+    tl::CaptureChannel capture;
+    parallel.build (ly, top, conn, 0, 0, true, 2u);
+    telemetry = capture.captured_text ();
+  }
+
+  EXPECT_EQ (telemetry.find ("outcome=parallel") != std::string::npos, true);
+  EXPECT_EQ (
+    root_nets (attributes_joined.clusters_per_cell (top.cell_index ())),
+    size_t (1));
+  EXPECT_EQ (root_nets (serial.clusters_per_cell (top.cell_index ())), size_t (2));
+  EXPECT_EQ (hierarchy_signature (ly, serial, l1),
+             hierarchy_signature (ly, parallel, l1));
 }
 
 //  issue #609

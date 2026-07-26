@@ -39,6 +39,7 @@
 #include "dbCompoundOperation.h"
 #include "dbArray.h"
 #include "tlUnitTest.h"
+#include "tlEnv.h"
 #include "tlStream.h"
 
 #include <initializer_list>
@@ -47,6 +48,34 @@
 
 namespace
 {
+
+class ScopedTestEnvironment
+{
+public:
+  ScopedTestEnvironment (const std::string &name, const std::string &value)
+    : m_name (name), m_was_set (tl::has_env (name)),
+      m_old_value (m_was_set ? tl::get_env (name) : std::string ())
+  {
+    tl::set_env (m_name, value);
+  }
+
+  ~ScopedTestEnvironment ()
+  {
+    if (m_was_set) {
+      tl::set_env (m_name, m_old_value);
+    } else {
+      tl::unset_env (m_name);
+    }
+  }
+
+private:
+  ScopedTestEnvironment (const ScopedTestEnvironment &);
+  ScopedTestEnvironment &operator= (const ScopedTestEnvironment &);
+
+  std::string m_name;
+  bool m_was_set;
+  std::string m_old_value;
+};
 
 typedef std::vector<db::Polygon> Contact4RawLayer;
 
@@ -3658,6 +3687,7 @@ TEST(deep_region_merged_with_properties)
   top.shapes (l1).insert (db::BoxWithProperties (db::Box (0, 2000, 1000, 3000), ps5_id));
 
   db::DeepShapeStore dss;
+  dss.set_threads (2);
 
   db::RecursiveShapeIterator iter (ly, top, l1);
   //  enable properties
@@ -3668,7 +3698,19 @@ TEST(deep_region_merged_with_properties)
 
   db::Region rr1;
 
-  EXPECT_EQ (r1.merged ().to_string (), "(0,2000;0,3000;1000,3000;1000,2000){A=>18,B=>41,E=>43};(0,0;0,1000;1500,1000;1500,0){A=>17};(1000,0;1000,1000;2000,1000;2000,0){B=>42};(0,1000;0,2000;1000,2000;1000,1000){C=>18};(1000,1000;1000,2000;2000,2000;2000,1000){D=>42}");
+  std::string merged_with_properties;
+  std::string component_telemetry;
+  {
+    ScopedTestEnvironment enabled (
+      "KLAYOUT_HIER_NETWORK_COMPONENTS_TELEMETRY", "1");
+    tl::CaptureChannel capture;
+    merged_with_properties = r1.merged ().to_string ();
+    component_telemetry = capture.captured_text ();
+  }
+  EXPECT_EQ (
+    component_telemetry.find ("outcome=parallel") != std::string::npos,
+    true);
+  EXPECT_EQ (merged_with_properties, "(0,2000;0,3000;1000,3000;1000,2000){A=>18,B=>41,E=>43};(0,0;0,1000;1500,1000;1500,0){A=>17};(1000,0;1000,1000;2000,1000;2000,0){B=>42};(0,1000;0,2000;1000,2000;1000,1000){C=>18};(1000,1000;1000,2000;2000,2000;2000,1000){D=>42}");
   rr1 = r1;
   rr1.merge ();
   EXPECT_EQ (rr1.to_string (), "(0,2000;0,3000;1000,3000;1000,2000){A=>18,B=>41,E=>43};(0,0;0,1000;1500,1000;1500,0){A=>17};(1000,0;1000,1000;2000,1000;2000,0){B=>42};(0,1000;0,2000;1000,2000;1000,1000){C=>18};(1000,1000;1000,2000;2000,2000;2000,1000){D=>42}");

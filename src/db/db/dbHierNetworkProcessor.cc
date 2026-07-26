@@ -3589,8 +3589,6 @@ hier_clusters<T>::do_build (cell_clusters_box_converter<T> &cbc, const db::Layou
       component_reason = "thread-budget";
     } else if (breakout_cells && ! breakout_cells->empty ()) {
       component_reason = "breakout-cells";
-    } else if (separate_attributes) {
-      component_reason = "separate-attributes";
     } else if (attr_equivalence && ! attr_equivalence->empty ()) {
       component_reason = "attribute-equivalence";
     } else if (conn.global_nets () != 0) {
