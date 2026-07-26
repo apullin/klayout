@@ -297,11 +297,26 @@ def split_deck(
         "run_active4 = run_antenna_feol\n",
         "ACTIVE.4 owner",
     )
-    text = _replace_once(
-        text,
-        "(ANTENNA &amp;&amp; run_antenna)\n",
+    gate_dependency = "(ANTENNA &amp;&amp; run_antenna)\n"
+    raw_poly34_owner_count = text.count("poly34_raw_owner =")
+    if raw_poly34_owner_count > 1:
+        raise TransformError(
+            "raw POLY.3/.4 owner: expected at most one marker, "
+            f"found {raw_poly34_owner_count}"
+        )
+    expected_gate_dependencies = 2 if raw_poly34_owner_count else 1
+    gate_dependency_count = text.count(gate_dependency)
+    if gate_dependency_count != expected_gate_dependencies:
+        raise TransformError(
+            "gate dependency: expected "
+            f"{expected_gate_dependencies} source match"
+            f"{'es' if expected_gate_dependencies != 1 else ''}, "
+            f"found {gate_dependency_count}"
+        )
+    text = text.replace(
+        gate_dependency,
         "(ANTENNA &amp;&amp; run_antenna_checks)\n",
-        "gate dependency",
+        expected_gate_dependencies,
     )
 
     start_marker = "#   ANTENNA checks\n"

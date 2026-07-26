@@ -2416,6 +2416,26 @@ not just wall time.
             raw CUDA, injected exception, forced capacity, missing library,
             and ABI-compatible symbol-incomplete library.  Evidence:
             `.scratchpad/cuda-runs/klayout-poly34-raw-owner.M4P5M5`.
+          - [x] **Recompose the raw POLY owner into the exact 14-owner
+            production roofline:** the antenna splitter now recognizes the
+            generated raw-POLY owner and fail-closed rewrites both of its
+            `run_antenna` dependencies to the split-owner predicate.  The
+            focused transform suite passes all 12 cases, including the new
+            two-dependency composition.
+
+            One exact GPU-enabled full gate then reduced `m1_enclosure` from
+            **44.406 to 24.568 s**, removing **19.838 owner-seconds / 44.674%
+            of owner wall**.  The full launch remained flat at **50.440 s**
+            versus the preceding three-run **50.370 s mean** (+0.070 s /
+            +0.139%), exactly demonstrating a roofline handoff rather than an
+            end-to-end regression.  The new tied poles are `antenna_m3` at
+            **40.940 s**, `antenna_m4_m10` at **40.790 s**, and
+            `implant_contact` at **40.288 s**; `antenna_m2` follows at
+            **38.676 s**.  All 14 reports merged to the accepted canonical
+            SHA-256
+            `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+            Evidence:
+            `.scratchpad/cuda-runs/composed-14-owner-poly34-full.KGjC9c`.
         - [ ] **Reuse the cumulative M3 prefix for the M4 antenna check:** the
           current owner spends roughly 78.33 aggregate CPU-seconds extracting
           and evaluating M3, then rebuilding almost the entire graph for M4

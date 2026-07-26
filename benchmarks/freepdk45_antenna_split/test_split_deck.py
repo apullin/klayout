@@ -198,6 +198,30 @@ class SplitDeckTest(unittest.TestCase):
             result.index('.output("METAL3_ANTENNA"'),
         )
 
+    def test_split_rebinds_both_raw_poly34_antenna_dependencies(self) -> None:
+        source = source_deck().replace(
+            "need_gate = a || (ANTENNA &amp;&amp; run_antenna)\r\n",
+            "need_gate = a || (ANTENNA &amp;&amp; run_antenna)\r\n"
+            "poly34_raw_owner = poly34_requested &amp;&amp; DRC "
+            "&amp;&amp; run_poly &amp;&amp; !run_implant_contact "
+            "&amp;&amp; !(ANTENNA &amp;&amp; run_antenna)\r\n",
+            1,
+        )
+
+        result = split_deck(source)
+
+        self.assertEqual(
+            result.count("(ANTENNA &amp;&amp; run_antenna_checks)\n"),
+            2,
+        )
+        self.assertNotIn("(ANTENNA &amp;&amp; run_antenna)\n", result)
+        self.assertIn(
+            "poly34_raw_owner = poly34_requested &amp;&amp; DRC "
+            "&amp;&amp; run_poly &amp;&amp; !run_implant_contact "
+            "&amp;&amp; !(ANTENNA &amp;&amp; run_antenna_checks)\n",
+            result,
+        )
+
     def test_rejects_an_already_split_deck(self) -> None:
         with self.assertRaisesRegex(TransformError, "already antenna-split"):
             split_deck(source_deck().replace("antenna", "antenna_feol", 1))
