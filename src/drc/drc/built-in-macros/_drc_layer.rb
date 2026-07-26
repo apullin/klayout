@@ -3769,6 +3769,18 @@ CODE
     end
 
     # Internal, fail-closed acceleration hook for the qualified atomic
+    # FreePDK45 POLY.3/POLY.4 transaction.  Both operands remain pristine
+    # physical layers; the CUDA backend derives GATE itself.
+    def cuda_poly34_raw_clean?(active)
+      @engine._context("cuda_poly34_raw_clean?") do
+        check_is_layer(active)
+        requires_region
+        active.requires_region
+        self.data.cuda_poly34_raw_clean?(active.data)
+      end
+    end
+
+    # Internal, fail-closed acceleration hook for the qualified atomic
     # FreePDK45 POLY.3/POLY.4 transaction.  The receiver is POLY; ACTIVE and
     # the already-derived GATE intersection are explicit operands.
     def cuda_poly34_clean?(active, gate)

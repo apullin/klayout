@@ -1958,6 +1958,54 @@ static bool cuda_implant12_clean (
            deep_contact->deep_layer ());
 }
 
+static bool cuda_poly34_raw_clean (
+  const db::Region *poly, const db::Region *active)
+{
+  try {
+    // Resolve opt-in and symbol availability before inspecting a DeepLayer.
+    // A disabled or symbol-incomplete backend therefore leaves historical
+    // GATE as the first geometry operation.  A backend that exports the
+    // shared symbol but understands only format 1 can still reject format 2
+    // safely after raw lowering.
+    if (! db::cuda_spatial_poly34_requested ()) {
+      return cuda_poly34_host_decline ("raw-capability-unavailable");
+    }
+    const db::DeepRegion *deep_poly =
+      dynamic_cast<const db::DeepRegion *> (poly->delegate ());
+    const db::DeepRegion *deep_active =
+      dynamic_cast<const db::DeepRegion *> (active->delegate ());
+    if (! deep_poly || ! deep_active) {
+      return cuda_poly34_host_decline ("raw-operand-is-not-deep-region");
+    }
+    if (! poly->merged_semantics () || ! active->merged_semantics ()) {
+      return cuda_poly34_host_decline ("raw-operand-has-raw-semantics");
+    }
+    const db::DeepLayer &raw_poly = deep_poly->deep_layer ();
+    const db::DeepLayer &raw_active = deep_active->deep_layer ();
+    if (raw_poly.layer () >= raw_poly.layout ().layers () ||
+        raw_active.layer () >= raw_active.layout ().layers ()) {
+      return cuda_poly34_host_decline ("raw-operand-layer-is-invalid");
+    }
+    if (! raw_poly.layout ().get_properties (raw_poly.layer ()).log_equal (
+          db::LayerProperties (9, 0))) {
+      return cuda_poly34_host_decline (
+        "raw-poly-is-not-physical-layer-9/0");
+    }
+    if (! raw_active.layout ().get_properties (
+          raw_active.layer ()).log_equal (db::LayerProperties (1, 0))) {
+      return cuda_poly34_host_decline (
+        "raw-active-is-not-physical-layer-1/0");
+    }
+    // Deliberately use only pristine DeepLayer references.  In particular,
+    // this hook must never call merged_deep_layer() or construct GATE.
+    return db::cuda_poly34_try_raw_empty (raw_poly, raw_active);
+  } catch (const std::exception &error) {
+    return cuda_poly34_host_decline (error.what ());
+  } catch (...) {
+    return cuda_poly34_host_decline ("unknown-raw-host-exception");
+  }
+}
+
 static bool cuda_poly34_clean (
   const db::Region *poly, const db::Region *active,
   const db::Region *gate)
@@ -5124,6 +5172,17 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "primary followed by raw GATE and CONTACT operands. It returns true only "
     "when both ordered FreePDK45 rules are completely certified empty. False "
     "requires both historical CPU expressions.\n"
+  ) +
+  method_ext (
+    "cuda_poly34_raw_clean?", &cuda_poly34_raw_clean,
+    gsi::arg ("active"),
+    "@brief Tries POLY.3/POLY.4 before constructing merged inputs or GATE\n"
+    "\n"
+    "This internal fail-closed hook accepts only pristine physical POLY 9/0 "
+    "and ACTIVE 1/0 deep layers. The backend derives their exact intersection "
+    "and attempts both ordered terminal-empty rules atomically. It never "
+    "calls merged_deep_layer. False requires the historical GATE construction "
+    "and both original CPU expressions.\n"
   ) +
   method_ext (
     "cuda_poly34_clean?", &cuda_poly34_clean,

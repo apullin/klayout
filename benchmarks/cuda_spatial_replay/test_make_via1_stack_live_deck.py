@@ -30,7 +30,19 @@ POLY4 = (
     '.output("POLY.4", "POLY.4 : Minimum enclosure of active around gate : '
     '70nm")'
 )
-POLY34_SOURCE_BLOCK = f"{POLY3}\n{POLY4}"
+POLY34_GATE = "gate = poly &amp; active if need_gate"
+POLY34_LAZY_GATE = (
+    "gate = poly &amp; active if need_gate &amp;&amp; !poly34_raw_clean"
+)
+POLY34_RAW_OWNER = (
+    "poly34_raw_owner = poly34_requested &amp;&amp; DRC &amp;&amp; run_poly "
+    "&amp;&amp; !run_implant_contact &amp;&amp; "
+    "!(ANTENNA &amp;&amp; run_antenna)"
+)
+POLY34_RULE_BLOCK = f"{POLY3}\n{POLY4}"
+POLY34_SOURCE_BLOCK = (
+    f"{POLY34_GATE}\nintervening\n{POLY34_RULE_BLOCK}"
+)
 ACTIVE3_WELL = "well = nwell.or(pwell) if need_well"
 ACTIVE3_RULE = (
     "well.enclosing(active, 55.nm, euclidian)"
@@ -412,7 +424,7 @@ class M1ResidentMorphologyTransformTest(unittest.TestCase):
 
 
 class Poly34TransformTest(unittest.TestCase):
-    def test_rewrites_only_the_exact_pair(self) -> None:
+    def test_rewrites_exact_gate_and_rule_anchors(self) -> None:
         source = f"before\n{POLY34_SOURCE_BLOCK}\nafter\n"
 
         transformed = generator.add_poly34(source)
@@ -420,12 +432,18 @@ class Poly34TransformTest(unittest.TestCase):
         self.assertTrue(transformed.startswith("before\n"))
         self.assertTrue(transformed.endswith("\nafter\n"))
         self.assertIn(
+            "poly34_raw_clean = "
+            "poly.respond_to?(:cuda_poly34_raw_clean?) "
+            "&amp;&amp; poly.cuda_poly34_raw_clean?(active)",
+            transformed,
+        )
+        self.assertIn(
             "poly34_clean = poly.respond_to?(:cuda_poly34_clean?) "
             "&amp;&amp; poly.cuda_poly34_clean?(active, gate)",
             transformed,
         )
         self.assertIn("rescue StandardError =&gt; error", transformed)
-        self.assertIn("poly34_clean = false", transformed)
+        self.assertIn("poly34_raw_clean = false", transformed)
         self.assertIn(
             'info("CUDA POLY.3/.4 Ruby fallback: #{poly34_error}") '
             "if poly34_error",
@@ -444,42 +462,85 @@ class Poly34TransformTest(unittest.TestCase):
 
         # The only projection-enclosure calls left are the two historical
         # expressions preserved literally inside the fail-closed CPU branch.
+        self.assertEqual(transformed.count(POLY34_LAZY_GATE), 1)
+        self.assertNotIn(POLY34_GATE + "\n", transformed)
         self.assertEqual(transformed.count(POLY3), 1)
         self.assertEqual(transformed.count(POLY4), 1)
-        false_branch = transformed.split("else\n", 1)[1].split("\nend", 1)[0]
+        false_branch = transformed.split(
+            "\nif poly34_clean\n", 1
+        )[1].split("\nelse\n", 1)[1].split("\nend", 1)[0]
         self.assertEqual(false_branch, f"  {POLY3}\n  {POLY4}")
 
-    def test_preserves_output_order_and_pristine_cpu_postprocessing(
+    def test_raw_owner_is_the_exact_sole_consumer_guard(self) -> None:
+        transformed = generator.add_poly34(POLY34_SOURCE_BLOCK)
+
+        owner = next(
+            line
+            for line in transformed.splitlines()
+            if line.startswith("poly34_raw_owner =")
+        )
+        self.assertEqual(owner, POLY34_RAW_OWNER)
+
+    def test_clean_branch_has_no_gate_or_cpu_postprocessing_dependency(
         self,
     ) -> None:
         transformed = generator.add_poly34(POLY34_SOURCE_BLOCK)
 
         clean_branch = transformed.split(
-            "if poly34_clean\n", 1
+            "\nif poly34_clean\n", 1
         )[1].split("\nelse", 1)[0]
         self.assertLess(
             clean_branch.index('output("POLY.3"'),
             clean_branch.index('output("POLY.4"'),
         )
+        self.assertNotIn("gate =", clean_branch)
+        self.assertNotIn("(gate", clean_branch)
         self.assertNotIn(".enclosing", clean_branch)
         self.assertNotIn(".polygons", clean_branch)
         self.assertNotIn(".without_area", clean_branch)
 
-    def test_ruby_exception_path_precedes_pristine_cpu_fallback(self) -> None:
+    def test_raw_decline_or_exception_cannot_try_legacy(self) -> None:
         transformed = generator.add_poly34(POLY34_SOURCE_BLOCK)
 
-        begin_at = transformed.index("  begin\n")
-        call_at = transformed.index("poly.cuda_poly34_clean?(active, gate)")
-        rescue_at = transformed.index("  rescue StandardError =&gt; error")
-        fail_closed_at = transformed.index(
-            "    poly34_clean = false", rescue_at
+        raw_call_at = transformed.index(
+            "poly.cuda_poly34_raw_clean?(active)"
+        )
+        raw_rescue_at = transformed.index(
+            "rescue StandardError =&gt; error", raw_call_at
+        )
+        raw_reset_at = transformed.index(
+            "poly34_raw_clean = false", raw_rescue_at
+        )
+        lazy_gate_at = transformed.index(POLY34_LAZY_GATE)
+        legacy_guard = (
+            "if poly34_requested &amp;&amp; !poly34_raw_owner"
+        )
+        legacy_guard_at = transformed.index(legacy_guard)
+        legacy_call_at = transformed.index(
+            "poly.cuda_poly34_clean?(active, gate)"
         )
         cpu_branch_at = transformed.index(f"  {POLY3}")
 
-        self.assertLess(begin_at, call_at)
-        self.assertLess(call_at, rescue_at)
-        self.assertLess(rescue_at, fail_closed_at)
-        self.assertLess(fail_closed_at, cpu_branch_at)
+        self.assertLess(raw_call_at, raw_rescue_at)
+        self.assertLess(raw_rescue_at, raw_reset_at)
+        self.assertLess(raw_reset_at, lazy_gate_at)
+        self.assertLess(lazy_gate_at, legacy_guard_at)
+        self.assertLess(legacy_guard_at, legacy_call_at)
+        self.assertLess(legacy_call_at, cpu_branch_at)
+        self.assertEqual(transformed.count(legacy_guard), 1)
+
+    def test_legacy_hook_is_retained_only_for_nonowner_modes(self) -> None:
+        transformed = generator.add_poly34(POLY34_SOURCE_BLOCK)
+
+        legacy_block = transformed.split(
+            "if poly34_requested &amp;&amp; !poly34_raw_owner\n", 1
+        )[1].split("\nend", 1)[0]
+        self.assertIn(
+            "poly.cuda_poly34_clean?(active, gate)", legacy_block
+        )
+        self.assertEqual(
+            transformed.count("poly.cuda_poly34_clean?(active, gate)"), 1
+        )
 
     def test_rejects_a_changed_rule(self) -> None:
         changed = POLY34_SOURCE_BLOCK.replace("70.nm", "71.nm")
@@ -490,8 +551,33 @@ class Poly34TransformTest(unittest.TestCase):
         ):
             generator.add_poly34(changed)
 
-    def test_rejects_duplicate_source_pairs(self) -> None:
-        duplicated = f"{POLY34_SOURCE_BLOCK}\n{POLY34_SOURCE_BLOCK}"
+    def test_rejects_changed_or_duplicate_gate_anchor(self) -> None:
+        changed = POLY34_SOURCE_BLOCK.replace(
+            "if need_gate", "if need_gate_now"
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"POLY\.3/\.4 raw GATE transaction: "
+            r"expected one source block, found 0",
+        ):
+            generator.add_poly34(changed)
+
+        duplicated = (
+            f"{POLY34_GATE}\n{POLY34_GATE}\n"
+            f"intervening\n{POLY34_RULE_BLOCK}"
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"POLY\.3/\.4 raw GATE transaction: "
+            r"expected one source block, found 2",
+        ):
+            generator.add_poly34(duplicated)
+
+    def test_rejects_duplicate_rule_anchor(self) -> None:
+        duplicated = (
+            f"{POLY34_GATE}\nintervening\n"
+            f"{POLY34_RULE_BLOCK}\n{POLY34_RULE_BLOCK}"
+        )
 
         with self.assertRaisesRegex(
             RuntimeError,
@@ -504,12 +590,30 @@ class Poly34TransformTest(unittest.TestCase):
         injected = generator.inject_poly34_ruby_exception(transformed)
 
         self.assertNotIn(
+            "poly.cuda_poly34_raw_clean?(active)", injected
+        )
+        self.assertIn(
             "poly.cuda_poly34_clean?(active, gate)", injected
         )
         self.assertEqual(
             injected.count('raise("injected POLY34 Ruby exception")'), 1
         )
         self.assertIn("rescue StandardError =&gt; error", injected)
+        raise_at = injected.index(
+            'raise("injected POLY34 Ruby exception")'
+        )
+        rescue_at = injected.index(
+            "rescue StandardError =&gt; error", raise_at
+        )
+        reset_at = injected.index(
+            "poly34_raw_clean = false", rescue_at
+        )
+        gate_at = injected.index(POLY34_LAZY_GATE)
+        cpu_at = injected.index(f"  {POLY3}")
+        self.assertLess(raise_at, rescue_at)
+        self.assertLess(rescue_at, reset_at)
+        self.assertLess(reset_at, gate_at)
+        self.assertLess(gate_at, cpu_at)
         self.assertEqual(injected.count(POLY3), 1)
         self.assertEqual(injected.count(POLY4), 1)
 

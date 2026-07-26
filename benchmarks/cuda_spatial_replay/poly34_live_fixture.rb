@@ -134,6 +134,41 @@ hier_transform_hit.insert(
   )
 )
 
+# POLY and ACTIVE live in different hierarchy leaves and meet only after
+# expansion into the common top-cell coordinate system.  This guards the raw
+# CUDA join against an unsafe context-local implementation.
+cross_poly_leaf = poly34_cell(
+  layout,
+  "POLY34_CROSS_CONTEXT_POLY_LEAF",
+  poly,
+  active,
+  [gate],
+  []
+)
+cross_active_leaf = poly34_cell(
+  layout,
+  "POLY34_CROSS_CONTEXT_ACTIVE_LEAF",
+  poly,
+  active,
+  [],
+  [gate]
+)
+cross_context_clean = layout.create_cell("POLY34_CROSS_CONTEXT_CLEAN")
+cross_context_transform =
+  RBA::Trans.new(RBA::Trans::M90, 25_000, 35_000)
+cross_context_clean.insert(
+  RBA::CellInstArray.new(
+    cross_poly_leaf.cell_index,
+    cross_context_transform
+  )
+)
+cross_context_clean.insert(
+  RBA::CellInstArray.new(
+    cross_active_leaf.cell_index,
+    cross_context_transform
+  )
+)
+
 # The leaf template is stored once and occurs 2048 times through two
 # transformed 32x32 arrays.  Every gate is clean by the coincident zero-area
 # terminal rule.  This is the hierarchy-reuse head check, not a flat census.
@@ -172,6 +207,7 @@ hier_clean.insert(
 
 expected_tops = %w[
   POLY34_CLEAN
+  POLY34_CROSS_CONTEXT_CLEAN
   POLY34_HIER_CLEAN
   POLY34_HIER_TRANSFORM_HIT
   POLY34_MANHATTAN_PRIMARY_CLEAN
@@ -188,5 +224,6 @@ layout.write(output)
 puts(
   "POLY34_LIVE_FIXTURE ok path=#{output}" \
   " tops=#{expected_tops.length} dbu=#{layout.dbu}" \
-  " hierarchy_gate_occurrences=2048 transformed_hit_occurrences=6"
+  " hierarchy_gate_occurrences=2048 transformed_hit_occurrences=6" \
+  " cross_context_gate_occurrences=1"
 )

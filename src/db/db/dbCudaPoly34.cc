@@ -16,6 +16,7 @@
 
 #include "dbCell.h"
 #include "dbDeepShapeStore.h"
+#include "dbLayerProperties.h"
 #include "dbLayout.h"
 #include "dbPolygonGenerators.h"
 #include "dbPolygonTools.h"
@@ -47,6 +48,7 @@ namespace
 {
 
 const uint32_t scene_format_version = 1;
+const uint32_t raw_scene_format_version = 2;
 const uint32_t qualified_dbu_per_micron = 2000;
 const int64_t qualified_poly3_distance = 110;
 const int64_t qualified_poly4_distance = 140;
@@ -375,6 +377,42 @@ void append_cell_layer (
   }
 }
 
+void append_raw_cell_layer (
+  const db::Cell &cell, unsigned int layer, uint32_t domain,
+  uint64_t maximum, CudaPoly34Scene &scene,
+  klayout_cuda_spatial_poly34_domain_span_v1 &span,
+  LocalBounds &bounds)
+{
+  if (domain != KLAYOUT_CUDA_SPATIAL_POLY34_POLY_DOMAIN &&
+      domain != KLAYOUT_CUDA_SPATIAL_POLY34_ACTIVE_DOMAIN) {
+    throw Poly34Decline ("invalid raw POLY34 geometry domain");
+  }
+  span.box_begin =
+    vector_size_u64 (scene.boxes.size (), "raw POLY34 box begin");
+  span.box_count = 0;
+  span.reserved0 = 0;
+
+  const db::Shapes &shapes = cell.shapes (layer);
+  for (db::Shapes::shape_iterator shape =
+         shapes.begin (db::ShapeIterator::All);
+       ! shape.at_end (); ++shape) {
+    // Region polygon input ignores physical-layer labels.  Preserve that
+    // exact filtering at the raw ABI boundary and reject every other
+    // unsupported non-polygon record through append_primary_polygon.
+    if (shape->is_text ()) {
+      continue;
+    }
+    const size_t before = scene.boxes.size ();
+    append_primary_polygon (*shape, maximum, scene, bounds);
+    const size_t added = scene.boxes.size () - before;
+    if (added > std::numeric_limits<uint32_t>::max () - span.box_count) {
+      throw Poly34Decline (
+        "per-cell raw POLY34 box count exceeds uint32");
+    }
+    span.box_count += uint32_t (added);
+  }
+}
+
 InstanceTemplate make_instance (
   const db::Instance &instance,
   const std::map<db::cell_index_type, uint32_t> &dense_cells)
@@ -618,7 +656,7 @@ void add_context_domain (
 
 void derive_context_lists_and_bounds (
   CudaPoly34Scene &scene, const std::vector<LocalBounds> &bounds,
-  uint64_t maximum)
+  uint64_t maximum, bool require_gate)
 {
   for (size_t context_id = 0;
        context_id < scene.contexts.size (); ++context_id) {
@@ -640,11 +678,18 @@ void derive_context_lists_and_bounds (
       cell.domains [KLAYOUT_CUDA_SPATIAL_POLY34_ACTIVE_DOMAIN].box_count,
       maximum, scene.active_contexts, scene.active_offsets,
       scene.flat_boxes [KLAYOUT_CUDA_SPATIAL_POLY34_ACTIVE_DOMAIN]);
-    add_context_domain (
-      uint32_t (context_id),
-      cell.domains [KLAYOUT_CUDA_SPATIAL_POLY34_GATE_DOMAIN].box_count,
-      maximum, scene.gate_contexts, scene.gate_offsets,
-      scene.flat_boxes [KLAYOUT_CUDA_SPATIAL_POLY34_GATE_DOMAIN]);
+    if (require_gate) {
+      add_context_domain (
+        uint32_t (context_id),
+        cell.domains [KLAYOUT_CUDA_SPATIAL_POLY34_GATE_DOMAIN].box_count,
+        maximum, scene.gate_contexts, scene.gate_offsets,
+        scene.flat_boxes [KLAYOUT_CUDA_SPATIAL_POLY34_GATE_DOMAIN]);
+    } else if (
+      cell.domains [KLAYOUT_CUDA_SPATIAL_POLY34_GATE_DOMAIN].box_count ||
+      cell.domains [KLAYOUT_CUDA_SPATIAL_POLY34_GATE_DOMAIN].reserved0) {
+      throw Poly34Decline (
+        "raw POLY34 scene unexpectedly contains a GATE span");
+    }
     add_world_bounds (scene, context, bounds [context.cell_id]);
   }
 
@@ -659,7 +704,10 @@ void derive_context_lists_and_bounds (
       ! scene.have_scene_box ||
       scene.poly_contexts.empty () ||
       scene.active_contexts.empty () ||
-      scene.gate_contexts.empty ()) {
+      (require_gate && scene.gate_contexts.empty ()) ||
+      (! require_gate &&
+       (! scene.gate_contexts.empty () || ! scene.gate_offsets.empty () ||
+        scene.flat_boxes [KLAYOUT_CUDA_SPATIAL_POLY34_GATE_DOMAIN] != 0))) {
     throw Poly34Decline (
       "POLY34 scene is empty or exceeds aggregate flat capacity");
   }
@@ -713,6 +761,46 @@ void validate_inputs (
   if (poly.layout ().dbu () != 0.0005) {
     throw Poly34Decline (
       "POLY34 scene DBU is not the qualified 0.5 nm");
+  }
+}
+
+void validate_raw_inputs (
+  const db::DeepLayer &poly, const db::DeepLayer &active,
+  const CudaPoly34SceneLimits &limits)
+{
+  if (! limits.max_contexts || ! limits.max_flat_boxes ||
+      limits.max_contexts > std::numeric_limits<uint32_t>::max ()) {
+    throw Poly34Decline (
+      "raw POLY34 scene capacity is zero or exceeds context IDs");
+  }
+  if (poly.store () != active.store () ||
+      &poly.layout () != &active.layout () ||
+      poly.layout_index () != active.layout_index () ||
+      poly.initial_cell ().cell_index () !=
+        active.initial_cell ().cell_index ()) {
+    throw Poly34Decline (
+      "raw POLY34 operands do not share one store, layout and top cell");
+  }
+  if (poly.breakout_cells () != 0 || active.breakout_cells () != 0) {
+    throw Poly34Decline (
+      "raw POLY34 scene has hierarchy breakout cells");
+  }
+  if (poly.layer () == active.layer () ||
+      poly.layer () >= poly.layout ().layers () ||
+      active.layer () >= active.layout ().layers ()) {
+    throw Poly34Decline (
+      "raw POLY34 operands do not have two valid distinct layer identities");
+  }
+  if (! poly.layout ().get_properties (poly.layer ()).log_equal (
+        db::LayerProperties (9, 0)) ||
+      ! active.layout ().get_properties (active.layer ()).log_equal (
+        db::LayerProperties (1, 0))) {
+    throw Poly34Decline (
+      "raw POLY34 operands are not physical POLY 9/0 and ACTIVE 1/0");
+  }
+  if (poly.layout ().dbu () != 0.0005) {
+    throw Poly34Decline (
+      "raw POLY34 scene DBU is not the qualified 0.5 nm");
   }
 }
 
@@ -792,7 +880,89 @@ CudaPoly34Scene serialize_live_scene (
   }
   expand_contexts (
     scene.root_cell, templates, max_contexts, scene.contexts);
-  derive_context_lists_and_bounds (scene, bounds, max_flat_boxes);
+  derive_context_lists_and_bounds (scene, bounds, max_flat_boxes, true);
+  return scene;
+}
+
+CudaPoly34Scene serialize_raw_live_scene (
+  const db::DeepLayer &poly, const db::DeepLayer &active,
+  uint64_t max_contexts, uint64_t max_flat_boxes)
+{
+  const db::Layout &layout = poly.layout ();
+  const db::cell_index_type top = poly.initial_cell ().cell_index ();
+  std::set<db::cell_index_type> reachable;
+  reachable.insert (top);
+  poly.initial_cell ().collect_called_cells (reachable);
+  if (reachable.empty () ||
+      reachable.size () > std::numeric_limits<uint32_t>::max () ||
+      reachable.size () > max_contexts) {
+    throw Poly34Decline (
+      "reachable raw POLY34 hierarchy has an invalid cell count");
+  }
+
+  std::map<db::cell_index_type, uint32_t> dense_cells;
+  uint32_t dense = 0;
+  for (std::set<db::cell_index_type>::const_iterator cell =
+         reachable.begin (); cell != reachable.end (); ++cell, ++dense) {
+    dense_cells.insert (std::make_pair (*cell, dense));
+  }
+  const std::map<db::cell_index_type, uint32_t>::const_iterator root =
+    dense_cells.find (top);
+  if (root == dense_cells.end ()) {
+    throw Poly34Decline (
+      "raw POLY34 initial cell is absent from hierarchy census");
+  }
+
+  CudaPoly34Scene scene;
+  scene.root_cell = root->second;
+  scene.store_identity =
+    uint64_t (reinterpret_cast<std::uintptr_t> (poly.store ()));
+  scene.layout_identity =
+    uint64_t (reinterpret_cast<std::uintptr_t> (&poly.layout ()));
+  scene.top_cell_identity = uint64_t (top);
+  scene.layer_ids [KLAYOUT_CUDA_SPATIAL_POLY34_POLY_DOMAIN] = poly.layer ();
+  scene.layer_ids [KLAYOUT_CUDA_SPATIAL_POLY34_ACTIVE_DOMAIN] =
+    active.layer ();
+  scene.layer_ids [KLAYOUT_CUDA_SPATIAL_POLY34_GATE_DOMAIN] =
+    KLAYOUT_CUDA_SPATIAL_POLY34_NO_GATE_LAYER;
+  scene.cells.resize (reachable.size ());
+  std::vector<LocalBounds> bounds (reachable.size ());
+  std::vector<CellTemplate> templates (reachable.size ());
+  for (std::set<db::cell_index_type>::const_iterator source =
+         reachable.begin (); source != reachable.end (); ++source) {
+    const uint32_t cell_id = dense_cells.find (*source)->second;
+    const db::Cell &cell = layout.cell (*source);
+    for (db::Cell::const_iterator instance = cell.begin ();
+         ! instance.at_end (); ++instance) {
+      templates [cell_id].instances.push_back (
+        make_instance (*instance, dense_cells));
+    }
+
+    klayout_cuda_spatial_poly34_cell_v1 record;
+    std::memset (&record, 0, sizeof (record));
+    record.source_cell_index = uint64_t (*source);
+    append_raw_cell_layer (
+      cell, poly.layer (), KLAYOUT_CUDA_SPATIAL_POLY34_POLY_DOMAIN,
+      max_flat_boxes, scene,
+      record.domains [KLAYOUT_CUDA_SPATIAL_POLY34_POLY_DOMAIN],
+      bounds [cell_id]);
+    append_raw_cell_layer (
+      cell, active.layer (), KLAYOUT_CUDA_SPATIAL_POLY34_ACTIVE_DOMAIN,
+      max_flat_boxes, scene,
+      record.domains [KLAYOUT_CUDA_SPATIAL_POLY34_ACTIVE_DOMAIN],
+      bounds [cell_id]);
+    klayout_cuda_spatial_poly34_domain_span_v1 &gate =
+      record.domains [KLAYOUT_CUDA_SPATIAL_POLY34_GATE_DOMAIN];
+    gate.box_begin =
+      vector_size_u64 (scene.boxes.size (), "raw POLY34 GATE box begin");
+    gate.box_count = 0;
+    gate.reserved0 = 0;
+    scene.cells [cell_id] = record;
+  }
+  expand_contexts (
+    scene.root_cell, templates, max_contexts, scene.contexts);
+  derive_context_lists_and_bounds (
+    scene, bounds, max_flat_boxes, false);
   return scene;
 }
 
@@ -915,6 +1085,28 @@ bool cuda_poly34_build_scene (
   } catch (...) {
     set_reason (
       decline_reason, "unknown POLY34 scene-lowering exception");
+  }
+  return false;
+}
+
+bool cuda_poly34_build_raw_scene (
+  const db::DeepLayer &raw_poly, const db::DeepLayer &raw_active,
+  const CudaPoly34SceneLimits &limits, CudaPoly34Scene &scene,
+  std::string *decline_reason)
+{
+  try {
+    validate_record_layouts ();
+    validate_raw_inputs (raw_poly, raw_active, limits);
+    CudaPoly34Scene built = serialize_raw_live_scene (
+      raw_poly, raw_active, limits.max_contexts, limits.max_flat_boxes);
+    scene.swap (built);
+    set_reason (decline_reason, "");
+    return true;
+  } catch (const std::exception &ex) {
+    set_reason (decline_reason, ex.what ());
+  } catch (...) {
+    set_reason (
+      decline_reason, "unknown raw POLY34 scene-lowering exception");
   }
   return false;
 }
@@ -1085,6 +1277,188 @@ bool cuda_poly34_try_empty (
     if (telemetry) {
       try {
         tl::info << "CUDA POLY.3/.4 live lowering:"
+                 << " outcome=cpu-fallback message=unknown exception";
+      } catch (...) {
+        //  Telemetry must never turn a speculative decline into an error.
+      }
+    }
+  }
+  return false;
+}
+
+bool cuda_poly34_try_raw_empty (
+  const db::DeepLayer &raw_poly, const db::DeepLayer &raw_active)
+{
+  const bool telemetry = env_enabled ("KLAYOUT_CUDA_POLY34_TELEMETRY");
+  const std::chrono::steady_clock::time_point begin =
+    std::chrono::steady_clock::now ();
+  try {
+    validate_record_layouts ();
+    if (! db::cuda_spatial_poly34_requested ()) {
+      return false;
+    }
+
+    const uint64_t max_contexts = env_u64 (
+      "KLAYOUT_CUDA_POLY34_MAX_CONTEXTS", default_max_contexts);
+    const uint64_t max_flat_boxes = env_u64 (
+      "KLAYOUT_CUDA_POLY34_MAX_FLAT_BOXES", default_max_flat_boxes);
+    const uint64_t max_grid_cells = env_u64 (
+      "KLAYOUT_CUDA_POLY34_MAX_GRID_CELLS", default_max_grid_cells);
+    const uint64_t max_poly_memberships = env_u64 (
+      "KLAYOUT_CUDA_POLY34_MAX_POLY_MEMBERSHIPS",
+      default_max_memberships);
+    const uint64_t max_active_memberships = env_u64 (
+      "KLAYOUT_CUDA_POLY34_MAX_ACTIVE_MEMBERSHIPS",
+      default_max_memberships);
+    const uint64_t max_query_visits = env_u64 (
+      "KLAYOUT_CUDA_POLY34_MAX_QUERY_VISITS",
+      default_max_query_visits);
+    const uint64_t max_candidate_work = env_u64 (
+      "KLAYOUT_CUDA_POLY34_MAX_CANDIDATE_WORK",
+      default_max_candidate_work);
+    if (! max_contexts || ! max_flat_boxes || ! max_grid_cells ||
+        ! max_poly_memberships || ! max_active_memberships ||
+        ! max_query_visits || ! max_candidate_work ||
+        max_contexts > std::numeric_limits<uint32_t>::max () ||
+        max_grid_cells > std::numeric_limits<uint32_t>::max () ||
+        max_poly_memberships > std::numeric_limits<uint32_t>::max () ||
+        max_active_memberships > std::numeric_limits<uint32_t>::max ()) {
+      throw Poly34Decline (
+        "a raw POLY34 capacity is zero or exceeds format-2 IDs");
+    }
+
+    CudaPoly34SceneLimits limits;
+    limits.max_contexts = max_contexts;
+    limits.max_flat_boxes = max_flat_boxes;
+    CudaPoly34Scene scene;
+    std::string reason;
+    if (! cuda_poly34_build_raw_scene (
+          raw_poly, raw_active, limits, scene, &reason)) {
+      throw Poly34Decline (
+        reason.empty ()
+          ? "unable to build live raw POLY34 scene"
+          : reason);
+    }
+    if (! scene.gate_contexts.empty () || ! scene.gate_offsets.empty () ||
+        scene.flat_boxes [KLAYOUT_CUDA_SPATIAL_POLY34_GATE_DOMAIN] != 0 ||
+        scene.layer_ids [KLAYOUT_CUDA_SPATIAL_POLY34_GATE_DOMAIN] !=
+          KLAYOUT_CUDA_SPATIAL_POLY34_NO_GATE_LAYER) {
+      throw Poly34Decline (
+        "raw POLY34 host scene unexpectedly materialized GATE");
+    }
+
+    klayout_cuda_spatial_poly34_request_v1 request;
+    std::memset (&request, 0, sizeof (request));
+    request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+    request.struct_size = sizeof (request);
+    request.opcode =
+      KLAYOUT_CUDA_SPATIAL_POLY34_RAW_TERMINAL_EMPTY;
+    request.option_flags =
+      KLAYOUT_CUDA_SPATIAL_POLY34_RAW_QUALIFIED_OPTIONS;
+    request.format_version = raw_scene_format_version;
+    request.dbu_per_micron = qualified_dbu_per_micron;
+    request.root_cell = scene.root_cell;
+    request.requested_mask = KLAYOUT_CUDA_SPATIAL_POLY34_ALL_RULES;
+    request.device = env_device ();
+    request.poly3_distance = qualified_poly3_distance;
+    request.poly4_distance = qualified_poly4_distance;
+    request.grid_cell_size = qualified_grid_cell;
+    request.store_identity = scene.store_identity;
+    request.layout_identity = scene.layout_identity;
+    request.top_cell_identity = scene.top_cell_identity;
+    request.poly_layer_id =
+      scene.layer_ids [KLAYOUT_CUDA_SPATIAL_POLY34_POLY_DOMAIN];
+    request.active_layer_id =
+      scene.layer_ids [KLAYOUT_CUDA_SPATIAL_POLY34_ACTIVE_DOMAIN];
+    request.gate_layer_id = KLAYOUT_CUDA_SPATIAL_POLY34_NO_GATE_LAYER;
+    request.contexts = scene.contexts.data ();
+    request.context_count = scene.contexts.size ();
+    request.context_record_bytes =
+      sizeof (klayout_cuda_spatial_poly34_context_v1);
+    request.poly_contexts = scene.poly_contexts.data ();
+    request.poly_context_count = scene.poly_contexts.size ();
+    request.poly_offsets = scene.poly_offsets.data ();
+    request.poly_offset_count = scene.poly_offsets.size ();
+    request.active_contexts = scene.active_contexts.data ();
+    request.active_context_count = scene.active_contexts.size ();
+    request.active_offsets = scene.active_offsets.data ();
+    request.active_offset_count = scene.active_offsets.size ();
+    request.gate_contexts = 0;
+    request.gate_context_count = 0;
+    request.gate_offsets = 0;
+    request.gate_offset_count = 0;
+    request.cells = scene.cells.data ();
+    request.cell_count = scene.cells.size ();
+    request.cell_record_bytes =
+      sizeof (klayout_cuda_spatial_poly34_cell_v1);
+    request.boxes = scene.boxes.data ();
+    request.box_count = scene.boxes.size ();
+    request.box_record_bytes =
+      sizeof (klayout_cuda_spatial_poly34_box_v1);
+    request.flat_poly_box_count =
+      scene.flat_boxes [KLAYOUT_CUDA_SPATIAL_POLY34_POLY_DOMAIN];
+    request.flat_active_box_count =
+      scene.flat_boxes [KLAYOUT_CUDA_SPATIAL_POLY34_ACTIVE_DOMAIN];
+    request.flat_gate_box_count = 0;
+    request.scene_left = scene.scene_left;
+    request.scene_bottom = scene.scene_bottom;
+    request.scene_right = scene.scene_right;
+    request.scene_top = scene.scene_top;
+    request.max_contexts = max_contexts;
+    request.max_flat_boxes = max_flat_boxes;
+    request.max_grid_cells = max_grid_cells;
+    request.max_poly_memberships = max_poly_memberships;
+    request.max_active_memberships = max_active_memberships;
+    request.max_query_visits = max_query_visits;
+    request.max_candidate_work = max_candidate_work;
+    request.max_candidates_per_gate = 64;
+
+    std::array<uint8_t, 32> digest;
+    if (! db::cuda_poly34_digest::request_digest (request, digest)) {
+      throw Poly34Decline (
+        "unable to digest live raw POLY34 request");
+    }
+    std::copy (digest.begin (), digest.end (), request.scene_digest);
+
+    const std::chrono::steady_clock::time_point call_begin =
+      std::chrono::steady_clock::now ();
+    const double lower_ms =
+      std::chrono::duration<double, std::milli> (
+        call_begin - begin).count ();
+    const db::CudaPoly34Attempt attempt =
+      db::cuda_spatial_try_poly34_empty (request);
+    const std::chrono::steady_clock::time_point end =
+      std::chrono::steady_clock::now ();
+    if (telemetry) {
+      tl::info << "CUDA POLY.3/.4 raw live lowering:"
+               << " contexts=" << request.context_count
+               << " cells=" << request.cell_count
+               << " stored_boxes=" << request.box_count
+               << " raw_poly_boxes=" << request.flat_poly_box_count
+               << " raw_active_boxes=" << request.flat_active_box_count
+               << " derived_gate_boxes=" << attempt.flat_gate_box_count
+               << " lower_ms=" << lower_ms
+               << " call_ms="
+               << std::chrono::duration<double, std::milli> (
+                    end - call_begin).count ()
+               << " live_total_ms="
+               << std::chrono::duration<double, std::milli> (
+                    end - begin).count ();
+    }
+    return attempt.disposition == db::CudaPoly34Attempt::CertifiedEmpty;
+  } catch (const std::exception &ex) {
+    if (telemetry) {
+      try {
+        tl::info << "CUDA POLY.3/.4 raw live lowering:"
+                 << " outcome=cpu-fallback message=" << ex.what ();
+      } catch (...) {
+        //  Telemetry must never turn a speculative decline into an error.
+      }
+    }
+  } catch (...) {
+    if (telemetry) {
+      try {
+        tl::info << "CUDA POLY.3/.4 raw live lowering:"
                  << " outcome=cpu-fallback message=unknown exception";
       } catch (...) {
         //  Telemetry must never turn a speculative decline into an error.

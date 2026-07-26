@@ -10,11 +10,13 @@ Usage:
     [--python PATH] [--timeout-seconds N] [--generate-only] [--ab-only] \
     [--keep-work]
 
-Generates the opt-in FreePDK45 POLY.3/.4 transaction deck and runs only the
+Generates the opt-in FreePDK45 POLY.3/.4 raw-owner deck and runs only the
 production m1_enclosure owner. The first two runs are a same-binary,
-same-generated-deck feature-off/live-CUDA A/B. Only after that exact report
-differential passes, injected-Ruby-exception and forced-capacity lanes prove
-that production declines retain both original CPU expressions.
+same-generated-deck feature-off/live-CUDA A/B. The CUDA owner must derive
+GATE on device directly from pristine POLY/ACTIVE. Only after that exact
+report differential passes, injected-Ruby-exception, forced-capacity,
+missing-backend, and ABI-compatible unsupported-backend lanes prove that
+every decline constructs pristine host GATE and runs both original CPU rules.
 
 The generator gate requires a pre-change default-deck reference. Generation
 without --poly34 must remain byte-identical to that reference; repeated default
@@ -144,6 +146,10 @@ fi
 [[ -f "${hook_probe}" ]] || die "POLY.3/.4 hook probe is missing"
 [[ -x /usr/bin/time ]] || die "/usr/bin/time is unavailable"
 [[ -x /usr/bin/timeout ]] || die "/usr/bin/timeout is unavailable"
+if (( ! generate_only && ! ab_only)); then
+  [[ -x /usr/bin/cc ]] ||
+    die "full fallback gate requires /usr/bin/cc for its unsupported DSO"
+fi
 
 python=$(command -v -- "${python}") ||
   die "Python interpreter is not executable: ${python}"
@@ -182,6 +188,9 @@ live_deck="${work}/decks/poly34-live.lydrc"
 live_repeat="${work}/decks/poly34-live-repeat.lydrc"
 exception_deck="${work}/decks/poly34-ruby-exception.lydrc"
 generator_log="${work}/logs/deck-generator.log"
+missing_backend="${work}/runtime/libklayout_cuda_spatial_missing.so"
+unsupported_backend_source="${work}/runtime/unsupported-poly34-backend.c"
+unsupported_backend="${work}/runtime/libklayout_cuda_spatial_unsupported.so"
 
 run_generator() {
   local output=$1
@@ -221,18 +230,56 @@ assert_deck_count() {
     die "${label}: expected ${expected} occurrences, found ${actual}"
 }
 
+assert_deck_line_count() {
+  local file=$1
+  local expected=$2
+  local pattern=$3
+  local label=$4
+  local actual
+  actual=$(grep -Fxc -- "${pattern}" "${file}" || true)
+  [[ "${actual}" == "${expected}" ]] ||
+    die "${label}: expected ${expected} exact lines, found ${actual}"
+}
+
 assert_deck_count 1 \
   'poly34_request = ENV["KLAYOUT_CUDA_POLY34"].to_s' \
   "Ruby opt-in source"
 assert_deck_count 1 \
+  "poly34_raw_owner = poly34_requested &amp;&amp; DRC &amp;&amp; run_poly &amp;&amp; !run_implant_contact &amp;&amp; !(ANTENNA &amp;&amp; run_antenna)" \
+  "raw sole-consumer owner"
+assert_deck_count 1 \
+  "poly.respond_to?(:cuda_poly34_raw_clean?)" \
+  "raw stock compatibility guard"
+assert_deck_count 1 \
+  "poly.cuda_poly34_raw_clean?(active)" \
+  "raw pre-GATE hook"
+assert_deck_count 1 \
+  "if poly34_requested &amp;&amp; !poly34_raw_owner" \
+  "legacy non-owner guard"
+assert_deck_count 1 \
   "poly.respond_to?(:cuda_poly34_clean?)" \
-  "stock compatibility guard"
+  "legacy non-owner compatibility guard"
+assert_deck_count 1 \
+  "poly.cuda_poly34_clean?(active, gate)" \
+  "legacy non-owner hook"
 assert_deck_count 1 \
   "CUDA POLY.3/.4 transaction:" \
   "transaction telemetry"
-assert_deck_count 1 \
+assert_deck_count 2 \
   "rescue StandardError =&gt; error" \
-  "Ruby exception guard"
+  "raw and legacy Ruby exception guards"
+assert_deck_line_count \
+  "${default_deck}" 1 \
+  "gate = poly &amp; active if need_gate" \
+  "default pristine GATE"
+assert_deck_line_count \
+  "${live_deck}" 0 \
+  "gate = poly &amp; active if need_gate" \
+  "eager GATE removal"
+assert_deck_line_count \
+  "${live_deck}" 1 \
+  "gate = poly &amp; active if need_gate &amp;&amp; !poly34_raw_clean" \
+  "fail-closed lazy GATE"
 assert_deck_count 1 \
   'poly34_empty.output("POLY.3"' \
   "POLY.3 certified-empty output"
@@ -250,9 +297,16 @@ assert_deck_count 1 \
   'raise("injected POLY34 Ruby exception")' "${exception_deck}")" == 1 ]] ||
   die "injected-exception deck does not contain exactly one injected exception"
 if grep -Fq -- \
-  "poly.cuda_poly34_clean?(active, gate)" "${exception_deck}"; then
-  die "injected-exception deck retained the live hook call"
+  "poly.cuda_poly34_raw_clean?(active)" "${exception_deck}"; then
+  die "injected-exception deck retained the raw hook call"
 fi
+grep -Fq -- \
+  "poly.cuda_poly34_clean?(active, gate)" "${exception_deck}" ||
+  die "injected-exception deck lost the legacy non-owner hook"
+assert_deck_line_count \
+  "${exception_deck}" 1 \
+  "gate = poly &amp; active if need_gate &amp;&amp; !poly34_raw_clean" \
+  "injected-exception lazy GATE"
 for expression in \
   'poly.enclosing(gate, 55.nm, projection).polygons.without_area(0).output("POLY.3"' \
   'active.enclosing(gate, 70.nm, projection).polygons.without_area(0).output("POLY.4"'; do
@@ -260,9 +314,29 @@ for expression in \
     die "injected-exception deck changed a pristine CPU expression"
 done
 
-mutated_source="${work}/decks/mutated-source.lydrc"
-mutated_output="${work}/decks/mutated-output.lydrc"
-mutation_log="${work}/logs/deck-mutation.log"
+raw_call_line=$(
+  grep -Fn -- "poly.cuda_poly34_raw_clean?(active)" "${live_deck}" |
+    cut -d: -f1
+)
+lazy_gate_line=$(
+  grep -Fn -- \
+    "gate = poly &amp; active if need_gate &amp;&amp; !poly34_raw_clean" \
+    "${live_deck}" |
+    cut -d: -f1
+)
+legacy_guard_line=$(
+  grep -Fn -- \
+    "if poly34_requested &amp;&amp; !poly34_raw_owner" "${live_deck}" |
+    cut -d: -f1
+)
+[[ "${raw_call_line}" -lt "${lazy_gate_line}" ]] ||
+  die "raw hook is not before lazy GATE"
+[[ "${lazy_gate_line}" -lt "${legacy_guard_line}" ]] ||
+  die "legacy non-owner hook is not after GATE"
+
+mutated_source="${work}/decks/mutated-rule-source.lydrc"
+mutated_output="${work}/decks/mutated-rule-output.lydrc"
+mutation_log="${work}/logs/deck-rule-mutation.log"
 sed \
   's/active\.enclosing(gate, 70\.nm, projection)/active.enclosing(gate, 71.nm, projection)/' \
   "${source_deck}" >"${mutated_source}"
@@ -281,8 +355,29 @@ grep -Fq -- \
     die "changed POLY.4 rule did not fail at the exact matcher"
   }
 
+mutated_gate_source="${work}/decks/mutated-gate-source.lydrc"
+mutated_gate_output="${work}/decks/mutated-gate-output.lydrc"
+gate_mutation_log="${work}/logs/deck-gate-mutation.log"
+sed \
+  '/^gate = poly &amp; active if need_gate$/s/need_gate$/need_gate_now/' \
+  "${source_deck}" >"${mutated_gate_source}"
+cmp -s -- "${source_deck}" "${mutated_gate_source}" &&
+  die "GATE mutation did not change the source deck"
+if "${python}" "${deck_generator}" \
+  --input "${mutated_gate_source}" --output "${mutated_gate_output}" \
+  --m1-contact --implant12 --poly34 >"${gate_mutation_log}" 2>&1; then
+  die "changed GATE anchor was incorrectly accepted"
+fi
+grep -Fq -- \
+  "POLY.3/.4 raw GATE transaction: expected one source block, found 0" \
+  "${gate_mutation_log}" ||
+  {
+    cat -- "${gate_mutation_log}" >&2
+    die "changed GATE anchor did not fail at the exact matcher"
+  }
+
 echo \
-  "POLY34_PRODUCTION_OWNER_GATE ok gate=generator default-byte-identical=1 repeatable=1 exact-matcher=1 ruby-rescue=1 injected-exception=1 pristine-cpu=2 ordered-empty-outputs=2"
+  "POLY34_PRODUCTION_OWNER_GATE ok gate=generator default-byte-identical=1 repeatable=1 exact-anchors=2 raw-pre-gate=1 lazy-gate=1 legacy-nonowner=retained ruby-rescue=2 injected-raw-exception=1 pristine-cpu=2 ordered-empty-outputs=2"
 
 if ((generate_only)); then
   sha256sum -- \
@@ -308,6 +403,8 @@ canonicalize_report() {
 run_host_hook_preflight() {
   local runtime="${work}/runtime/hook-probe"
   local log="${work}/logs/hook-probe.log"
+  local raw_probe="${work}/runtime/poly34-raw-hook-presence.drc"
+  local raw_log="${work}/logs/raw-hook-probe.log"
   mkdir -p -- \
     "${runtime}/home" "${runtime}/config" "${runtime}/cache" "${runtime}/tmp"
   if ! env -i \
@@ -326,8 +423,56 @@ run_host_hook_preflight() {
   fi
   grep -Fq -- "POLY34_HOOK_PRESENCE ok" "${log}" ||
     die "POLY.3/.4 hook probe completion marker is missing"
+
+  sed \
+    -e 's/cuda_poly34_clean?/cuda_poly34_raw_clean?/g' \
+    -e 's/POLY34_HOOK_PRESENCE/POLY34_RAW_HOOK_PRESENCE/g' \
+    "${hook_probe}" >"${raw_probe}"
+  cmp -s -- "${hook_probe}" "${raw_probe}" &&
+    die "raw POLY.3/.4 hook probe was not derived"
+  if ! env -i \
+    "HOME=${runtime}/home" \
+    "KLAYOUT_HOME=${runtime}/home" \
+    "XDG_CONFIG_HOME=${runtime}/config" \
+    "XDG_CACHE_HOME=${runtime}/cache" \
+    "TMPDIR=${runtime}/tmp" \
+    PATH=/usr/bin:/bin \
+    LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC \
+    QT_QPA_PLATFORM=offscreen \
+    "LD_LIBRARY_PATH=${runtime_ld_library_path}" \
+    "${klayout}" -b -r "${raw_probe}" >"${raw_log}" 2>&1; then
+    cat -- "${raw_log}" >&2
+    die "loaded KLayout runtime failed the raw POLY.3/.4 hook probe"
+  fi
+  grep -Fq -- "POLY34_RAW_HOOK_PRESENCE ok" "${raw_log}" ||
+    die "raw POLY.3/.4 hook probe completion marker is missing"
   echo \
-    "POLY34_PRODUCTION_OWNER_GATE ok gate=host-hook-preflight runtime=bound"
+    "POLY34_PRODUCTION_OWNER_GATE ok gate=host-hook-preflight raw=present legacy=present runtime=bound"
+}
+
+build_unsupported_backend() {
+  printf '%s\n' \
+    'unsigned int klayout_cuda_spatial_abi_version(void)' \
+    '{' \
+    '  return 1u;' \
+    '}' >"${unsupported_backend_source}"
+  /usr/bin/cc \
+    -shared -fPIC -O2 \
+    -Wl,-soname,libklayout_cuda_spatial_unsupported.so \
+    -o "${unsupported_backend}" "${unsupported_backend_source}"
+  [[ -s "${unsupported_backend}" ]] ||
+    die "unsupported-backend fixture was not built"
+  /usr/bin/nm -D "${unsupported_backend}" \
+    >"${work}/runtime/unsupported-poly34-backend.nm"
+  grep -Fq -- \
+    "klayout_cuda_spatial_abi_version" \
+    "${work}/runtime/unsupported-poly34-backend.nm" ||
+    die "unsupported-backend fixture has no compatible ABI entry point"
+  if grep -Fq -- \
+    "klayout_cuda_spatial_run_poly34_empty_v1" \
+    "${work}/runtime/unsupported-poly34-backend.nm"; then
+    die "unsupported-backend fixture unexpectedly exports POLY.3/.4"
+  fi
 }
 
 capture_runtime_closure() {
@@ -457,12 +602,12 @@ run_lane() {
   local lane=$1
   local mode=$2
   local lane_deck="${live_deck}"
+  local lane_backend="${backend}"
   local runtime="${work}/runtime/${lane}"
   local report="${work}/reports/${lane}.lyrdb"
   local log="${work}/logs/${lane}.log"
   local time_file="${work}/timings/${lane}.txt"
   local -a cuda_env=(
-    "KLAYOUT_CUDA_SPATIAL_BACKEND=${backend}"
     KLAYOUT_CUDA_ACTIVE3=1
     KLAYOUT_CUDA_ACTIVE3_TELEMETRY=1
     KLAYOUT_CUDA_M1_CONTACT=1
@@ -504,10 +649,25 @@ run_lane() {
         KLAYOUT_CUDA_POLY34_MAX_GRID_CELLS=1
       )
       ;;
+    missing)
+      lane_backend="${missing_backend}"
+      cuda_env+=(
+        KLAYOUT_CUDA_POLY34=1
+        KLAYOUT_CUDA_POLY34_TELEMETRY=1
+      )
+      ;;
+    unsupported)
+      lane_backend="${unsupported_backend}"
+      cuda_env+=(
+        KLAYOUT_CUDA_POLY34=1
+        KLAYOUT_CUDA_POLY34_TELEMETRY=1
+      )
+      ;;
     *)
       die "internal error: unknown lane mode ${mode}"
       ;;
   esac
+  cuda_env+=("KLAYOUT_CUDA_SPATIAL_BACKEND=${lane_backend}")
 
   set +e
   /usr/bin/time \
@@ -586,6 +746,28 @@ assert_transaction() {
     die "${lane}: expected transaction disposition ${disposition}"
 }
 
+telemetry_uint() {
+  local lane=$1
+  local marker=$2
+  local field=$3
+  local log="${work}/logs/${lane}.log"
+  local value
+  value=$(
+    awk -v marker="${marker}" -v key="${field}=" \
+      'index($0, marker) {
+         for (i = 1; i <= NF; ++i) {
+           if (index($i, key) == 1) {
+             print substr($i, length(key) + 1)
+           }
+         }
+       }' \
+      "${log}"
+  )
+  [[ "${value}" =~ ^[0-9]+$ ]] ||
+    die "${lane}: ${marker} has no unique unsigned ${field}"
+  printf '%s\n' "${value}"
+}
+
 # The requested timing comparison is deliberately first and serial.
 run_host_hook_preflight
 run_device_preflight control
@@ -609,18 +791,81 @@ cuda_certificate_count=$(
 [[ "${cuda_certificate_count}" == 1 ]] ||
   die "CUDA lane expected one terminal certificate, found ${cuda_certificate_count}"
 grep -Fq -- \
-  "CUDA POLY.3/.4 terminal-empty certificate: outcome=certified-empty contexts=849265 poly_boxes=5013998 active_boxes=2684780 gates=3401254 certified_mask=3 poly_candidates=4462594 active_candidates=3403326 atomic_empty=3401254 fallback_gates=0" \
+  "CUDA POLY.3/.4 terminal-empty certificate: outcome=certified-empty" \
   "${work}/logs/cuda.log" ||
-  die "CUDA lane did not report the exact production certificate census"
+  die "CUDA lane did not report a certified raw production certificate"
 grep -Fq -- \
   "fallback_flags=0 device_flags=0 message=complete atomic POLY.3/.4 terminal-empty certificate" \
   "${work}/logs/cuda.log" ||
   die "CUDA lane terminal certificate reported fallback or device flags"
 cuda_lowering_count=$(
-  grep -Fc -- "CUDA POLY.3/.4 live lowering:" "${work}/logs/cuda.log" || true
+  grep -Fc -- \
+    "CUDA POLY.3/.4 raw live lowering:" \
+    "${work}/logs/cuda.log" || true
 )
 [[ "${cuda_lowering_count}" == 1 ]] ||
-  die "CUDA lane expected one live-lowering marker, found ${cuda_lowering_count}"
+  die "CUDA lane expected one raw live-lowering marker, found ${cuda_lowering_count}"
+if grep -Fq -- \
+  "CUDA POLY.3/.4 live lowering:" "${work}/logs/cuda.log"; then
+  die "CUDA lane paid the legacy host-GATE/merged-input lowering path"
+fi
+if grep -Fq -- \
+  "CUDA POLY.3/.4 host guard:" "${work}/logs/cuda.log"; then
+  die "CUDA lane unexpectedly declined the raw host guard"
+fi
+
+raw_marker="CUDA POLY.3/.4 raw live lowering:"
+certificate_marker="CUDA POLY.3/.4 terminal-empty certificate:"
+cuda_raw_poly=$(
+  telemetry_uint cuda "${raw_marker}" raw_poly_boxes
+)
+cuda_raw_contexts=$(
+  telemetry_uint cuda "${raw_marker}" contexts
+)
+cuda_raw_active=$(
+  telemetry_uint cuda "${raw_marker}" raw_active_boxes
+)
+cuda_derived_gates=$(
+  telemetry_uint cuda "${raw_marker}" derived_gate_boxes
+)
+cuda_certificate_poly=$(
+  telemetry_uint cuda "${certificate_marker}" poly_boxes
+)
+cuda_certificate_contexts=$(
+  telemetry_uint cuda "${certificate_marker}" contexts
+)
+cuda_certificate_active=$(
+  telemetry_uint cuda "${certificate_marker}" active_boxes
+)
+cuda_certificate_gates=$(
+  telemetry_uint cuda "${certificate_marker}" gates
+)
+cuda_atomic_empty=$(
+  telemetry_uint cuda "${certificate_marker}" atomic_empty
+)
+cuda_certified_mask=$(
+  telemetry_uint cuda "${certificate_marker}" certified_mask
+)
+cuda_fallback_gates=$(
+  telemetry_uint cuda "${certificate_marker}" fallback_gates
+)
+[[ "${cuda_raw_poly}" -gt 0 && "${cuda_raw_active}" -gt 0 &&
+   "${cuda_derived_gates}" -gt 0 && "${cuda_raw_contexts}" -gt 0 ]] ||
+  die "CUDA lane reported an empty raw production census"
+[[ "${cuda_raw_contexts}" == "${cuda_certificate_contexts}" ]] ||
+  die "CUDA lane raw context census does not match the certificate"
+[[ "${cuda_raw_poly}" == "${cuda_certificate_poly}" ]] ||
+  die "CUDA lane raw POLY census does not match the certificate"
+[[ "${cuda_raw_active}" == "${cuda_certificate_active}" ]] ||
+  die "CUDA lane raw ACTIVE census does not match the certificate"
+[[ "${cuda_derived_gates}" == "${cuda_certificate_gates}" ]] ||
+  die "CUDA lane device-derived GATE census does not match the certificate"
+[[ "${cuda_derived_gates}" == "${cuda_atomic_empty}" ]] ||
+  die "CUDA lane did not certify every device-derived GATE tile"
+[[ "${cuda_certified_mask}" == 3 && "${cuda_fallback_gates}" == 0 ]] ||
+  die "CUDA lane did not atomically certify exactly POLY.3 and POLY.4"
+echo \
+  "POLY34_PRODUCTION_OWNER_GATE ok gate=raw-device-census contexts=${cuda_raw_contexts} raw_poly=${cuda_raw_poly} raw_active=${cuda_raw_active} device_gates=${cuda_derived_gates} host_gate=0 legacy_merged_lowering=0"
 for lane in control cuda; do
   grep -Fq -- \
     "CUDA spatial backend loaded: ${backend}" \
@@ -681,6 +926,8 @@ if ((ab_only)); then
     "${work}/logs/control-device-preflight.log" \
     "${work}/logs/cuda-device-preflight.log" \
     "${work}/logs/hook-probe.log" \
+    "${work}/logs/raw-hook-probe.log" \
+    "${work}/runtime/poly34-raw-hook-presence.drc" \
     "${deck_generator}" \
     "$0" \
     >"${work}/pinned-artifacts.sha256"
@@ -692,11 +939,11 @@ if ((ab_only)); then
   cat -- "${work}/timings/cuda.txt"
   cat -- "${work}/canonical-report-sha256.txt"
   grep -h -E -- \
-    'CUDA POLY\.3/\.4 transaction:|CUDA POLY\.3/\.4 live lowering:|CUDA M1 contact transaction:' \
+    'CUDA POLY\.3/\.4 transaction:|CUDA POLY\.3/\.4 raw live lowering:|CUDA POLY\.3/\.4 terminal-empty certificate:|CUDA M1 contact transaction:' \
     "${work}/logs/control.log" \
     "${work}/logs/cuda.log"
   echo \
-    "POLY34_PRODUCTION_OWNER_GATE PASS owner=m1_enclosure lanes=2 ab-first=1 canonical-reports=exact default-byte-identical=1 device-preflight=each-lane"
+    "POLY34_PRODUCTION_OWNER_GATE PASS owner=m1_enclosure lanes=2 ab-first=1 raw-device-derived-gate=1 host-gate-bypassed=1 canonical-reports=exact default-byte-identical=1 device-preflight=each-lane"
   exit 0
 fi
 
@@ -731,9 +978,16 @@ grep -Fq -- \
   "${work}/logs/exception.log" ||
   die "injected Ruby exception did not reach the fail-closed deck fallback"
 if grep -Fq -- \
-  "CUDA POLY.3/.4 live lowering:" "${work}/logs/exception.log"; then
-  die "injected Ruby exception unexpectedly reached live lowering"
+  "CUDA POLY.3/.4 raw live lowering:" "${work}/logs/exception.log" ||
+   grep -Fq -- \
+  "CUDA POLY.3/.4 live lowering:" "${work}/logs/exception.log" ||
+   grep -Fq -- \
+  "CUDA POLY.3/.4 terminal-empty certificate:" \
+  "${work}/logs/exception.log"; then
+  die "injected Ruby exception unexpectedly reached POLY.3/.4 lowering"
 fi
+echo \
+  "POLY34_PRODUCTION_OWNER_GATE ok gate=injected-raw-exception host-gate=constructed pristine-cpu=2 report=exact"
 
 run_device_preflight capacity
 cmp -s -- \
@@ -768,24 +1022,105 @@ capacity_certificate_count=$(
 [[ "${capacity_certificate_count}" == 1 ]] ||
   die "capacity: expected one terminal certificate, found ${capacity_certificate_count}"
 grep -Fq -- \
-  "CUDA POLY.3/.4 terminal-empty certificate: outcome=fallback contexts=849265 poly_boxes=5013998 active_boxes=2684780 gates=3401254 certified_mask=0 poly_candidates=0 active_candidates=0 atomic_empty=0 fallback_gates=0" \
+  "CUDA POLY.3/.4 terminal-empty certificate: outcome=fallback" \
   "${work}/logs/capacity.log" ||
-  die "forced-capacity lane did not report the exact production fallback census"
+  die "forced-capacity lane did not report the raw production fallback"
 grep -Fq -- \
   "fallback_flags=8 device_flags=0 message=POLY34 pipeline requested CPU fallback" \
   "${work}/logs/capacity.log" ||
   die "forced-capacity lane did not exercise the expected backend capacity decline"
 capacity_lowering_count=$(
   grep -Fc -- \
-    "CUDA POLY.3/.4 live lowering:" "${work}/logs/capacity.log" || true
+    "CUDA POLY.3/.4 raw live lowering:" \
+    "${work}/logs/capacity.log" || true
 )
 [[ "${capacity_lowering_count}" == 1 ]] ||
-  die "capacity: expected one live-lowering marker, found ${capacity_lowering_count}"
+  die "capacity: expected one raw live-lowering marker, found ${capacity_lowering_count}"
+if grep -Fq -- \
+  "CUDA POLY.3/.4 live lowering:" "${work}/logs/capacity.log"; then
+  die "forced-capacity raw decline incorrectly tried the legacy hook"
+fi
 if grep -Fq -- \
   "CUDA POLY.3/.4 terminal-empty certificate: outcome=certified-empty" \
   "${work}/logs/capacity.log"; then
   die "forced-capacity lane unexpectedly certified the transaction empty"
 fi
+capacity_derived_gates=$(
+  telemetry_uint capacity "${raw_marker}" derived_gate_boxes
+)
+capacity_certificate_gates=$(
+  telemetry_uint capacity "${certificate_marker}" gates
+)
+capacity_certified_mask=$(
+  telemetry_uint capacity "${certificate_marker}" certified_mask
+)
+capacity_atomic_empty=$(
+  telemetry_uint capacity "${certificate_marker}" atomic_empty
+)
+[[ "${capacity_derived_gates}" == "${capacity_certificate_gates}" ]] ||
+  die "capacity: raw lowering and backend GATE censuses disagree"
+[[ "${capacity_certified_mask}" == 0 && "${capacity_atomic_empty}" == 0 ]] ||
+  die "capacity: forced decline returned a consumable certificate"
+echo \
+  "POLY34_PRODUCTION_OWNER_GATE ok gate=forced-capacity raw-decline=1 legacy-retry=0 host-gate=constructed pristine-cpu=2 report=exact"
+
+build_unsupported_backend
+[[ ! -e "${missing_backend}" ]] ||
+  die "missing-backend fixture unexpectedly exists"
+
+run_lane missing missing
+assert_same_report missing
+assert_transaction missing full-cpu-fallback
+missing_host_guard_count=$(
+  grep -Fc -- \
+    "CUDA POLY.3/.4 host guard: outcome=cpu-fallback reason=raw-capability-unavailable" \
+    "${work}/logs/missing.log" || true
+)
+[[ "${missing_host_guard_count}" == 1 ]] ||
+  die "missing: raw capability guard did not decline exactly once"
+grep -Fq -- \
+  "unable to load CUDA spatial backend: ${missing_backend}" \
+  "${work}/logs/missing.log" ||
+  die "missing: exact loader failure is absent"
+for marker in \
+  "CUDA POLY.3/.4 raw live lowering:" \
+  "CUDA POLY.3/.4 live lowering:" \
+  "CUDA POLY.3/.4 terminal-empty certificate:"; do
+  if grep -Fq -- "${marker}" "${work}/logs/missing.log"; then
+    die "missing: unavailable backend crossed the pre-GATE capability guard"
+  fi
+done
+echo \
+  "POLY34_PRODUCTION_OWNER_GATE ok gate=missing-backend raw-capability-decline=1 host-gate=constructed pristine-cpu=2 report=exact"
+
+run_lane unsupported unsupported
+assert_same_report unsupported
+assert_transaction unsupported full-cpu-fallback
+unsupported_host_guard_count=$(
+  grep -Fc -- \
+    "CUDA POLY.3/.4 host guard: outcome=cpu-fallback reason=raw-capability-unavailable" \
+    "${work}/logs/unsupported.log" || true
+)
+[[ "${unsupported_host_guard_count}" == 1 ]] ||
+  die "unsupported: raw capability guard did not decline exactly once"
+grep -Fq -- \
+  "CUDA spatial backend loaded: ${unsupported_backend}" \
+  "${work}/logs/unsupported.log" ||
+  die "unsupported: ABI-compatible symbol-incomplete backend did not load"
+if grep -Fq -- \
+  "incompatible ABI" "${work}/logs/unsupported.log"; then
+  die "unsupported: fixture did not reach the missing-entry-point case"
+fi
+for marker in \
+  "CUDA POLY.3/.4 raw live lowering:" \
+  "CUDA POLY.3/.4 live lowering:" \
+  "CUDA POLY.3/.4 terminal-empty certificate:"; do
+  if grep -Fq -- "${marker}" "${work}/logs/unsupported.log"; then
+    die "unsupported: symbol-incomplete backend crossed the pre-GATE capability guard"
+  fi
+done
+echo \
+  "POLY34_PRODUCTION_OWNER_GATE ok gate=unsupported-backend abi=compatible poly34-entry=absent host-gate=constructed pristine-cpu=2 report=exact"
 
 sha256sum -- \
   "${klayout}" \
@@ -802,6 +1137,8 @@ sha256sum -- \
   "${work}/reports/cuda.canonical.lyrdb" \
   "${work}/reports/exception.canonical.lyrdb" \
   "${work}/reports/capacity.canonical.lyrdb" \
+  "${work}/reports/missing.canonical.lyrdb" \
+  "${work}/reports/unsupported.canonical.lyrdb" \
   "${work}/runtime/control-closure.sha256" \
   "${work}/runtime/cuda-closure.sha256" \
   "${work}/runtime/exception-closure.sha256" \
@@ -811,6 +1148,11 @@ sha256sum -- \
   "${work}/logs/exception-device-preflight.log" \
   "${work}/logs/capacity-device-preflight.log" \
   "${work}/logs/hook-probe.log" \
+  "${work}/logs/raw-hook-probe.log" \
+  "${work}/runtime/poly34-raw-hook-presence.drc" \
+  "${unsupported_backend_source}" \
+  "${unsupported_backend}" \
+  "${work}/runtime/unsupported-poly34-backend.nm" \
   "${deck_generator}" \
   "$0" \
   >"${work}/pinned-artifacts.sha256"
@@ -820,17 +1162,23 @@ sha256sum -- \
   "${work}/reports/cuda.canonical.lyrdb" \
   "${work}/reports/exception.canonical.lyrdb" \
   "${work}/reports/capacity.canonical.lyrdb" \
+  "${work}/reports/missing.canonical.lyrdb" \
+  "${work}/reports/unsupported.canonical.lyrdb" \
   >"${work}/canonical-report-sha256.txt"
 
 cat -- "${work}/timings/control.txt"
 cat -- "${work}/timings/cuda.txt"
 cat -- "${work}/timings/exception.txt"
 cat -- "${work}/timings/capacity.txt"
+cat -- "${work}/timings/missing.txt"
+cat -- "${work}/timings/unsupported.txt"
 cat -- "${work}/canonical-report-sha256.txt"
 grep -h -E -- \
-  'CUDA POLY\.3/\.4 transaction:|CUDA POLY\.3/\.4 live lowering:' \
+  'CUDA POLY\.3/\.4 transaction:|CUDA POLY\.3/\.4 raw live lowering:|CUDA POLY\.3/\.4 terminal-empty certificate:|CUDA POLY\.3/\.4 host guard:' \
   "${work}/logs/cuda.log" \
   "${work}/logs/exception.log" \
-  "${work}/logs/capacity.log"
+  "${work}/logs/capacity.log" \
+  "${work}/logs/missing.log" \
+  "${work}/logs/unsupported.log"
 echo \
-  "POLY34_PRODUCTION_OWNER_GATE PASS owner=m1_enclosure lanes=4 ab-first=1 canonical-reports=exact default-byte-identical=1"
+  "POLY34_PRODUCTION_OWNER_GATE PASS owner=m1_enclosure lanes=6 ab-first=1 raw-device-derived-gate=1 host-gate-bypassed=1 fail-closed-host-gate-lanes=5 legacy-nonowner=retained canonical-reports=exact default-byte-identical=1"

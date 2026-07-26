@@ -712,6 +712,10 @@ DB_PUBLIC bool cuda_spatial_validate_m2_union_boundary (
 /**
  * Invoke the optional atomic POLY.3/POLY.4 terminal-empty certificate.
  *
+ * Format 1 accepts exact merged POLY, ACTIVE and a caller-derived GATE.
+ * Format 2 accepts exact raw physical POLY/ACTIVE rectangle covers and
+ * requires the backend to derive GATE before proving the same two rules.
+ *
  * Only CertifiedEmpty is consumable.  Every positive-area or conservative
  * miss, uncertainty, malformed echo, capacity, loader or CUDA outcome
  * requires the complete unchanged two-rule CPU transaction.

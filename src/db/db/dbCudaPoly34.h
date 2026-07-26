@@ -83,6 +83,18 @@ DB_PUBLIC bool cuda_poly34_build_scene (
   std::string *decline_reason = 0);
 
 /**
+ * Build format 2 from pristine physical POLY and ACTIVE without constructing
+ * either merged operand or the derived GATE layer on the host.
+ *
+ * The two domains are exact rectangle covers.  The GATE domain is represented
+ * by empty spans and lists and KLAYOUT_CUDA_SPATIAL_POLY34_NO_GATE_LAYER.
+ */
+DB_PUBLIC bool cuda_poly34_build_raw_scene (
+  const db::DeepLayer &raw_poly, const db::DeepLayer &raw_active,
+  const CudaPoly34SceneLimits &limits, CudaPoly34Scene &scene,
+  std::string *decline_reason = 0);
+
+/**
  * Try the optional atomic POLY.3/POLY.4 terminal-empty certificate.
  *
  * True certifies both historical output categories empty.  False means run
@@ -92,6 +104,16 @@ DB_PUBLIC bool cuda_poly34_build_scene (
 DB_PUBLIC bool cuda_poly34_try_empty (
   const db::DeepLayer &merged_poly, const db::DeepLayer &merged_active,
   const db::DeepLayer &merged_gate, const CudaPoly34BuildSpec &spec);
+
+/**
+ * Try format 2 directly from pristine physical POLY and ACTIVE.
+ *
+ * True is consumable only when the backend derived the complete intersection
+ * and certified both terminal output categories empty.  False requires the
+ * historical host GATE construction and both CPU expressions.
+ */
+DB_PUBLIC bool cuda_poly34_try_raw_empty (
+  const db::DeepLayer &raw_poly, const db::DeepLayer &raw_active);
 
 } // namespace db
 

@@ -37,7 +37,11 @@ POLY4 = (
     '.output("POLY.4", "POLY.4 : Minimum enclosure of active around gate : '
     '70nm")'
 )
-POLY34_SOURCE_BLOCK = f"{POLY3}\n{POLY4}"
+POLY34_GATE = "gate = poly &amp; active if need_gate"
+POLY34_LAZY_GATE = (
+    "gate = poly &amp; active if need_gate &amp;&amp; !poly34_raw_clean"
+)
+POLY34_SOURCE_BLOCK = f"{POLY34_GATE}\n{POLY3}\n{POLY4}"
 
 
 class CudaCompositionTest(unittest.TestCase):
@@ -67,6 +71,17 @@ class CudaCompositionTest(unittest.TestCase):
                 'poly34_request = ENV["KLAYOUT_CUDA_POLY34"].to_s'
             ),
             1,
+        )
+        self.assertEqual(
+            composed.count("poly.cuda_poly34_raw_clean?(active)"), 1
+        )
+        self.assertEqual(composed.count(POLY34_LAZY_GATE), 1)
+        self.assertIn(
+            "if poly34_requested &amp;&amp; !poly34_raw_owner",
+            composed,
+        )
+        self.assertEqual(
+            composed.count("poly.cuda_poly34_clean?(active, gate)"), 1
         )
         self.assertEqual(composed.count("poly34_empty.output"), 2)
         self.assertEqual(composed.count(POLY3), 1)

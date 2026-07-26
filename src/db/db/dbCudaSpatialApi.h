@@ -1460,11 +1460,13 @@ klayout_cuda_spatial_run_m1_resident_morphology_empty_v1 (
 /*
  * Optional atomic FreePDK45 POLY.3/POLY.4 terminal-empty certificate.
  *
- * The caller supplies three exact merged hierarchical domains: POLY, ACTIVE
- * and their already-derived GATE intersection.  The backend expands the
- * compact box templates, constructs complete bounded candidate windows for
- * the fixed 110/140-DBU projection-enclosure profiles and applies the exact
- * zero-area-terminal certificate to every GATE box.
+ * Format 1 supplies three exact merged hierarchical domains: POLY, ACTIVE
+ * and their already-derived GATE intersection.  Format 2 instead supplies
+ * exact raw physical POLY/ACTIVE rectangle covers and requires the backend
+ * to derive their complete positive-area intersection.  The backend expands
+ * the compact box templates, constructs complete bounded candidate windows
+ * for the fixed 110/140-DBU projection-enclosure profiles and applies the
+ * exact zero-area-terminal certificate to every GATE tile.
  *
  * No partial result is consumable.  The historical two-rule CPU transaction
  * may be skipped only when disposition is COMPLETE, both rule bits are
@@ -1474,7 +1476,13 @@ klayout_cuda_spatial_run_m1_resident_morphology_empty_v1 (
  */
 enum klayout_cuda_spatial_poly34_opcode
 {
-  KLAYOUT_CUDA_SPATIAL_POLY34_TERMINAL_EMPTY = 1
+  KLAYOUT_CUDA_SPATIAL_POLY34_TERMINAL_EMPTY = 1,
+  /*
+   * Format 2 supplies exact raw physical POLY/ACTIVE rectangle covers and
+   * derives GATE = POLY & ACTIVE on the selected device.  It remains an
+   * empty-only transaction: no derived geometry is returned to the caller.
+   */
+  KLAYOUT_CUDA_SPATIAL_POLY34_RAW_TERMINAL_EMPTY = 2
 };
 
 enum klayout_cuda_spatial_poly34_rule
@@ -1504,10 +1512,33 @@ enum klayout_cuda_spatial_poly34_option_flag
   KLAYOUT_CUDA_SPATIAL_POLY34_ZERO_AREA_TERMINAL = 1u << 6,
   KLAYOUT_CUDA_SPATIAL_POLY34_RECTANGULAR_GATE = 1u << 7,
   KLAYOUT_CUDA_SPATIAL_POLY34_EXACT_PRIMARY_BOX_UNIONS = 1u << 8,
-  KLAYOUT_CUDA_SPATIAL_POLY34_ORDERED_OUTPUTS = 1u << 9
+  KLAYOUT_CUDA_SPATIAL_POLY34_ORDERED_OUTPUTS = 1u << 9,
+  KLAYOUT_CUDA_SPATIAL_POLY34_RAW_PHYSICAL_DOMAINS = 1u << 10,
+  KLAYOUT_CUDA_SPATIAL_POLY34_DERIVE_GATE_INTERSECTION = 1u << 11,
+  KLAYOUT_CUDA_SPATIAL_POLY34_EXACT_RECTANGLE_COVERS = 1u << 12
 };
 
 #define KLAYOUT_CUDA_SPATIAL_POLY34_QUALIFIED_OPTIONS ((1u << 10) - 1u)
+
+/*
+ * Unlike format 1, the raw transaction does not assert pre-merged operands
+ * or a pre-materialized rectangular GATE.  Its exact rectangle covers retain
+ * the same integer set as each physical input, and the backend derives the
+ * complete intersection before applying the unchanged empty certificate.
+ */
+#define KLAYOUT_CUDA_SPATIAL_POLY34_RAW_QUALIFIED_OPTIONS ( \
+  KLAYOUT_CUDA_SPATIAL_POLY34_SAME_STORE_LAYOUT_TOP | \
+  KLAYOUT_CUDA_SPATIAL_POLY34_NO_BREAKOUT | \
+  KLAYOUT_CUDA_SPATIAL_POLY34_PROJECTION | \
+  KLAYOUT_CUDA_SPATIAL_POLY34_IGNORE_PROPERTIES | \
+  KLAYOUT_CUDA_SPATIAL_POLY34_INCLUDE_TOUCHING | \
+  KLAYOUT_CUDA_SPATIAL_POLY34_ZERO_AREA_TERMINAL | \
+  KLAYOUT_CUDA_SPATIAL_POLY34_ORDERED_OUTPUTS | \
+  KLAYOUT_CUDA_SPATIAL_POLY34_RAW_PHYSICAL_DOMAINS | \
+  KLAYOUT_CUDA_SPATIAL_POLY34_DERIVE_GATE_INTERSECTION | \
+  KLAYOUT_CUDA_SPATIAL_POLY34_EXACT_RECTANGLE_COVERS)
+
+#define KLAYOUT_CUDA_SPATIAL_POLY34_NO_GATE_LAYER 0xffffffffu
 
 enum klayout_cuda_spatial_poly34_disposition
 {

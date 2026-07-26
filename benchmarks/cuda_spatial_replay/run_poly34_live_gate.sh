@@ -7,12 +7,13 @@ Usage:
   bash run_poly34_live_gate.sh \
     --klayout PATH --backend PATH [--keep-work]
 
-Runs only the focused live integrity gate for the opt-in atomic POLY.3/.4
-terminal-empty certificate.  It compares complete canonical CPU and CUDA
-reports for clean, hierarchical-clean, independent POLY.3/POLY.4 positive
-    hits and a mixed two-rule fallback.  Feature-disabled, missing-backend, and
-    capacity lanes must also preserve the CPU report without unsafe partial
-    consumption.  This script is not a production/full-design benchmark.
+Runs only the focused live integrity gate for the opt-in atomic raw
+POLY+ACTIVE -> GATE -> POLY.3/.4 CUDA transaction.  It compares complete
+canonical CPU and CUDA reports for clean, hierarchical-clean, cross-context,
+independent POLY.3/POLY.4 positive hits and a mixed two-rule fallback.
+Feature-disabled, missing-backend, and capacity lanes must also preserve the
+CPU report without unsafe partial consumption.  This script is not a
+production/full-design benchmark.
 EOF
 }
 
@@ -162,7 +163,7 @@ if ! run_klayout off fixture -b -r "${fixture_script}" \
 fi
 [[ -s "${fixture}" ]] || die "fixture generator produced no layout"
   grep -Fq -- \
-  "POLY34_LIVE_FIXTURE ok path=${fixture} tops=7 dbu=0.0005 hierarchy_gate_occurrences=2048 transformed_hit_occurrences=6" \
+  "POLY34_LIVE_FIXTURE ok path=${fixture} tops=8 dbu=0.0005 hierarchy_gate_occurrences=2048 transformed_hit_occurrences=6 cross_context_gate_occurrences=1" \
   "${fixture_log}" ||
   die "fixture completion marker or hierarchy count is wrong"
 
@@ -257,7 +258,7 @@ attempt_count() {
 }
 
 lowering_count() {
-  grep -Fc -- "CUDA POLY.3/.4 live lowering:" "$1" || true
+  grep -Fc -- "CUDA POLY.3/.4 raw live lowering:" "$1" || true
 }
 
 assert_one_attempt() {
@@ -271,6 +272,7 @@ assert_one_attempt() {
 
 cases=(
   "POLY34_CLEAN:clean:cert"
+  "POLY34_CROSS_CONTEXT_CLEAN:clean:cert"
   "POLY34_HIER_CLEAN:clean:cert"
   "POLY34_HIER_TRANSFORM_HIT:poly3:hit"
   "POLY34_MANHATTAN_PRIMARY_CLEAN:clean:cert"
@@ -288,7 +290,7 @@ for spec in "${cases[@]}"; do
   [[ "$(lowering_count "${oracle_log}")" == 0 ]] ||
     die "oracle/${top}: opt-in-off path lowered a scene"
 done
-echo "POLY34_LIVE_GATE ok gate=cpu-oracle cases=7 categories=2"
+echo "POLY34_LIVE_GATE ok gate=cpu-oracle cases=8 categories=2"
 
 for spec in "${cases[@]}"; do
   IFS=: read -r top expected disposition <<<"${spec}"
@@ -311,9 +313,18 @@ for spec in "${cases[@]}"; do
       grep -Fq -- "atomic_empty=2048 fallback_gates=0" "${log}" ||
         die "accelerated/${top}: hierarchy certificate count is wrong"
       grep -Fq -- \
-        "contexts=2051 cells=3 stored_boxes=3 poly_boxes=2048 active_boxes=2048 gate_boxes=2048" \
+        "contexts=2051 cells=3 stored_boxes=2 raw_poly_boxes=2048 raw_active_boxes=2048 derived_gate_boxes=2048" \
         "${log}" ||
-        die "accelerated/${top}: compact lowering census is wrong"
+        die "accelerated/${top}: raw compact lowering census is wrong"
+    elif [[ "${top}" == POLY34_CROSS_CONTEXT_CLEAN ]]; then
+      grep -Fq -- \
+        "contexts=3 poly_boxes=1 active_boxes=1 gates=1" \
+        "${log}" ||
+        die "accelerated/${top}: global cross-context join census is wrong"
+      grep -Fq -- \
+        "contexts=3 cells=3 stored_boxes=2 raw_poly_boxes=1 raw_active_boxes=1 derived_gate_boxes=1" \
+        "${log}" ||
+        die "accelerated/${top}: cross-context raw lowering census is wrong"
     fi
   else
     grep -Fq -- \
@@ -330,14 +341,14 @@ for spec in "${cases[@]}"; do
       grep -Fq -- "atomic_empty=0 fallback_gates=6" "${log}" ||
         die "accelerated/${top}: transformed hit was not atomically declined"
       grep -Fq -- \
-        "contexts=7 cells=2 stored_boxes=3 poly_boxes=6 active_boxes=6 gate_boxes=6" \
+        "contexts=7 cells=2 stored_boxes=2 raw_poly_boxes=6 raw_active_boxes=6 derived_gate_boxes=6" \
         "${log}" ||
-        die "accelerated/${top}: transformed compact lowering census is wrong"
+        die "accelerated/${top}: transformed raw lowering census is wrong"
     fi
   fi
 done
 echo \
-  "POLY34_LIVE_GATE ok gate=cuda clean=3 hits=4 reports=cpu-identical atomic=1 transformed-hit=1 manhattan-primary=1"
+  "POLY34_LIVE_GATE ok gate=cuda clean=4 hits=4 reports=cpu-identical atomic=1 transformed-hit=1 manhattan-primary=1 cross-context=1"
 
 run_case wrong-layer cuda POLY34_CLEAN clean -rd poly_layer=19
 compare_reports oracle wrong-layer POLY34_CLEAN
@@ -388,4 +399,4 @@ grep -Fq -- \
 echo "POLY34_LIVE_GATE ok gate=capacity report=cpu-identical"
 
 echo \
-  "POLY34_LIVE_GATE PASS oracles=7 cuda=7 wrong-layer=1 backend-off=1 missing=1 capacity=1 reports=18"
+  "POLY34_LIVE_GATE PASS oracles=8 cuda=8 wrong-layer=1 backend-off=1 missing=1 capacity=1 reports=20"

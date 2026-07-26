@@ -439,20 +439,45 @@ end""",
 
 
 def add_poly34(text: str) -> str:
+    text = replace_once(
+        text,
+        """gate = poly &amp; active if need_gate
+""",
+        """# BEGIN KLAYOUT CUDA POLY34 RAW OWNER
+# The raw two-input certificate may bypass GATE only when POLY.3/.4 are its
+# sole consumers.  A missing method, exception, or backend decline leaves the
+# certificate false, constructs the literal source GATE, and later executes
+# both pristine CPU rules without trying the legacy three-input certificate.
+poly34_request = ENV["KLAYOUT_CUDA_POLY34"].to_s
+poly34_requested = !poly34_request.empty? &amp;&amp; poly34_request != "0" &amp;&amp; poly34_request != "false" &amp;&amp; poly34_request != "off"
+poly34_raw_owner = poly34_requested &amp;&amp; DRC &amp;&amp; run_poly &amp;&amp; !run_implant_contact &amp;&amp; !(ANTENNA &amp;&amp; run_antenna)
+poly34_raw_clean = false
+poly34_raw_error = nil
+if poly34_raw_owner
+  begin
+    poly34_raw_clean = poly.respond_to?(:cuda_poly34_raw_clean?) &amp;&amp; poly.cuda_poly34_raw_clean?(active)
+  rescue StandardError =&gt; error
+    poly34_raw_clean = false
+    poly34_raw_error = "#{error.class}: #{error.message}"
+  end
+end
+gate = poly &amp; active if need_gate &amp;&amp; !poly34_raw_clean
+# END KLAYOUT CUDA POLY34 RAW OWNER
+""",
+        "POLY.3/.4 raw GATE transaction",
+    )
     return replace_once(
         text,
         """poly.enclosing(gate, 55.nm, projection).polygons.without_area(0).output("POLY.3", "POLY.3 : Minimum poly extension beyond active : 55nm")
 active.enclosing(gate, 70.nm, projection).polygons.without_area(0).output("POLY.4", "POLY.4 : Minimum enclosure of active around gate : 70nm")""",
         """# BEGIN KLAYOUT CUDA POLY34 TRANSACTION
 # One qualified transaction may prove both fixed projection-enclosure
-# categories empty.  The generated opt-in is fail-closed: a missing method or
-# any Ruby/host/backend decline executes both historical CPU expressions
-# unchanged and in their original output order.
-poly34_request = ENV["KLAYOUT_CUDA_POLY34"].to_s
-poly34_requested = !poly34_request.empty? &amp;&amp; poly34_request != "0" &amp;&amp; poly34_request != "false" &amp;&amp; poly34_request != "off"
-poly34_clean = false
-poly34_error = nil
-if poly34_requested
+# categories empty.  The raw owner has already run before GATE construction.
+# Only non-owner modes may use the legacy three-input certificate; a raw-owner
+# decline or exception goes directly to both historical CPU expressions.
+poly34_clean = poly34_raw_clean
+poly34_error = poly34_raw_error
+if poly34_requested &amp;&amp; !poly34_raw_owner
   begin
     poly34_clean = poly.respond_to?(:cuda_poly34_clean?) &amp;&amp; poly.cuda_poly34_clean?(active, gate)
   rescue StandardError =&gt; error
@@ -572,7 +597,7 @@ end""",
 def inject_poly34_ruby_exception(text: str) -> str:
     return replace_once(
         text,
-        """poly34_clean = poly.respond_to?(:cuda_poly34_clean?) &amp;&amp; poly.cuda_poly34_clean?(active, gate)""",
+        """poly34_raw_clean = poly.respond_to?(:cuda_poly34_raw_clean?) &amp;&amp; poly.cuda_poly34_raw_clean?(active)""",
         """raise("injected POLY34 Ruby exception")""",
         "POLY.3/.4 injected Ruby exception",
     )

@@ -18,6 +18,8 @@
 #include <thrust/device_vector.h>
 #include <thrust/execution_policy.h>
 #include <thrust/fill.h>
+#include <thrust/functional.h>
+#include <thrust/reduce.h>
 #include <thrust/scan.h>
 
 #include <algorithm>
@@ -72,6 +74,7 @@ enum PolyDeviceFlag : std::uint32_t {
   kPolyQueryCapacity = 1u << 4,
   kPolyCandidateWorkCapacity = 1u << 5,
   kPolyInvalidDeviceRecord = 1u << 6,
+  kPolyIntersectionCapacity = 1u << 7,
 };
 
 struct PolyGrid {
@@ -118,6 +121,12 @@ struct PipelineResult {
   std::uint64_t d2h_ns = 0;
 };
 
+struct RawGateResult {
+  thrust::device_vector<PolyBox> boxes;
+  std::uint64_t query_visits = 0;
+  std::uint64_t memberships = 0;
+};
+
 std::mutex &poly_pipeline_mutex()
 {
   static std::mutex mutex;
@@ -159,6 +168,24 @@ bool checked_add_u64(std::uint64_t first, std::uint64_t second,
   }
   *result = first + second;
   return true;
+}
+
+bool raw_request(const PolyRequest &request)
+{
+  return request.opcode ==
+             KLAYOUT_CUDA_SPATIAL_POLY34_RAW_TERMINAL_EMPTY &&
+         request.option_flags ==
+             KLAYOUT_CUDA_SPATIAL_POLY34_RAW_QUALIFIED_OPTIONS &&
+         request.format_version == 2;
+}
+
+bool merged_request(const PolyRequest &request)
+{
+  return request.opcode ==
+             KLAYOUT_CUDA_SPATIAL_POLY34_TERMINAL_EMPTY &&
+         request.option_flags ==
+             KLAYOUT_CUDA_SPATIAL_POLY34_QUALIFIED_OPTIONS &&
+         request.format_version == 1;
 }
 
 std::int64_t floor_div_host(std::int64_t value, std::int64_t divisor)
@@ -230,12 +257,11 @@ bool valid_context_domain(
 
 bool request_structurally_valid(const PolyRequest &request)
 {
+  const bool raw = raw_request(request);
+  const bool merged = merged_request(request);
   if (request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
       request.struct_size != sizeof(request) ||
-      request.opcode != KLAYOUT_CUDA_SPATIAL_POLY34_TERMINAL_EMPTY ||
-      request.option_flags !=
-          KLAYOUT_CUDA_SPATIAL_POLY34_QUALIFIED_OPTIONS ||
-      request.format_version != 1 || request.dbu_per_micron != 2000 ||
+      (!raw && !merged) || request.dbu_per_micron != 2000 ||
       request.requested_mask != KLAYOUT_CUDA_SPATIAL_POLY34_ALL_RULES ||
       request.device < 0 || request.reserved0 ||
       request.identity_reserved || request.context_reserved ||
@@ -249,8 +275,11 @@ bool request_structurally_valid(const PolyRequest &request)
           certificate::kMaximumCandidateBoxes ||
       !request.store_identity || !request.layout_identity ||
       request.poly_layer_id == request.active_layer_id ||
-      request.poly_layer_id == request.gate_layer_id ||
-      request.active_layer_id == request.gate_layer_id ||
+      (merged &&
+       (request.poly_layer_id == request.gate_layer_id ||
+        request.active_layer_id == request.gate_layer_id)) ||
+      (raw &&
+       request.gate_layer_id != KLAYOUT_CUDA_SPATIAL_POLY34_NO_GATE_LAYER) ||
       !request.context_count || !request.contexts ||
       request.context_record_bytes != sizeof(PolyContext) ||
       !request.cell_count || !request.cells ||
@@ -258,7 +287,15 @@ bool request_structurally_valid(const PolyRequest &request)
       !request.box_count || !request.boxes ||
       request.box_record_bytes != sizeof(PolyBox) ||
       !request.flat_poly_box_count || !request.flat_active_box_count ||
-      !request.flat_gate_box_count ||
+      (merged && !request.flat_gate_box_count) ||
+      (raw &&
+       (request.gate_contexts || request.gate_context_count ||
+        request.gate_offsets || request.gate_offset_count ||
+        request.flat_gate_box_count)) ||
+      (merged &&
+       (!request.gate_contexts || !request.gate_context_count ||
+        !request.gate_offsets ||
+        request.gate_offset_count != request.gate_context_count)) ||
       request.root_cell >= request.cell_count ||
       request.context_count > request.max_contexts ||
       request.context_count > UINT32_MAX ||
@@ -314,7 +351,10 @@ bool request_structurally_valid(const PolyRequest &request)
          domain < KLAYOUT_CUDA_SPATIAL_POLY34_DOMAIN_COUNT; ++domain) {
       const PolySpan &span = cell.domains[domain];
       if (span.reserved0 || span.box_begin != next_box ||
-          span.box_count > request.box_count - next_box) {
+          span.box_count > request.box_count - next_box ||
+          (raw &&
+           domain == KLAYOUT_CUDA_SPATIAL_POLY34_GATE_DOMAIN &&
+           span.box_count)) {
         return false;
       }
       for (std::uint32_t local = 0; local < span.box_count; ++local) {
@@ -358,11 +398,11 @@ bool request_structurally_valid(const PolyRequest &request)
           request.active_contexts, request.active_context_count,
           request.active_offsets, request.active_offset_count,
           request.flat_active_box_count) ||
-      !valid_context_domain(
+      (merged && !valid_context_domain(
           request, KLAYOUT_CUDA_SPATIAL_POLY34_GATE_DOMAIN,
           request.gate_contexts, request.gate_context_count,
           request.gate_offsets, request.gate_offset_count,
-          request.flat_gate_box_count)) {
+          request.flat_gate_box_count))) {
     return false;
   }
 
@@ -587,6 +627,222 @@ __global__ void fill_grid_kernel(
   }
 }
 
+__device__ bool positive_box_intersection(
+    const PolyBox &first, const PolyBox &second, PolyBox *intersection)
+{
+  PolyBox candidate = {
+      max(first.left, second.left),
+      max(first.bottom, second.bottom),
+      min(first.right, second.right),
+      min(first.top, second.top)};
+  if (candidate.left >= candidate.right ||
+      candidate.bottom >= candidate.top) {
+    return false;
+  }
+  *intersection = candidate;
+  return true;
+}
+
+__global__ void count_raw_gate_intersections_kernel(
+    const PolyBox *poly, std::uint64_t poly_count,
+    const PolyBox *active, PolyGrid grid,
+    const std::uint32_t *active_counts,
+    const std::uint32_t *active_offsets,
+    const std::uint32_t *active_members,
+    std::uint32_t *intersection_counts,
+    unsigned long long *query_visits, std::uint32_t *status)
+{
+  for (std::uint64_t poly_id =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       poly_id < poly_count;
+       poly_id += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const PolyBox source = poly[poly_id];
+    std::int64_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    if (!grid_span(source, grid, 0, &x0, &y0, &x1, &y1)) {
+      atomicOr(status, static_cast<std::uint32_t>(kPolyInvalidDeviceRecord));
+      continue;
+    }
+
+    std::uint32_t local_count = 0;
+    unsigned long long local_visits = 0;
+    for (std::int64_t y = y0; y <= y1; ++y) {
+      for (std::int64_t x = x0; x <= x1; ++x) {
+        const std::uint64_t cell = grid_index(grid, x, y);
+        const std::uint32_t begin = active_offsets[cell];
+        const std::uint32_t end = begin + active_counts[cell];
+        for (std::uint32_t slot = begin; slot < end; ++slot) {
+          ++local_visits;
+          PolyBox intersection{};
+          if (!positive_box_intersection(
+                  source, active[active_members[slot]], &intersection)) {
+            continue;
+          }
+          // Both input boxes can span multiple grid cells.  Assign their
+          // positive intersection to exactly the cell containing its
+          // lower-left point so every pair is counted once without a
+          // per-thread duplicate set.
+          if (floor_div_device(intersection.left, grid.cell_size) != x ||
+              floor_div_device(intersection.bottom, grid.cell_size) != y) {
+            continue;
+          }
+          if (local_count == UINT32_MAX) {
+            atomicOr(
+                status,
+                static_cast<std::uint32_t>(kPolyIntersectionCapacity));
+          } else {
+            ++local_count;
+          }
+        }
+      }
+    }
+    intersection_counts[poly_id] = local_count;
+    atomicAdd(query_visits, local_visits);
+  }
+}
+
+__global__ void fill_raw_gate_intersections_kernel(
+    const PolyBox *poly, std::uint64_t poly_count,
+    const PolyBox *active, PolyGrid grid,
+    const std::uint32_t *active_counts,
+    const std::uint32_t *active_offsets,
+    const std::uint32_t *active_members,
+    const std::uint32_t *expected_counts,
+    const std::uint64_t *intersection_offsets,
+    std::uint64_t intersection_capacity, PolyBox *intersections,
+    std::uint32_t *status)
+{
+  for (std::uint64_t poly_id =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       poly_id < poly_count;
+       poly_id += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const PolyBox source = poly[poly_id];
+    std::int64_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    if (!grid_span(source, grid, 0, &x0, &y0, &x1, &y1)) {
+      atomicOr(status, static_cast<std::uint32_t>(kPolyInvalidDeviceRecord));
+      continue;
+    }
+
+    const std::uint64_t output_begin = intersection_offsets[poly_id];
+    std::uint32_t emitted = 0;
+    for (std::int64_t y = y0; y <= y1; ++y) {
+      for (std::int64_t x = x0; x <= x1; ++x) {
+        const std::uint64_t cell = grid_index(grid, x, y);
+        const std::uint32_t begin = active_offsets[cell];
+        const std::uint32_t end = begin + active_counts[cell];
+        for (std::uint32_t slot = begin; slot < end; ++slot) {
+          PolyBox intersection{};
+          if (!positive_box_intersection(
+                  source, active[active_members[slot]], &intersection) ||
+              floor_div_device(intersection.left, grid.cell_size) != x ||
+              floor_div_device(intersection.bottom, grid.cell_size) != y) {
+            continue;
+          }
+          const std::uint64_t output = output_begin + emitted;
+          if (emitted >= expected_counts[poly_id] ||
+              output >= intersection_capacity) {
+            atomicOr(
+                status,
+                static_cast<std::uint32_t>(kPolyIntersectionCapacity));
+          } else {
+            intersections[output] = intersection;
+            ++emitted;
+          }
+        }
+      }
+    }
+    if (emitted != expected_counts[poly_id]) {
+      atomicOr(
+          status, static_cast<std::uint32_t>(kPolyInvalidDeviceRecord));
+    }
+  }
+}
+
+__device__ bool raw_gate_side_probe(
+    const PolyBox &gate, std::uint32_t side, PolyBox *probe)
+{
+  *probe = gate;
+  switch (side) {
+    case 0:
+      probe->right = gate.left;
+      return add_i64_checked(gate.left, -1, &probe->left);
+    case 1:
+      probe->left = gate.right;
+      return add_i64_checked(gate.right, 1, &probe->right);
+    case 2:
+      probe->top = gate.bottom;
+      return add_i64_checked(gate.bottom, -1, &probe->bottom);
+    case 3:
+      probe->bottom = gate.top;
+      return add_i64_checked(gate.top, 1, &probe->top);
+    default:
+      return false;
+  }
+}
+
+__device__ bool box_covers_box(
+    const PolyBox &cover, const PolyBox &target)
+{
+  return cover.left <= target.left && cover.bottom <= target.bottom &&
+         cover.right >= target.right && cover.top >= target.top;
+}
+
+__global__ void mark_raw_gate_internal_sides_kernel(
+    const PolyBox *gates, std::uint64_t gate_count, PolyGrid grid,
+    const std::uint32_t *counts, const std::uint32_t *offsets,
+    const std::uint32_t *members, std::uint8_t *internal_sides,
+    unsigned long long *query_visits, std::uint32_t *status)
+{
+  for (std::uint64_t gate_id =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       gate_id < gate_count;
+       gate_id += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const PolyBox gate = gates[gate_id];
+    std::uint8_t mask = 0;
+    unsigned long long visits = 0;
+    for (std::uint32_t side = 0; side < 4; ++side) {
+      PolyBox probe{};
+      if (!raw_gate_side_probe(gate, side, &probe)) {
+        atomicOr(
+            status,
+            static_cast<std::uint32_t>(kPolyInvalidDeviceRecord));
+        continue;
+      }
+      const std::int64_t x =
+          floor_div_device(probe.left, grid.cell_size);
+      const std::int64_t y =
+          floor_div_device(probe.bottom, grid.cell_size);
+      const std::int64_t max_x =
+          grid.base_x + static_cast<std::int64_t>(grid.width) - 1;
+      const std::int64_t max_y =
+          grid.base_y + static_cast<std::int64_t>(grid.height) - 1;
+      if (x < grid.base_x || x > max_x ||
+          y < grid.base_y || y > max_y) {
+        atomicOr(
+            status,
+            static_cast<std::uint32_t>(kPolyInvalidDeviceRecord));
+        continue;
+      }
+      const std::uint64_t cell = grid_index(grid, x, y);
+      const std::uint32_t begin = offsets[cell];
+      const std::uint32_t end = begin + counts[cell];
+      for (std::uint32_t slot = begin; slot < end; ++slot) {
+        ++visits;
+        const std::uint32_t candidate = members[slot];
+        if (candidate != gate_id &&
+            box_covers_box(gates[candidate], probe)) {
+          mask |= std::uint8_t(1) << side;
+          break;
+        }
+      }
+    }
+    internal_sides[gate_id] = mask;
+    atomicAdd(query_visits, visits);
+  }
+}
+
 __device__ bool window_candidate(
     const PolyBox &gate, const PolyBox &primary, std::int64_t distance)
 {
@@ -602,7 +858,9 @@ __global__ void query_profile_kernel(
     const std::uint32_t *counts, const std::uint32_t *offsets,
     const std::uint32_t *members, std::int64_t distance,
     std::uint64_t max_query_visits, std::uint64_t max_candidate_work,
-    std::uint32_t max_candidates, std::uint8_t *outcomes,
+    std::uint32_t max_candidates,
+    const std::uint8_t *proven_internal_sides,
+    std::uint8_t *outcomes,
     ProfileCounters *counters, std::uint32_t *status)
 {
   for (std::uint64_t gate_id =
@@ -682,7 +940,9 @@ __global__ void query_profile_kernel(
         certificate::terminal_empty_profile(
             certificate::Box{
                 gate.left, gate.bottom, gate.right, gate.top},
-            candidate_boxes, candidate_count, distance, true);
+            candidate_boxes, candidate_count, distance, true,
+            proven_internal_sides ?
+                proven_internal_sides[gate_id] : 0);
     outcomes[gate_id] = static_cast<std::uint8_t>(outcome);
     if (outcome == certificate::Certificate::kTerminalEmpty) {
       atomicAdd(&counters->terminal_empty, 1ULL);
@@ -723,7 +983,7 @@ std::uint32_t fallback_from_device_flags(std::uint32_t flags)
       (kPolyGridCounterOverflow | kPolyMembershipCapacity)) {
     return KLAYOUT_CUDA_SPATIAL_FALLBACK_MEMBERSHIP_CAPACITY;
   }
-  if (flags & kPolyCandidateCapacity) {
+  if (flags & (kPolyCandidateCapacity | kPolyIntersectionCapacity)) {
     return KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_CAPACITY;
   }
   if (flags &
@@ -744,12 +1004,281 @@ unsigned int blocks_for(std::uint64_t records,
                  static_cast<std::uint64_t>(properties.maxGridSize[0]))));
 }
 
+RawGateResult derive_raw_gates(
+    const PolyBox *poly, std::uint64_t poly_count,
+    const PolyBox *active, std::uint64_t active_count,
+    const PolyGrid &grid, std::uint64_t grid_cells,
+    const PolyRequest &request, std::uint32_t *device_status,
+    const cudaDeviceProp &properties)
+{
+  RawGateResult result;
+
+  // Index the complete ACTIVE rectangle cover once for the exact global
+  // POLY x ACTIVE positive-area join.
+  thrust::device_vector<std::uint32_t> counts(grid_cells, 0);
+  thrust::device_vector<std::uint32_t> offsets(grid_cells + 1);
+  thrust::device_vector<std::uint32_t> cursors(grid_cells);
+  thrust::device_vector<unsigned long long> membership_total(1, 0);
+  count_grid_kernel<<<blocks_for(active_count, properties), kThreads>>>(
+      active, active_count, grid,
+      thrust::raw_pointer_cast(counts.data()),
+      thrust::raw_pointer_cast(membership_total.data()),
+      device_status);
+  cuda_require(
+      cudaGetLastError(), "POLY34 raw ACTIVE grid-count launch");
+  cuda_require(
+      cudaDeviceSynchronize(),
+      "POLY34 raw ACTIVE grid-count synchronize");
+
+  unsigned long long memberships = 0;
+  std::uint32_t status = 0;
+  cuda_require(
+      cudaMemcpy(
+          &memberships,
+          thrust::raw_pointer_cast(membership_total.data()),
+          sizeof(memberships), cudaMemcpyDeviceToHost),
+      "POLY34 raw ACTIVE membership count D2H");
+  cuda_require(
+      cudaMemcpy(
+          &status, device_status, sizeof(status), cudaMemcpyDeviceToHost),
+      "POLY34 raw ACTIVE grid status D2H");
+  result.memberships = memberships;
+  if (status) return result;
+  if (memberships > request.max_active_memberships ||
+      memberships > UINT32_MAX) {
+    status = kPolyMembershipCapacity;
+    cuda_require(
+        cudaMemcpy(
+            device_status, &status, sizeof(status), cudaMemcpyHostToDevice),
+        "POLY34 raw ACTIVE membership-capacity H2D");
+    return result;
+  }
+
+  thrust::exclusive_scan(
+      thrust::device, counts.begin(), counts.end(), offsets.begin());
+  const std::uint32_t terminal = static_cast<std::uint32_t>(memberships);
+  cuda_require(
+      cudaMemcpy(
+          thrust::raw_pointer_cast(offsets.data()) + grid_cells,
+          &terminal, sizeof(terminal), cudaMemcpyHostToDevice),
+      "POLY34 raw ACTIVE terminal offset H2D");
+  thrust::copy(
+      thrust::device, offsets.begin(), offsets.begin() + grid_cells,
+      cursors.begin());
+  thrust::device_vector<std::uint32_t> members(
+      static_cast<std::size_t>(memberships));
+  fill_grid_kernel<<<blocks_for(active_count, properties), kThreads>>>(
+      active, active_count, grid,
+      thrust::raw_pointer_cast(cursors.data()),
+      thrust::raw_pointer_cast(members.data()), device_status);
+  cuda_require(
+      cudaGetLastError(), "POLY34 raw ACTIVE grid-fill launch");
+  cuda_require(
+      cudaDeviceSynchronize(),
+      "POLY34 raw ACTIVE grid-fill synchronize");
+  cuda_require(
+      cudaMemcpy(
+          &status, device_status, sizeof(status), cudaMemcpyDeviceToHost),
+      "POLY34 raw ACTIVE fill status D2H");
+  if (status) return result;
+
+  // Count every positive-area pair intersection.  A deterministic owner grid
+  // cell suppresses only duplicate visits of the same pair; overlapping or
+  // duplicate input rectangles remain distinct exact cover members.
+  thrust::device_vector<std::uint32_t> gate_counts(poly_count, 0);
+  thrust::device_vector<std::uint64_t> gate_offsets(poly_count);
+  thrust::device_vector<unsigned long long> query_visits(1, 0);
+  count_raw_gate_intersections_kernel<<<
+      blocks_for(poly_count, properties), kThreads>>>(
+      poly, poly_count, active, grid,
+      thrust::raw_pointer_cast(counts.data()),
+      thrust::raw_pointer_cast(offsets.data()),
+      thrust::raw_pointer_cast(members.data()),
+      thrust::raw_pointer_cast(gate_counts.data()),
+      thrust::raw_pointer_cast(query_visits.data()), device_status);
+  cuda_require(
+      cudaGetLastError(), "POLY34 raw GATE count launch");
+  cuda_require(
+      cudaDeviceSynchronize(), "POLY34 raw GATE count synchronize");
+  cuda_require(
+      cudaMemcpy(
+          &result.query_visits,
+          thrust::raw_pointer_cast(query_visits.data()),
+          sizeof(result.query_visits), cudaMemcpyDeviceToHost),
+      "POLY34 raw GATE query visits D2H");
+  cuda_require(
+      cudaMemcpy(
+          &status, device_status, sizeof(status), cudaMemcpyDeviceToHost),
+      "POLY34 raw GATE count status D2H");
+  if (status) return result;
+  if (result.query_visits > request.max_query_visits) {
+    status = kPolyQueryCapacity;
+    cuda_require(
+        cudaMemcpy(
+            device_status, &status, sizeof(status), cudaMemcpyHostToDevice),
+        "POLY34 raw GATE query-capacity H2D");
+    return result;
+  }
+
+  const std::uint64_t gate_count = thrust::reduce(
+      thrust::device, gate_counts.begin(), gate_counts.end(),
+      std::uint64_t(0), thrust::plus<std::uint64_t>());
+  if (gate_count > request.max_flat_boxes || gate_count > UINT32_MAX) {
+    status = kPolyIntersectionCapacity;
+    cuda_require(
+        cudaMemcpy(
+            device_status, &status, sizeof(status), cudaMemcpyHostToDevice),
+        "POLY34 raw GATE capacity H2D");
+    return result;
+  }
+  if (!gate_count) return result;
+
+  thrust::exclusive_scan(
+      thrust::device, gate_counts.begin(), gate_counts.end(),
+      gate_offsets.begin());
+  result.boxes.resize(static_cast<std::size_t>(gate_count));
+  fill_raw_gate_intersections_kernel<<<
+      blocks_for(poly_count, properties), kThreads>>>(
+      poly, poly_count, active, grid,
+      thrust::raw_pointer_cast(counts.data()),
+      thrust::raw_pointer_cast(offsets.data()),
+      thrust::raw_pointer_cast(members.data()),
+      thrust::raw_pointer_cast(gate_counts.data()),
+      thrust::raw_pointer_cast(gate_offsets.data()), gate_count,
+      thrust::raw_pointer_cast(result.boxes.data()), device_status);
+  cuda_require(
+      cudaGetLastError(), "POLY34 raw GATE fill launch");
+  cuda_require(
+      cudaDeviceSynchronize(), "POLY34 raw GATE fill synchronize");
+  return result;
+}
+
+thrust::device_vector<std::uint8_t> prove_raw_gate_internal_sides(
+    const PolyBox *gates, std::uint64_t gate_count,
+    const PolyGrid &grid, std::uint64_t grid_cells,
+    const PolyRequest &request, std::uint32_t *device_status,
+    const cudaDeviceProp &properties)
+{
+  thrust::device_vector<std::uint8_t> masks;
+  if (!gate_count) return masks;
+
+  // Build a bounded index over the exact intersection cover.  A tile side is
+  // marked internal only when one other GATE tile covers the complete
+  // positive-width 1-DBU strip immediately across that side.  This is merely
+  // a sufficient proof: split coverage retains the conservative fallback.
+  thrust::device_vector<std::uint32_t> counts(grid_cells, 0);
+  thrust::device_vector<std::uint32_t> offsets(grid_cells + 1);
+  thrust::device_vector<std::uint32_t> cursors(grid_cells);
+  thrust::device_vector<unsigned long long> membership_total(1, 0);
+  count_grid_kernel<<<blocks_for(gate_count, properties), kThreads>>>(
+      gates, gate_count, grid,
+      thrust::raw_pointer_cast(counts.data()),
+      thrust::raw_pointer_cast(membership_total.data()),
+      device_status);
+  cuda_require(
+      cudaGetLastError(), "POLY34 raw GATE grid-count launch");
+  cuda_require(
+      cudaDeviceSynchronize(),
+      "POLY34 raw GATE grid-count synchronize");
+
+  unsigned long long memberships = 0;
+  std::uint32_t status = 0;
+  cuda_require(
+      cudaMemcpy(
+          &memberships,
+          thrust::raw_pointer_cast(membership_total.data()),
+          sizeof(memberships), cudaMemcpyDeviceToHost),
+      "POLY34 raw GATE membership count D2H");
+  cuda_require(
+      cudaMemcpy(
+          &status, device_status, sizeof(status), cudaMemcpyDeviceToHost),
+      "POLY34 raw GATE grid status D2H");
+  if (status) return masks;
+  const std::uint64_t maximum_memberships =
+      std::max(
+          request.max_poly_memberships,
+          request.max_active_memberships);
+  if (memberships > maximum_memberships || memberships > UINT32_MAX) {
+    status = kPolyMembershipCapacity;
+    cuda_require(
+        cudaMemcpy(
+            device_status, &status, sizeof(status), cudaMemcpyHostToDevice),
+        "POLY34 raw GATE membership-capacity H2D");
+    return masks;
+  }
+
+  thrust::exclusive_scan(
+      thrust::device, counts.begin(), counts.end(), offsets.begin());
+  const std::uint32_t terminal = static_cast<std::uint32_t>(memberships);
+  cuda_require(
+      cudaMemcpy(
+          thrust::raw_pointer_cast(offsets.data()) + grid_cells,
+          &terminal, sizeof(terminal), cudaMemcpyHostToDevice),
+      "POLY34 raw GATE terminal offset H2D");
+  thrust::copy(
+      thrust::device, offsets.begin(), offsets.begin() + grid_cells,
+      cursors.begin());
+  thrust::device_vector<std::uint32_t> members(
+      static_cast<std::size_t>(memberships));
+  fill_grid_kernel<<<blocks_for(gate_count, properties), kThreads>>>(
+      gates, gate_count, grid,
+      thrust::raw_pointer_cast(cursors.data()),
+      thrust::raw_pointer_cast(members.data()), device_status);
+  cuda_require(
+      cudaGetLastError(), "POLY34 raw GATE grid-fill launch");
+  cuda_require(
+      cudaDeviceSynchronize(),
+      "POLY34 raw GATE grid-fill synchronize");
+  cuda_require(
+      cudaMemcpy(
+          &status, device_status, sizeof(status), cudaMemcpyDeviceToHost),
+      "POLY34 raw GATE fill status D2H");
+  if (status) return masks;
+
+  masks.resize(static_cast<std::size_t>(gate_count));
+  thrust::device_vector<unsigned long long> query_visits(1, 0);
+  mark_raw_gate_internal_sides_kernel<<<
+      blocks_for(gate_count, properties), kThreads>>>(
+      gates, gate_count, grid,
+      thrust::raw_pointer_cast(counts.data()),
+      thrust::raw_pointer_cast(offsets.data()),
+      thrust::raw_pointer_cast(members.data()),
+      thrust::raw_pointer_cast(masks.data()),
+      thrust::raw_pointer_cast(query_visits.data()), device_status);
+  cuda_require(
+      cudaGetLastError(), "POLY34 raw GATE internal-side launch");
+  cuda_require(
+      cudaDeviceSynchronize(),
+      "POLY34 raw GATE internal-side synchronize");
+
+  unsigned long long visits = 0;
+  cuda_require(
+      cudaMemcpy(
+          &visits, thrust::raw_pointer_cast(query_visits.data()),
+          sizeof(visits), cudaMemcpyDeviceToHost),
+      "POLY34 raw GATE internal-side visits D2H");
+  cuda_require(
+      cudaMemcpy(
+          &status, device_status, sizeof(status), cudaMemcpyDeviceToHost),
+      "POLY34 raw GATE internal-side status D2H");
+  if (!status && visits > request.max_query_visits) {
+    status = kPolyQueryCapacity;
+    cuda_require(
+        cudaMemcpy(
+            device_status, &status, sizeof(status), cudaMemcpyHostToDevice),
+        "POLY34 raw GATE internal-side query-capacity H2D");
+  }
+  return masks;
+}
+
 ProfileResult run_profile(
     const PolyBox *primary, std::uint64_t primary_count,
     const PolyBox *gates, std::uint64_t gate_count,
     const PolyGrid &grid, std::uint64_t grid_cells,
     std::int64_t distance, std::uint64_t maximum_memberships,
-    const PolyRequest &request, std::uint8_t *outcomes,
+    const PolyRequest &request,
+    const std::uint8_t *proven_internal_sides,
+    std::uint8_t *outcomes,
     std::uint32_t *device_status, const cudaDeviceProp &properties)
 {
   ProfileResult result;
@@ -827,7 +1356,7 @@ ProfileResult run_profile(
       thrust::raw_pointer_cast(offsets.data()),
       thrust::raw_pointer_cast(members.data()), distance,
       request.max_query_visits, request.max_candidate_work,
-      request.max_candidates_per_gate, outcomes,
+      request.max_candidates_per_gate, proven_internal_sides, outcomes,
       thrust::raw_pointer_cast(counters.data()), device_status);
   cuda_require(cudaGetLastError(), "POLY34 profile query launch");
   cuda_require(cudaDeviceSynchronize(), "POLY34 profile query synchronize");
@@ -848,6 +1377,7 @@ ProfileResult run_profile(
 PipelineResult run_pipeline(const PolyRequest &request)
 {
   PipelineResult result;
+  const bool raw = raw_request(request);
   if (request.context_count > request.max_contexts ||
       request.box_count > request.max_flat_boxes ||
       request.flat_poly_box_count > request.max_flat_boxes ||
@@ -920,8 +1450,8 @@ PipelineResult run_pipeline(const PolyRequest &request)
           static_cast<std::uint64_t>(properties.maxGridSize[0]) ||
       request.active_context_count >
           static_cast<std::uint64_t>(properties.maxGridSize[0]) ||
-      request.gate_context_count >
-          static_cast<std::uint64_t>(properties.maxGridSize[0])) {
+      (!raw && request.gate_context_count >
+          static_cast<std::uint64_t>(properties.maxGridSize[0]))) {
     result.fallback_flags =
         KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
     return result;
@@ -937,18 +1467,15 @@ PipelineResult run_pipeline(const PolyRequest &request)
   thrust::device_vector<std::uint64_t>
       active_offsets(request.active_offset_count);
   thrust::device_vector<std::uint32_t>
-      gate_contexts(request.gate_context_count);
+      gate_contexts(raw ? 0 : request.gate_context_count);
   thrust::device_vector<std::uint64_t>
-      gate_offsets(request.gate_offset_count);
+      gate_offsets(raw ? 0 : request.gate_offset_count);
   thrust::device_vector<PolyCell> cell_records(request.cell_count);
   thrust::device_vector<PolyBox> templates(request.box_count);
   thrust::device_vector<PolyBox> poly_boxes(request.flat_poly_box_count);
   thrust::device_vector<PolyBox> active_boxes(request.flat_active_box_count);
-  thrust::device_vector<PolyBox> gate_boxes(request.flat_gate_box_count);
-  thrust::device_vector<std::uint8_t>
-      poly_outcomes(request.flat_gate_box_count);
-  thrust::device_vector<std::uint8_t>
-      active_outcomes(request.flat_gate_box_count);
+  thrust::device_vector<PolyBox> gate_boxes(
+      raw ? 0 : request.flat_gate_box_count);
   thrust::device_vector<std::uint32_t> status(1, 0);
   result.setup_ns = elapsed_ns(setup_begin, Clock::now());
 
@@ -979,14 +1506,16 @@ PipelineResult run_pipeline(const PolyRequest &request)
       active_offsets, request.active_offsets,
       request.active_offset_count, std::uint64_t,
       "POLY34 ACTIVE-offset H2D");
-  POLY34_H2D(
-      gate_contexts, request.gate_contexts,
-      request.gate_context_count, std::uint32_t,
-      "POLY34 GATE-context H2D");
-  POLY34_H2D(
-      gate_offsets, request.gate_offsets,
-      request.gate_offset_count, std::uint64_t,
-      "POLY34 GATE-offset H2D");
+  if (!raw) {
+    POLY34_H2D(
+        gate_contexts, request.gate_contexts,
+        request.gate_context_count, std::uint32_t,
+        "POLY34 GATE-context H2D");
+    POLY34_H2D(
+        gate_offsets, request.gate_offsets,
+        request.gate_offset_count, std::uint64_t,
+        "POLY34 GATE-offset H2D");
+  }
   POLY34_H2D(
       cell_records, request.cells, request.cell_count,
       PolyCell, "POLY34 cell H2D");
@@ -1023,24 +1552,24 @@ PipelineResult run_pipeline(const PolyRequest &request)
       KLAYOUT_CUDA_SPATIAL_POLY34_ACTIVE_DOMAIN,
       thrust::raw_pointer_cast(active_boxes.data()),
       thrust::raw_pointer_cast(status.data()));
-  expand_boxes_kernel<<<
-      static_cast<unsigned int>(request.gate_context_count),
-      kContextThreads>>>(
-      thrust::raw_pointer_cast(contexts.data()),
-      thrust::raw_pointer_cast(gate_contexts.data()),
-      thrust::raw_pointer_cast(gate_offsets.data()),
-      request.gate_context_count,
-      thrust::raw_pointer_cast(cell_records.data()),
-      thrust::raw_pointer_cast(templates.data()),
-      KLAYOUT_CUDA_SPATIAL_POLY34_GATE_DOMAIN,
-      thrust::raw_pointer_cast(gate_boxes.data()),
-      thrust::raw_pointer_cast(status.data()));
+  if (!raw) {
+    expand_boxes_kernel<<<
+        static_cast<unsigned int>(request.gate_context_count),
+        kContextThreads>>>(
+        thrust::raw_pointer_cast(contexts.data()),
+        thrust::raw_pointer_cast(gate_contexts.data()),
+        thrust::raw_pointer_cast(gate_offsets.data()),
+        request.gate_context_count,
+        thrust::raw_pointer_cast(cell_records.data()),
+        thrust::raw_pointer_cast(templates.data()),
+        KLAYOUT_CUDA_SPATIAL_POLY34_GATE_DOMAIN,
+        thrust::raw_pointer_cast(gate_boxes.data()),
+        thrust::raw_pointer_cast(status.data()));
+  }
   cuda_require(cudaGetLastError(), "POLY34 expansion launch");
   cuda_require(cudaDeviceSynchronize(), "POLY34 expansion synchronize");
-  result.expand_ns = elapsed_ns(expand_begin, Clock::now());
   result.expanded_poly = request.flat_poly_box_count;
   result.expanded_active = request.flat_active_box_count;
-  result.expanded_gate = request.flat_gate_box_count;
 
   std::uint32_t host_status = 0;
   cuda_require(
@@ -1054,13 +1583,60 @@ PipelineResult run_pipeline(const PolyRequest &request)
     return result;
   }
 
+  thrust::device_vector<std::uint8_t> proven_internal_sides;
+  if (raw) {
+    RawGateResult derived = derive_raw_gates(
+        thrust::raw_pointer_cast(poly_boxes.data()),
+        request.flat_poly_box_count,
+        thrust::raw_pointer_cast(active_boxes.data()),
+        request.flat_active_box_count, grid, result.grid_cells, request,
+        thrust::raw_pointer_cast(status.data()), properties);
+    gate_boxes.swap(derived.boxes);
+    cuda_require(
+        cudaMemcpy(
+            &host_status, thrust::raw_pointer_cast(status.data()),
+            sizeof(host_status), cudaMemcpyDeviceToHost),
+        "POLY34 raw GATE status D2H");
+    if (host_status) {
+      result.device_flags = host_status;
+      result.fallback_flags = fallback_from_device_flags(host_status);
+      return result;
+    }
+    proven_internal_sides = prove_raw_gate_internal_sides(
+        thrust::raw_pointer_cast(gate_boxes.data()),
+        gate_boxes.size(), grid, result.grid_cells, request,
+        thrust::raw_pointer_cast(status.data()), properties);
+    cuda_require(
+        cudaMemcpy(
+            &host_status, thrust::raw_pointer_cast(status.data()),
+            sizeof(host_status), cudaMemcpyDeviceToHost),
+        "POLY34 raw GATE internal-side status D2H");
+    if (host_status) {
+      result.device_flags = host_status;
+      result.fallback_flags = fallback_from_device_flags(host_status);
+      return result;
+    }
+    if (proven_internal_sides.size() != gate_boxes.size()) {
+      result.fallback_flags =
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+      return result;
+    }
+  }
+  result.expanded_gate = gate_boxes.size();
+  result.expand_ns = elapsed_ns(expand_begin, Clock::now());
+  const std::uint64_t gate_count = result.expanded_gate;
+  thrust::device_vector<std::uint8_t> poly_outcomes(gate_count);
+  thrust::device_vector<std::uint8_t> active_outcomes(gate_count);
+
   result.poly = run_profile(
       thrust::raw_pointer_cast(poly_boxes.data()),
       request.flat_poly_box_count,
       thrust::raw_pointer_cast(gate_boxes.data()),
-      request.flat_gate_box_count, grid, result.grid_cells,
+      gate_count, grid, result.grid_cells,
       request.poly3_distance, request.max_poly_memberships,
-      request, thrust::raw_pointer_cast(poly_outcomes.data()),
+      request,
+      raw ? thrust::raw_pointer_cast(proven_internal_sides.data()) : nullptr,
+      thrust::raw_pointer_cast(poly_outcomes.data()),
       thrust::raw_pointer_cast(status.data()), properties);
   cuda_require(
       cudaMemcpy(
@@ -1077,9 +1653,11 @@ PipelineResult run_pipeline(const PolyRequest &request)
       thrust::raw_pointer_cast(active_boxes.data()),
       request.flat_active_box_count,
       thrust::raw_pointer_cast(gate_boxes.data()),
-      request.flat_gate_box_count, grid, result.grid_cells,
+      gate_count, grid, result.grid_cells,
       request.poly4_distance, request.max_active_memberships,
-      request, thrust::raw_pointer_cast(active_outcomes.data()),
+      request,
+      raw ? thrust::raw_pointer_cast(proven_internal_sides.data()) : nullptr,
+      thrust::raw_pointer_cast(active_outcomes.data()),
       thrust::raw_pointer_cast(status.data()), properties);
   cuda_require(
       cudaMemcpy(
@@ -1096,10 +1674,10 @@ PipelineResult run_pipeline(const PolyRequest &request)
   thrust::device_vector<unsigned long long> atomic_empty(1, 0);
   thrust::device_vector<unsigned long long> fallback(1, 0);
   combine_outcomes_kernel<<<
-      blocks_for(request.flat_gate_box_count, properties), kThreads>>>(
+      blocks_for(gate_count, properties), kThreads>>>(
       thrust::raw_pointer_cast(poly_outcomes.data()),
       thrust::raw_pointer_cast(active_outcomes.data()),
-      request.flat_gate_box_count,
+      gate_count,
       thrust::raw_pointer_cast(atomic_empty.data()),
       thrust::raw_pointer_cast(fallback.data()));
   cuda_require(cudaGetLastError(), "POLY34 outcome reduction launch");
@@ -1119,13 +1697,13 @@ PipelineResult run_pipeline(const PolyRequest &request)
       "POLY34 fallback-gate D2H");
   result.d2h_ns = elapsed_ns(d2h_begin, Clock::now());
 
-  if (result.poly.terminal_empty == request.flat_gate_box_count) {
+  if (result.poly.terminal_empty == gate_count) {
     result.certified_empty_mask |= KLAYOUT_CUDA_SPATIAL_POLY3_RULE;
   }
-  if (result.active.terminal_empty == request.flat_gate_box_count) {
+  if (result.active.terminal_empty == gate_count) {
     result.certified_empty_mask |= KLAYOUT_CUDA_SPATIAL_POLY4_RULE;
   }
-  if (result.atomic_terminal_empty == request.flat_gate_box_count &&
+  if (result.atomic_terminal_empty == gate_count &&
       result.fallback_gates == 0 &&
       result.certified_empty_mask ==
           KLAYOUT_CUDA_SPATIAL_POLY34_ALL_RULES) {
@@ -1197,6 +1775,12 @@ int run_request(const PolyRequest *request, PolyResult *result)
     result->expanded_poly_box_count = pipeline.expanded_poly;
     result->expanded_active_box_count = pipeline.expanded_active;
     result->expanded_gate_box_count = pipeline.expanded_gate;
+    if (raw_request(*request)) {
+      // Format 2 has no host GATE census to echo.  Publish the complete
+      // device-derived tile count in both result census fields so the host can
+      // validate all terminal/fallback counters against one bound value.
+      result->flat_gate_box_count = pipeline.expanded_gate;
+    }
     result->grid_cell_count = pipeline.grid_cells;
     result->poly_membership_count = pipeline.poly.memberships;
     result->active_membership_count = pipeline.active.memberships;

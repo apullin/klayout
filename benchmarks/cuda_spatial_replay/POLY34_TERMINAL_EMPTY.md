@@ -7,10 +7,11 @@ host ABI or live-deck transaction could be added:
 > `enclosing(..., projection).polygons.without_area(0)` is empty for the
 > qualified 110 and 140 DBU profiles?
 
-The standalone predicate, production-volume census, and separately enabled
-live transaction are now all present.  The live path remains additive and
-fail-closed; this milestone does not alter a production deck or book a
-whole-run performance saving.
+The standalone predicate, production-volume census, initial merged-GATE live
+transaction, and direct raw POLY+ACTIVE owner transaction are now all present.
+Both CUDA protocols remain additive and fail closed.  The default deck remains
+byte-identical; the separately enabled raw owner path now has an exact
+production performance result.
 
 ## Exact terminal semantics
 
@@ -190,7 +191,7 @@ bash benchmarks/cuda_spatial_replay/run_poly34_production_dry_run.sh \
   --input /path/to/layout.gds --top TOP
 ```
 
-## Additive live transaction
+## Initial merged-GATE live transaction
 
 The separately enabled live path avoids the 159-second flat census
 construction.  Its host bridge first checks both the POLY.3/.4 opt-in and the
@@ -207,15 +208,16 @@ clean only when every GATE occurrence certifies both profiles.  A genuine hit,
 uncertain predicate, malformed request, disabled or missing backend, capacity
 limit, or CUDA error executes both pristine CPU expressions.
 
-The focused live gate has seven CPU oracles and seven accelerated cases: flat
-clean, clean Manhattan non-box primary decomposition, 2,048-occurrence
-hierarchical clean, a six-occurrence asymmetric rotated-array hit, independent
-genuine POLY.3 and POLY.4 hits, and a mixed two-rule hit.  It also proves that
-an unqualified source layer, a configured backend with the feature disabled,
-and a missing backend perform no scene lowering, and that a forced
-device-capacity failure falls back atomically.  All 18 complete,
-generator-stripped `.lyrdb` reports are canonical-identical to their CPU
-oracle, including ordered categories and cell/report structure:
+At this historical milestone, the focused live gate had seven CPU oracles and
+seven accelerated cases: flat clean, clean Manhattan non-box primary
+decomposition, 2,048-occurrence hierarchical clean, a six-occurrence
+asymmetric rotated-array hit, independent genuine POLY.3 and POLY.4 hits, and
+a mixed two-rule hit.  It also proved that an unqualified source layer, a
+configured backend with the feature disabled, and a missing backend performed
+no scene lowering, and that a forced device-capacity failure fell back
+atomically.  All 18 complete, generator-stripped `.lyrdb` reports were
+canonical-identical to their CPU oracle, including ordered categories and
+cell/report structure:
 
 ```text
 POLY34_LIVE_GATE ok gate=cpu-oracle cases=7 categories=2
@@ -239,3 +241,114 @@ The existing aggregate CUDA ABI/oracle smoke and VIA1-stack backend smoke also
 pass with the new independent symbol linked into the shared backend.  This is
 an integrity milestone, not a production/full-design performance gate, so no
 whole-run saving is booked here.
+
+## Direct raw POLY+ACTIVE owner transaction
+
+The next transaction moves the expensive Boolean boundary itself.  In the
+sole-consumer `m1_enclosure` owner, the generated deck calls
+`cuda_poly34_raw_clean?` before constructing `gate = poly & active`.  The host
+walks the hierarchy once, performs exact Manhattan `TD_simple` decomposition
+of the raw POLY and ACTIVE layers, and serializes their compact cell templates
+and complete occurrence contexts.  It sends no GATE layer, GATE context, or
+GATE box span.
+
+The device expands both raw layers into the common top-cell coordinate system
+and performs a global spatial join.  The construction is exact because
+
+```text
+(union_i P_i) intersect (union_j A_j)
+  = union_i,j (P_i intersect A_j)
+```
+
+Every positive-area `P_i intersect A_j` rectangle is emitted.  A deterministic
+grid owner prevents one pair from being emitted repeatedly when it spans
+multiple grid cells.  The resulting rectangles are an exact cover of GATE;
+they need not be merged, disjoint, or equal in count to the historical merged
+GATE polygons.  A complete join with no positive intersection also proves
+that GATE is empty.
+
+An exact cover introduces artificial tile sides that are not physical GATE
+boundaries.  Before applying either terminal profile, the backend tests each
+tile side against the derived GATE cover.  It suppresses the side only when
+one other exact GATE tile covers the complete positive-width 1-DBU strip
+immediately across that side.  On the integer-DBU geometry lattice, that is a
+sufficient proof that the whole side lies inside GATE and therefore cannot
+participate in KLayout's enclosing result.  Split or partial coverage is not
+accepted.  A directed fixture with a 100-DBU tile beside a 1-DBU fragment
+would falsely look partially covered if the seam were treated as an external
+boundary; proving the full 1-DBU strip internal lets both rules certify it
+exactly.  Unproved seams, incomplete windows, unsupported geometry, arithmetic
+overflow, or any capacity error still decline atomically.
+
+The raw request is an additive format-2 opcode.  The original merged-GATE
+opcode, request format, and non-owner deck hook are unchanged.  A raw owner
+decline never retries that legacy CUDA path: it lazily constructs the
+historical `gate = poly & active` region and executes both pristine CPU
+expressions.  Ruby exceptions, missing or symbol-incomplete backends, capacity
+declines, and device errors follow the same fail-closed rule.  Non-owner modes
+can continue to use the legacy transaction.
+
+The current focused live gate has eight CPU oracles and eight raw CUDA cases.
+The added clean case stores POLY and ACTIVE in different sibling leaves and
+makes them intersect only after both contexts are transformed into the common
+top coordinate system.  This proves the device join is global rather than
+unsafely context-local.  All 20 complete canonical reports match:
+
+```text
+POLY34_LIVE_GATE ok gate=cpu-oracle cases=8 categories=2
+POLY34_LIVE_GATE ok gate=cuda clean=4 hits=4 reports=cpu-identical atomic=1 transformed-hit=1 manhattan-primary=1 cross-context=1
+POLY34_LIVE_GATE ok gate=wrong-layer report=cpu-identical no-lowering=1
+POLY34_LIVE_GATE ok gate=backend-off report=cpu-identical
+POLY34_LIVE_GATE ok gate=missing-backend report=cpu-identical
+POLY34_LIVE_GATE ok gate=capacity report=cpu-identical
+POLY34_LIVE_GATE PASS oracles=8 cuda=8 wrong-layer=1 backend-off=1 missing=1 capacity=1 reports=20
+```
+
+On the pinned FreePDK45 x2 production owner, the raw compact scene contained:
+
+```text
+contexts             849,265
+cells                    273
+stored source boxes     7,004
+expanded raw POLY  16,207,964
+expanded raw ACTIVE 24,689,320
+derived GATE tiles   3,420,536
+```
+
+The **3,420,536** value counts device-derived cover tiles, not merged GATE
+polygons.  The host raw lowering took **316.150 ms** and the complete backend
+call took **652.485 ms**, for **968.635 ms** combined.  Telemetry confirms
+that this lane performed no host GATE construction and no legacy merged-input
+lowering.
+
+The exact immediate-parent production A/B changed **78.74 -> 34.04 seconds**,
+removing **44.70 wall-seconds / 56.769% of owner time**.  Peak RSS changed
+**1,850,420 -> 704,812 KiB**, or **61.911% less**.  Both complete reports have
+canonical SHA-256
+`d056b808e6f2134e60286e35247a92e3a2f6d2eaa26b463fd572aa7e0652146d`.
+This comparison is against the immediately preceding implementation and is
+not additive with the older merged-GATE production result.
+
+Reproduce the focused and production gates with:
+
+```sh
+bash benchmarks/cuda_spatial_replay/run_poly34_live_gate.sh \
+  --klayout /path/to/klayout \
+  --backend /path/to/libklayout_cuda_spatial_backend.so
+
+bash benchmarks/cuda_spatial_replay/run_poly34_production_owner_gate.sh \
+  --klayout /path/to/klayout \
+  --backend /path/to/libklayout_cuda_spatial_backend.so \
+  --device-smoke /path/to/cuda_spatial_backend_smoke \
+  --source-deck /path/to/source.lydrc \
+  --default-deck-reference /path/to/default.lydrc \
+  --input /path/to/layout.gds \
+  --top-cell TOP
+```
+
+A second serialized production A/B measured **77.16 -> 33.93 seconds**,
+removing **43.23 seconds / 56.026% of owner time**.  The complete six-lane
+gate also proved exact reports for injected exception, forced capacity,
+missing-library, and ABI-compatible symbol-incomplete-library fallback.  Its
+durable evidence is in
+`.scratchpad/cuda-runs/klayout-poly34-raw-owner.M4P5M5`.

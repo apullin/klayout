@@ -122,7 +122,8 @@ KLAYOUT_POLY34_HD inline Certificate terminal_empty_profile(
     const Box *primary_boxes,
     std::uint32_t primary_count,
     std::int64_t distance,
-    bool supported = true) {
+    bool supported = true,
+    std::uint8_t proven_internal_sides = 0) {
   if (!supported || !valid_box(gate) || !primary_boxes || !primary_count ||
       primary_count > kMaximumCandidateBoxes ||
       (distance != kPoly3Distance && distance != kPoly4Distance)) {
@@ -163,7 +164,18 @@ KLAYOUT_POLY34_HD inline Certificate terminal_empty_profile(
   // KLayout, but is deliberately declined here.  Partial coverage, unrelated
   // nearby primary geometry, and candidate-window ambiguity therefore cannot
   // become a false terminal-empty certificate.
-  for (const Box &band : bands) {
+  for (std::uint32_t side = 0; side < 4; ++side) {
+    // A raw rectangle cover can split one physical GATE component into
+    // several tiles.  Its caller may suppress a tile side only after
+    // independently proving that a positive-width strip immediately across
+    // the complete side belongs to GATE too.  Such a side is internal to the
+    // exact union and therefore cannot participate in KLayout's enclosing
+    // result.  Every unproved or partially internal side retains the original
+    // conservative test below.
+    if (proven_internal_sides & (std::uint8_t(1) << side)) {
+      continue;
+    }
+    const Box &band = bands[side];
     if (!union_misses(band, primary_boxes, primary_count) &&
         !union_covers(band, primary_boxes, primary_count)) {
       return Certificate::kFallback;

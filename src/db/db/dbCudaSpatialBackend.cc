@@ -4391,7 +4391,17 @@ CudaPoly34Attempt cuda_spatial_try_poly34_empty (
     log_poly34_attempt (attempt);
     return attempt;
   }
-  if (request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+  const bool legacy_request =
+    request.opcode == KLAYOUT_CUDA_SPATIAL_POLY34_TERMINAL_EMPTY;
+  const bool raw_request =
+    request.opcode == KLAYOUT_CUDA_SPATIAL_POLY34_RAW_TERMINAL_EMPTY;
+  bool invalid_request = false;
+
+  if (legacy_request) {
+    // Keep the format-1 contract independent and byte-for-byte strict.  The
+    // additive raw opcode must not relax any assertion made by old callers.
+    invalid_request =
+      request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
       request.struct_size != sizeof (request) ||
       request.opcode != KLAYOUT_CUDA_SPATIAL_POLY34_TERMINAL_EMPTY ||
       request.option_flags !=
@@ -4444,7 +4454,86 @@ CudaPoly34Attempt cuda_spatial_try_poly34_empty (
       request.flat_active_box_count >
         std::numeric_limits<uint32_t>::max () ||
       request.flat_gate_box_count >
-        std::numeric_limits<uint32_t>::max ()) {
+        std::numeric_limits<uint32_t>::max ();
+  } else if (raw_request) {
+    invalid_request =
+      request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      request.struct_size != sizeof (request) ||
+      request.opcode != KLAYOUT_CUDA_SPATIAL_POLY34_RAW_TERMINAL_EMPTY ||
+      request.option_flags !=
+        KLAYOUT_CUDA_SPATIAL_POLY34_RAW_QUALIFIED_OPTIONS ||
+      request.format_version != 2 ||
+      request.dbu_per_micron != 2000 ||
+      request.requested_mask != KLAYOUT_CUDA_SPATIAL_POLY34_ALL_RULES ||
+      request.device < 0 || request.reserved0 != 0 ||
+      request.identity_reserved != 0 ||
+      request.context_reserved != 0 || request.cell_reserved != 0 ||
+      request.box_reserved != 0 || request.capacity_reserved != 0 ||
+      request.reserved1 [0] != 0 || request.reserved1 [1] != 0 ||
+      request.poly3_distance != 110 || request.poly4_distance != 140 ||
+      request.grid_cell_size <= 0 ||
+      request.max_candidates_per_gate != 64 ||
+      ! request.context_count || ! request.contexts ||
+      ! request.poly_context_count || ! request.poly_contexts ||
+      request.poly_offset_count != request.poly_context_count ||
+      ! request.poly_offsets ||
+      ! request.active_context_count || ! request.active_contexts ||
+      request.active_offset_count != request.active_context_count ||
+      ! request.active_offsets ||
+      request.gate_context_count != 0 || request.gate_contexts != 0 ||
+      request.gate_offset_count != 0 || request.gate_offsets != 0 ||
+      ! request.cell_count || ! request.cells ||
+      ! request.box_count || ! request.boxes ||
+      request.context_record_bytes !=
+        sizeof (klayout_cuda_spatial_poly34_context_v1) ||
+      request.cell_record_bytes !=
+        sizeof (klayout_cuda_spatial_poly34_cell_v1) ||
+      request.box_record_bytes !=
+        sizeof (klayout_cuda_spatial_poly34_box_v1) ||
+      ! request.flat_poly_box_count ||
+      ! request.flat_active_box_count ||
+      request.flat_gate_box_count != 0 ||
+      request.gate_layer_id != KLAYOUT_CUDA_SPATIAL_POLY34_NO_GATE_LAYER ||
+      request.poly_layer_id == request.active_layer_id ||
+      request.poly_layer_id == KLAYOUT_CUDA_SPATIAL_POLY34_NO_GATE_LAYER ||
+      request.active_layer_id == KLAYOUT_CUDA_SPATIAL_POLY34_NO_GATE_LAYER ||
+      request.scene_left >= request.scene_right ||
+      request.scene_bottom >= request.scene_top ||
+      ! request.max_contexts || ! request.max_flat_boxes ||
+      ! request.max_grid_cells || ! request.max_poly_memberships ||
+      ! request.max_active_memberships || ! request.max_query_visits ||
+      ! request.max_candidate_work ||
+      request.context_count > request.max_contexts ||
+      request.context_count > std::numeric_limits<uint32_t>::max () ||
+      request.cell_count > request.context_count ||
+      request.cell_count > std::numeric_limits<uint32_t>::max () ||
+      request.box_count > request.max_flat_boxes ||
+      request.flat_poly_box_count >
+        std::numeric_limits<uint32_t>::max () ||
+      request.flat_active_box_count >
+        std::numeric_limits<uint32_t>::max ();
+
+    // Format 2 is deliberately incapable of smuggling a host-computed GATE
+    // through the generic cell records.  CUDA must derive every gate tile.
+    if (! invalid_request) {
+      const klayout_cuda_spatial_poly34_cell_v1 *cells =
+        static_cast<const klayout_cuda_spatial_poly34_cell_v1 *> (
+          request.cells);
+      for (uint64_t i = 0; i < request.cell_count; ++i) {
+        const klayout_cuda_spatial_poly34_domain_span_v1 &gate =
+          cells [i].domains [KLAYOUT_CUDA_SPATIAL_POLY34_GATE_DOMAIN];
+        if (gate.box_count != 0 || gate.reserved0 != 0 ||
+            gate.box_begin > request.box_count) {
+          invalid_request = true;
+          break;
+        }
+      }
+    }
+  } else {
+    invalid_request = true;
+  }
+
+  if (invalid_request) {
     attempt.disposition = CudaPoly34Attempt::InvalidResult;
     attempt.message = "CUDA POLY34 caller supplied an unqualified request";
     log_poly34_attempt (attempt);
@@ -4516,7 +4605,7 @@ CudaPoly34Attempt cuda_spatial_try_poly34_empty (
 
   if (status == KLAYOUT_CUDA_SPATIAL_OK &&
       result.status == KLAYOUT_CUDA_SPATIAL_OK) {
-    const bool echo_matches =
+    const bool common_echo_matches =
       result.opcode == request.opcode &&
       result.option_flags == request.option_flags &&
       result.format_version == request.format_version &&
@@ -4539,15 +4628,24 @@ CudaPoly34Attempt cuda_spatial_try_poly34_empty (
       result.context_count == request.context_count &&
       result.poly_context_count == request.poly_context_count &&
       result.active_context_count == request.active_context_count &&
-      result.gate_context_count == request.gate_context_count &&
       result.cell_count == request.cell_count &&
       result.box_count == request.box_count &&
       result.flat_poly_box_count == request.flat_poly_box_count &&
       result.flat_active_box_count == request.flat_active_box_count &&
-      result.flat_gate_box_count == request.flat_gate_box_count &&
       result.expanded_poly_box_count == request.flat_poly_box_count &&
-      result.expanded_active_box_count == request.flat_active_box_count &&
-      result.expanded_gate_box_count == request.flat_gate_box_count;
+      result.expanded_active_box_count == request.flat_active_box_count;
+    const bool gate_echo_matches = legacy_request
+      ? result.gate_context_count == request.gate_context_count &&
+        result.flat_gate_box_count == request.flat_gate_box_count &&
+        result.expanded_gate_box_count == request.flat_gate_box_count
+      : result.gate_context_count == 0 &&
+        result.flat_gate_box_count <= request.max_flat_boxes &&
+        result.flat_gate_box_count <=
+          std::numeric_limits<uint32_t>::max () &&
+        result.expanded_gate_box_count == result.flat_gate_box_count;
+    const uint64_t proof_gate_count = legacy_request
+      ? request.flat_gate_box_count
+      : result.flat_gate_box_count;
     const bool counters_possible =
       result.grid_cell_count <= request.max_grid_cells &&
       result.poly_membership_count <= request.max_poly_memberships &&
@@ -4556,20 +4654,21 @@ CudaPoly34Attempt cuda_spatial_try_poly34_empty (
       result.active_query_visit_count <= request.max_query_visits &&
       result.poly_candidate_count <= request.max_candidate_work &&
       result.active_candidate_count <= request.max_candidate_work &&
-      result.poly_terminal_empty_count <= request.flat_gate_box_count &&
-      result.active_terminal_empty_count <= request.flat_gate_box_count &&
+      result.poly_terminal_empty_count <= proof_gate_count &&
+      result.active_terminal_empty_count <= proof_gate_count &&
       result.atomic_terminal_empty_count <=
         result.poly_terminal_empty_count &&
       result.atomic_terminal_empty_count <=
         result.active_terminal_empty_count &&
-      result.fallback_gate_count <= request.flat_gate_box_count &&
+      result.fallback_gate_count <= proof_gate_count &&
       result.atomic_terminal_empty_count + result.fallback_gate_count ==
-        request.flat_gate_box_count &&
+        proof_gate_count &&
       result.maximum_poly_candidates <=
         request.max_candidates_per_gate &&
       result.maximum_active_candidates <=
         request.max_candidates_per_gate;
-    if (! echo_matches || ! counters_possible ||
+    if (! common_echo_matches || ! gate_echo_matches ||
+        ! counters_possible ||
         result.fallback_flags != KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE ||
         result.device_flags != 0) {
       attempt.disposition = CudaPoly34Attempt::InvalidResult;
@@ -4579,9 +4678,9 @@ CudaPoly34Attempt cuda_spatial_try_poly34_empty (
       result.disposition == KLAYOUT_CUDA_SPATIAL_POLY34_COMPLETE &&
       result.certified_empty_mask ==
         KLAYOUT_CUDA_SPATIAL_POLY34_ALL_RULES &&
-      result.poly_terminal_empty_count == request.flat_gate_box_count &&
-      result.active_terminal_empty_count == request.flat_gate_box_count &&
-      result.atomic_terminal_empty_count == request.flat_gate_box_count &&
+      result.poly_terminal_empty_count == proof_gate_count &&
+      result.active_terminal_empty_count == proof_gate_count &&
+      result.atomic_terminal_empty_count == proof_gate_count &&
       result.fallback_gate_count == 0) {
       attempt.disposition = CudaPoly34Attempt::CertifiedEmpty;
     } else if (

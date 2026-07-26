@@ -10,9 +10,12 @@ deep
 
 poly = input(($poly_layer || 9).to_i, 0)
 active = input(1, 0)
-gate = poly & active
 
-if poly.cuda_poly34_clean?(active, gate)
+raw_clean =
+  poly.respond_to?(:cuda_poly34_raw_clean?) &&
+  poly.cuda_poly34_raw_clean?(active)
+
+if raw_clean
   empty = polygon_layer
   empty.output(
     "POLY.3",
@@ -24,6 +27,10 @@ if poly.cuda_poly34_clean?(active, gate)
   )
   accelerated = 1
 else
+  # The direct CUDA transaction is speculative and atomic.  A decline builds
+  # the historical GATE expression here, then executes both pristine CPU
+  # checks; it must never fall through to the older merged-GATE CUDA hook.
+  gate = poly & active
   poly.enclosing(gate, 55.nm, projection)
     .polygons.without_area(0)
     .output(

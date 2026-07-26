@@ -2367,6 +2367,55 @@ not just wall time.
             runtime-closure, device-smoke, loaded-DSO, transaction-census, and
             fallback-disposition gates pass.  Evidence:
             `.scratchpad/cuda-runs/klayout-poly34-production-owner.k2jgeV`.
+          - [x] **Replace host-derived GATE with one direct raw POLY+ACTIVE
+            CUDA transaction:** the sole-consumer `m1_enclosure` owner now
+            calls the raw hook before the deck constructs `gate = poly &
+            active`.  The host lowers the exact compact POLY/ACTIVE hierarchy
+            once and sends no GATE geometry.  CUDA expands every context and
+            constructs an exact GATE cover from every positive-area raw pair
+            intersection, using the distributive identity
+            `(union P_i) intersect (union A_j) =
+            union (P_i intersect A_j)`.  The join is global across hierarchy
+            contexts rather than context-local.
+
+            Pairwise intersections can leave overlapping or adjacent tiles,
+            so a tile seam is suppressed only when one other exact GATE tile
+            covers the complete positive-width 1-DBU strip immediately across
+            that side.  The directed 1-DBU-fragment test proves this internal
+            side is ignored by both terminal profiles.  Partial, split,
+            overflowed, or otherwise unproved coverage retains conservative
+            atomic CPU fallback.
+
+            The current focused live gate passes **8 CPU oracles plus 8 CUDA
+            cases** and all **20 canonical reports**, including a clean
+            cross-context join whose POLY and ACTIVE occupy different sibling
+            hierarchy leaves.  The legacy merged-GATE opcode and non-owner
+            hook remain unchanged.  In the raw owner, a missing capability,
+            exception, backend decline, capacity limit, or CUDA error builds
+            the historical GATE and executes both pristine CPU expressions;
+            it never retries the legacy CUDA lowering.
+
+            The exact immediate-parent A/B measured **78.74 -> 34.04 s**,
+            removing **44.70 real seconds / 56.769% of owner wall**.  This is
+            an immediate-parent result, not an additive comparison with the
+            older 89.66 -> 66.74 s milestone.  Both reports retained canonical
+            SHA-256
+            `d056b808e6f2134e60286e35247a92e3a2f6d2eaa26b463fd572aa7e0652146d`,
+            while peak RSS changed **1,850,420 -> 704,812 KiB** (**61.911%
+            less**).
+
+            Production telemetry records **849,265 contexts, 273 cells, and
+            7,004 stored source boxes**.  Device expansion produced
+            **16,207,964 raw POLY boxes** and **24,689,320 raw ACTIVE boxes**,
+            then **3,420,536 exact derived GATE tiles**.  Host raw lowering
+            took **316.150 ms** and the complete backend call **652.485 ms**,
+            or **968.635 ms** combined, with **zero host GATE boxes and zero
+            legacy lowering**.  A second serialized production A/B measured
+            **77.16 -> 33.93 s** (**43.23 real seconds / 56.026% less**) and
+            the complete six-lane gate retained the same canonical report for
+            raw CUDA, injected exception, forced capacity, missing library,
+            and ABI-compatible symbol-incomplete library.  Evidence:
+            `.scratchpad/cuda-runs/klayout-poly34-raw-owner.M4P5M5`.
         - [ ] **Reuse the cumulative M3 prefix for the M4 antenna check:** the
           current owner spends roughly 78.33 aggregate CPU-seconds extracting
           and evaluating M3, then rebuilding almost the entire graph for M4
