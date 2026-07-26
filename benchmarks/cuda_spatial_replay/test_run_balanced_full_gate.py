@@ -251,6 +251,7 @@ class BalancedFullGateStaticTest(unittest.TestCase):
             "--with-m1-5-9",
             "--with-m2-width-space",
             "--with-implant12",
+            "--with-implant15",
             "--with-poly34",
             "--prune-poly2",
         ):
@@ -294,6 +295,59 @@ class BalancedFullGateStaticTest(unittest.TestCase):
             "CUDA M1 exact resident morphology certificate:"
             " outcome=certified-empty",
             self.launcher_text,
+        )
+
+    def test_implant15_is_atomic_and_composes_with_implant12(self) -> None:
+        self.assertIn(
+            "implant15_generator_args=(--implant15)",
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_CUDA_IMPLANT15=${implant15}"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_CUDA_IMPLANT15_TELEMETRY=1"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            "CUDA IMPLANT.1-.5 raw transaction: certified-empty",
+            self.launcher_text,
+        )
+        self.assertIn(
+            "implant12 == 1 && implant15 != 1",
+            self.launcher_text,
+        )
+        self.assertIn(
+            "raw IMPLANT.1-.5 success unexpectedly entered "
+            "IMPLANT.1/.2 fallback",
+            self.launcher_text,
+        )
+
+        # Selecting both is deliberate: the raw all-five transaction owns
+        # the fast path, while the older IMPLANT.1/.2 transaction remains in
+        # its literal outer fallback.
+        composed = self.run_preflight(
+            "--with-implant12",
+            "--with-implant15",
+        )
+        self.assertEqual(composed.returncode, 2)
+        self.assertNotIn("choose exactly one IMPLANT", composed.stderr)
+        self.assertIn("KLayout is not executable", composed.stderr)
+
+        legacy_only = self.run_preflight("--with-implant12")
+        self.assertEqual(legacy_only.returncode, 2)
+        self.assertNotIn("IMPLANT.1-.5", legacy_only.stderr)
+        self.assertIn("KLayout is not executable", legacy_only.stderr)
+
+        conflicting = self.run_preflight(
+            "--with-implant15",
+            "--without-implant15",
+        )
+        self.assertEqual(conflicting.returncode, 2)
+        self.assertIn(
+            "choose exactly one IMPLANT.1-.5 runtime mode",
+            conflicting.stderr,
         )
 
     def test_m1_base_width_space_is_exact_and_resource_serialized(self) -> None:

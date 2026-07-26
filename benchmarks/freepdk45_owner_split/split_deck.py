@@ -69,14 +69,46 @@ def split_deck(
         raise TransformError("source deck is already owner-split")
 
     if split_implant_contact:
+        implant15_marker = "# BEGIN KLAYOUT CUDA IMPLANT15 RAW OWNER"
+        implant12_marker = (
+            'implant12_request = ENV["KLAYOUT_CUDA_IMPLANT12"].to_s'
+        )
+        implant15_count = text.count(implant15_marker)
+        implant12_count = text.count(implant12_marker)
+        if implant15_count not in (0, 1):
+            raise TransformError(
+                "raw IMPLANT.1-.5 transaction: expected zero or one "
+                f"exact marker, found {implant15_count}"
+            )
+        if implant12_count not in (0, 1):
+            raise TransformError(
+                "IMPLANT.1/.2 transaction: expected zero or one exact "
+                f"marker, found {implant12_count}"
+            )
+        if implant15_count:
+            implant12_outputs = 3 if implant12_count else 2
+            implant345_outputs = 2
+            implant_boundary = "implant.forget\nend\n\n#   Contact"
+            split_boundary = (
+                "implant.forget\nend\n\nend\n\n\n"
+                "if run_contact\n\n#   Contact"
+            )
+        else:
+            implant12_outputs = 2 if implant12_count else 1
+            implant345_outputs = 1
+            implant_boundary = "implant.forget\n\n#   Contact"
+            split_boundary = (
+                "implant.forget\n\nend\n\n\n"
+                "if run_contact\n\n#   Contact"
+            )
         _require_output_counts(
             text,
             {
-                "IMPLANT.1": (1, 2),
-                "IMPLANT.2": (1, 2),
-                "IMPLANT.3": (1,),
-                "IMPLANT.4": (1,),
-                "IMPLANT.5": (1,),
+                "IMPLANT.1": (implant12_outputs,),
+                "IMPLANT.2": (implant12_outputs,),
+                "IMPLANT.3": (implant345_outputs,),
+                "IMPLANT.4": (implant345_outputs,),
+                "IMPLANT.5": (implant345_outputs,),
                 "CONTACT.1": (1, 2),
                 "CONTACT.2": (1, 2),
                 "CONTACT.3": (1, 2),
@@ -114,8 +146,8 @@ def split_deck(
         )
         text = _replace_once(
             text,
-            "implant.forget\n\n#   Contact",
-            "implant.forget\n\nend\n\n\nif run_contact\n\n#   Contact",
+            implant_boundary,
+            split_boundary,
             "implant/contact block boundary",
         )
 

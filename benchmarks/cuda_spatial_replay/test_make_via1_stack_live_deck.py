@@ -20,6 +20,26 @@ IMPLANT2 = (
     'pimplant to contact : 25nm")'
 )
 SOURCE_BLOCK = f"{IMPLANT1}\n{IMPLANT2}"
+IMPLANT3 = (
+    'implant.width(45.nm, euclidian).output("IMPLANT.3", '
+    '"IMPLANT.3 : Minimum width of nimplant/ pimplant  : 45nm")'
+)
+IMPLANT4 = (
+    'implant.space(45.nm, euclidian).output("IMPLANT.4", '
+    '"IMPLANT.4 : Minimum spacing of nimplant/ pimplant  : 45nm")'
+)
+IMPLANT5 = (
+    'nplus.and(pplus).output("IMPLANT.5", '
+    '"IMPLANT.5 : Nimplant and pimplant must not overlap")'
+)
+IMPLANT_UNION = "implant = nplus.or(pplus) if need_implant"
+IMPLANT15_RULES = (
+    f"{SOURCE_BLOCK}\n{IMPLANT3}\n{IMPLANT4}\n{IMPLANT5}\nimplant.forget"
+)
+IMPLANT15_SOURCE = (
+    f"gate = poly &amp; active if need_gate\n{IMPLANT_UNION}\n"
+    f"intervening\n#   Implant\n{IMPLANT15_RULES}"
+)
 POLY3 = (
     "poly.enclosing(gate, 55.nm, projection).polygons.without_area(0)"
     '.output("POLY.3", "POLY.3 : Minimum poly extension beyond active : '
@@ -172,6 +192,179 @@ class Implant12TransformTest(unittest.TestCase):
             r"IMPLANT\.1/\.2 transaction: expected one source block, found 2",
         ):
             generator.add_implant12(duplicated)
+
+
+class Implant15RawTransformTest(unittest.TestCase):
+    def test_is_deterministic_ordered_and_bypasses_the_union_only_on_clean(
+        self,
+    ) -> None:
+        source = f"before\n{IMPLANT15_SOURCE}\nafter\n"
+
+        first = generator.add_implant15(source)
+        second = generator.add_implant15(source)
+
+        self.assertEqual(first, second)
+        self.assertTrue(first.startswith("before\n"))
+        self.assertTrue(first.endswith("\nafter\n"))
+        self.assertEqual(first.count(IMPLANT_UNION), 1)
+        self.assertLess(
+            first.index("gate = poly &amp; active if need_gate"),
+            first.index("nplus.cuda_implant15_raw_clean?(pplus, gate, cont)"),
+        )
+        self.assertLess(
+            first.index("nplus.cuda_implant15_raw_clean?(pplus, gate, cont)"),
+            first.index(f"  {IMPLANT_UNION}"),
+        )
+
+        clean_branch = first.split(
+            "#   Implant\nif implant15_raw_clean\n", 1
+        )[1].split("\nelse\n", 1)[0]
+        self.assertEqual(
+            re.findall(
+                r'implant15_empty\.output\("(IMPLANT\.[1-5])"',
+                clean_branch,
+            ),
+            [f"IMPLANT.{rule}" for rule in range(1, 6)],
+        )
+        self.assertNotIn("nplus.or(pplus)", clean_branch)
+        self.assertNotIn("implant.separation", clean_branch)
+        self.assertNotIn("implant.width", clean_branch)
+        self.assertNotIn("implant.space", clean_branch)
+        self.assertNotIn("nplus.and(pplus)", clean_branch)
+
+    def test_every_decline_keeps_one_literal_union_and_five_rule_fallback(
+        self,
+    ) -> None:
+        transformed = generator.add_implant15(IMPLANT15_SOURCE)
+
+        self.assertIn(
+            "implant15_owner = implant15_requested &amp;&amp; DRC "
+            "&amp;&amp; run_implant_contact",
+            transformed,
+        )
+        self.assertIn(
+            "if nplus.respond_to?(:cuda_implant15_raw_clean?)",
+            transformed,
+        )
+        self.assertIn(
+            "rescue StandardError =&gt; implant15_raw_error",
+            transformed,
+        )
+        method_index = transformed.index(
+            "nplus.cuda_implant15_raw_clean?(pplus, gate, cont)"
+        )
+        empty_index = transformed.index(
+            "implant15_empty = polygon_layer", method_index
+        )
+        rescue_index = transformed.index(
+            "rescue StandardError =&gt; implant15_raw_error", empty_index
+        )
+        self.assertLess(method_index, empty_index)
+        self.assertLess(empty_index, rescue_index)
+        self.assertIn("implant15_empty = nil", transformed[rescue_index:])
+        self.assertIn(
+            'implant15_raw_reason = "exception:'
+            '#{implant15_raw_error.class}"',
+            transformed,
+        )
+        self.assertIn(
+            "unless implant15_raw_clean\n"
+            f"  {IMPLANT_UNION}\n"
+            "end",
+            transformed,
+        )
+        for historical_rule in (
+            IMPLANT1,
+            IMPLANT2,
+            IMPLANT3,
+            IMPLANT4,
+            IMPLANT5,
+        ):
+            self.assertEqual(transformed.count(historical_rule), 1)
+        self.assertEqual(transformed.count("implant.forget"), 1)
+        self.assertIn(
+            "CUDA IMPLANT.1-.5 raw transaction: "
+            "#{implant15_raw_clean ? 'certified-empty' : "
+            "'full-cpu-fallback'} reason=#{implant15_raw_reason}",
+            transformed,
+        )
+
+    def test_implant12_remains_inside_only_the_outer_fallback(self) -> None:
+        with_implant12 = generator.add_implant12(IMPLANT15_SOURCE)
+        transformed = generator.add_implant15(with_implant12)
+
+        clean_branch, fallback = transformed.split(
+            "#   Implant\nif implant15_raw_clean\n", 1
+        )[1].split("\nelse\n", 1)
+        self.assertNotIn("implant12_", clean_branch)
+        self.assertIn("implant12_clean", fallback)
+        self.assertEqual(
+            transformed.count(
+                "implant.respond_to?(:cuda_implant12_clean?)"
+            ),
+            1,
+        )
+        self.assertEqual(transformed.count(IMPLANT1), 1)
+        self.assertEqual(transformed.count(IMPLANT2), 1)
+        self.assertEqual(transformed.count(IMPLANT3), 1)
+        self.assertEqual(transformed.count(IMPLANT4), 1)
+        self.assertEqual(transformed.count(IMPLANT5), 1)
+
+    def test_composes_after_poly34_and_rejects_missing_or_late_gate(
+        self,
+    ) -> None:
+        with_poly_rules = f"{IMPLANT15_SOURCE}\n{POLY34_RULE_BLOCK}"
+        poly_first = generator.add_poly34(with_poly_rules)
+        transformed = generator.add_implant15(poly_first)
+        self.assertIn(POLY34_LAZY_GATE, transformed)
+        self.assertLess(
+            transformed.index(POLY34_LAZY_GATE),
+            transformed.index(
+                "nplus.cuda_implant15_raw_clean?(pplus, gate, cont)"
+            ),
+        )
+
+        missing_gate = IMPLANT15_SOURCE.replace(
+            "gate = poly &amp; active if need_gate\n",
+            "",
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "expected one GATE construction followed by one implant union",
+        ):
+            generator.add_implant15(missing_gate)
+
+        late_gate = IMPLANT15_SOURCE.replace(
+            "gate = poly &amp; active if need_gate\n",
+            "",
+        ).replace(
+            "intervening\n",
+            "intervening\ngate = poly &amp; active if need_gate\n",
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "expected one GATE construction followed by one implant union",
+        ):
+            generator.add_implant15(late_gate)
+
+    def test_source_drift_and_duplicates_fail_closed(self) -> None:
+        changed = IMPLANT15_SOURCE.replace("45.nm", "46.nm", 1)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"IMPLANT\.1-\.5 raw rule transaction: expected one exact",
+        ):
+            generator.add_implant15(changed)
+
+        duplicated = (
+            f"gate = poly &amp; active if need_gate\n{IMPLANT_UNION}\n"
+            f"#   Implant\n{IMPLANT15_RULES}\n"
+            f"#   Implant\n{IMPLANT15_RULES}"
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"IMPLANT\.1-\.5 raw rule transaction: expected one exact",
+        ):
+            generator.add_implant15(duplicated)
 
 
 class M2RulesTransformTest(unittest.TestCase):

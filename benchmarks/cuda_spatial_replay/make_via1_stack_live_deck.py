@@ -438,6 +438,119 @@ end""",
     )
 
 
+def add_implant15(text: str) -> str:
+    """Add the fail-closed raw NPLUS/PPLUS IMPLANT.1-.5 transaction."""
+
+    implant_union = "implant = nplus.or(pplus) if need_implant"
+    union_count = text.count(implant_union)
+    gate_anchors = (
+        "gate = poly &amp; active if need_gate",
+        (
+            "gate = poly &amp; active if need_gate &amp;&amp; "
+            "!poly34_raw_clean"
+        ),
+    )
+    source_lines = text.splitlines()
+    gate_matches = [
+        anchor for anchor in gate_anchors if source_lines.count(anchor) == 1
+    ]
+    if (
+        union_count != 1
+        or len(gate_matches) != 1
+        or text.index(gate_matches[0]) > text.index(implant_union)
+    ):
+        raise RuntimeError(
+            "IMPLANT.1-.5 raw union transaction: expected one GATE "
+            "construction followed by one implant union"
+        )
+
+    text = replace_once(
+        text,
+        implant_union,
+        """# BEGIN KLAYOUT CUDA IMPLANT15 RAW OWNER
+# The raw transaction consumes pristine NPLUS/PPLUS plus the already-created
+# GATE and CONTACT operands.  Only a complete all-five-bit empty certificate
+# may bypass both the historical implant union and the five CPU rules.  Every
+# disabled or missing method, exception, backend decline, rule hit, capacity
+# limit, or uncertainty constructs the literal source union below.
+implant15_request = ENV["KLAYOUT_CUDA_IMPLANT15"].to_s
+implant15_requested = !implant15_request.empty? &amp;&amp; implant15_request != "0" &amp;&amp; implant15_request != "false" &amp;&amp; implant15_request != "off"
+implant15_owner = implant15_requested &amp;&amp; DRC &amp;&amp; run_implant_contact
+implant15_raw_clean = false
+implant15_empty = nil
+implant15_raw_reason = "not-owner"
+if implant15_owner
+  implant15_raw_reason = "method-unavailable"
+  begin
+    if nplus.respond_to?(:cuda_implant15_raw_clean?)
+      implant15_raw_clean = nplus.cuda_implant15_raw_clean?(pplus, gate, cont)
+      if implant15_raw_clean
+        implant15_empty = polygon_layer
+        implant15_raw_reason = "certified-empty"
+      else
+        implant15_raw_reason = "certificate-declined"
+      end
+    end
+  rescue StandardError =&gt; implant15_raw_error
+    implant15_raw_clean = false
+    implant15_empty = nil
+    implant15_raw_reason = "exception:#{implant15_raw_error.class}"
+  end
+end
+info("CUDA IMPLANT.1-.5 raw transaction: #{implant15_raw_clean ? 'certified-empty' : 'full-cpu-fallback'} reason=#{implant15_raw_reason}") if implant15_owner
+
+unless implant15_raw_clean
+  implant = nplus.or(pplus) if need_implant
+end
+# END KLAYOUT CUDA IMPLANT15 RAW OWNER""",
+        "IMPLANT.1-.5 raw union transaction",
+    )
+
+    historical_pair = """implant.separation(gate, 70.nm, projection).polygons.without_area(0).output("IMPLANT.1", "IMPLANT.1 : Minimum spacing of nimplant/ pimplant to channel : 70nm")
+implant.separation(cont, 25.nm, projection).polygons.without_area(0).output("IMPLANT.2", "IMPLANT.1 : Minimum spacing of nimplant/ pimplant to contact : 25nm")"""
+    historical_suffix = """implant.width(45.nm, euclidian).output("IMPLANT.3", "IMPLANT.3 : Minimum width of nimplant/ pimplant  : 45nm")
+implant.space(45.nm, euclidian).output("IMPLANT.4", "IMPLANT.4 : Minimum spacing of nimplant/ pimplant  : 45nm")
+nplus.and(pplus).output("IMPLANT.5", "IMPLANT.5 : Nimplant and pimplant must not overlap")
+implant.forget"""
+    historical_rules = f"{historical_pair}\n{historical_suffix}"
+    implant12_rules = f"{add_implant12(historical_pair)}\n{historical_suffix}"
+    source_blocks = (
+        f"#   Implant\n{historical_rules}",
+        f"#   Implant\n{implant12_rules}",
+    )
+    matches = [
+        (source_block, text.count(source_block))
+        for source_block in source_blocks
+        if text.count(source_block)
+    ]
+    if len(matches) != 1 or matches[0][1] != 1:
+        counts = ", ".join(str(count) for _, count in matches) or "0"
+        raise RuntimeError(
+            "IMPLANT.1-.5 raw rule transaction: expected one exact "
+            f"historical or IMPLANT12-composed source block, found {counts}"
+        )
+
+    source_block = matches[0][0]
+    fallback_rules = source_block.removeprefix("#   Implant\n")
+    fallback_rules = "\n".join(
+        f"  {line}" for line in fallback_rules.splitlines()
+    )
+    return text.replace(
+        source_block,
+        f"""#   Implant
+if implant15_raw_clean
+  implant15_empty.output("IMPLANT.1", "IMPLANT.1 : Minimum spacing of nimplant/ pimplant to channel : 70nm")
+  implant15_empty.output("IMPLANT.2", "IMPLANT.1 : Minimum spacing of nimplant/ pimplant to contact : 25nm")
+  implant15_empty.output("IMPLANT.3", "IMPLANT.3 : Minimum width of nimplant/ pimplant  : 45nm")
+  implant15_empty.output("IMPLANT.4", "IMPLANT.4 : Minimum spacing of nimplant/ pimplant  : 45nm")
+  implant15_empty.output("IMPLANT.5", "IMPLANT.5 : Nimplant and pimplant must not overlap")
+else
+{fallback_rules}
+end""",
+        1,
+    )
+
+
 def add_poly34(text: str) -> str:
     text = replace_once(
         text,
@@ -618,6 +731,11 @@ def main() -> int:
         help="also add the fail-closed IMPLANT.1/.2 transaction",
     )
     parser.add_argument(
+        "--implant15",
+        action="store_true",
+        help="also add the fail-closed raw IMPLANT.1-.5 transaction",
+    )
+    parser.add_argument(
         "--m2-rules",
         action="store_true",
         help="also add the fail-closed live M2.1/.2/.4-.9 transaction",
@@ -667,6 +785,8 @@ def main() -> int:
         output = add_m1_5_9(output)
     if args.implant12:
         output = add_implant12(output)
+    if args.implant15:
+        output = add_implant15(output)
     if args.poly34:
         output = add_poly34(output)
     if args.inject_poly34_ruby_exception:
