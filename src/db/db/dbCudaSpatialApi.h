@@ -2397,6 +2397,271 @@ klayout_cuda_spatial_run_active3_well_union_empty_v1 (
   const struct klayout_cuda_spatial_active3_well_union_request_v1 *request,
   struct klayout_cuda_spatial_active3_well_union_result_v1 *result);
 
+/*
+ * Optional exact raw FreePDK45 IMPLANT.1-.5 empty certificate.
+ *
+ * This additive transaction receives four independent, digest-bound
+ * raw-Manhattan hierarchies: physical NPLUS 4/0, physical PPLUS 5/0, the
+ * already-derived exact GATE integer set, and physical CONTACT 10/0.  GATE
+ * deliberately carries the sentinel layer/datatype below: it is a qualified
+ * derived KLayout layer, not a physical GDS layer.
+ *
+ * The backend expands all four scenes onto one device, forms and retains the
+ * exact NPLUS-or-PPLUS IMPLANT union, and executes five ordered resident
+ * phases matching the historical deck:
+ *
+ *   IMPLANT.1  implant.separation(gate, 140 DBU, projection), zero area only
+ *   IMPLANT.2  implant.separation(contact, 50 DBU, projection), zero area only
+ *   IMPLANT.3  implant.width(90 DBU, euclidian)
+ *   IMPLANT.4  implant.space(90 DBU, euclidian)
+ *   IMPLANT.5  nplus.and(pplus)
+ *
+ * Adjacent kernels may be fused internally for bandwidth, but the result
+ * preserves distinct counts and timings for every semantic phase.  No
+ * intermediate geometry crosses back to the host.  COMPLETE is consumable
+ * only when certified_empty_mask and clean_mask both equal ALL_RULES and
+ * every scalar, capacity, scene descriptor and digest echo matches exactly.
+ * Every other outcome requires all five literal CPU expressions.
+ */
+#define KLAYOUT_CUDA_SPATIAL_IMPLANT15_NPLUS_DIGEST_DOMAIN "KNPLS001"
+#define KLAYOUT_CUDA_SPATIAL_IMPLANT15_PPLUS_DIGEST_DOMAIN "KPPLS001"
+#define KLAYOUT_CUDA_SPATIAL_IMPLANT15_GATE_DIGEST_DOMAIN "KGATE001"
+#define KLAYOUT_CUDA_SPATIAL_IMPLANT15_CONTACT_DIGEST_DOMAIN "KCRAW001"
+#define KLAYOUT_CUDA_SPATIAL_IMPLANT15_DIGEST_DOMAIN_BYTES 8u
+#define KLAYOUT_CUDA_SPATIAL_IMPLANT15_DERIVED_LAYER 0xffffffffu
+#define KLAYOUT_CUDA_SPATIAL_IMPLANT15_DERIVED_DATATYPE 0xffffffffu
+
+enum klayout_cuda_spatial_implant15_opcode
+{
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_RAW_RESIDENT_EMPTY = 1
+};
+
+enum klayout_cuda_spatial_implant15_rule
+{
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_RULE_1 = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_RULE_2 = 1u << 1,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_RULE_3 = 1u << 2,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_RULE_4 = 1u << 3,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_RULE_5 = 1u << 4
+};
+
+#define KLAYOUT_CUDA_SPATIAL_IMPLANT15_ALL_RULES ((1u << 5) - 1u)
+
+enum klayout_cuda_spatial_implant15_role
+{
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_NPLUS_ROLE = 1,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_PPLUS_ROLE = 2,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_GATE_ROLE = 3,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_CONTACT_ROLE = 4
+};
+
+enum klayout_cuda_spatial_implant15_option_flag
+{
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_RAW_NPLUS_HIERARCHY = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_RAW_PPLUS_HIERARCHY = 1u << 1,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_DERIVED_GATE_HIERARCHY = 1u << 2,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_RAW_CONTACT_HIERARCHY = 1u << 3,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_SAME_STORE_LAYOUT_TOP = 1u << 4,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_NO_BREAKOUT = 1u << 5,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_ORTHOGONAL_UNIT_TRANSFORMS = 1u << 6,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_NO_PROPERTIES = 1u << 7,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_CLOCKWISE_MANHATTAN_CONTOURS = 1u << 8,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_EXACT_IMPLANT_INTEGER_SET_UNION = 1u << 9,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_CANONICAL_IMPLANT_BOUNDARY = 1u << 10,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_RULE1_PROJECTION = 1u << 11,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_RULE2_PROJECTION = 1u << 12,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_RULE3_EUCLIDIAN_WIDTH = 1u << 13,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_RULE4_EUCLIDIAN_SPACE = 1u << 14,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_RULE5_EXACT_INTERSECTION = 1u << 15,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_DIFFERENT_POLYGONS = 1u << 16,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_IGNORE_ANGLE_90 = 1u << 17,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_WHOLE_EDGES_FALSE = 1u << 18,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_PROJECTION_DEFAULTS = 1u << 19,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_SHIELDED = 1u << 20,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_NO_FILTERS_OR_NEGATIVE = 1u << 21,
+  /*
+   * IMPLANT.5 is an integer-set AND: boundary-only touching has zero area
+   * and is clean.  This bit binds the backend to strict positive-area
+   * NPLUS/PPLUS overlap.
+   */
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_POSITIVE_AREA_OVERLAP = 1u << 22,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_ORDERED_OUTPUTS = 1u << 23,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_DEFAULT_STREAM = 1u << 24
+};
+
+#define KLAYOUT_CUDA_SPATIAL_IMPLANT15_QUALIFIED_OPTIONS ((1u << 25) - 1u)
+
+enum klayout_cuda_spatial_implant15_disposition
+{
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_COMPLETE = 0,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_RAW_HITS = 1,
+  KLAYOUT_CUDA_SPATIAL_IMPLANT15_UNCERTAIN = 2
+};
+
+/*
+ * These aliases intentionally preserve the established raw-Manhattan pointer
+ * descriptor and pointer-free echo layouts.  Role, layer/datatype sentinel
+ * and digest domain make every operand non-interchangeable.
+ */
+typedef struct klayout_cuda_spatial_contact4_active_union_scene_v1
+  klayout_cuda_spatial_implant15_scene_v1;
+typedef struct klayout_cuda_spatial_contact4_active_union_scene_echo_v1
+  klayout_cuda_spatial_implant15_scene_echo_v1;
+
+/*
+ * All allocation/work ceilings live in one pointer-free POD so the result can
+ * echo the complete bounded-computation contract byte for byte.
+ */
+struct klayout_cuda_spatial_implant15_capacity_v1
+{
+  uint32_t struct_size;
+  uint32_t max_slabs_per_rectangle;
+  uint32_t max_cells_per_secondary_edge;
+  uint32_t max_cells_per_boundary_edge;
+  uint64_t max_contexts;
+  uint64_t max_rectangles;
+  uint64_t max_x_slabs;
+  uint64_t max_union_memberships;
+  uint64_t max_events;
+  uint64_t max_raw_segments;
+  uint64_t max_boundary_segments;
+  uint64_t max_gate_edges;
+  uint64_t max_contact_edges;
+  uint64_t max_grid_cells;
+  uint64_t max_secondary_memberships;
+  uint64_t max_gate_boundary_cell_visits;
+  uint64_t max_contact_boundary_cell_visits;
+  uint64_t max_member_visits;
+  uint64_t max_pair_work;
+  uint64_t max_morphology_work;
+  uint64_t max_overlap_work;
+  uint64_t reserved[4];
+};
+
+struct klayout_cuda_spatial_implant15_request_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  uint32_t requested_mask;
+  int32_t device;
+  uint32_t reserved0;
+  uint32_t reserved1;
+  int64_t implant1_distance;
+  int64_t implant2_distance;
+  int64_t implant3_distance;
+  int64_t implant4_distance;
+  int64_t grid_cell_size;
+
+  klayout_cuda_spatial_implant15_scene_v1 nplus;
+  klayout_cuda_spatial_implant15_scene_v1 pplus;
+  klayout_cuda_spatial_implant15_scene_v1 gate;
+  klayout_cuda_spatial_implant15_scene_v1 contact;
+  struct klayout_cuda_spatial_implant15_capacity_v1 capacity;
+  uint64_t reserved2[4];
+};
+
+struct klayout_cuda_spatial_implant15_result_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t status;
+  uint32_t fallback_flags;
+  uint32_t disposition;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  uint32_t requested_mask;
+  uint32_t certified_empty_mask;
+  uint32_t clean_mask;
+  int32_t device;
+  uint32_t device_flags;
+  uint32_t reserved0;
+  uint32_t reserved1;
+  int64_t implant1_distance;
+  int64_t implant2_distance;
+  int64_t implant3_distance;
+  int64_t implant4_distance;
+  int64_t grid_cell_size;
+
+  klayout_cuda_spatial_implant15_scene_echo_v1 nplus;
+  klayout_cuda_spatial_implant15_scene_echo_v1 pplus;
+  klayout_cuda_spatial_implant15_scene_echo_v1 gate;
+  klayout_cuda_spatial_implant15_scene_echo_v1 contact;
+  struct klayout_cuda_spatial_implant15_capacity_v1 capacity;
+
+  uint64_t nplus_rectangle_count;
+  uint64_t pplus_rectangle_count;
+  uint64_t implant_rectangle_count;
+  uint64_t x_slab_count;
+  uint64_t union_membership_count;
+  uint64_t event_count;
+  uint64_t strip_interval_count;
+  uint64_t raw_segment_count;
+  uint64_t boundary_segment_count;
+  uint64_t gate_expanded_edge_count;
+  uint64_t contact_expanded_edge_count;
+
+  uint64_t implant1_grid_cell_count;
+  uint64_t implant1_secondary_membership_count;
+  uint64_t implant1_boundary_cell_visit_count;
+  uint64_t implant1_member_visit_count;
+  uint64_t implant1_candidate_count;
+  uint64_t implant1_hit_count;
+  uint64_t implant1_uncertain_count;
+  uint64_t implant2_grid_cell_count;
+  uint64_t implant2_secondary_membership_count;
+  uint64_t implant2_boundary_cell_visit_count;
+  uint64_t implant2_member_visit_count;
+  uint64_t implant2_candidate_count;
+  uint64_t implant2_hit_count;
+  uint64_t implant2_uncertain_count;
+  uint64_t implant3_candidate_count;
+  uint64_t implant3_hit_count;
+  uint64_t implant3_uncertain_count;
+  uint64_t implant4_candidate_count;
+  uint64_t implant4_hit_count;
+  uint64_t implant4_uncertain_count;
+  uint64_t implant5_membership_count;
+  uint64_t implant5_candidate_count;
+  uint64_t implant5_hit_count;
+  uint64_t implant5_uncertain_count;
+
+  uint64_t setup_ns;
+  uint64_t nplus_h2d_ns;
+  uint64_t nplus_expand_ns;
+  uint64_t pplus_h2d_ns;
+  uint64_t pplus_expand_ns;
+  uint64_t implant_union_ns;
+  uint64_t implant_boundary_ns;
+  uint64_t gate_h2d_ns;
+  uint64_t gate_expand_ns;
+  uint64_t implant1_ns;
+  uint64_t contact_h2d_ns;
+  uint64_t contact_expand_ns;
+  uint64_t implant2_ns;
+  uint64_t implant3_ns;
+  uint64_t implant4_ns;
+  uint64_t implant5_ns;
+  uint64_t d2h_ns;
+  uint64_t total_ns;
+  uint64_t reserved2[4];
+  char message[192];
+};
+
+typedef int (*klayout_cuda_spatial_run_implant15_raw_empty_v1_func) (
+  const struct klayout_cuda_spatial_implant15_request_v1 *,
+  struct klayout_cuda_spatial_implant15_result_v1 *);
+
+KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_implant15_raw_empty_v1 (
+  const struct klayout_cuda_spatial_implant15_request_v1 *request,
+  struct klayout_cuda_spatial_implant15_result_v1 *result);
+
 #ifdef __cplusplus
 }
 #endif

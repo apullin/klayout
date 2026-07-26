@@ -173,8 +173,17 @@ struct BaseWidthSpaceResult
   double elapsed_ms = 0.0;
 };
 
+enum class BaseWidthSpaceProfile : std::uint32_t
+{
+  // FreePDK45 METAL1.1/.2: 65 nm at 0.5 nm/DBU.
+  m1_130 = UINT32_C(0x4d313130),
+  // FreePDK45 IMPLANT.3/.4: 45 nm at 0.5 nm/DBU.
+  implant_90 = UINT32_C(0x49303930),
+};
+
 struct BaseWidthSpaceContext
 {
+  BaseWidthSpaceProfile profile = BaseWidthSpaceProfile::m1_130;
   std::int64_t distance = 0;
   std::int64_t origin_x = 0;
   std::int64_t origin_y = 0;
@@ -192,7 +201,8 @@ void consume_base_width_space_hook(
     const std::uint32_t *slab_counts, void *opaque);
 
 manhattan_union::ResidentStripHook make_base_width_space_hook(
-    BaseWidthSpaceContext *context);
+    BaseWidthSpaceContext *context,
+    bool stop_before_boundary = true);
 
 // Checked adapter for manhattan_union::ResidentStripHook.
 struct ResidentContext

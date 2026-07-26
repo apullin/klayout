@@ -596,7 +596,10 @@ morph::BaseWidthSpaceResult run_base_strip_pass(
     const std::vector<RectI64> &rectangles, bool transpose,
     int device,
     std::uint64_t max_corner_pair_work =
-        UINT64_C(2000000000))
+        UINT64_C(2000000000),
+    morph::BaseWidthSpaceProfile profile =
+        morph::BaseWidthSpaceProfile::m1_130,
+    std::int64_t distance = 130)
 {
   std::vector<RectI64> oriented = rectangles;
   if (transpose) {
@@ -608,7 +611,8 @@ morph::BaseWidthSpaceResult run_base_strip_pass(
     }
   }
   morph::BaseWidthSpaceContext context;
-  context.distance = 130;
+  context.profile = profile;
+  context.distance = distance;
   context.max_corner_pair_work = max_corner_pair_work;
   context.origin_x = oriented.front().left;
   context.origin_y = oriented.front().bottom;
@@ -635,6 +639,47 @@ morph::BaseWidthSpaceResult run_base_strip_pass(
         "base width/space strip census mismatch");
   }
   return context.result;
+}
+
+void require_base_profile_gate(int device)
+{
+  const std::vector<RectI64> threshold_rectangle = {
+      {0, 0, 200, 90, 0, 0}};
+  const morph::BaseWidthSpaceResult implant =
+      run_base_strip_pass(
+          threshold_rectangle, false, device,
+          UINT64_C(2000000000),
+          morph::BaseWidthSpaceProfile::implant_90, 90);
+  if (implant.width_violations ||
+      implant.space_violations ||
+      implant.corner_candidates) {
+    throw std::runtime_error(
+        "implant_90 threshold-equality profile gate failed");
+  }
+
+  const auto require_rejected = [](
+      morph::BaseWidthSpaceProfile profile,
+      std::int64_t distance, const char *label) {
+    morph::BaseWidthSpaceContext context;
+    context.profile = profile;
+    context.distance = distance;
+    try {
+      (void)morph::make_base_width_space_hook(&context);
+    } catch (const std::runtime_error &) {
+      return;
+    }
+    throw std::runtime_error(
+        std::string(label) + " profile mismatch was accepted");
+  };
+  require_rejected(
+      morph::BaseWidthSpaceProfile::implant_90, 89,
+      "implant_90/distance_89");
+  require_rejected(
+      morph::BaseWidthSpaceProfile::implant_90, 130,
+      "implant_90/distance_130");
+  require_rejected(
+      morph::BaseWidthSpaceProfile::m1_130, 90,
+      "m1_130/distance_90");
 }
 
 void require_base_pair_work_capacity(int device)
@@ -797,11 +842,13 @@ void run_base_width_space_strip_gate(int device)
         "base width/space strip check census mismatch");
   }
   require_base_pair_work_capacity(device);
+  require_base_profile_gate(device);
   std::cout << "M1_BASE_WIDTH_SPACE_STRIP_GATE PASS checks="
             << checks << " directed=" << directed.size()
             << " random=32 threshold_dbu=130"
             << " endpoint_certificate=exact-threshold"
-            << " capacity_rejections=1\n";
+            << " capacity_rejections=1"
+            << " profile_gate=implant90\n";
 }
 
 void require_long_space_certificate(

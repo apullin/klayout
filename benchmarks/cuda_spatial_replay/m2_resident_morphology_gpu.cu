@@ -50,6 +50,19 @@ using Clock = std::chrono::steady_clock;
 
 constexpr std::uint32_t kThreads = 256;
 constexpr std::uint32_t kMorphMaxActiveSlabs = 128;
+constexpr std::int64_t kImplantBaseWidthSpaceDistance = 90;
+
+bool valid_base_width_space_profile(
+    morph::BaseWidthSpaceProfile profile, std::int64_t distance)
+{
+  switch (profile) {
+  case morph::BaseWidthSpaceProfile::m1_130:
+    return distance == m1ws::kQualifiedSceneCoordinateDistance;
+  case morph::BaseWidthSpaceProfile::implant_90:
+    return distance == kImplantBaseWidthSpaceDistance;
+  }
+  return false;
+}
 
 double elapsed_ms(Clock::time_point begin, Clock::time_point end)
 {
@@ -474,9 +487,15 @@ __device__ void base_width_space_add(
 
 __global__ void scan_base_width_space_kernel(
     DeviceBandView source, std::int64_t distance,
+    morph::BaseWidthSpaceProfile profile,
     BaseWidthSpaceDeviceCounters *counters, std::uint32_t *status)
 {
-  if (distance != m1ws::kQualifiedSceneCoordinateDistance) {
+  const bool qualified =
+      (profile == morph::BaseWidthSpaceProfile::m1_130 &&
+       distance == m1ws::kQualifiedSceneCoordinateDistance) ||
+      (profile == morph::BaseWidthSpaceProfile::implant_90 &&
+       distance == kImplantBaseWidthSpaceDistance);
+  if (!qualified) {
     if (!blockIdx.x && !threadIdx.x) {
       atomicOr(
           status,
@@ -2467,8 +2486,8 @@ void consume_base_width_space_hook(
 {
   auto *context = static_cast<BaseWidthSpaceContext *>(opaque);
   if (!context || context->invoked ||
-      context->distance !=
-          m1_width_space::kQualifiedSceneCoordinateDistance) {
+      !valid_base_width_space_profile(
+          context->profile, context->distance)) {
     throw std::runtime_error(
         "resident base-width/space hook state");
   }
@@ -2496,7 +2515,7 @@ void consume_base_width_space_hook(
   thrust::fill(policy, status.begin(), status.end(), 0);
   scan_base_width_space_kernel<<<
       launch_blocks(source.x_slabs), kThreads, 0, stream>>>(
-      source, context->distance,
+      source, context->distance, context->profile,
       thrust::raw_pointer_cast(counters.data()),
       thrust::raw_pointer_cast(status.data()));
   cuda_require(
@@ -2544,18 +2563,18 @@ void consume_base_width_space_hook(
 }
 
 manhattan_union::ResidentStripHook make_base_width_space_hook(
-    BaseWidthSpaceContext *context)
+    BaseWidthSpaceContext *context, bool stop_before_boundary)
 {
   if (!context || context->invoked ||
-      context->distance !=
-          m1_width_space::kQualifiedSceneCoordinateDistance) {
+      !valid_base_width_space_profile(
+          context->profile, context->distance)) {
     throw std::runtime_error(
         "invalid resident base-width/space hook context");
   }
   manhattan_union::ResidentStripHook hook;
   hook.consume = consume_base_width_space_hook;
   hook.context = context;
-  hook.stop_before_boundary = true;
+  hook.stop_before_boundary = stop_before_boundary;
   return hook;
 }
 

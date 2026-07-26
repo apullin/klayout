@@ -124,6 +124,16 @@ const RawManhattanProfile raw_nplus_profile = {
   { 'K', 'N', 'P', 'L', 'S', '0', '0', '1' }
 };
 
+const RawManhattanProfile raw_pplus_profile = {
+  5, 0, "raw PPLUS",
+  { 'K', 'P', 'P', 'L', 'S', '0', '0', '1' }
+};
+
+const RawManhattanProfile derived_gate_profile = {
+  -1, -1, "derived GATE",
+  { 'K', 'G', 'A', 'T', 'E', '0', '0', '1' }
+};
+
 const RawManhattanProfile raw_nwell_profile = {
   3, 0, "raw NWELL",
   { 'K', 'N', 'W', 'E', 'L', '0', '0', '1' }
@@ -920,6 +930,28 @@ void validate_raw_well_union_inputs (
   }
 }
 
+void validate_derived_gate_input (
+  const db::DeepLayer &derived_gate,
+  const CudaM1WidthSpaceSceneLimits &limits)
+{
+  validate_scene_limits (limits);
+  if (derived_gate.breakout_cells () != 0) {
+    throw M1WidthSpaceDecline (
+      "derived GATE scene has hierarchy breakout cells");
+  }
+  if (derived_gate.layout ().dbu () != 0.0005) {
+    throw M1WidthSpaceDecline (
+      "derived GATE scene DBU is not the qualified 0.5 nm");
+  }
+  if (! derived_gate.layout ().is_valid_layer (derived_gate.layer ())) {
+    throw M1WidthSpaceDecline (
+      "derived GATE scene layer index is not valid");
+  }
+  //  Do not inspect LayerProperties here.  GATE is an exact temporary
+  //  DeepLayer produced by POLY & ACTIVE, not a physical GDS layer.  Shape
+  //  and instance properties are rejected by the common serializer.
+}
+
 template <class Scene>
 Scene serialize_layer_scene (
   const db::DeepLayer &metal1,
@@ -1594,6 +1626,30 @@ bool cuda_nplus_raw_manhattan_scene_digest (
   }
 }
 
+bool cuda_pplus_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest)
+{
+  try {
+    return raw_manhattan_scene_digest (
+      scene, raw_pplus_profile, digest);
+  } catch (...) {
+    return false;
+  }
+}
+
+bool cuda_gate_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest)
+{
+  try {
+    return raw_manhattan_scene_digest (
+      scene, derived_gate_profile, digest);
+  } catch (...) {
+    return false;
+  }
+}
+
 bool cuda_nwell_raw_manhattan_scene_digest (
   const CudaRawManhattanScene &scene,
   std::array<uint8_t, 32> &digest)
@@ -1706,6 +1762,44 @@ bool cuda_nplus_raw_manhattan_build_scene (
 {
   return build_raw_manhattan_scene (
     raw_nplus, limits, raw_nplus_profile, scene, decline_reason);
+}
+
+bool cuda_pplus_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_pplus,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason)
+{
+  return build_raw_manhattan_scene (
+    raw_pplus, limits, raw_pplus_profile, scene, decline_reason);
+}
+
+bool cuda_gate_raw_manhattan_build_scene (
+  const db::DeepLayer &derived_gate,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason)
+{
+  try {
+    validate_derived_gate_input (derived_gate, limits);
+    CudaRawManhattanScene candidate =
+      serialize_layer_scene<CudaRawManhattanScene> (
+        derived_gate, limits);
+    std::array<uint8_t, 32> digest;
+    if (! cuda_gate_raw_manhattan_scene_digest (candidate, digest)) {
+      throw M1WidthSpaceDecline (
+        "serialized derived GATE scene failed structural digest validation");
+    }
+    candidate.digest = digest;
+    scene.swap (candidate);
+    set_reason (decline_reason, "");
+    return true;
+  } catch (const std::exception &ex) {
+    set_reason (decline_reason, ex.what ());
+  } catch (...) {
+    set_reason (decline_reason, "unknown exception");
+  }
+  return false;
 }
 
 bool cuda_nwell_raw_manhattan_build_scene (

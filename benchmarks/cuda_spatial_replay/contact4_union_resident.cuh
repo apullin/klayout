@@ -34,7 +34,13 @@ enum class ContactDirectionContract : std::uint32_t
   // resident union boundary is exact WELL.  This selects the qualified
   // ACTIVE.3 distance and preserves EdgePair{well, active} predicate order.
   validated_active3_secondary_material_on_right_contours =
-      UINT32_C(0x41335231)
+      UINT32_C(0x41335231),
+  // The resident primary is an exact merged IMPLANT boundary and the indexed
+  // secondary is a complete raw GATE or CONTACT contour stream.  This selects
+  // the exact IMPLANT.1/.2 projection predicate; 140 and 50 DBU are qualified
+  // independently by that predicate.
+  validated_implant12_secondary_material_on_right_contours =
+      UINT32_C(0x49315231)
 };
 
 struct Limits
@@ -173,6 +179,20 @@ manhattan_union::ResidentBoundaryHook make_resident_hook(
     ResidentContext *context);
 
 void consume_device_boundary_hook(
+    cudaStream_t stream,
+    const manhattan_union::DirectedSegmentI64 *horizontal,
+    std::uint64_t horizontal_count,
+    const manhattan_union::DirectedSegmentI64 *vertical,
+    std::uint64_t vertical_count, void *opaque);
+
+/*
+ * Composable classifier callback.  Unlike consume_device_boundary_hook this
+ * records an exact nonempty Result without throwing, so a resident caller can
+ * chain later rule operators or return its own nonempty disposition.  Invalid
+ * input, capacity exhaustion, device invariants, and CUDA failures still
+ * throw; exact predicate uncertainty remains visible in Result.
+ */
+void consume_device_boundary_result_hook(
     cudaStream_t stream,
     const manhattan_union::DirectedSegmentI64 *horizontal,
     std::uint64_t horizontal_count,

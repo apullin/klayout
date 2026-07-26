@@ -81,6 +81,11 @@ const RawSceneProfile profiles [] = {
     db::cuda_nplus_raw_manhattan_scene_digest
   },
   {
+    5, 0, "raw PPLUS",
+    db::cuda_pplus_raw_manhattan_build_scene,
+    db::cuda_pplus_raw_manhattan_scene_digest
+  },
+  {
     3, 0, "raw NWELL",
     db::cuda_nwell_raw_manhattan_build_scene,
     db::cuda_nwell_raw_manhattan_scene_digest
@@ -740,4 +745,83 @@ TEST(13_CombinedRawWellSceneDeclinesAtomically)
   EXPECT_EQ (sentinel.flat_polygon_count, uint64_t (17));
   EXPECT_EQ (
     reason.find ("breakout") != std::string::npos, true);
+}
+
+TEST(14_DerivedGateSceneIsExactDistinctAndNonPhysical)
+{
+  db::DeepShapeStore store ("TOP", 0.0005);
+  db::Region seed;
+  seed.insert (db::Box (0, 0, 200, 100));
+  seed.insert (db::Box (300, 0, 500, 150));
+  db::DeepLayer gate = store.create_from_flat (seed, false);
+
+  //  A derived GATE layer is intentionally not identified by one physical
+  //  GDS layer/datatype.  Arbitrary LayerProperties must not alter the
+  //  qualified geometry digest or make it masquerade as NPLUS/PPLUS.
+  gate.layout ().set_properties (
+    gate.layer (), db::LayerProperties (777, 23));
+  db::CudaRawManhattanScene scene;
+  std::string reason;
+  EXPECT_EQ (
+    db::cuda_gate_raw_manhattan_build_scene (
+      gate, db::CudaM1WidthSpaceSceneLimits (), scene, &reason),
+    true);
+  EXPECT_EQ (reason, "");
+  EXPECT_EQ (scene.flat_polygon_count, uint64_t (2));
+  EXPECT_EQ (scene.flat_edge_count, uint64_t (8));
+
+  std::array<uint8_t, 32> recomputed;
+  EXPECT_EQ (
+    db::cuda_gate_raw_manhattan_scene_digest (scene, recomputed), true);
+  EXPECT_EQ (recomputed == scene.digest, true);
+  std::array<uint8_t, 32> nplus_digest;
+  std::array<uint8_t, 32> pplus_digest;
+  EXPECT_EQ (
+    db::cuda_nplus_raw_manhattan_scene_digest (scene, nplus_digest), true);
+  EXPECT_EQ (
+    db::cuda_pplus_raw_manhattan_scene_digest (scene, pplus_digest), true);
+  EXPECT_EQ (nplus_digest == scene.digest, false);
+  EXPECT_EQ (pplus_digest == scene.digest, false);
+
+  db::CudaRawManhattanScene repeated;
+  EXPECT_EQ (
+    db::cuda_gate_raw_manhattan_build_scene (
+      gate, db::CudaM1WidthSpaceSceneLimits (), repeated, 0),
+    true);
+  EXPECT_EQ (same_geometry (scene, repeated), true);
+  EXPECT_EQ (scene.digest == repeated.digest, true);
+}
+
+TEST(15_DerivedGateSceneDeclinesAtomically)
+{
+  db::DeepShapeStore store ("TOP", 0.0005);
+  db::Region seed;
+  seed.insert (db::Box (0, 0, 200, 100));
+  db::DeepLayer gate = store.create_from_flat (seed, false);
+  gate.initial_cell ().shapes (gate.layer ()).insert (
+    db::object_with_properties<db::Box> (
+      db::Box (300, 0, 400, 100), 1));
+
+  db::CudaRawManhattanScene sentinel;
+  sentinel.flat_polygon_count = 17;
+  std::string reason;
+  EXPECT_EQ (
+    db::cuda_gate_raw_manhattan_build_scene (
+      gate, db::CudaM1WidthSpaceSceneLimits (), sentinel, &reason),
+    false);
+  EXPECT_EQ (sentinel.flat_polygon_count, uint64_t (17));
+  EXPECT_EQ (reason.find ("properties") != std::string::npos, true);
+
+  db::DeepShapeStore breakout ("TOP", 0.0005);
+  db::DeepLayer breakout_gate = breakout.create_from_flat (seed, false);
+  breakout.add_breakout_cell (
+    breakout_gate.layout_index (),
+    breakout_gate.initial_cell ().cell_index ());
+  EXPECT_EQ (
+    db::cuda_gate_raw_manhattan_build_scene (
+      breakout_gate, db::CudaM1WidthSpaceSceneLimits (),
+      sentinel, &reason),
+    false);
+  EXPECT_EQ (sentinel.flat_polygon_count, uint64_t (17));
+  EXPECT_EQ (reason.find ("breakout") != std::string::npos, true);
 }

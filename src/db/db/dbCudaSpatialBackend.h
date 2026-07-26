@@ -488,6 +488,59 @@ struct DB_PUBLIC CudaImplant12Attempt
   std::string message;
 };
 
+struct DB_PUBLIC CudaImplant15Attempt
+{
+  enum Disposition
+  {
+    Disabled,
+    CertifiedEmpty,
+    RawHits,
+    BackendFallback,
+    BackendError,
+    InvalidResult
+  };
+
+  CudaImplant15Attempt ();
+
+  Disposition disposition;
+  uint32_t certified_empty_mask;
+  uint32_t clean_mask;
+  uint32_t fallback_flags;
+  uint32_t device_flags;
+  uint64_t nplus_context_count;
+  uint64_t pplus_context_count;
+  uint64_t gate_context_count;
+  uint64_t contact_context_count;
+  uint64_t nplus_flat_polygon_count;
+  uint64_t pplus_flat_polygon_count;
+  uint64_t gate_flat_polygon_count;
+  uint64_t contact_flat_polygon_count;
+  uint64_t boundary_segment_count;
+  uint64_t implant1_candidate_count;
+  uint64_t implant1_hit_count;
+  uint64_t implant1_uncertain_count;
+  uint64_t implant2_candidate_count;
+  uint64_t implant2_hit_count;
+  uint64_t implant2_uncertain_count;
+  uint64_t implant3_candidate_count;
+  uint64_t implant3_hit_count;
+  uint64_t implant3_uncertain_count;
+  uint64_t implant4_candidate_count;
+  uint64_t implant4_hit_count;
+  uint64_t implant4_uncertain_count;
+  uint64_t implant5_candidate_count;
+  uint64_t implant5_hit_count;
+  uint64_t implant5_uncertain_count;
+  uint64_t implant_union_ns;
+  uint64_t implant1_ns;
+  uint64_t implant2_ns;
+  uint64_t implant3_ns;
+  uint64_t implant4_ns;
+  uint64_t implant5_ns;
+  uint64_t total_ns;
+  std::string message;
+};
+
 /**
  * Try the optional CUDA bipartite broad phase.
  *
@@ -756,6 +809,31 @@ DB_PUBLIC CudaImplant12Attempt cuda_spatial_try_implant12_empty (
 
 /** Return true only when the IMPLANT.1/.2 opt-in and symbol exist. */
 DB_PUBLIC bool cuda_spatial_implant12_requested ();
+
+/**
+ * Invoke the optional exact raw IMPLANT.1-.5 resident certificate.
+ *
+ * Only CertifiedEmpty is consumable.  Hits, uncertainty, partial masks,
+ * malformed echoes, capacity exhaustion and loader/CUDA failures all retain
+ * the complete unchanged five-rule CPU block.
+ */
+DB_PUBLIC CudaImplant15Attempt cuda_spatial_try_implant15_empty (
+  const klayout_cuda_spatial_implant15_request_v1 &request);
+
+/**
+ * Validate a successful raw IMPLANT.1-.5 result against its complete request.
+ *
+ * COMPLETE and diagnostic RAW_HITS/UNCERTAIN dispositions are accepted only
+ * when their exact partial-run census is internally consistent.  Callers may
+ * consume only COMPLETE; the other valid dispositions retain CPU fallback.
+ */
+DB_PUBLIC bool cuda_spatial_validate_implant15_result (
+  const klayout_cuda_spatial_implant15_request_v1 &request,
+  const klayout_cuda_spatial_implant15_result_v1 &result,
+  int backend_status, std::string *error = 0);
+
+/** Return true only when KLAYOUT_CUDA_IMPLANT15 and its symbol are ready. */
+DB_PUBLIC bool cuda_spatial_implant15_requested ();
 
 } // namespace db
 

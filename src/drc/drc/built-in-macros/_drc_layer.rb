@@ -3768,6 +3768,24 @@ CODE
       end
     end
 
+    # Internal, fail-closed acceleration hook for the complete FreePDK45
+    # IMPLANT.1-.5 block.  NPLUS, PPLUS and CONTACT remain pristine physical
+    # layers; GATE is the exact already-derived POLY/ACTIVE intersection.
+    # False retains every literal CPU expression.
+    def cuda_implant15_raw_clean?(pplus, gate, contact)
+      @engine._context("cuda_implant15_raw_clean?") do
+        check_is_layer(pplus)
+        check_is_layer(gate)
+        check_is_layer(contact)
+        requires_region
+        pplus.requires_region
+        gate.requires_region
+        contact.requires_region
+        self.data.cuda_implant15_raw_clean?(
+          pplus.data, gate.data, contact.data)
+      end
+    end
+
     # Internal, fail-closed acceleration hook for the qualified atomic
     # FreePDK45 POLY.3/POLY.4 transaction.  Both operands remain pristine
     # physical layers; the CUDA backend derives GATE itself.

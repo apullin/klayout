@@ -194,6 +194,17 @@ target_link_libraries(poly34_backend_smoke PRIVATE
   klayout_cuda_spatial_backend
 )
 
+add_executable(implant15_backend_smoke implant15_backend_smoke.cc)
+target_include_directories(implant15_backend_smoke PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+target_compile_options(implant15_backend_smoke PRIVATE
+  -O3 -Wall -Wextra -Werror
+)
+target_link_libraries(implant15_backend_smoke PRIVATE
+  klayout_cuda_spatial_backend
+)
+
 add_library(klayout_cuda_spatial_legacy_m1_backend SHARED
   legacy_m1_width_space_backend.cc
 )

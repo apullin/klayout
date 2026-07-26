@@ -253,6 +253,23 @@ DB_PUBLIC bool cuda_nplus_raw_manhattan_scene_digest (
   std::array<uint8_t, 32> &digest);
 
 /**
+ * Compute the canonical KPPLS001 digest of a structurally valid raw-PPLUS
+ * scene.  The hashed field order after the magic is identical to KM2RAW01.
+ */
+DB_PUBLIC bool cuda_pplus_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest);
+
+/**
+ * Compute the canonical KGATE001 digest of a structurally valid exact
+ * derived-GATE scene.  This distinct domain cannot be replayed as a physical
+ * GDS layer.
+ */
+DB_PUBLIC bool cuda_gate_raw_manhattan_scene_digest (
+  const CudaRawManhattanScene &scene,
+  std::array<uint8_t, 32> &digest);
+
+/**
  * Compute the canonical KNWEL001 digest of a structurally valid raw-NWELL
  * scene.  The hashed field order after the magic is identical to KM2RAW01.
  */
@@ -364,6 +381,31 @@ DB_PUBLIC bool cuda_poly_raw_manhattan_build_scene (
  */
 DB_PUBLIC bool cuda_nplus_raw_manhattan_build_scene (
   const db::DeepLayer &raw_nplus,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason = 0);
+
+/**
+ * Serialize the supplied raw physical FreePDK45 PPLUS layer verbatim.
+ *
+ * This fixed-domain builder accepts only physical layer 5/0 at 0.5-nm DBU.
+ */
+DB_PUBLIC bool cuda_pplus_raw_manhattan_build_scene (
+  const db::DeepLayer &raw_pplus,
+  const CudaM1WidthSpaceSceneLimits &limits,
+  CudaRawManhattanScene &scene,
+  std::string *decline_reason = 0);
+
+/**
+ * Serialize an exact already-derived GATE integer set.
+ *
+ * Unlike physical raw-layer builders this deliberately makes no GDS
+ * layer/datatype claim.  It accepts one valid internal DeepLayer with the
+ * established hierarchy, 0.5-nm DBU, no breakout cells or properties, and
+ * simple clockwise Manhattan polygons.  Success publishes KGATE001.
+ */
+DB_PUBLIC bool cuda_gate_raw_manhattan_build_scene (
+  const db::DeepLayer &derived_gate,
   const CudaM1WidthSpaceSceneLimits &limits,
   CudaRawManhattanScene &scene,
   std::string *decline_reason = 0);

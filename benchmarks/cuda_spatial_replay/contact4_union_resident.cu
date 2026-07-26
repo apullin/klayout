@@ -4,6 +4,7 @@
 
 #include "contact4_union_resident.cuh"
 #include "active3_exact_predicate.cuh"
+#include "implant12_exact_predicate.cuh"
 
 #include <cuda_runtime.h>
 
@@ -24,9 +25,19 @@ namespace {
 namespace c4 =
     klayout_cuda::contact4_union_resident;
 namespace a3 = klayout_cuda::active3;
+namespace i12 = klayout_cuda::implant12;
 namespace mu = klayout_cuda::manhattan_union;
 
 using Clock = std::chrono::steady_clock;
+
+static_assert(
+    static_cast<std::uint32_t>(a3::Verdict::kNoViolation) ==
+        static_cast<std::uint32_t>(i12::Verdict::kNoViolation) &&
+    static_cast<std::uint32_t>(a3::Verdict::kViolation) ==
+        static_cast<std::uint32_t>(i12::Verdict::kViolation) &&
+    static_cast<std::uint32_t>(a3::Verdict::kUncertain) ==
+        static_cast<std::uint32_t>(i12::Verdict::kUncertain),
+    "resident predicate verdict encodings diverged");
 
 constexpr std::int64_t kCoordinateLimit = INT64_C(1000000000000);
 constexpr std::uint32_t kThreads = 256;
@@ -525,7 +536,9 @@ __global__ void query_boundary_kernel(
     const std::uint32_t *counts,
     const std::uint64_t *offsets,
     const std::uint32_t *members,
-    std::uint64_t max_pair_work, Counters *counters,
+    std::uint64_t max_pair_work,
+    c4::ContactDirectionContract direction_contract,
+    Counters *counters,
     std::uint32_t *status)
 {
   unsigned long long local_candidates = 0;
@@ -591,14 +604,32 @@ __global__ void query_boundary_kernel(
             continue;
           }
           ++local_candidates;
-          const a3::Verdict verdict =
-              a3::classify_pair_bounded(
-                  a3::EdgePair{active, contact}, grid.distance);
-          if (verdict == a3::Verdict::kViolation) {
+          std::uint32_t verdict = 0;
+          if (direction_contract ==
+              c4::ContactDirectionContract::
+                  validated_implant12_secondary_material_on_right_contours) {
+            const i12::Verdict implant_verdict =
+                i12::classify_pair_bounded(
+                    i12::EdgePair{
+                        {active.x1, active.y1, active.x2, active.y2},
+                        {contact.x1, contact.y1, contact.x2, contact.y2}},
+                    grid.distance);
+            verdict = static_cast<std::uint32_t>(implant_verdict);
+          } else {
+            verdict = static_cast<std::uint32_t>(
+                a3::classify_pair_bounded(
+                    a3::EdgePair{active, contact}, grid.distance));
+          }
+          if (verdict ==
+              static_cast<std::uint32_t>(a3::Verdict::kViolation)) {
             ++local_hits;
-          } else if (verdict == a3::Verdict::kUncertain) {
+          } else if (verdict ==
+                     static_cast<std::uint32_t>(
+                         a3::Verdict::kUncertain)) {
             ++local_uncertain;
-          } else if (verdict != a3::Verdict::kNoViolation) {
+          } else if (verdict !=
+                     static_cast<std::uint32_t>(
+                         a3::Verdict::kNoViolation)) {
             atomicOr(status, std::uint32_t(kInvalidBoundary));
           }
         }
@@ -636,12 +667,19 @@ void validate_common_request(
       direction_contract ==
       c4::ContactDirectionContract::
           validated_active3_secondary_material_on_right_contours;
-  if ((!contact4 && !active3) ||
+  const bool implant12 =
+      direction_contract ==
+      c4::ContactDirectionContract::
+          validated_implant12_secondary_material_on_right_contours;
+  if ((!contact4 && !active3 && !implant12) ||
       (contact4 &&
        distance !=
            a3::kContact4QualifiedSceneCoordinateDistance) ||
       (active3 &&
-       distance != a3::kQualifiedSceneCoordinateDistance)) {
+       distance != a3::kQualifiedSceneCoordinateDistance) ||
+      (implant12 &&
+       distance != i12::kImplant1Distance &&
+       distance != i12::kImplant2Distance)) {
     throw std::runtime_error(
         "resident relation direction/distance contract declined");
   }
@@ -1064,6 +1102,7 @@ c4::Result consume_device_core(
         thrust::raw_pointer_cast(cell_offsets.data()),
         thrust::raw_pointer_cast(members.data()),
         request.limits.max_pair_work,
+        request.contact_direction_contract,
         thrust::raw_pointer_cast(counters.data()),
         thrust::raw_pointer_cast(status.data()));
     cuda_require(
@@ -1080,6 +1119,7 @@ c4::Result consume_device_core(
         thrust::raw_pointer_cast(cell_offsets.data()),
         thrust::raw_pointer_cast(members.data()),
         request.limits.max_pair_work,
+        request.contact_direction_contract,
         thrust::raw_pointer_cast(counters.data()),
         thrust::raw_pointer_cast(status.data()));
     cuda_require(
@@ -1281,6 +1321,24 @@ void consume_device_boundary_hook(
     const manhattan_union::DirectedSegmentI64 *vertical,
     std::uint64_t vertical_count, void *opaque)
 {
+  consume_device_boundary_result_hook(
+      stream, horizontal, horizontal_count, vertical,
+      vertical_count, opaque);
+  DeviceResidentContext *context =
+      static_cast<DeviceResidentContext *>(opaque);
+  if (!context->result.certified_empty) {
+    throw std::runtime_error(
+        "resident CONTACT.4 nonempty result declined");
+  }
+}
+
+void consume_device_boundary_result_hook(
+    cudaStream_t stream,
+    const manhattan_union::DirectedSegmentI64 *horizontal,
+    std::uint64_t horizontal_count,
+    const manhattan_union::DirectedSegmentI64 *vertical,
+    std::uint64_t vertical_count, void *opaque)
+{
   DeviceResidentContext *context =
       static_cast<DeviceResidentContext *>(opaque);
   if (!context || context->invoked) {
@@ -1291,10 +1349,6 @@ void consume_device_boundary_hook(
   context->result = consume_device(
       stream, horizontal, horizontal_count,
       vertical, vertical_count, context->request);
-  if (!context->result.certified_empty) {
-    throw std::runtime_error(
-        "resident CONTACT.4 nonempty result declined");
-  }
 }
 
 manhattan_union::ResidentBoundaryHook make_device_resident_hook(

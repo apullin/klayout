@@ -39,6 +39,7 @@
 #include "dbCudaActive3.h"
 #include "dbCudaAntennaM1.h"
 #include "dbCudaImplant12.h"
+#include "dbCudaImplant15.h"
 #include "dbCudaM1WidthSpace.h"
 #include "dbCudaM2Rules.h"
 #include "dbCudaPoly34.h"
@@ -1956,6 +1957,61 @@ static bool cuda_implant12_clean (
          db::cuda_implant12_try_empty (
            deep_implant->deep_layer (), deep_gate->deep_layer (),
            deep_contact->deep_layer ());
+}
+
+static bool cuda_implant15_raw_clean (
+  const db::Region *nplus, const db::Region *pplus,
+  const db::Region *gate, const db::Region *contact)
+{
+  try {
+    //  Capability discovery precedes any scene lowering.  Disabled and
+    //  symbol-incomplete configurations therefore preserve the literal CPU
+    //  block without paying for four hierarchy serializations.
+    if (! db::cuda_spatial_implant15_requested ()) {
+      return false;
+    }
+    const db::DeepRegion *deep_nplus =
+      dynamic_cast<const db::DeepRegion *> (nplus->delegate ());
+    const db::DeepRegion *deep_pplus =
+      dynamic_cast<const db::DeepRegion *> (pplus->delegate ());
+    const db::DeepRegion *deep_gate =
+      dynamic_cast<const db::DeepRegion *> (gate->delegate ());
+    const db::DeepRegion *deep_contact =
+      dynamic_cast<const db::DeepRegion *> (contact->delegate ());
+    if (! deep_nplus || ! deep_pplus || ! deep_gate || ! deep_contact ||
+        ! nplus->merged_semantics () || ! pplus->merged_semantics () ||
+        ! gate->merged_semantics () || ! contact->merged_semantics () ||
+        nplus->is_merged () || pplus->is_merged () ||
+        contact->is_merged ()) {
+      return false;
+    }
+
+    const db::DeepLayer &raw_nplus = deep_nplus->deep_layer ();
+    const db::DeepLayer &raw_pplus = deep_pplus->deep_layer ();
+    const db::DeepLayer &derived_gate = deep_gate->deep_layer ();
+    const db::DeepLayer &raw_contact = deep_contact->deep_layer ();
+    if (raw_nplus.layer () >= raw_nplus.layout ().layers () ||
+        raw_pplus.layer () >= raw_pplus.layout ().layers () ||
+        derived_gate.layer () >= derived_gate.layout ().layers () ||
+        raw_contact.layer () >= raw_contact.layout ().layers () ||
+        ! raw_nplus.layout ().get_properties (
+            raw_nplus.layer ()).log_equal (db::LayerProperties (4, 0)) ||
+        ! raw_pplus.layout ().get_properties (
+            raw_pplus.layer ()).log_equal (db::LayerProperties (5, 0)) ||
+        ! raw_contact.layout ().get_properties (
+            raw_contact.layer ()).log_equal (db::LayerProperties (10, 0))) {
+      return false;
+    }
+
+    //  GATE is intentionally checked only as a valid derived DeepLayer here.
+    //  Its common hierarchy, DBU, Manhattan/no-property shape contract and
+    //  distinct KGATE001 provenance are established by the narrow builder.
+    return db::cuda_implant15_try_raw_empty (
+      raw_nplus, raw_pplus, derived_gate, raw_contact);
+  } catch (...) {
+    //  No speculative failure can bypass any of the five CPU expressions.
+    return false;
+  }
 }
 
 static bool cuda_poly34_raw_clean (
@@ -5172,6 +5228,17 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "primary followed by raw GATE and CONTACT operands. It returns true only "
     "when both ordered FreePDK45 rules are completely certified empty. False "
     "requires both historical CPU expressions.\n"
+  ) +
+  method_ext (
+    "cuda_implant15_raw_clean?", &cuda_implant15_raw_clean,
+    gsi::arg ("pplus"), gsi::arg ("gate"), gsi::arg ("contact"),
+    "@brief Tries exact raw CUDA IMPLANT.1-.5 as one resident transaction\n"
+    "\n"
+    "This internal default-off hook accepts pristine physical NPLUS, PPLUS "
+    "and CONTACT plus the exact already-derived GATE DeepLayer. The backend "
+    "forms and retains IMPLANT on-device, executes five distinct rule phases "
+    "and returns only one scalar clean certificate. False requires all five "
+    "literal CPU expressions.\n"
   ) +
   method_ext (
     "cuda_poly34_raw_clean?", &cuda_poly34_raw_clean,

@@ -22,6 +22,8 @@
 
 #include <thrust/device_ptr.h>
 #include <thrust/device_vector.h>
+#include <thrust/execution_policy.h>
+#include <thrust/scan.h>
 
 #include <algorithm>
 #include <array>
@@ -80,6 +82,16 @@ using Active3WellRequest =
     klayout_cuda_spatial_active3_well_union_request_v1;
 using Active3WellResult =
     klayout_cuda_spatial_active3_well_union_result_v1;
+using Implant15Scene =
+    klayout_cuda_spatial_implant15_scene_v1;
+using Implant15SceneEcho =
+    klayout_cuda_spatial_implant15_scene_echo_v1;
+using Implant15Capacity =
+    klayout_cuda_spatial_implant15_capacity_v1;
+using Implant15Request =
+    klayout_cuda_spatial_implant15_request_v1;
+using Implant15Result =
+    klayout_cuda_spatial_implant15_result_v1;
 using M1MorphRequest =
     klayout_cuda_spatial_m1_resident_morphology_request_v1;
 using M1MorphResult =
@@ -117,6 +129,14 @@ static_assert(sizeof(M1MorphRequest) == 408,
               "unexpected M1 resident-morphology request ABI padding");
 static_assert(sizeof(M1MorphResult) == 744,
               "unexpected M1 resident-morphology result ABI padding");
+static_assert(std::is_trivially_copyable<Implant15Scene>::value,
+              "IMPLANT.1-.5 scenes must remain POD");
+static_assert(std::is_trivially_copyable<Implant15Capacity>::value,
+              "IMPLANT.1-.5 capacities must remain POD");
+static_assert(std::is_trivially_copyable<Implant15Request>::value,
+              "IMPLANT.1-.5 requests must remain POD");
+static_assert(std::is_trivially_copyable<Implant15Result>::value,
+              "IMPLANT.1-.5 results must remain POD");
 static_assert(sizeof(a3::DirectedEdge) == sizeof(Edge),
               "CONTACT4 and raw-scene edge layouts diverged");
 static_assert(sizeof(mu::DirectedSegmentI64) == sizeof(Segment),
@@ -145,6 +165,12 @@ constexpr char kContactRawDigestMagic[8] =
     {'K', 'C', 'R', 'A', 'W', '0', '0', '1'};
 constexpr char kWellUnionRawDigestMagic[8] =
     {'K', 'W', 'R', 'W', 'L', '0', '0', '1'};
+constexpr char kNplusRawDigestMagic[8] =
+    {'K', 'N', 'P', 'L', 'S', '0', '0', '1'};
+constexpr char kPplusRawDigestMagic[8] =
+    {'K', 'P', 'P', 'L', 'S', '0', '0', '1'};
+constexpr char kGateRawDigestMagic[8] =
+    {'K', 'G', 'A', 'T', 'E', '0', '0', '1'};
 constexpr std::array<std::uint8_t, 32>
     kQualifiedCompactM2SceneDigest = {
         0x66, 0xec, 0x73, 0xea, 0xf6, 0x86, 0xc6, 0xf6,
@@ -441,6 +467,13 @@ void set_message(Contact4Result *result, const char *message)
 }
 
 void set_message(Active3WellResult *result, const char *message)
+{
+  std::snprintf(
+      result->message, sizeof(result->message), "%s",
+      message ? message : "");
+}
+
+void set_message(Implant15Result *result, const char *message)
 {
   std::snprintf(
       result->message, sizeof(result->message), "%s",
@@ -913,10 +946,95 @@ Request active3_scene_as_union_request(
   return adapted;
 }
 
+Request implant15_scene_as_union_request(
+    const Implant15Scene &scene,
+    const Implant15Request &request)
+{
+  Request adapted{};
+  adapted.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  adapted.struct_size = sizeof(adapted);
+  adapted.opcode =
+      KLAYOUT_CUDA_SPATIAL_M2_RAW_MANHATTAN_UNION_BOUNDARY;
+  adapted.option_flags =
+      KLAYOUT_CUDA_SPATIAL_M2_UNION_QUALIFIED_OPTIONS;
+  adapted.format_version = scene.format_version;
+  adapted.dbu_per_micron = scene.dbu_per_micron;
+  adapted.root_cell = scene.root_cell;
+  adapted.device = request.device;
+  adapted.contexts = scene.contexts;
+  adapted.context_count = scene.context_count;
+  adapted.context_record_bytes = scene.context_record_bytes;
+  adapted.metal_contexts = scene.layer_contexts;
+  adapted.metal_context_count = scene.layer_context_count;
+  adapted.context_polygon_offsets =
+      scene.context_polygon_offsets;
+  adapted.context_polygon_offset_count =
+      scene.context_polygon_offset_count;
+  adapted.context_edge_offsets = scene.context_edge_offsets;
+  adapted.context_edge_offset_count =
+      scene.context_edge_offset_count;
+  adapted.cells = scene.cells;
+  adapted.cell_count = scene.cell_count;
+  adapted.cell_record_bytes = scene.cell_record_bytes;
+  adapted.polygons = scene.polygons;
+  adapted.polygon_count = scene.polygon_count;
+  adapted.polygon_record_bytes = scene.polygon_record_bytes;
+  adapted.edges = scene.edges;
+  adapted.edge_count = scene.edge_count;
+  adapted.edge_record_bytes = scene.edge_record_bytes;
+  adapted.flat_polygon_count = scene.flat_polygon_count;
+  adapted.flat_edge_count = scene.flat_edge_count;
+  adapted.scene_left = scene.scene_left;
+  adapted.scene_bottom = scene.scene_bottom;
+  adapted.scene_right = scene.scene_right;
+  adapted.scene_top = scene.scene_top;
+  adapted.max_contexts = request.capacity.max_contexts;
+  adapted.max_rectangles = request.capacity.max_rectangles;
+  adapted.max_x_slabs = request.capacity.max_x_slabs;
+  adapted.max_memberships =
+      request.capacity.max_union_memberships;
+  adapted.max_events = request.capacity.max_events;
+  adapted.max_raw_segments =
+      request.capacity.max_raw_segments;
+  adapted.max_segments =
+      request.capacity.max_boundary_segments;
+  adapted.max_slabs_per_rectangle =
+      request.capacity.max_slabs_per_rectangle;
+  std::copy(
+      scene.scene_digest, scene.scene_digest + 32,
+      adapted.scene_digest);
+  return adapted;
+}
+
 bool exact_bytes(
     const std::uint8_t *bytes, const char (&expected)[8])
 {
   return std::equal(bytes, bytes + 8, expected);
+}
+
+bool valid_implant15_scene_descriptor(
+    const Implant15Scene &scene, std::uint32_t role,
+    std::uint32_t layer, std::uint32_t datatype,
+    const char (&digest_magic)[8],
+    const Implant15Request &request)
+{
+  if (scene.struct_size != sizeof(scene) ||
+      scene.role != role || scene.format_version != 1 ||
+      scene.dbu_per_micron != 2000 || scene.layer != layer ||
+      scene.datatype != datatype || scene.reserved0 ||
+      scene.context_reserved || scene.cell_reserved ||
+      scene.polygon_reserved || scene.edge_reserved ||
+      scene.reserved1[0] || scene.reserved1[1] ||
+      !exact_bytes(scene.digest_domain, digest_magic)) {
+    return false;
+  }
+  Request structural =
+      implant15_scene_as_union_request(scene, request);
+  structural.max_rectangles = std::max(
+      structural.max_rectangles, structural.flat_polygon_count);
+  structural.max_memberships = std::max(
+      structural.max_memberships, structural.edge_count);
+  return valid_basic_request(structural);
 }
 
 bool valid_contact4_scene_descriptor(
@@ -1078,6 +1196,90 @@ bool valid_active3_well_request(
           request.max_active_edges ||
       request.active.flat_edge_count >
           std::numeric_limits<std::uint32_t>::max()) {
+    return false;
+  }
+  return true;
+}
+
+bool valid_implant15_request(const Implant15Request &request)
+{
+  const Implant15Capacity &capacity = request.capacity;
+  if (request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      request.struct_size != sizeof(request) ||
+      request.opcode !=
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_RAW_RESIDENT_EMPTY ||
+      request.option_flags !=
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_QUALIFIED_OPTIONS ||
+      request.format_version != 1 ||
+      request.dbu_per_micron != 2000 ||
+      request.requested_mask !=
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_ALL_RULES ||
+      request.device < 0 || request.reserved0 ||
+      request.reserved1 ||
+      request.implant1_distance != 140 ||
+      request.implant2_distance != 50 ||
+      request.implant3_distance != 90 ||
+      request.implant4_distance != 90 ||
+      request.grid_cell_size != 2000 ||
+      request.reserved2[0] || request.reserved2[1] ||
+      request.reserved2[2] || request.reserved2[3] ||
+      capacity.struct_size != sizeof(capacity) ||
+      !capacity.max_slabs_per_rectangle ||
+      !capacity.max_cells_per_secondary_edge ||
+      !capacity.max_cells_per_boundary_edge ||
+      !capacity.max_contexts || !capacity.max_rectangles ||
+      !capacity.max_x_slabs ||
+      !capacity.max_union_memberships ||
+      !capacity.max_events || !capacity.max_raw_segments ||
+      !capacity.max_boundary_segments ||
+      !capacity.max_gate_edges || !capacity.max_contact_edges ||
+      !capacity.max_grid_cells ||
+      !capacity.max_secondary_memberships ||
+      !capacity.max_gate_boundary_cell_visits ||
+      !capacity.max_contact_boundary_cell_visits ||
+      !capacity.max_member_visits ||
+      !capacity.max_pair_work ||
+      !capacity.max_morphology_work ||
+      !capacity.max_overlap_work ||
+      capacity.reserved[0] || capacity.reserved[1] ||
+      capacity.reserved[2] || capacity.reserved[3]) {
+    return false;
+  }
+  if (!valid_implant15_scene_descriptor(
+          request.nplus,
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_NPLUS_ROLE,
+          4, 0, kNplusRawDigestMagic, request) ||
+      !valid_implant15_scene_descriptor(
+          request.pplus,
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_PPLUS_ROLE,
+          5, 0, kPplusRawDigestMagic, request) ||
+      !valid_implant15_scene_descriptor(
+          request.gate,
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_GATE_ROLE,
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_DERIVED_LAYER,
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_DERIVED_DATATYPE,
+          kGateRawDigestMagic, request) ||
+      !valid_implant15_scene_descriptor(
+          request.contact,
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_CONTACT_ROLE,
+          10, 0, kContactRawDigestMagic, request)) {
+    return false;
+  }
+  const Implant15Scene *const scenes[] = {
+      &request.nplus, &request.pplus,
+      &request.gate, &request.contact};
+  for (const Implant15Scene *scene : scenes) {
+    if (scene->format_version != request.format_version ||
+        scene->dbu_per_micron != request.dbu_per_micron ||
+        scene->context_count > capacity.max_contexts) {
+      return false;
+    }
+  }
+  if (request.gate.flat_edge_count > capacity.max_gate_edges ||
+      request.contact.flat_edge_count >
+          capacity.max_contact_edges ||
+      request.gate.flat_edge_count > UINT32_MAX ||
+      request.contact.flat_edge_count > UINT32_MAX) {
     return false;
   }
   return true;
@@ -2245,6 +2447,327 @@ __global__ void transpose_m1_rectangles_kernel(
   }
 }
 
+/*
+ * Exact IMPLANT.5 operator.  PPLUS rectangles are indexed in a bounded
+ * uniform grid and NPLUS rectangles query that index.  Rectangle covers are
+ * exact decompositions of their source polygons, so one strict positive-area
+ * box intersection is equivalent to a nonempty NPLUS & PPLUS result.
+ * Boundary and corner touching deliberately fail the strict inequalities.
+ */
+struct Implant15OverlapGrid
+{
+  std::int64_t base_x;
+  std::int64_t base_y;
+  std::int64_t cell_size;
+  std::uint32_t width;
+  std::uint32_t height;
+};
+
+enum Implant15OverlapFlag : std::uint32_t
+{
+  kImplant15OverlapInvalidRectangle = 1u << 0,
+  kImplant15OverlapCoordinate = 1u << 1,
+  kImplant15OverlapCountOverflow = 1u << 2,
+  kImplant15OverlapFillMismatch = 1u << 3,
+  kImplant15OverlapWorkCapacity = 1u << 4,
+};
+
+struct Implant15OverlapCounters
+{
+  unsigned long long member_visits;
+  unsigned long long hits;
+};
+
+__host__ __device__ std::int64_t implant15_floor_div(
+    std::int64_t value, std::int64_t divisor)
+{
+  const std::int64_t quotient = value / divisor;
+  const std::int64_t remainder = value % divisor;
+  return remainder < 0 ? quotient - 1 : quotient;
+}
+
+__device__ bool implant15_rectangle_span(
+    const mu::RectI64 &rectangle, Implant15OverlapGrid grid,
+    std::int64_t *x0, std::int64_t *y0,
+    std::int64_t *x1, std::int64_t *y1)
+{
+  if (rectangle.left >= rectangle.right ||
+      rectangle.bottom >= rectangle.top ||
+      rectangle.left < -kCoordinateLimit ||
+      rectangle.bottom < -kCoordinateLimit ||
+      rectangle.right > kCoordinateLimit ||
+      rectangle.top > kCoordinateLimit ||
+      rectangle.right == INT64_MIN ||
+      rectangle.top == INT64_MIN) {
+    return false;
+  }
+  const std::int64_t global_x0 =
+      implant15_floor_div(rectangle.left, grid.cell_size);
+  const std::int64_t global_y0 =
+      implant15_floor_div(rectangle.bottom, grid.cell_size);
+  const std::int64_t global_x1 =
+      implant15_floor_div(rectangle.right - 1, grid.cell_size);
+  const std::int64_t global_y1 =
+      implant15_floor_div(rectangle.top - 1, grid.cell_size);
+  if (global_x0 < grid.base_x || global_y0 < grid.base_y) {
+    return false;
+  }
+  *x0 = global_x0 - grid.base_x;
+  *y0 = global_y0 - grid.base_y;
+  *x1 = global_x1 - grid.base_x;
+  *y1 = global_y1 - grid.base_y;
+  return *x0 >= 0 && *y0 >= 0 && *x0 <= *x1 && *y0 <= *y1 &&
+         static_cast<std::uint64_t>(*x1) < grid.width &&
+         static_cast<std::uint64_t>(*y1) < grid.height;
+}
+
+__device__ std::uint64_t implant15_overlap_grid_index(
+    Implant15OverlapGrid grid, std::int64_t x, std::int64_t y)
+{
+  return static_cast<std::uint64_t>(y) * grid.width +
+         static_cast<std::uint64_t>(x);
+}
+
+__global__ void implant15_count_overlap_memberships_kernel(
+    const mu::RectI64 *pplus, std::uint64_t pplus_count,
+    Implant15OverlapGrid grid, std::uint32_t *cell_counts,
+    std::uint64_t max_work,
+    unsigned long long *membership_total, std::uint32_t *status)
+{
+  unsigned long long local_total = 0;
+  for (std::uint64_t index =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       index < pplus_count;
+       index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    std::int64_t x0 = 0;
+    std::int64_t y0 = 0;
+    std::int64_t x1 = 0;
+    std::int64_t y1 = 0;
+    if (!implant15_rectangle_span(
+            pplus[index], grid, &x0, &y0, &x1, &y1)) {
+      atomicOr(
+          status,
+          static_cast<std::uint32_t>(
+              kImplant15OverlapInvalidRectangle));
+      continue;
+    }
+    const std::uint64_t width =
+        static_cast<std::uint64_t>(x1 - x0) + 1;
+    const std::uint64_t height =
+        static_cast<std::uint64_t>(y1 - y0) + 1;
+    if (!width || !height || width > UINT64_MAX / height) {
+      atomicOr(
+          status,
+          static_cast<std::uint32_t>(
+              kImplant15OverlapCoordinate));
+      continue;
+    }
+    const std::uint64_t rectangle_memberships = width * height;
+    if (local_total > max_work ||
+        rectangle_memberships > max_work - local_total) {
+      atomicOr(
+          status,
+          static_cast<std::uint32_t>(
+              kImplant15OverlapWorkCapacity));
+      local_total = max_work;
+    } else {
+      local_total += rectangle_memberships;
+    }
+    for (std::int64_t y = y0; y <= y1; ++y) {
+      for (std::int64_t x = x0; x <= x1; ++x) {
+        const std::uint64_t cell =
+            implant15_overlap_grid_index(grid, x, y);
+        if (atomicAdd(cell_counts + cell, 1u) == UINT32_MAX) {
+          atomicOr(
+              status,
+              static_cast<std::uint32_t>(
+                  kImplant15OverlapCountOverflow));
+        }
+      }
+    }
+  }
+  if (local_total) {
+    const unsigned long long previous =
+        atomicAdd(membership_total, local_total);
+    if (previous > ULLONG_MAX - local_total) {
+      atomicOr(
+          status,
+          static_cast<std::uint32_t>(
+              kImplant15OverlapCountOverflow));
+    }
+  }
+}
+
+__global__ void implant15_fill_overlap_memberships_kernel(
+    const mu::RectI64 *pplus, std::uint64_t pplus_count,
+    Implant15OverlapGrid grid, unsigned long long *cell_cursors,
+    std::uint32_t *members, std::uint64_t member_capacity,
+    std::uint32_t *status)
+{
+  for (std::uint64_t index =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       index < pplus_count;
+       index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    std::int64_t x0 = 0;
+    std::int64_t y0 = 0;
+    std::int64_t x1 = 0;
+    std::int64_t y1 = 0;
+    if (!implant15_rectangle_span(
+            pplus[index], grid, &x0, &y0, &x1, &y1)) {
+      atomicOr(
+          status,
+          static_cast<std::uint32_t>(
+              kImplant15OverlapInvalidRectangle));
+      continue;
+    }
+    for (std::int64_t y = y0; y <= y1; ++y) {
+      for (std::int64_t x = x0; x <= x1; ++x) {
+        const std::uint64_t cell =
+            implant15_overlap_grid_index(grid, x, y);
+        const unsigned long long position =
+            atomicAdd(cell_cursors + cell, 1ull);
+        if (position >= member_capacity || index > UINT32_MAX) {
+          atomicOr(
+              status,
+              static_cast<std::uint32_t>(
+                  kImplant15OverlapFillMismatch));
+        } else {
+          members[position] = static_cast<std::uint32_t>(index);
+        }
+      }
+    }
+  }
+}
+
+__global__ void implant15_validate_overlap_grid_kernel(
+    const std::uint32_t *counts, const std::uint64_t *offsets,
+    const unsigned long long *cursors, std::uint64_t cell_count,
+    std::uint32_t *status)
+{
+  for (std::uint64_t cell =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       cell < cell_count;
+       cell += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    if (cursors[cell] != offsets[cell] + counts[cell]) {
+      atomicOr(
+          status,
+          static_cast<std::uint32_t>(
+              kImplant15OverlapFillMismatch));
+    }
+  }
+}
+
+__global__ void implant15_query_overlap_kernel(
+    const mu::RectI64 *nplus, std::uint64_t nplus_count,
+    const mu::RectI64 *pplus, std::uint64_t pplus_count,
+    Implant15OverlapGrid grid, const std::uint32_t *cell_counts,
+    const std::uint64_t *cell_offsets, const std::uint32_t *members,
+    std::uint64_t max_work, Implant15OverlapCounters *counters,
+    std::uint32_t *status)
+{
+  unsigned long long local_visits = 0;
+  unsigned long long local_hits = 0;
+  for (std::uint64_t nplus_id =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       nplus_id < nplus_count;
+       nplus_id +=
+           static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const mu::RectI64 first = nplus[nplus_id];
+    std::int64_t first_x0 = 0;
+    std::int64_t first_y0 = 0;
+    std::int64_t first_x1 = 0;
+    std::int64_t first_y1 = 0;
+    if (!implant15_rectangle_span(
+            first, grid, &first_x0, &first_y0,
+            &first_x1, &first_y1)) {
+      atomicOr(
+          status,
+          static_cast<std::uint32_t>(
+              kImplant15OverlapInvalidRectangle));
+      continue;
+    }
+    for (std::int64_t y = first_y0; y <= first_y1; ++y) {
+      for (std::int64_t x = first_x0; x <= first_x1; ++x) {
+        const std::uint64_t cell =
+            implant15_overlap_grid_index(grid, x, y);
+        const std::uint64_t begin = cell_offsets[cell];
+        const std::uint64_t end = begin + cell_counts[cell];
+        for (std::uint64_t position = begin;
+             position < end; ++position) {
+          if (local_visits == max_work) {
+            atomicOr(
+                status,
+                static_cast<std::uint32_t>(
+                    kImplant15OverlapWorkCapacity));
+          } else {
+            ++local_visits;
+          }
+          const std::uint32_t pplus_id = members[position];
+          if (pplus_id >= pplus_count) {
+            atomicOr(
+                status,
+                static_cast<std::uint32_t>(
+                    kImplant15OverlapFillMismatch));
+            continue;
+          }
+          const mu::RectI64 second = pplus[pplus_id];
+          std::int64_t second_x0 = 0;
+          std::int64_t second_y0 = 0;
+          std::int64_t second_x1 = 0;
+          std::int64_t second_y1 = 0;
+          if (!implant15_rectangle_span(
+                  second, grid, &second_x0, &second_y0,
+                  &second_x1, &second_y1)) {
+            atomicOr(
+                status,
+                static_cast<std::uint32_t>(
+                    kImplant15OverlapInvalidRectangle));
+            continue;
+          }
+          // Exactly one grid cell owns every rectangle pair.
+          if (x != max(first_x0, second_x0) ||
+              y != max(first_y0, second_y0)) {
+            continue;
+          }
+          if (first.left < second.right &&
+              second.left < first.right &&
+              first.bottom < second.top &&
+              second.bottom < first.top) {
+            ++local_hits;
+          }
+        }
+      }
+    }
+  }
+  if (local_visits) {
+    const unsigned long long previous =
+        atomicAdd(&counters->member_visits, local_visits);
+    if (previous > ULLONG_MAX - local_visits ||
+        previous > max_work ||
+        local_visits > max_work - previous) {
+      atomicOr(
+          status,
+          static_cast<std::uint32_t>(
+              kImplant15OverlapWorkCapacity));
+    }
+  }
+  if (local_hits) atomicAdd(&counters->hits, local_hits);
+}
+
+struct Implant15OverlapResult
+{
+  std::uint64_t grid_cells = 0;
+  std::uint64_t memberships = 0;
+  std::uint64_t candidate_visits = 0;
+  std::uint64_t hits = 0;
+  std::uint32_t device_flags = 0;
+  std::uint64_t elapsed_ns = 0;
+};
+
 __global__ void expand_contact_edges_kernel(
     const Context *contexts, std::uint64_t context_count,
     const std::uint32_t *layer_contexts,
@@ -2647,6 +3170,210 @@ std::uint64_t transpose_m1_rectangles_resident(
   return elapsed_ns(begin, Clock::now());
 }
 
+Implant15OverlapGrid implant15_make_overlap_grid(
+    const Implant15Request &request)
+{
+  const std::int64_t left =
+      std::min(request.nplus.scene_left, request.pplus.scene_left);
+  const std::int64_t bottom =
+      std::min(request.nplus.scene_bottom, request.pplus.scene_bottom);
+  const std::int64_t right =
+      std::max(request.nplus.scene_right, request.pplus.scene_right);
+  const std::int64_t top =
+      std::max(request.nplus.scene_top, request.pplus.scene_top);
+  const std::int64_t base_x =
+      implant15_floor_div(left, request.grid_cell_size);
+  const std::int64_t base_y =
+      implant15_floor_div(bottom, request.grid_cell_size);
+  const std::int64_t high_x =
+      implant15_floor_div(right - 1, request.grid_cell_size);
+  const std::int64_t high_y =
+      implant15_floor_div(top - 1, request.grid_cell_size);
+  const __int128 width =
+      static_cast<__int128>(high_x) - base_x + 1;
+  const __int128 height =
+      static_cast<__int128>(high_y) - base_y + 1;
+  if (right <= left || top <= bottom ||
+      right == INT64_MIN || top == INT64_MIN ||
+      width <= 0 || height <= 0 ||
+      width > UINT32_MAX || height > UINT32_MAX ||
+      width * height >
+          static_cast<__int128>(
+              request.capacity.max_grid_cells) ||
+      width * height > UINT64_MAX) {
+    capacity("IMPLANT.5 overlap grid exceeds capacity");
+  }
+  return {
+      base_x, base_y, request.grid_cell_size,
+      static_cast<std::uint32_t>(width),
+      static_cast<std::uint32_t>(height)};
+}
+
+Implant15OverlapResult run_implant15_overlap(
+    const thrust::device_vector<mu::RectI64> &nplus,
+    const thrust::device_vector<mu::RectI64> &pplus,
+    const Implant15Request &request)
+{
+  const auto begin = Clock::now();
+  Implant15OverlapResult result;
+  if (nplus.empty() || pplus.empty()) {
+    result.elapsed_ns = elapsed_ns(begin, Clock::now());
+    return result;
+  }
+  if (nplus.size() > UINT32_MAX || pplus.size() > UINT32_MAX) {
+    capacity("IMPLANT.5 rectangle-id domain exceeds uint32");
+  }
+  const Implant15OverlapGrid grid =
+      implant15_make_overlap_grid(request);
+  result.grid_cells =
+      static_cast<std::uint64_t>(grid.width) * grid.height;
+  thrust::device_vector<std::uint32_t> status(1, 0);
+  thrust::device_vector<unsigned long long>
+      membership_total(1, 0);
+  thrust::device_vector<std::uint32_t> cell_counts(
+      result.grid_cells, 0);
+  thrust::device_vector<std::uint64_t> cell_offsets(
+      result.grid_cells);
+  thrust::device_vector<unsigned long long> cell_cursors(
+      result.grid_cells);
+  const std::uint32_t pplus_blocks =
+      static_cast<std::uint32_t>(std::min<std::uint64_t>(
+          (pplus.size() + kExpandThreads - 1) /
+              kExpandThreads,
+          kMaximumBlocks));
+  implant15_count_overlap_memberships_kernel<<<
+      pplus_blocks, kExpandThreads>>>(
+      thrust::raw_pointer_cast(pplus.data()), pplus.size(), grid,
+      thrust::raw_pointer_cast(cell_counts.data()),
+      request.capacity.max_overlap_work,
+      thrust::raw_pointer_cast(membership_total.data()),
+      thrust::raw_pointer_cast(status.data()));
+  cuda_require(
+      cudaGetLastError(),
+      "IMPLANT.5 overlap membership-count launch");
+  cuda_require(
+      cudaDeviceSynchronize(),
+      "IMPLANT.5 overlap membership-count synchronize");
+  unsigned long long memberships = 0;
+  cuda_require(
+      cudaMemcpy(
+          &memberships,
+          thrust::raw_pointer_cast(membership_total.data()),
+          sizeof(memberships), cudaMemcpyDeviceToHost),
+      "IMPLANT.5 overlap membership count D2H");
+  cuda_require(
+      cudaMemcpy(
+          &result.device_flags,
+          thrust::raw_pointer_cast(status.data()),
+          sizeof(result.device_flags), cudaMemcpyDeviceToHost),
+      "IMPLANT.5 overlap count status D2H");
+  if (result.device_flags) {
+    throw std::runtime_error(
+        "IMPLANT.5 overlap membership invariant");
+  }
+  result.memberships = memberships;
+  if (result.memberships >
+      request.capacity.max_overlap_work) {
+    capacity("IMPLANT.5 overlap membership capacity");
+  }
+
+  thrust::exclusive_scan(
+      thrust::device, cell_counts.begin(), cell_counts.end(),
+      cell_offsets.begin(), std::uint64_t{0});
+  cuda_require(
+      cudaMemcpy(
+          thrust::raw_pointer_cast(cell_cursors.data()),
+          thrust::raw_pointer_cast(cell_offsets.data()),
+          result.grid_cells * sizeof(unsigned long long),
+          cudaMemcpyDeviceToDevice),
+      "IMPLANT.5 overlap offsets-to-cursors D2D");
+  thrust::device_vector<std::uint32_t> members(
+      result.memberships);
+  implant15_fill_overlap_memberships_kernel<<<
+      pplus_blocks, kExpandThreads>>>(
+      thrust::raw_pointer_cast(pplus.data()), pplus.size(), grid,
+      thrust::raw_pointer_cast(cell_cursors.data()),
+      thrust::raw_pointer_cast(members.data()),
+      result.memberships,
+      thrust::raw_pointer_cast(status.data()));
+  cuda_require(
+      cudaGetLastError(),
+      "IMPLANT.5 overlap membership-fill launch");
+  implant15_validate_overlap_grid_kernel<<<
+      static_cast<std::uint32_t>(std::min<std::uint64_t>(
+          (result.grid_cells + kExpandThreads - 1) /
+              kExpandThreads,
+          kMaximumBlocks)),
+      kExpandThreads>>>(
+      thrust::raw_pointer_cast(cell_counts.data()),
+      thrust::raw_pointer_cast(cell_offsets.data()),
+      thrust::raw_pointer_cast(cell_cursors.data()),
+      result.grid_cells,
+      thrust::raw_pointer_cast(status.data()));
+  cuda_require(
+      cudaGetLastError(),
+      "IMPLANT.5 overlap grid-validation launch");
+  cuda_require(
+      cudaDeviceSynchronize(),
+      "IMPLANT.5 overlap grid-build synchronize");
+
+  thrust::device_vector<Implant15OverlapCounters> counters(1);
+  cuda_require(
+      cudaMemset(
+          thrust::raw_pointer_cast(counters.data()), 0,
+          sizeof(Implant15OverlapCounters)),
+      "IMPLANT.5 overlap counters clear");
+  const std::uint32_t nplus_blocks =
+      static_cast<std::uint32_t>(std::min<std::uint64_t>(
+          (nplus.size() + kExpandThreads - 1) /
+              kExpandThreads,
+          kMaximumBlocks));
+  implant15_query_overlap_kernel<<<
+      nplus_blocks, kExpandThreads>>>(
+      thrust::raw_pointer_cast(nplus.data()), nplus.size(),
+      thrust::raw_pointer_cast(pplus.data()), pplus.size(),
+      grid, thrust::raw_pointer_cast(cell_counts.data()),
+      thrust::raw_pointer_cast(cell_offsets.data()),
+      thrust::raw_pointer_cast(members.data()),
+      request.capacity.max_overlap_work,
+      thrust::raw_pointer_cast(counters.data()),
+      thrust::raw_pointer_cast(status.data()));
+  cuda_require(
+      cudaGetLastError(), "IMPLANT.5 overlap query launch");
+  cuda_require(
+      cudaDeviceSynchronize(),
+      "IMPLANT.5 overlap query synchronize");
+  Implant15OverlapCounters host{};
+  cuda_require(
+      cudaMemcpy(
+          &host, thrust::raw_pointer_cast(counters.data()),
+          sizeof(host), cudaMemcpyDeviceToHost),
+      "IMPLANT.5 overlap counters D2H");
+  cuda_require(
+      cudaMemcpy(
+          &result.device_flags,
+          thrust::raw_pointer_cast(status.data()),
+          sizeof(result.device_flags), cudaMemcpyDeviceToHost),
+      "IMPLANT.5 overlap final status D2H");
+  result.candidate_visits = host.member_visits;
+  result.hits = host.hits;
+  result.elapsed_ns = elapsed_ns(begin, Clock::now());
+  if (result.device_flags &
+      static_cast<std::uint32_t>(
+          kImplant15OverlapWorkCapacity)) {
+    capacity("IMPLANT.5 overlap candidate-work capacity");
+  }
+  if (result.device_flags) {
+    throw std::runtime_error(
+        "IMPLANT.5 overlap device invariant");
+  }
+  if (result.candidate_visits >
+      request.capacity.max_overlap_work) {
+    capacity("IMPLANT.5 overlap candidate-work capacity");
+  }
+  return result;
+}
+
 struct ExpandedContacts
 {
   thrust::device_vector<a3::DirectedEdge> edges;
@@ -3040,6 +3767,134 @@ mu::ResidentBoundaryHook make_active3_well_union_hook(
   return hook;
 }
 
+struct Implant15BoundaryContext
+{
+  const Request *gate = nullptr;
+  const Request *contact = nullptr;
+  const Implant15Request *outer = nullptr;
+  bool invoked = false;
+  std::uint32_t expansion_status = 0;
+  std::uint64_t gate_h2d_ns = 0;
+  std::uint64_t gate_expand_ns = 0;
+  std::uint64_t contact_h2d_ns = 0;
+  std::uint64_t contact_expand_ns = 0;
+  c4::DeviceResidentContext implant1;
+  c4::DeviceResidentContext implant2;
+};
+
+void consume_implant15_secondary(
+    cudaStream_t stream,
+    const mu::DirectedSegmentI64 *horizontal,
+    std::uint64_t horizontal_count,
+    const mu::DirectedSegmentI64 *vertical,
+    std::uint64_t vertical_count,
+    const Request &secondary, std::int64_t distance,
+    std::uint64_t max_edges, std::uint64_t max_cell_visits,
+    const Implant15Request &outer,
+    std::uint64_t *h2d_ns, std::uint64_t *expand_ns,
+    std::uint32_t *expansion_status,
+    c4::DeviceResidentContext *resident)
+{
+  if (!h2d_ns || !expand_ns || !expansion_status || !resident) {
+    throw std::runtime_error(
+        "IMPLANT.1/.2 secondary callback state");
+  }
+  ExpandedContacts expanded =
+      expand_contact_edges_resident(secondary);
+  *h2d_ns = expanded.h2d_ns;
+  *expand_ns = expanded.expand_ns;
+  *expansion_status |= expanded.status;
+  if (expanded.status) {
+    throw std::runtime_error(
+        "IMPLANT.1/.2 secondary expansion failed");
+  }
+
+  c4::DeviceRequest &device_request = resident->request;
+  device_request.contacts.device_edges =
+      thrust::raw_pointer_cast(expanded.edges.data());
+  device_request.contacts.count = secondary.flat_edge_count;
+  device_request.contacts.bounds = c4::ContactBounds{
+      secondary.scene_left, secondary.scene_bottom,
+      secondary.scene_right, secondary.scene_top};
+  device_request.distance = distance;
+  device_request.grid_cell_size = outer.grid_cell_size;
+  device_request.device = outer.device;
+  device_request.contact_direction_contract =
+      c4::ContactDirectionContract::
+          validated_implant12_secondary_material_on_right_contours;
+  device_request.limits.max_contact_edges = max_edges;
+  device_request.limits.max_grid_cells =
+      outer.capacity.max_grid_cells;
+  device_request.limits.max_memberships =
+      outer.capacity.max_secondary_memberships;
+  device_request.limits.max_boundary_cell_visits =
+      max_cell_visits;
+  device_request.limits.max_member_visits =
+      outer.capacity.max_member_visits;
+  device_request.limits.max_pair_work =
+      outer.capacity.max_pair_work;
+  device_request.limits.max_cells_per_contact_edge =
+      outer.capacity.max_cells_per_secondary_edge;
+  device_request.limits.max_cells_per_boundary_edge =
+      outer.capacity.max_cells_per_boundary_edge;
+  c4::consume_device_boundary_result_hook(
+      stream, horizontal, horizontal_count, vertical,
+      vertical_count, resident);
+}
+
+void consume_implant15_boundary(
+    cudaStream_t stream,
+    const mu::DirectedSegmentI64 *horizontal,
+    std::uint64_t horizontal_count,
+    const mu::DirectedSegmentI64 *vertical,
+    std::uint64_t vertical_count, void *opaque)
+{
+  Implant15BoundaryContext *context =
+      static_cast<Implant15BoundaryContext *>(opaque);
+  if (!context || context->invoked || !context->gate ||
+      !context->contact || !context->outer) {
+    throw std::runtime_error(
+        "IMPLANT.1-.5 boundary callback contract");
+  }
+  context->invoked = true;
+  if (stream != nullptr) {
+    throw std::runtime_error(
+        "IMPLANT.1-.5 boundary callback requires default stream");
+  }
+  consume_implant15_secondary(
+      stream, horizontal, horizontal_count, vertical,
+      vertical_count, *context->gate,
+      context->outer->implant1_distance,
+      context->outer->capacity.max_gate_edges,
+      context->outer->capacity.max_gate_boundary_cell_visits,
+      *context->outer, &context->gate_h2d_ns,
+      &context->gate_expand_ns, &context->expansion_status,
+      &context->implant1);
+  consume_implant15_secondary(
+      stream, horizontal, horizontal_count, vertical,
+      vertical_count, *context->contact,
+      context->outer->implant2_distance,
+      context->outer->capacity.max_contact_edges,
+      context->outer->capacity.max_contact_boundary_cell_visits,
+      *context->outer, &context->contact_h2d_ns,
+      &context->contact_expand_ns,
+      &context->expansion_status, &context->implant2);
+}
+
+mu::ResidentBoundaryHook make_implant15_boundary_hook(
+    Implant15BoundaryContext *context)
+{
+  if (!context || context->invoked) {
+    throw std::runtime_error(
+        "invalid IMPLANT.1-.5 boundary hook context");
+  }
+  mu::ResidentBoundaryHook hook;
+  hook.consume = &consume_implant15_boundary;
+  hook.context = context;
+  hook.stop_before_d2h = true;
+  return hook;
+}
+
 void echo_contact4_scene(
     const Contact4Scene &source, Contact4SceneEcho *echo)
 {
@@ -3074,6 +3929,27 @@ void echo_contact4_scene(
   std::copy(
       source.scene_digest, source.scene_digest + 32,
       echo->scene_digest);
+}
+
+void echo_implant15_request(
+    const Implant15Request &request, Implant15Result *result)
+{
+  result->opcode = request.opcode;
+  result->option_flags = request.option_flags;
+  result->format_version = request.format_version;
+  result->dbu_per_micron = request.dbu_per_micron;
+  result->requested_mask = request.requested_mask;
+  result->device = request.device;
+  result->implant1_distance = request.implant1_distance;
+  result->implant2_distance = request.implant2_distance;
+  result->implant3_distance = request.implant3_distance;
+  result->implant4_distance = request.implant4_distance;
+  result->grid_cell_size = request.grid_cell_size;
+  echo_contact4_scene(request.nplus, &result->nplus);
+  echo_contact4_scene(request.pplus, &result->pplus);
+  echo_contact4_scene(request.gate, &result->gate);
+  echo_contact4_scene(request.contact, &result->contact);
+  result->capacity = request.capacity;
 }
 
 void echo_contact4_request(
@@ -3551,6 +4427,593 @@ int run_active3_well_union_request(
   }
   result->disposition =
       KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_UNCERTAIN;
+  result->total_ns = elapsed_ns(total_begin, Clock::now());
+  return result->status;
+}
+
+void copy_implant15_boundary_result(
+    const c4::DeviceResidentContext &source, bool implant1,
+    Implant15Result *result)
+{
+  if (!source.invoked) return;
+  const c4::Result &relation = source.result;
+  if (implant1) {
+    result->gate_expanded_edge_count = relation.contact_edges;
+    result->implant1_grid_cell_count = relation.grid_cells;
+    result->implant1_secondary_membership_count =
+        relation.memberships;
+    result->implant1_boundary_cell_visit_count =
+        relation.boundary_cell_visits;
+    result->implant1_member_visit_count =
+        relation.member_visits;
+    result->implant1_candidate_count =
+        relation.candidate_pairs;
+    result->implant1_hit_count = relation.hits;
+    result->implant1_uncertain_count = relation.uncertain;
+    result->implant1_ns =
+        milliseconds_to_ns(relation.total_ms);
+  } else {
+    result->contact_expanded_edge_count = relation.contact_edges;
+    result->implant2_grid_cell_count = relation.grid_cells;
+    result->implant2_secondary_membership_count =
+        relation.memberships;
+    result->implant2_boundary_cell_visit_count =
+        relation.boundary_cell_visits;
+    result->implant2_member_visit_count =
+        relation.member_visits;
+    result->implant2_candidate_count =
+        relation.candidate_pairs;
+    result->implant2_hit_count = relation.hits;
+    result->implant2_uncertain_count = relation.uncertain;
+    result->implant2_ns =
+        milliseconds_to_ns(relation.total_ms);
+  }
+}
+
+void copy_implant15_width_space_result(
+    const m2m::BaseWidthSpaceResult &original,
+    const m2m::BaseWidthSpaceResult &transposed,
+    const Implant15Request &request, Implant15Result *result)
+{
+  const auto add = [](std::uint64_t first, std::uint64_t second,
+                      const char *label) {
+    std::uint64_t value = 0;
+    if (!checked_add_u64(first, second, &value)) {
+      throw std::runtime_error(
+          std::string("IMPLANT morphology ") + label +
+          " overflows uint64");
+    }
+    return value;
+  };
+  const std::uint64_t interval_work =
+      add(original.intervals_checked,
+          transposed.intervals_checked, "width census");
+  const std::uint64_t gaps =
+      add(original.gaps_checked, transposed.gaps_checked,
+          "gap census");
+  const std::uint64_t corner_work =
+      add(original.corner_pair_work,
+          transposed.corner_pair_work, "corner-work census");
+  const std::uint64_t corner_hits =
+      add(original.corner_candidates,
+          transposed.corner_candidates,
+          "corner-hit census");
+  /*
+   * The exact corner endpoint classifier is deliberately conservative across
+   * the width/space attribution boundary.  It proves that the combined
+   * morphology certificate cannot be consumed, but it has intentionally lost
+   * the polygon identity required to attribute the candidate honestly to
+   * IMPLANT.3 or IMPLANT.4.  Charge the work and uncertainty to both rules;
+   * direct strip width and gap violations remain rule-specific hits.
+   */
+  result->implant3_candidate_count =
+      add(interval_work, corner_work, "width/corner census");
+  result->implant3_hit_count =
+      add(original.width_violations,
+          transposed.width_violations,
+          "width-hit census");
+  result->implant4_candidate_count =
+      add(gaps, corner_work, "spacing census");
+  result->implant4_hit_count =
+      add(original.space_violations,
+          transposed.space_violations,
+          "parallel-space-hit census");
+  result->implant3_uncertain_count =
+      add(
+          corner_hits,
+          original.device_flags || transposed.device_flags,
+          "width uncertainty census");
+  result->implant4_uncertain_count =
+      add(
+          corner_hits,
+          original.device_flags || transposed.device_flags,
+          "space uncertainty census");
+  if (result->implant3_candidate_count >
+          request.capacity.max_morphology_work ||
+      result->implant4_candidate_count >
+          request.capacity.max_morphology_work) {
+    capacity("IMPLANT.3/.4 morphology-work capacity");
+  }
+  /*
+   * Width and direct-gap spacing intentionally share one strip scan in each
+   * orientation.  Charge that fused scan once to IMPLANT.3; IMPLANT.4 is the
+   * zero-additional-latency sibling certificate from the same operator.
+   */
+  result->implant3_ns = milliseconds_to_ns(
+      original.elapsed_ms + transposed.elapsed_ms);
+  result->implant4_ns = 0;
+}
+
+mu::GpuUnionLimits implant15_union_limits(
+    const Implant15Request &request)
+{
+  mu::GpuUnionLimits limits;
+  limits.max_rectangles = request.capacity.max_rectangles;
+  limits.max_x_slabs = request.capacity.max_x_slabs;
+  limits.max_memberships =
+      request.capacity.max_union_memberships;
+  limits.max_events = request.capacity.max_events;
+  limits.max_raw_segments =
+      request.capacity.max_raw_segments;
+  limits.max_segments =
+      request.capacity.max_boundary_segments;
+  limits.max_slabs_per_rectangle =
+      request.capacity.max_slabs_per_rectangle;
+  return limits;
+}
+
+mu::GpuUnionStripWindowLimits implant15_window_limits(
+    const Implant15Request &request)
+{
+  mu::GpuUnionStripWindowLimits limits;
+  limits.max_window_events = std::min(
+      limits.max_window_events, request.capacity.max_events);
+  limits.max_strip_intervals = std::min(
+      {request.capacity.max_union_memberships,
+       request.capacity.max_raw_segments / 2,
+       static_cast<std::uint64_t>(UINT32_MAX)});
+  limits.max_windows = std::min(
+      limits.max_windows, request.capacity.max_x_slabs);
+  limits.max_window_slabs =
+      static_cast<std::uint32_t>(std::min<std::uint64_t>(
+          limits.max_window_slabs,
+          request.capacity.max_x_slabs));
+  return limits;
+}
+
+thrust::device_vector<mu::RectI64>
+implant15_concatenate_rectangles(
+    const thrust::device_vector<mu::RectI64> &nplus,
+    const thrust::device_vector<mu::RectI64> &pplus)
+{
+  if (pplus.size() >
+      std::numeric_limits<std::size_t>::max() - nplus.size()) {
+    capacity("IMPLANT rectangle concatenation exceeds size_t");
+  }
+  thrust::device_vector<mu::RectI64> combined(
+      nplus.size() + pplus.size());
+  if (!nplus.empty()) {
+    cuda_require(
+        cudaMemcpy(
+            thrust::raw_pointer_cast(combined.data()),
+            thrust::raw_pointer_cast(nplus.data()),
+            nplus.size() * sizeof(mu::RectI64),
+            cudaMemcpyDeviceToDevice),
+        "IMPLANT NPLUS rectangle concatenation D2D");
+  }
+  if (!pplus.empty()) {
+    cuda_require(
+        cudaMemcpy(
+            thrust::raw_pointer_cast(combined.data()) + nplus.size(),
+            thrust::raw_pointer_cast(pplus.data()),
+            pplus.size() * sizeof(mu::RectI64),
+            cudaMemcpyDeviceToDevice),
+        "IMPLANT PPLUS rectangle concatenation D2D");
+  }
+  cuda_require(
+      cudaDeviceSynchronize(),
+      "IMPLANT rectangle concatenation synchronize");
+  return combined;
+}
+
+std::uint64_t transpose_implant15_rectangles(
+    thrust::device_vector<mu::RectI64> *rectangles,
+    std::int64_t left, std::int64_t bottom,
+    std::int64_t right, std::int64_t top)
+{
+  if (!rectangles || rectangles->empty()) {
+    throw std::runtime_error(
+        "invalid resident IMPLANT transpose input");
+  }
+  const auto begin = Clock::now();
+  thrust::device_vector<std::uint32_t> status(1, 0);
+  transpose_m1_rectangles_kernel<<<
+      static_cast<std::uint32_t>(std::min<std::uint64_t>(
+          (rectangles->size() + kExpandThreads - 1) /
+              kExpandThreads,
+          kMaximumBlocks)),
+      kExpandThreads>>>(
+      thrust::raw_pointer_cast(rectangles->data()),
+      rectangles->size(), left, bottom, right, top,
+      thrust::raw_pointer_cast(status.data()));
+  cuda_require(
+      cudaGetLastError(),
+      "IMPLANT resident transpose launch");
+  cuda_require(
+      cudaDeviceSynchronize(),
+      "IMPLANT resident transpose synchronize");
+  std::uint32_t host_status = 0;
+  cuda_require(
+      cudaMemcpy(
+          &host_status, thrust::raw_pointer_cast(status.data()),
+          sizeof(host_status), cudaMemcpyDeviceToHost),
+      "IMPLANT transpose status D2H");
+  if (host_status) {
+    coordinate_decline(
+        "IMPLANT resident transpose failed exact bounds gate");
+  }
+  return elapsed_ns(begin, Clock::now());
+}
+
+int run_implant15_request(
+    const Implant15Request *request, Implant15Result *result)
+{
+  if (!result) return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  std::memset(result, 0, sizeof(*result));
+  result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  result->struct_size = sizeof(*result);
+  result->status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  result->fallback_flags =
+      KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+  result->disposition =
+      KLAYOUT_CUDA_SPATIAL_IMPLANT15_UNCERTAIN;
+  if (!request || !valid_implant15_request(*request)) {
+    set_message(
+        result,
+        "unsupported or malformed raw IMPLANT.1-.5 request");
+    return KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  }
+  echo_implant15_request(*request, result);
+  const auto total_begin = Clock::now();
+  try {
+    std::lock_guard<std::mutex> lock(pipeline_mutex());
+    const auto setup_begin = Clock::now();
+    const Request nplus =
+        implant15_scene_as_union_request(
+            request->nplus, *request);
+    const Request pplus =
+        implant15_scene_as_union_request(
+            request->pplus, *request);
+    Request gate =
+        implant15_scene_as_union_request(
+            request->gate, *request);
+    Request contact =
+        implant15_scene_as_union_request(
+            request->contact, *request);
+    gate.max_rectangles = gate.flat_edge_count;
+    contact.max_rectangles = contact.flat_edge_count;
+    validate_shared_contact4_hierarchy(nplus, pplus);
+    validate_shared_contact4_hierarchy(nplus, gate);
+    validate_shared_contact4_hierarchy(nplus, contact);
+    const LoweredScene nplus_lowered =
+        validate_and_lower(nplus, kNplusRawDigestMagic);
+    const LoweredScene pplus_lowered =
+        validate_and_lower(pplus, kPplusRawDigestMagic);
+    validate_without_lowering(gate, kGateRawDigestMagic);
+    validate_without_lowering(contact, kContactRawDigestMagic);
+    result->setup_ns = elapsed_ns(setup_begin, Clock::now());
+    result->nplus_rectangle_count =
+        nplus_lowered.flat_rectangles;
+    result->pplus_rectangle_count =
+        pplus_lowered.flat_rectangles;
+    if (!checked_add_u64(
+            result->nplus_rectangle_count,
+            result->pplus_rectangle_count,
+            &result->implant_rectangle_count) ||
+        result->implant_rectangle_count >
+            request->capacity.max_rectangles) {
+      capacity("combined raw IMPLANT rectangles exceed capacity");
+    }
+
+    ExpandedRectangles expanded_nplus =
+        expand_rectangles_resident(nplus, nplus_lowered);
+    ExpandedRectangles expanded_pplus =
+        expand_rectangles_resident(pplus, pplus_lowered);
+    result->nplus_h2d_ns = expanded_nplus.h2d_ns;
+    result->nplus_expand_ns = expanded_nplus.expand_ns;
+    result->pplus_h2d_ns = expanded_pplus.h2d_ns;
+    result->pplus_expand_ns = expanded_pplus.expand_ns;
+    if (expanded_nplus.status || expanded_pplus.status) {
+      result->device_flags =
+          expanded_nplus.status | expanded_pplus.status;
+      result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      result->fallback_flags =
+          result->device_flags & kExpandTransformOverflow
+              ? KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW
+              : KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+      set_message(
+          result,
+          "raw NPLUS/PPLUS device expansion failed exact gate");
+      result->total_ns = elapsed_ns(total_begin, Clock::now());
+      return result->status;
+    }
+
+    const Implant15OverlapResult overlap =
+        run_implant15_overlap(
+            expanded_nplus.rectangles,
+            expanded_pplus.rectangles, *request);
+    result->implant5_membership_count = overlap.memberships;
+    result->implant5_candidate_count =
+        overlap.candidate_visits;
+    result->implant5_hit_count = overlap.hits;
+    result->implant5_uncertain_count =
+        overlap.device_flags != 0;
+    result->implant5_ns = overlap.elapsed_ns;
+    result->device_flags |= overlap.device_flags;
+    if (overlap.hits || overlap.device_flags) {
+      result->status = overlap.hits
+          ? KLAYOUT_CUDA_SPATIAL_OK
+          : KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      result->fallback_flags =
+          overlap.device_flags
+              ? KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT
+              : KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE;
+      result->disposition = overlap.hits
+          ? KLAYOUT_CUDA_SPATIAL_IMPLANT15_RAW_HITS
+          : KLAYOUT_CUDA_SPATIAL_IMPLANT15_UNCERTAIN;
+      set_message(
+          result,
+          overlap.hits
+              ? "strict positive-area NPLUS/PPLUS overlap requires CPU fallback"
+              : "IMPLANT.5 device invariant declined");
+      result->total_ns = elapsed_ns(total_begin, Clock::now());
+      return result->status;
+    }
+    result->clean_mask |= KLAYOUT_CUDA_SPATIAL_IMPLANT15_RULE_5;
+
+    const std::int64_t implant_left =
+        std::min(nplus.scene_left, pplus.scene_left);
+    const std::int64_t implant_bottom =
+        std::min(nplus.scene_bottom, pplus.scene_bottom);
+    const std::int64_t implant_right =
+        std::max(nplus.scene_right, pplus.scene_right);
+    const std::int64_t implant_top =
+        std::max(nplus.scene_top, pplus.scene_top);
+    const __int128 x_range =
+        static_cast<__int128>(implant_right) - implant_left;
+    const __int128 y_range =
+        static_cast<__int128>(implant_top) - implant_bottom;
+    if (x_range <= 0 || y_range <= 0 ||
+        x_range > UINT32_MAX || y_range > UINT32_MAX) {
+      coordinate_decline(
+          "combined raw IMPLANT range exceeds packed union capacity");
+    }
+    const mu::GpuUnionLimits union_limits =
+        implant15_union_limits(*request);
+
+    // Y-oriented pass first.  It consumes only the temporary transposed copy.
+    thrust::device_vector<mu::RectI64> transposed =
+        implant15_concatenate_rectangles(
+            expanded_nplus.rectangles,
+            expanded_pplus.rectangles);
+    const std::uint64_t transpose_ns =
+        transpose_implant15_rectangles(
+            &transposed, implant_left, implant_bottom,
+            implant_right, implant_top);
+    m2m::BaseWidthSpaceContext transposed_certificate;
+    transposed_certificate.profile =
+        m2m::BaseWidthSpaceProfile::implant_90;
+    transposed_certificate.distance =
+        request->implant3_distance;
+    transposed_certificate.origin_x = implant_bottom;
+    transposed_certificate.origin_y = implant_left;
+    transposed_certificate.max_corner_endpoints =
+        request->capacity.max_boundary_segments;
+    transposed_certificate.max_corner_pair_work =
+        request->capacity.max_morphology_work;
+    const mu::ResidentStripHook transposed_hook =
+        m2m::make_base_width_space_hook(
+            &transposed_certificate, true);
+    const mu::GpuUnionOutput transposed_output =
+        mu::gpu_union_resident_windowed_strips(
+            std::move(transposed), implant_left, implant_right,
+            union_limits, implant15_window_limits(*request),
+            request->device,
+            static_cast<double>(transpose_ns) / 1000000.0,
+            &transposed_hook);
+    if (transposed_output.fallback ||
+        !transposed_certificate.invoked) {
+      result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      result->fallback_flags =
+          fallback_flags_for_union(transposed_output);
+      set_message(
+          result,
+          ("transposed raw IMPLANT union: " +
+           transposed_output.message).c_str());
+      result->total_ns = elapsed_ns(total_begin, Clock::now());
+      return result->status;
+    }
+
+    // Original orientation continues from exact strips into one canonical
+    // boundary, then two separately indexed projection-relation operators.
+    thrust::device_vector<mu::RectI64> original =
+        implant15_concatenate_rectangles(
+            expanded_nplus.rectangles,
+            expanded_pplus.rectangles);
+    thrust::device_vector<mu::RectI64> empty;
+    expanded_nplus.rectangles.swap(empty);
+    thrust::device_vector<mu::RectI64> empty_pplus;
+    expanded_pplus.rectangles.swap(empty_pplus);
+    m2m::BaseWidthSpaceContext original_certificate;
+    original_certificate.profile =
+        m2m::BaseWidthSpaceProfile::implant_90;
+    original_certificate.distance = request->implant3_distance;
+    original_certificate.origin_x = implant_left;
+    original_certificate.origin_y = implant_bottom;
+    original_certificate.max_corner_endpoints =
+        request->capacity.max_boundary_segments;
+    original_certificate.max_corner_pair_work =
+        request->capacity.max_morphology_work;
+    const mu::ResidentStripHook original_hook =
+        m2m::make_base_width_space_hook(
+            &original_certificate, false);
+    Implant15BoundaryContext boundary;
+    boundary.gate = &gate;
+    boundary.contact = &contact;
+    boundary.outer = request;
+    const mu::ResidentBoundaryHook boundary_hook =
+        make_implant15_boundary_hook(&boundary);
+    const mu::GpuUnionOutput original_output =
+        mu::gpu_union_resident(
+            std::move(original), implant_bottom, implant_top,
+            union_limits, request->device, 0.0,
+            &original_hook, &boundary_hook);
+    result->x_slab_count = std::max(
+        original_output.x_slabs, transposed_output.x_slabs);
+    result->union_membership_count = std::max(
+        original_output.memberships,
+        transposed_output.memberships);
+    result->event_count = std::max(
+        original_output.event_count,
+        transposed_output.event_count);
+    result->strip_interval_count = std::max(
+        original_output.strip_intervals,
+        transposed_output.strip_intervals);
+    result->raw_segment_count = original_output.raw_segments;
+    result->boundary_segment_count =
+        boundary.implant1.invoked
+            ? boundary.implant1.result.boundary_segments
+            : boundary.implant2.invoked
+                  ? boundary.implant2.result.boundary_segments
+                  : 0;
+    result->implant_union_ns = milliseconds_to_ns(
+        original_output.x_membership_ms +
+        original_output.strip_scan_ms +
+        transposed_output.x_membership_ms +
+        transposed_output.strip_scan_ms);
+    result->implant_boundary_ns =
+        milliseconds_to_ns(original_output.boundary_ms);
+    result->gate_h2d_ns = boundary.gate_h2d_ns;
+    result->gate_expand_ns = boundary.gate_expand_ns;
+    result->contact_h2d_ns = boundary.contact_h2d_ns;
+    result->contact_expand_ns = boundary.contact_expand_ns;
+    result->device_flags |= boundary.expansion_status;
+    copy_implant15_boundary_result(
+        boundary.implant1, true, result);
+    copy_implant15_boundary_result(
+        boundary.implant2, false, result);
+    copy_implant15_width_space_result(
+        original_certificate.result,
+        transposed_certificate.result, *request, result);
+
+    const bool raw_hits =
+        result->implant1_hit_count ||
+        result->implant2_hit_count ||
+        result->implant3_hit_count ||
+        result->implant4_hit_count;
+    const bool uncertain =
+        result->device_flags ||
+        result->implant1_uncertain_count ||
+        result->implant2_uncertain_count ||
+        result->implant3_uncertain_count ||
+        result->implant4_uncertain_count;
+    const bool pipeline_complete =
+        !original_output.fallback &&
+        original_output.resident_consumer_completed &&
+        original_output.resident_boundary_consumer_completed &&
+        original_output.segments.empty() &&
+        original_output.d2h_ms == 0.0 &&
+        original_certificate.invoked &&
+        boundary.invoked &&
+        boundary.implant1.invoked &&
+        boundary.implant2.invoked;
+    if (boundary.implant1.invoked &&
+        !result->implant1_hit_count &&
+        !result->implant1_uncertain_count) {
+      result->clean_mask |=
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_RULE_1;
+    }
+    if (boundary.implant2.invoked &&
+        !result->implant2_hit_count &&
+        !result->implant2_uncertain_count) {
+      result->clean_mask |=
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_RULE_2;
+    }
+    if (!result->implant3_hit_count &&
+        !result->implant3_uncertain_count) {
+      result->clean_mask |=
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_RULE_3;
+    }
+    if (!result->implant4_hit_count &&
+        !result->implant4_uncertain_count) {
+      result->clean_mask |=
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_RULE_4;
+    }
+    if (raw_hits && !uncertain && pipeline_complete) {
+      result->status = KLAYOUT_CUDA_SPATIAL_OK;
+      result->fallback_flags =
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE;
+      result->disposition =
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_RAW_HITS;
+      set_message(
+          result,
+          "raw IMPLANT.1-.5 hit requires pristine CPU fallback");
+    } else if (uncertain || !pipeline_complete) {
+      result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      result->fallback_flags =
+          original_output.fallback
+              ? fallback_flags_for_union(original_output)
+              : uncertain
+                    ? static_cast<std::uint32_t>(
+                          KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST)
+                    : static_cast<std::uint32_t>(
+                          KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT);
+      result->disposition =
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_UNCERTAIN;
+      set_message(
+          result,
+          "raw IMPLANT.1-.5 resident operator declined");
+    } else {
+      result->clean_mask =
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_ALL_RULES;
+      result->certified_empty_mask =
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_ALL_RULES;
+      result->fallback_flags =
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE;
+      result->disposition =
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_COMPLETE;
+      result->status = KLAYOUT_CUDA_SPATIAL_OK;
+      set_message(
+          result,
+          "complete chained resident IMPLANT.1-.5 empty certificate");
+    }
+    result->total_ns = elapsed_ns(total_begin, Clock::now());
+    return result->status;
+  } catch (const M2Decline &decline) {
+    result->certified_empty_mask = 0;
+    result->fallback_flags = decline.fallback_flags();
+    result->status =
+        decline.kind() == DeclineKind::bad_argument
+            ? KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT
+            : KLAYOUT_CUDA_SPATIAL_FALLBACK;
+    set_message(result, decline.what());
+  } catch (const std::exception &error) {
+    result->certified_empty_mask = 0;
+    result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    set_message(result, error.what());
+  } catch (...) {
+    result->certified_empty_mask = 0;
+    result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+    result->fallback_flags =
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+    set_message(
+        result,
+        "unknown raw IMPLANT.1-.5 backend exception");
+  }
+  result->disposition =
+      KLAYOUT_CUDA_SPATIAL_IMPLANT15_UNCERTAIN;
   result->total_ns = elapsed_ns(total_begin, Clock::now());
   return result->status;
 }
@@ -4653,6 +6116,31 @@ klayout_cuda_spatial_run_active3_well_union_empty_v1(
       set_message(
           result,
           "exception escaped resident exact-WELL-union ACTIVE3 boundary");
+    }
+    return KLAYOUT_CUDA_SPATIAL_ERROR;
+  }
+}
+
+extern "C" KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_implant15_raw_empty_v1(
+    const klayout_cuda_spatial_implant15_request_v1 *request,
+    klayout_cuda_spatial_implant15_result_v1 *result)
+{
+  try {
+    return run_implant15_request(request, result);
+  } catch (...) {
+    if (result) {
+      std::memset(result, 0, sizeof(*result));
+      result->abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+      result->struct_size = sizeof(*result);
+      result->status = KLAYOUT_CUDA_SPATIAL_ERROR;
+      result->fallback_flags =
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+      result->disposition =
+          KLAYOUT_CUDA_SPATIAL_IMPLANT15_UNCERTAIN;
+      set_message(
+          result,
+          "exception escaped chained resident IMPLANT.1-.5 boundary");
     }
     return KLAYOUT_CUDA_SPATIAL_ERROR;
   }
