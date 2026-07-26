@@ -1846,6 +1846,41 @@ not just wall time.
           `.scratchpad/cuda-runs/composed-14-owner-full.mJAK5P`
           (accepted `N=3` cohort).
 
+        - [x] **Parallelize the two closed hierarchy components used by
+          antenna extraction:** the hierarchy builder now recognizes exactly
+          two disjoint direct-child descendant cones, gives each worker an
+          isolated box converter and interaction cache, joins them, and
+          processes the selected top cell serially.  Eligibility is
+          deliberately narrow: shared descendants, parents outside a cone,
+          breakout cells, attributes, global nets, soft connections, dirty
+          layouts, missing map entries, worker failures, and incomplete work
+          all retain or cleanly retry the serial implementation.
+
+          Three adversarial unit cases cover the accepted independent topology,
+          a shared-descendant diamond, and a descendant with an external
+          parent.  Canonical geometry/connectivity signatures match serial
+          execution, and the complete editable/non-editable hierarchy suite
+          passes 52/52.
+
+          The focused production ABBA changed the M3 owner mean from 55.225 to
+          40.590 s (**14.635 real seconds / 26.50% less owner wall**) and the M4
+          mean from 55.265 to 40.850 s (**14.415 real seconds / 26.08% less
+          owner wall**).  Because they run concurrently, the antenna epoch
+          changed from 55.305 to 40.875 s: **14.430 real seconds / 26.09% less
+          antenna critical wall**, not their sum.
+
+          With the ordinary deep-store thread budget enabling the path
+          automatically for cluster-only extraction, the exact three-run
+          14-owner gate measured 59.43, 59.34, and 59.24 s, averaging
+          **59.337 s**.  Against the immediately preceding commit's
+          61.573-second mean, this removes **2.236 real seconds / 3.63% of
+          full-launch wall**.  Every run retained canonical report SHA-256
+          `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+          The next exposed owner is `m1_enclosure` at 54.177--54.338 s.
+          Evidence:
+          `.scratchpad/cuda-runs/antenna-hier-components-abba.2w7j5B` and
+          `.scratchpad/cuda-runs/composed-14-owner-full.RXZP7I`.
+
       - [x] **Reuse the atomic M1-contact proof for CONTACT.1-.3 and
         METAL1.3:** commit `0c901b5` makes one stronger M1-containment,
         exact-cut, spacing, and enclosure certificate serve all four fixed
@@ -2969,12 +3004,13 @@ not just wall time.
     model at least +5% whole-run opportunity, or if a smaller 2-5% result is
     demonstrably low risk.
 
-    A secondary, overlapping trial is a no-update bounding-box converter after
-    an explicit layout update.  The non-LTO build exposes 7.46 profile points
-    in repeated `Layout::update()`/dirty checks, but that pre-CUDA PGO binary
-    attributed only about 1% directly to named bbox conversion in M1.  Do not
-    book that ceiling until path-specific counters separate genuine repeated
-    work from PGO inlining and the already-counted outer scanner.
+    - [x] **No-update bounding-box converter trial — rejected:** after an
+      explicit layout update, the exact production ABBA changed the concurrent
+      antenna epoch from 56.650 to 55.950 s, only **0.700 real seconds / 1.24%
+      less critical wall**.  M3 alone improved 1.89% and M4 2.13%, but the
+      overlapping critical-path result is below the acceptance threshold and
+      the source was reverted.  Evidence:
+      `.scratchpad/cuda-runs/antenna-hier-bbox-abba.QRqSmh`.
 
 ## Measured lower-priority paths
 

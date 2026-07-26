@@ -1452,6 +1452,7 @@ inline void mem_stat (MemStatistics *stat, MemStatistics::purpose_t purpose, int
 }
 
 template <typename> class cell_clusters_box_converter;
+template <typename> class hier_cluster_component_task;
 
 /**
  *  @brief A hierarchical representation of clusters
@@ -1489,6 +1490,14 @@ public:
    *  @brief Builds a hierarchy of clusters from a cell hierarchy and given connectivity
    */
   void build (const db::Layout &layout, const db::Cell &cell, const db::Connectivity &conn, const std::map<db::cell_index_type, tl::equivalence_clusters<size_t> > *attr_equivalence = 0, const std::set<cell_index_type> *breakout_cells = 0, bool separate_attributes = false);
+
+  /**
+   *  @brief Builds a hierarchy of clusters with the given thread budget
+   *
+   *  Independent hierarchy components may be processed concurrently.  A
+   *  max_threads value smaller than two preserves the serial implementation.
+   */
+  void build (const db::Layout &layout, const db::Cell &cell, const db::Connectivity &conn, const std::map<db::cell_index_type, tl::equivalence_clusters<size_t> > *attr_equivalence, const std::set<cell_index_type> *breakout_cells, bool separate_attributes, unsigned int max_threads);
 
   /**
    *  @brief Gets the connected clusters for a given cell
@@ -1531,10 +1540,13 @@ public:
   void mem_stat (MemStatistics *stat, MemStatistics::purpose_t purpose, int cat, bool no_self, void *parent) const;
 
 private:
+  friend class hier_cluster_component_task<T>;
+
+  connected_clusters<T> &clusters_per_cell_existing (db::cell_index_type cell_index);
   void build_local_cluster (const db::Layout &layout, const db::Cell &cell, const db::Connectivity &conn, const tl::equivalence_clusters<size_t> *attr_equivalence, bool separate_attributes);
   void build_hier_connections (cell_clusters_box_converter<T> &cbc, const db::Layout &layout, const db::Cell &cell, const db::Connectivity &conn, const std::set<cell_index_type> *breakout_cells, instance_interaction_cache_type &instance_interaction_cache, bool separate_attributes);
   void build_hier_connections_for_cells (cell_clusters_box_converter<T> &cbc, const db::Layout &layout, const std::vector<db::cell_index_type> &cells, const db::Connectivity &conn, const std::set<cell_index_type> *breakout_cells, tl::RelativeProgress &progress, instance_interaction_cache_type &instance_interaction_cache, bool separate_attributes);
-  void do_build (cell_clusters_box_converter<T> &cbc, const db::Layout &layout, const db::Cell &cell, const db::Connectivity &conn, const std::map<cell_index_type, tl::equivalence_clusters<size_t> > *attr_equivalence, const std::set<cell_index_type> *breakout_cells, bool separate_attributes);
+  void do_build (cell_clusters_box_converter<T> &cbc, const db::Layout &layout, const db::Cell &cell, const db::Connectivity &conn, const std::map<cell_index_type, tl::equivalence_clusters<size_t> > *attr_equivalence, const std::set<cell_index_type> *breakout_cells, bool separate_attributes, unsigned int max_threads);
 
   std::map<db::cell_index_type, connected_clusters<T> > m_per_cell_clusters;
   int m_base_verbosity;

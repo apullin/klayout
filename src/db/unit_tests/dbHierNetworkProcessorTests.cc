@@ -32,6 +32,7 @@
 #include "dbLayout.h"
 #include "dbStream.h"
 #include "dbCommonReader.h"
+#include "tlEnv.h"
 
 #include <limits>
 #include <utility>
@@ -1994,6 +1995,229 @@ static size_t root_nets (const db::connected_clusters<db::PolygonRef> &cc)
     }
   }
   return n;
+}
+
+class ScopedEnvironment
+{
+public:
+  ScopedEnvironment (const std::string &name, const std::string &value)
+    : m_name (name), m_was_set (tl::has_env (name)),
+      m_old_value (m_was_set ? tl::get_env (name) : std::string ())
+  {
+    tl::set_env (m_name, value);
+  }
+
+  ~ScopedEnvironment ()
+  {
+    if (m_was_set) {
+      tl::set_env (m_name, m_old_value);
+    } else {
+      tl::unset_env (m_name);
+    }
+  }
+
+private:
+  ScopedEnvironment (const ScopedEnvironment &);
+  ScopedEnvironment &operator= (const ScopedEnvironment &);
+
+  std::string m_name;
+  bool m_was_set;
+  std::string m_old_value;
+};
+
+static std::string
+hierarchy_signature (const db::Layout &ly,
+                     const db::hier_clusters<db::PolygonRef> &hc,
+                     unsigned int layer)
+{
+  std::vector<std::string> cells;
+
+  for (db::Layout::const_iterator c = ly.begin (); c != ly.end (); ++c) {
+    const db::cell_index_type ci = c->cell_index ();
+    const db::connected_clusters<db::PolygonRef> &cc = hc.clusters_per_cell (ci);
+    std::vector<std::string> roots;
+
+    for (db::connected_clusters<db::PolygonRef>::all_iterator r = cc.begin_all (); ! r.at_end (); ++r) {
+      if (! cc.is_root (*r)) {
+        continue;
+      }
+
+      std::vector<std::string> shapes;
+      db::recursive_cluster_shape_iterator<db::PolygonRef> si (hc, layer, ci, *r);
+      while (! si.at_end ()) {
+        db::Polygon poly = si->obj ();
+        poly.transform (si->trans ());
+        poly.transform (si.trans ());
+        shapes.push_back (path2string (ly, ci, si.inst_path ()) + ":" + poly.to_string ());
+        ++si;
+      }
+      std::sort (shapes.begin (), shapes.end ());
+
+      std::string root = tl::to_string (shapes.size ()) + "{";
+      for (std::vector<std::string>::const_iterator s = shapes.begin (); s != shapes.end (); ++s) {
+        root += tl::to_string (s->size ()) + ":" + *s;
+      }
+      root += "}";
+      roots.push_back (root);
+    }
+
+    std::sort (roots.begin (), roots.end ());
+    std::string cell = std::string (ly.cell_name (ci)) + "#" + tl::to_string (roots.size ()) + "[";
+    for (std::vector<std::string>::const_iterator r = roots.begin (); r != roots.end (); ++r) {
+      cell += tl::to_string (r->size ()) + ":" + *r;
+    }
+    cell += "]";
+    cells.push_back (cell);
+  }
+
+  std::sort (cells.begin (), cells.end ());
+  std::string signature;
+  for (std::vector<std::string>::const_iterator c = cells.begin (); c != cells.end (); ++c) {
+    signature += tl::to_string (c->size ()) + ":" + *c;
+  }
+  return signature;
+}
+
+TEST(121_HierClustersIndependentComponents)
+{
+  db::Layout ly;
+  unsigned int l1 = ly.insert_layer (db::LayerProperties (1, 0));
+
+  db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+  db::Cell &a = ly.cell (ly.add_cell ("A"));
+  db::Cell &la = ly.cell (ly.add_cell ("LA"));
+  db::Cell &b = ly.cell (ly.add_cell ("B"));
+  db::Cell &lb = ly.cell (ly.add_cell ("LB"));
+
+  la.shapes (l1).insert (make_box (ly, db::Box (0, 0, 100, 100)));
+  a.shapes (l1).insert (make_box (ly, db::Box (50, 0, 160, 100)));
+  a.insert (db::CellInstArray (db::CellInst (la.cell_index ()), db::Trans ()));
+  top.shapes (l1).insert (make_box (ly, db::Box (100, 0, 180, 100)));
+  top.insert (db::CellInstArray (db::CellInst (a.cell_index ()), db::Trans ()));
+
+  lb.shapes (l1).insert (make_box (ly, db::Box (20, 0, 120, 100)));
+  b.shapes (l1).insert (make_box (ly, db::Box (0, 0, 70, 100)));
+  b.insert (db::CellInstArray (db::CellInst (lb.cell_index ()), db::Trans ()));
+  top.shapes (l1).insert (make_box (ly, db::Box (1000, 0, 1060, 100)));
+  top.insert (db::CellInstArray (db::CellInst (b.cell_index ()),
+                                db::Trans (db::Vector (1000, 0))));
+  //  Join both worker-owned cones only at the serial top boundary.
+  top.shapes (l1).insert (make_box (ly, db::Box (150, 0, 1020, 100)));
+
+  db::Connectivity conn;
+  conn.connect (l1, l1);
+
+  db::hier_clusters<db::PolygonRef> serial;
+  serial.build (ly, top, conn, 0, 0, false, 1u);
+  db::hier_clusters<db::PolygonRef> parallel;
+  std::string telemetry;
+  {
+    ScopedEnvironment enabled (
+      "KLAYOUT_HIER_NETWORK_COMPONENTS_TELEMETRY", "1");
+    tl::CaptureChannel capture;
+    parallel.build (ly, top, conn, 0, 0, false, 2u);
+    telemetry = capture.captured_text ();
+  }
+
+  EXPECT_EQ (telemetry.find ("outcome=parallel") != std::string::npos, true);
+  EXPECT_EQ (root_nets (serial.clusters_per_cell (top.cell_index ())), size_t (1));
+  EXPECT_EQ (hierarchy_signature (ly, serial, l1),
+             hierarchy_signature (ly, parallel, l1));
+}
+
+TEST(122_HierClustersSharedDescendantFallback)
+{
+  db::Layout ly;
+  unsigned int l1 = ly.insert_layer (db::LayerProperties (1, 0));
+
+  db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+  db::Cell &a = ly.cell (ly.add_cell ("A"));
+  db::Cell &b = ly.cell (ly.add_cell ("B"));
+  db::Cell &shared = ly.cell (ly.add_cell ("SHARED"));
+
+  shared.shapes (l1).insert (make_box (ly, db::Box (0, 0, 100, 100)));
+  a.shapes (l1).insert (make_box (ly, db::Box (40, 0, 140, 100)));
+  b.shapes (l1).insert (make_box (ly, db::Box (20, 0, 120, 100)));
+  a.insert (db::CellInstArray (db::CellInst (shared.cell_index ()), db::Trans ()));
+  b.insert (db::CellInstArray (db::CellInst (shared.cell_index ()), db::Trans ()));
+  top.shapes (l1).insert (make_box (ly, db::Box (80, 0, 160, 100)));
+  top.shapes (l1).insert (make_box (ly, db::Box (1080, 0, 1160, 100)));
+  top.insert (db::CellInstArray (db::CellInst (a.cell_index ()), db::Trans ()));
+  top.insert (db::CellInstArray (db::CellInst (b.cell_index ()),
+                                db::Trans (db::Vector (1000, 0))));
+
+  db::Connectivity conn;
+  conn.connect (l1, l1);
+
+  db::hier_clusters<db::PolygonRef> serial;
+  serial.build (ly, top, conn, 0, 0, false, 1u);
+  db::hier_clusters<db::PolygonRef> requested_parallel;
+  std::string telemetry;
+  {
+    ScopedEnvironment enabled (
+      "KLAYOUT_HIER_NETWORK_COMPONENTS_TELEMETRY", "1");
+    tl::CaptureChannel capture;
+    requested_parallel.build (ly, top, conn, 0, 0, false, 2u);
+    telemetry = capture.captured_text ();
+  }
+
+  EXPECT_EQ (telemetry.find ("reason=shared-descendant") != std::string::npos,
+             true);
+  EXPECT_EQ (root_nets (serial.clusters_per_cell (top.cell_index ())), size_t (2));
+  EXPECT_EQ (hierarchy_signature (ly, serial, l1),
+             hierarchy_signature (ly, requested_parallel, l1));
+}
+
+TEST(123_HierClustersExternalParentFallback)
+{
+  db::Layout ly;
+  unsigned int l1 = ly.insert_layer (db::LayerProperties (1, 0));
+
+  db::Cell &selected = ly.cell (ly.add_cell ("SELECTED"));
+  db::Cell &a = ly.cell (ly.add_cell ("A"));
+  db::Cell &la = ly.cell (ly.add_cell ("LA"));
+  db::Cell &b = ly.cell (ly.add_cell ("B"));
+  db::Cell &lb = ly.cell (ly.add_cell ("LB"));
+  db::Cell &outside = ly.cell (ly.add_cell ("OUTSIDE"));
+
+  la.shapes (l1).insert (make_box (ly, db::Box (0, 0, 100, 100)));
+  a.shapes (l1).insert (make_box (ly, db::Box (40, 0, 140, 100)));
+  a.insert (db::CellInstArray (db::CellInst (la.cell_index ()), db::Trans ()));
+  selected.shapes (l1).insert (make_box (ly, db::Box (80, 0, 160, 100)));
+  selected.insert (db::CellInstArray (db::CellInst (a.cell_index ()), db::Trans ()));
+
+  lb.shapes (l1).insert (make_box (ly, db::Box (0, 0, 80, 100)));
+  b.shapes (l1).insert (make_box (ly, db::Box (20, 0, 120, 100)));
+  b.insert (db::CellInstArray (db::CellInst (lb.cell_index ()), db::Trans ()));
+  selected.shapes (l1).insert (make_box (ly, db::Box (1020, 0, 1100, 100)));
+  selected.insert (db::CellInstArray (db::CellInst (b.cell_index ()),
+                                     db::Trans (db::Vector (1000, 0))));
+
+  outside.insert (db::CellInstArray (db::CellInst (la.cell_index ()),
+                                    db::Trans (db::Vector (2000, 0))));
+
+  db::Connectivity conn;
+  conn.connect (l1, l1);
+
+  db::hier_clusters<db::PolygonRef> serial;
+  serial.build (ly, selected, conn, 0, 0, false, 1u);
+  db::hier_clusters<db::PolygonRef> requested_parallel;
+  std::string telemetry;
+  {
+    ScopedEnvironment enabled (
+      "KLAYOUT_HIER_NETWORK_COMPONENTS_TELEMETRY", "1");
+    tl::CaptureChannel capture;
+    requested_parallel.build (ly, selected, conn, 0, 0, false, 2u);
+    telemetry = capture.captured_text ();
+  }
+
+  EXPECT_EQ (
+    telemetry.find ("reason=parent-outside-component") != std::string::npos,
+    true);
+  EXPECT_EQ (root_nets (serial.clusters_per_cell (selected.cell_index ())), size_t (2));
+  EXPECT_EQ (root_nets (serial.clusters_per_cell (outside.cell_index ())), size_t (1));
+  EXPECT_EQ (hierarchy_signature (ly, serial, l1),
+             hierarchy_signature (ly, requested_parallel, l1));
 }
 
 //  issue #609

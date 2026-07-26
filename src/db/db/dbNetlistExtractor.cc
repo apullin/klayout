@@ -212,7 +212,12 @@ NetlistExtractor::extract_nets (const db::DeepShapeStore &dss, unsigned int layo
 
   //  the big part: actually extract the nets
 
-  mp_clusters->build (*mp_layout, *mp_cell, conn, &net_name_equivalence);
+  unsigned int hierarchy_threads = 1;
+  if (m_clusters_only && dss.threads () > 1) {
+    hierarchy_threads = static_cast<unsigned int> (dss.threads ());
+  }
+  mp_clusters->build (*mp_layout, *mp_cell, conn, &net_name_equivalence,
+                      0, false, hierarchy_threads);
 
   if (m_clusters_only) {
     return;

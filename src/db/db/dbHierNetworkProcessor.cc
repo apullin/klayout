@@ -32,6 +32,8 @@
 #include "tlProgress.h"
 #include "tlLog.h"
 #include "tlTimer.h"
+#include "tlThreadedWorkers.h"
+#include "tlEnv.h"
 
 #include <vector>
 #include <map>
@@ -2265,6 +2267,238 @@ private:
   const hier_clusters<T> *mp_tree;
 };
 
+namespace
+{
+
+struct hier_cluster_component_result
+{
+  hier_cluster_component_result ()
+    : complete (false), cache_size (0), cache_hits (0), cache_misses (0)
+  {
+    //  .. nothing yet ..
+  }
+
+  bool complete;
+  size_t cache_size;
+  size_t cache_hits;
+  size_t cache_misses;
+};
+
+struct hier_cluster_parallel_failure
+{
+  explicit hier_cluster_parallel_failure (const std::string &_message)
+    : message (_message)
+  {
+    //  .. nothing yet ..
+  }
+
+  std::string message;
+};
+
+static bool
+connectivity_has_soft_connections (const db::Connectivity &conn)
+{
+  for (db::Connectivity::all_layer_iterator l = conn.begin_layers (); l != conn.end_layers (); ++l) {
+    for (db::Connectivity::layer_iterator c = conn.begin_connected (*l); c != conn.end_connected (*l); ++c) {
+      if (c->second != 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ *  @brief Splits a hierarchy into two closed descendant components
+ *
+ *  The narrow first implementation deliberately accepts only two distinct
+ *  direct child cell types whose descendant cones do not overlap.  Every
+ *  non-root parent must stay in the same cone, while each root may only have
+ *  the selected top cell as a parent.  These conditions are stronger than
+ *  necessary, but they guarantee that propagate_cluster_inst cannot write to
+ *  a cluster map entry owned by the other worker.
+ */
+static bool
+make_two_component_hierarchy_work (const db::Layout &layout, const db::Cell &top,
+                                   const std::set<db::cell_index_type> &called,
+                                   std::vector<std::vector<db::cell_index_type> > &work,
+                                   std::string &reason)
+{
+  work.clear ();
+
+  if (layout.under_construction () || layout.update_needed ()) {
+    reason = "layout-not-frozen";
+    return false;
+  }
+
+  std::set<db::cell_index_type> roots;
+  for (db::Cell::child_cell_iterator c = top.begin_child_cells (); ! c.at_end (); ++c) {
+    roots.insert (*c);
+  }
+  if (roots.size () != 2) {
+    reason = "direct-root-count";
+    return false;
+  }
+
+  std::map<db::cell_index_type, unsigned int> owner;
+  std::set<db::cell_index_type>::const_iterator r = roots.begin ();
+  const db::cell_index_type root0 = *r++;
+  const db::cell_index_type root1 = *r;
+  owner.insert (std::make_pair (root0, 1u));
+  owner.insert (std::make_pair (root1, 2u));
+
+  for (std::set<db::cell_index_type>::const_iterator ri = roots.begin (); ri != roots.end (); ++ri) {
+    const db::Cell &root = layout.cell (*ri);
+    size_t parents = 0;
+    for (db::Cell::parent_cell_iterator p = root.begin_parent_cells (); p != root.end_parent_cells (); ++p) {
+      ++parents;
+      if (*p != top.cell_index ()) {
+        reason = "root-parent-outside-top";
+        return false;
+      }
+    }
+    if (parents != 1) {
+      reason = "root-parent-count";
+      return false;
+    }
+  }
+
+  for (db::Layout::top_down_const_iterator c = layout.begin_top_down (); c != layout.end_top_down (); ++c) {
+    if (*c == top.cell_index () || called.find (*c) == called.end () || roots.find (*c) != roots.end ()) {
+      continue;
+    }
+
+    unsigned int mask = 0;
+    const db::Cell &child = layout.cell (*c);
+    for (db::Cell::parent_cell_iterator p = child.begin_parent_cells (); p != child.end_parent_cells (); ++p) {
+      if (*p == top.cell_index () || called.find (*p) == called.end ()) {
+        reason = "parent-outside-component";
+        return false;
+      }
+      std::map<db::cell_index_type, unsigned int>::const_iterator po = owner.find (*p);
+      if (po == owner.end ()) {
+        reason = "parent-owner-unavailable";
+        return false;
+      }
+      mask |= po->second;
+    }
+
+    if (mask != 1u && mask != 2u) {
+      reason = mask == 3u ? "shared-descendant" : "unowned-descendant";
+      return false;
+    }
+    owner.insert (std::make_pair (*c, mask));
+  }
+
+  if (owner.size () + 1 != called.size ()) {
+    reason = "descendant-coverage";
+    return false;
+  }
+
+  work.resize (2);
+  for (db::Layout::bottom_up_const_iterator c = layout.begin_bottom_up (); c != layout.end_bottom_up (); ++c) {
+    if (*c == top.cell_index () || called.find (*c) == called.end ()) {
+      continue;
+    }
+    std::map<db::cell_index_type, unsigned int>::const_iterator o = owner.find (*c);
+    if (o == owner.end () || (o->second != 1u && o->second != 2u)) {
+      reason = "bottom-up-owner";
+      work.clear ();
+      return false;
+    }
+    work [o->second - 1u].push_back (*c);
+  }
+
+  if (work [0].empty () || work [1].empty () ||
+      work [0].size () + work [1].size () + 1 != called.size ()) {
+    reason = "component-work-coverage";
+    work.clear ();
+    return false;
+  }
+
+  reason = "eligible";
+  return true;
+}
+
+}
+
+template <class T>
+class hier_cluster_component_task
+  : public tl::Task
+{
+public:
+  hier_cluster_component_task (hier_clusters<T> *tree, const db::Layout *layout,
+                               const db::Connectivity *conn,
+                               const std::set<db::cell_index_type> *breakout_cells,
+                               bool separate_attributes,
+                               const std::vector<db::cell_index_type> &cells,
+                               bool collect_stats,
+                               hier_cluster_component_result *result)
+    : mp_tree (tree), mp_layout (layout), mp_conn (conn),
+      mp_breakout_cells (breakout_cells),
+      m_separate_attributes (separate_attributes), m_cells (cells),
+      m_next (0), m_collect_stats (collect_stats), mp_result (result),
+      m_cbc (*layout, *tree)
+  {
+    //  .. nothing yet ..
+  }
+
+  bool at_end () const
+  {
+    return m_next == m_cells.size ();
+  }
+
+  void perform_next ()
+  {
+    tl_assert (! at_end ());
+    mp_tree->build_hier_connections (m_cbc, *mp_layout, mp_layout->cell (m_cells [m_next]),
+                                     *mp_conn, mp_breakout_cells, m_cache,
+                                     m_separate_attributes);
+    ++m_next;
+  }
+
+  void finish ()
+  {
+    if (m_collect_stats) {
+      mp_result->cache_size = m_cache.size ();
+      mp_result->cache_hits = m_cache.hits ();
+      mp_result->cache_misses = m_cache.misses ();
+    }
+    mp_result->complete = true;
+  }
+
+private:
+  hier_clusters<T> *mp_tree;
+  const db::Layout *mp_layout;
+  const db::Connectivity *mp_conn;
+  const std::set<db::cell_index_type> *mp_breakout_cells;
+  bool m_separate_attributes;
+  std::vector<db::cell_index_type> m_cells;
+  size_t m_next;
+  bool m_collect_stats;
+  hier_cluster_component_result *mp_result;
+  cell_clusters_box_converter<T> m_cbc;
+  typename hier_clusters<T>::instance_interaction_cache_type m_cache;
+};
+
+template <class T>
+class hier_cluster_component_worker
+  : public tl::Worker
+{
+public:
+  void perform_task (tl::Task *base)
+  {
+    hier_cluster_component_task<T> *task =
+      static_cast<hier_cluster_component_task<T> *> (base);
+    checkpoint ();
+    while (! task->at_end ()) {
+      task->perform_next ();
+      checkpoint ();
+    }
+    task->finish ();
+  }
+};
+
 // ------------------------------------------------------------------------------
 //  hier_clusters implementation
 
@@ -2305,9 +2539,30 @@ template <class T>
 void
 hier_clusters<T>::build (const db::Layout &layout, const db::Cell &cell, const db::Connectivity &conn, const std::map<db::cell_index_type, tl::equivalence_clusters<size_t> > *attr_equivalence, const std::set<db::cell_index_type> *breakout_cells, bool separate_attributes)
 {
+  build (layout, cell, conn, attr_equivalence, breakout_cells, separate_attributes, 1);
+}
+
+template <class T>
+void
+hier_clusters<T>::build (const db::Layout &layout, const db::Cell &cell, const db::Connectivity &conn, const std::map<db::cell_index_type, tl::equivalence_clusters<size_t> > *attr_equivalence, const std::set<db::cell_index_type> *breakout_cells, bool separate_attributes, unsigned int max_threads)
+{
+  layout.update ();
   clear ();
   cell_clusters_box_converter<T> cbc (layout, *this);
-  do_build (cbc, layout, cell, conn, attr_equivalence, breakout_cells, separate_attributes);
+  try {
+    do_build (cbc, layout, cell, conn, attr_equivalence, breakout_cells,
+              separate_attributes, max_threads);
+  } catch (const hier_cluster_parallel_failure &failure) {
+    if (tl::app_flag ("hier-network-components-telemetry")) {
+      tl::info << "Hierarchical cluster components: outcome=retry-serial reason="
+               << failure.message;
+    }
+    clear ();
+    layout.update ();
+    cell_clusters_box_converter<T> retry_cbc (layout, *this);
+    do_build (retry_cbc, layout, cell, conn, attr_equivalence, breakout_cells,
+              separate_attributes, 1);
+  }
 }
 
 namespace
@@ -3274,7 +3529,7 @@ hier_clusters<T>::propagate_cluster_inst (const db::Layout &layout, const db::Ce
 
 template <class T>
 void
-hier_clusters<T>::do_build (cell_clusters_box_converter<T> &cbc, const db::Layout &layout, const db::Cell &cell, const db::Connectivity &conn, const std::map<db::cell_index_type, tl::equivalence_clusters<size_t> > *attr_equivalence, const std::set<db::cell_index_type> *breakout_cells, bool separate_attributes)
+hier_clusters<T>::do_build (cell_clusters_box_converter<T> &cbc, const db::Layout &layout, const db::Cell &cell, const db::Connectivity &conn, const std::map<db::cell_index_type, tl::equivalence_clusters<size_t> > *attr_equivalence, const std::set<db::cell_index_type> *breakout_cells, bool separate_attributes, unsigned int max_threads)
 {
   tl::SelfTimer timer (tl::verbosity () > m_base_verbosity, tl::to_string (tr ("Computing shape clusters")));
 
@@ -3319,42 +3574,156 @@ hier_clusters<T>::do_build (cell_clusters_box_converter<T> &cbc, const db::Layou
   //  build the hierarchical connections bottom-up and for all cells whose children are computed already
 
   instance_interaction_cache_type instance_interaction_cache;
+  std::vector<hier_cluster_component_result> component_results;
+  bool used_components = false;
 
   {
     tl::SelfTimer timer (tl::verbosity () > m_base_verbosity + 10, tl::to_string (tr ("Computing hierarchical shape clusters")));
     tl::RelativeProgress progress (tl::to_string (tr ("Computing hierarchical clusters")), called.size (), 1);
 
-    std::set<db::cell_index_type> done;
-    std::vector<db::cell_index_type> todo;
-    for (db::Layout::bottom_up_const_iterator c = layout.begin_bottom_up (); c != layout.end_bottom_up (); ++c) {
+    std::vector<std::vector<db::cell_index_type> > component_work;
+    std::string component_reason;
+    bool components_eligible = false;
 
-      if (called.find (*c) != called.end ()) {
+    if (max_threads < 2) {
+      component_reason = "thread-budget";
+    } else if (breakout_cells && ! breakout_cells->empty ()) {
+      component_reason = "breakout-cells";
+    } else if (separate_attributes) {
+      component_reason = "separate-attributes";
+    } else if (attr_equivalence && ! attr_equivalence->empty ()) {
+      component_reason = "attribute-equivalence";
+    } else if (conn.global_nets () != 0) {
+      component_reason = "global-nets";
+    } else if (connectivity_has_soft_connections (conn)) {
+      component_reason = "soft-connections";
+    } else {
+      components_eligible =
+        make_two_component_hierarchy_work (layout, cell, called,
+                                           component_work, component_reason);
+    }
 
-        bool all_available = true;
-        const db::Cell &cell = layout.cell (*c);
-        for (db::Cell::child_cell_iterator cc = cell.begin_child_cells (); ! cc.at_end () && all_available; ++cc) {
-          all_available = (done.find (*cc) != done.end ());
+    if (components_eligible) {
+
+      //  All entries were created by the serial local phase.  Verify that no
+      //  worker can take the inserting branch of clusters_per_cell().
+      for (size_t i = 0; i < component_work.size () && components_eligible; ++i) {
+        for (std::vector<db::cell_index_type>::const_iterator c = component_work [i].begin ();
+             c != component_work [i].end (); ++c) {
+          if (m_per_cell_clusters.find (*c) == m_per_cell_clusters.end ()) {
+            component_reason = "missing-cluster-entry";
+            components_eligible = false;
+            break;
+          }
         }
+      }
+      if (m_per_cell_clusters.find (cell.cell_index ()) == m_per_cell_clusters.end ()) {
+        component_reason = "missing-top-cluster-entry";
+        components_eligible = false;
+      }
+    }
 
-        if (all_available) {
-          todo.push_back (*c);
-        } else {
-          tl_assert (! todo.empty ());
-          build_hier_connections_for_cells (cbc, layout, todo, conn, breakout_cells, progress, instance_interaction_cache, separate_attributes);
-          done.insert (todo.begin (), todo.end ());
-          todo.clear ();
-          todo.push_back (*c);
+    if (components_eligible) {
+
+      const bool collect_stats = tl::verbosity () >= m_base_verbosity + 20;
+      const size_t hierarchy_generation_id = layout.hier_generation_id ();
+      component_results.resize (2);
+      tl::Job<hier_cluster_component_worker<T> > job (2);
+
+      for (size_t i = 0; i < component_work.size (); ++i) {
+        job.schedule (new hier_cluster_component_task<T>
+                      (this, &layout, &conn, breakout_cells, separate_attributes,
+                       component_work [i], collect_stats, &component_results [i]));
+      }
+
+      try {
+        job.start ();
+        job.wait ();
+      } catch (...) {
+        job.terminate ();
+        throw;
+      }
+
+      if (job.has_error ()) {
+        throw hier_cluster_parallel_failure
+          (std::string ("worker-error:") + job.error_messages ().front ());
+      }
+      if (! component_results [0].complete || ! component_results [1].complete) {
+        throw hier_cluster_parallel_failure ("worker-incomplete");
+      }
+      if (layout.hier_generation_id () != hierarchy_generation_id ||
+          layout.under_construction () || layout.update_needed ()) {
+        throw hier_cluster_parallel_failure ("layout-changed-during-workers");
+      }
+
+      for (size_t i = 0; i < component_work.size (); ++i) {
+        for (size_t n = 0; n < component_work [i].size (); ++n) {
+          ++progress;
+        }
+      }
+
+      //  This is the only shared write boundary and remains serial.
+      build_hier_connections (cbc, layout, cell, conn, breakout_cells,
+                              instance_interaction_cache, separate_attributes);
+      ++progress;
+      used_components = true;
+
+      if (tl::app_flag ("hier-network-components-telemetry")) {
+        tl::info << "Hierarchical cluster components: outcome=parallel"
+                 << " workers=2 cells0=" << component_work [0].size ()
+                 << " cells1=" << component_work [1].size ()
+                 << " boundary_cells=1";
+      }
+
+    } else {
+
+      if (tl::app_flag ("hier-network-components-telemetry")) {
+        tl::info << "Hierarchical cluster components: outcome=serial reason="
+                 << component_reason;
+      }
+
+      std::set<db::cell_index_type> done;
+      std::vector<db::cell_index_type> todo;
+      for (db::Layout::bottom_up_const_iterator c = layout.begin_bottom_up (); c != layout.end_bottom_up (); ++c) {
+
+        if (called.find (*c) != called.end ()) {
+
+          bool all_available = true;
+          const db::Cell &todo_cell = layout.cell (*c);
+          for (db::Cell::child_cell_iterator cc = todo_cell.begin_child_cells (); ! cc.at_end () && all_available; ++cc) {
+            all_available = (done.find (*cc) != done.end ());
+          }
+
+          if (all_available) {
+            todo.push_back (*c);
+          } else {
+            tl_assert (! todo.empty ());
+            build_hier_connections_for_cells (cbc, layout, todo, conn, breakout_cells, progress, instance_interaction_cache, separate_attributes);
+            done.insert (todo.begin (), todo.end ());
+            todo.clear ();
+            todo.push_back (*c);
+          }
+
         }
 
       }
 
+      build_hier_connections_for_cells (cbc, layout, todo, conn, breakout_cells, progress, instance_interaction_cache, separate_attributes);
     }
-
-    build_hier_connections_for_cells (cbc, layout, todo, conn, breakout_cells, progress, instance_interaction_cache, separate_attributes);
   }
 
   if (tl::verbosity () >= m_base_verbosity + 20) {
-    tl::info << "Cluster build cache statistics (instance to instance cache): size=" << instance_interaction_cache.size () << ", hits=" << instance_interaction_cache.hits () << ", misses=" << instance_interaction_cache.misses ();
+    size_t cache_size = instance_interaction_cache.size ();
+    size_t cache_hits = instance_interaction_cache.hits ();
+    size_t cache_misses = instance_interaction_cache.misses ();
+    if (used_components) {
+      for (std::vector<hier_cluster_component_result>::const_iterator r = component_results.begin (); r != component_results.end (); ++r) {
+        cache_size += r->cache_size;
+        cache_hits += r->cache_hits;
+        cache_misses += r->cache_misses;
+      }
+    }
+    tl::info << "Cluster build cache statistics (instance to instance cache): size=" << cache_size << ", hits=" << cache_hits << ", misses=" << cache_misses;
   }
 }
 
@@ -3481,7 +3850,7 @@ hier_clusters<T>::build_hier_connections (cell_clusters_box_converter<T> &cbc, c
   }
   tl::SelfTimer timer (tl::verbosity () > m_base_verbosity + 20, msg);
 
-  connected_clusters<T> &local = m_per_cell_clusters [cell.cell_index ()];
+  connected_clusters<T> &local = clusters_per_cell_existing (cell.cell_index ());
 
   //  NOTE: this is a receiver for both the child-to-child and
   //  local to child interactions.
@@ -3602,7 +3971,7 @@ hier_clusters<T>::build_hier_connections (cell_clusters_box_converter<T> &cbc, c
 
     for (std::vector<db::Instance>::const_iterator inst = inst_storage.begin (); inst != inst_storage.end (); ++inst) {
 
-      const db::connected_clusters<T> &cc = m_per_cell_clusters [inst->cell_index ()];
+      const db::connected_clusters<T> &cc = clusters_per_cell_existing (inst->cell_index ());
       for (typename db::connected_clusters<T>::const_iterator cl = cc.begin (); cl != cc.end (); ++cl) {
 
         if (! cl->get_global_nets ().empty ()) {
@@ -3658,6 +4027,16 @@ hier_clusters<T>::build_hier_connections (cell_clusters_box_converter<T> &cbc, c
     }
 
   }
+}
+
+template <class T>
+connected_clusters<T> &
+hier_clusters<T>::clusters_per_cell_existing (db::cell_index_type cell_index)
+{
+  typename std::map<db::cell_index_type, connected_clusters<T> >::iterator c =
+    m_per_cell_clusters.find (cell_index);
+  tl_assert (c != m_per_cell_clusters.end ());
+  return c->second;
 }
 
 template <class T>
