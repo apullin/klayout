@@ -141,6 +141,59 @@ LongSpaceCertificate certify_f90_long_edge_space(
     const std::vector<manhattan_union::DirectedSegmentI64> &segments,
     std::uint64_t max_segments = UINT64_C(4096));
 
+/*
+ * Exact one-orientation M1.1/M1.2 certificate over canonical union strips.
+ *
+ * Every positive-width x slab is an exact vertical slice of the union.
+ * An occupied y interval shorter than distance exposes an opposing
+ * horizontal-boundary width violation; a gap shorter than distance between
+ * consecutive intervals exposes an unshielded spacing violation.  A bounded
+ * endpoint index additionally rejects every sub-distance Euclidean candidate
+ * whose parallel-edge projections do not overlap.  Running the same
+ * certificate once on the original geometry and once after x/y transposition
+ * covers both Manhattan edge orientations without materializing the
+ * multi-million-segment boundary.  Endpoint candidates are conservative:
+ * finding one retains the CPU path, while finding none is an exact empty
+ * certificate.
+ */
+struct BaseWidthSpaceResult
+{
+  std::uint64_t slabs_checked = 0;
+  std::uint64_t intervals_checked = 0;
+  std::uint64_t gaps_checked = 0;
+  std::uint64_t width_violations = 0;
+  std::uint64_t space_violations = 0;
+  std::uint64_t corner_endpoint_count = 0;
+  std::uint64_t corner_pair_work = 0;
+  std::uint64_t corner_candidates = 0;
+  std::uint64_t device_total_bytes = 0;
+  std::uint64_t device_free_begin_bytes = 0;
+  std::uint64_t device_free_low_bytes = 0;
+  std::uint32_t device_flags = 0;
+  double elapsed_ms = 0.0;
+};
+
+struct BaseWidthSpaceContext
+{
+  std::int64_t distance = 0;
+  std::int64_t origin_x = 0;
+  std::int64_t origin_y = 0;
+  std::uint64_t max_corner_endpoints = UINT64_C(64000000);
+  std::uint64_t max_corner_pair_work = UINT64_C(2000000000);
+  bool invoked = false;
+  BaseWidthSpaceResult result;
+};
+
+void consume_base_width_space_hook(
+    cudaStream_t stream, const std::int64_t *xs,
+    std::uint32_t x_slabs,
+    const manhattan_union::StripInterval *intervals,
+    std::uint64_t interval_count, const std::uint64_t *slab_offsets,
+    const std::uint32_t *slab_counts, void *opaque);
+
+manhattan_union::ResidentStripHook make_base_width_space_hook(
+    BaseWidthSpaceContext *context);
+
 // Checked adapter for manhattan_union::ResidentStripHook.
 struct ResidentContext
 {

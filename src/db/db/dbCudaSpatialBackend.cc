@@ -431,17 +431,24 @@ bool qualified_m2_union_request (
 bool qualified_m1_resident_morphology_request (
   const klayout_cuda_spatial_m1_resident_morphology_request_v1 &request)
 {
+  const bool suffix_request =
+    request.opcode ==
+      KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M15_9_EMPTY &&
+    request.requested_mask ==
+      KLAYOUT_CUDA_SPATIAL_M1_MORPH_ALL_EMPTY;
+  const bool base_request =
+    request.opcode ==
+      KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY &&
+    request.requested_mask ==
+      KLAYOUT_CUDA_SPATIAL_M1_BASE_ALL_EMPTY;
   return
     request.abi_version == KLAYOUT_CUDA_SPATIAL_ABI_VERSION &&
     request.struct_size == sizeof (request) &&
-    request.opcode ==
-      KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M15_9_EMPTY &&
+    (suffix_request || base_request) &&
     request.option_flags ==
       KLAYOUT_CUDA_SPATIAL_M1_MORPH_QUALIFIED_OPTIONS &&
     request.format_version == 1 && request.dbu_per_micron == 2000 &&
     request.device >= 0 &&
-    request.requested_mask ==
-      KLAYOUT_CUDA_SPATIAL_M1_MORPH_ALL_EMPTY &&
     request.reserved0 == 0 && request.context_reserved == 0 &&
     request.cell_reserved == 0 && request.polygon_reserved == 0 &&
     request.edge_reserved == 0 && request.union_reserved == 0 &&
@@ -957,9 +964,11 @@ public:
       m_m1_width_space_telemetry (
         env_enabled ("KLAYOUT_CUDA_M1_WIDTH_SPACE_TELEMETRY")),
       m_m1_resident_morphology_enabled (
-        env_enabled ("KLAYOUT_CUDA_M1_5_9")),
+        env_enabled ("KLAYOUT_CUDA_M1_5_9") ||
+        env_enabled ("KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE")),
       m_m1_resident_morphology_telemetry (
-        env_enabled ("KLAYOUT_CUDA_M1_5_9_TELEMETRY")),
+        env_enabled ("KLAYOUT_CUDA_M1_5_9_TELEMETRY") ||
+        env_enabled ("KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE_TELEMETRY")),
       m_m2_width_space_enabled (
         env_enabled ("KLAYOUT_CUDA_M2_WIDTH_SPACE")),
       m_m2_width_space_telemetry (
@@ -3656,17 +3665,13 @@ bool cuda_spatial_validate_m1_resident_morphology_result (
         "echo");
     }
 
+    const bool base_width_space =
+      request.opcode ==
+        KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY;
     uint64_t expected_union_events = 0;
-    uint64_t expected_space_pairs_twice = 0;
     if (! checked_multiply_u64 (
           result.union_membership_count, UINT64_C (2),
           expected_union_events) ||
-        ! checked_multiply_u64 (
-          result.f90_long_segment_count,
-          result.f90_long_segment_count
-            ? result.f90_long_segment_count - 1
-            : 0,
-          expected_space_pairs_twice) ||
         result.rectangle_count < request.flat_polygon_count ||
         result.rectangle_count > request.max_rectangles ||
         ! result.x_slab_count ||
@@ -3677,7 +3682,20 @@ bool cuda_spatial_validate_m1_resident_morphology_result (
         result.union_event_count != expected_union_events ||
         result.union_event_count > request.max_union_events ||
         ! result.strip_interval_count ||
-        result.strip_interval_count > result.union_membership_count ||
+        result.strip_interval_count > result.union_membership_count) {
+      return fail (
+        "CUDA M1 resident morphology backend returned impossible proof "
+        "counters");
+    }
+
+    uint64_t expected_space_pairs_twice = 0;
+    if (! base_width_space &&
+        (! checked_multiply_u64 (
+          result.f90_long_segment_count,
+          result.f90_long_segment_count
+            ? result.f90_long_segment_count - 1
+            : 0,
+          expected_space_pairs_twice) ||
         result.erode89_output_interval_count >
           request.max_morph_output_intervals ||
         result.dilate90_output_interval_count >
@@ -3708,10 +3726,26 @@ bool cuda_spatial_validate_m1_resident_morphology_result (
         result.boundary_source_visit_count >
           request.max_morph_source_visits_per_pass ||
         result.erode269_source_visit_count >
-          request.max_morph_source_visits_per_pass) {
+          request.max_morph_source_visits_per_pass)) {
       return fail (
         "CUDA M1 resident morphology backend returned impossible proof "
         "counters");
+    }
+    if (base_width_space &&
+        (result.erode89_output_interval_count != 0 ||
+         result.erode89_source_visit_count != 0 ||
+         result.dilate90_output_interval_count != 0 ||
+         result.dilate90_source_visit_count != 0 ||
+         result.boundary_source_visit_count != 0 ||
+         result.erode269_source_visit_count != 0 ||
+         result.f90_boundary_segment_count != 0 ||
+         result.f90_long_segment_count != 0 ||
+         result.f90_space_pair_count != 0 ||
+         result.f90_space_violation_count != 0 ||
+         result.f90_space_uncertain_count != 0 ||
+         result.f270_eroded_interval_count != 0)) {
+      return fail (
+        "CUDA M1 base width/space backend returned suffix counters");
     }
 
     if (! result.union_device_total_bytes ||
@@ -3720,16 +3754,25 @@ bool cuda_spatial_validate_m1_resident_morphology_result (
         result.union_device_free_begin_bytes >
           result.union_device_total_bytes ||
         result.union_device_free_low_bytes >
-          result.union_device_free_begin_bytes ||
-        ! result.morph_device_total_bytes ||
-        result.morph_device_total_bytes !=
-          result.union_device_total_bytes ||
-        ! result.morph_device_free_begin_bytes ||
-        ! result.morph_device_free_low_bytes ||
-        result.morph_device_free_begin_bytes >
-          result.morph_device_total_bytes ||
-        result.morph_device_free_low_bytes >
-          result.morph_device_free_begin_bytes) {
+          result.union_device_free_begin_bytes) {
+      return fail (
+        "CUDA M1 resident morphology backend returned impossible memory "
+        "telemetry");
+    }
+    if ((! base_width_space &&
+         (! result.morph_device_total_bytes ||
+          result.morph_device_total_bytes !=
+            result.union_device_total_bytes ||
+          ! result.morph_device_free_begin_bytes ||
+          ! result.morph_device_free_low_bytes ||
+          result.morph_device_free_begin_bytes >
+            result.morph_device_total_bytes ||
+          result.morph_device_free_low_bytes >
+            result.morph_device_free_begin_bytes)) ||
+        (base_width_space &&
+         (result.morph_device_total_bytes != 0 ||
+          result.morph_device_free_begin_bytes != 0 ||
+          result.morph_device_free_low_bytes != 0))) {
       return fail (
         "CUDA M1 resident morphology backend returned impossible memory "
         "telemetry");
@@ -3759,7 +3802,21 @@ bool cuda_spatial_validate_m1_resident_morphology_result (
       }
     }
 
-    if (result.disposition ==
+    if (base_width_space &&
+        result.disposition ==
+          KLAYOUT_CUDA_SPATIAL_M1_MORPH_COMPLETE &&
+        result.certified_empty_mask == request.requested_mask &&
+        result.d2h_ns == 0) {
+      // Sole consumable base width/space outcome.
+    } else if (
+      base_width_space &&
+      result.disposition ==
+        KLAYOUT_CUDA_SPATIAL_M1_MORPH_NOT_EMPTY &&
+      result.certified_empty_mask == 0) {
+      // Valid positive diagnostic; the caller retains the CPU transaction.
+    } else if (
+      ! base_width_space &&
+      result.disposition ==
           KLAYOUT_CUDA_SPATIAL_M1_MORPH_COMPLETE &&
         result.certified_empty_mask == request.requested_mask &&
         result.f90_space_violation_count == 0 &&
@@ -3768,6 +3825,7 @@ bool cuda_spatial_validate_m1_resident_morphology_result (
         result.d2h_ns == 0) {
       // Sole consumable outcome.
     } else if (
+      ! base_width_space &&
       result.disposition ==
         KLAYOUT_CUDA_SPATIAL_M1_MORPH_NOT_EMPTY &&
       (result.f90_space_violation_count != 0 ||
@@ -3775,6 +3833,7 @@ bool cuda_spatial_validate_m1_resident_morphology_result (
       result.f90_space_uncertain_count == 0) {
       // Valid positive diagnostic; the caller retains the CPU transaction.
     } else if (
+      ! base_width_space &&
       result.disposition ==
         KLAYOUT_CUDA_SPATIAL_M1_MORPH_UNCERTAIN &&
       result.f90_space_uncertain_count != 0) {

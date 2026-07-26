@@ -134,6 +134,7 @@ report_deep_region_multi_phases (
   size_t input_count, size_t output_count,
   const DeepRegionPhaseClock::time_point &begin,
   const DeepRegionPhaseClock::time_point &inputs_validated,
+  const DeepRegionPhaseClock::time_point &raw_cuda_attempted,
   const DeepRegionPhaseClock::time_point &merged_layer_ready,
   const DeepRegionPhaseClock::time_point &outputs_ready,
   const DeepRegionPhaseClock::time_point &cuda_attempted,
@@ -151,14 +152,16 @@ report_deep_region_multi_phases (
     stderr,
     "KLAYOUT_DEEP_REGION_MULTI"
     " outcome=%s output_kind=%s inputs=%zu outputs=%zu"
-    " input_validation_ms=%.6f merged_deep_layer_ms=%.6f"
+    " input_validation_ms=%.6f raw_cuda_attempt_ms=%.6f"
+    " merged_deep_layer_ms=%.6f"
     " output_setup_ms=%.6f cuda_attempt_ms=%.6f"
     " cpu_setup_ms=%.6f cpu_run_ms=%.6f cpu_cleanup_ms=%.6f"
     " release_ms=%.6f"
     " total_ms=%.6f\n",
     outcome, output_kind, input_count, output_count,
     deep_region_phase_milliseconds (begin, inputs_validated),
-    deep_region_phase_milliseconds (inputs_validated, merged_layer_ready),
+    deep_region_phase_milliseconds (inputs_validated, raw_cuda_attempted),
+    deep_region_phase_milliseconds (raw_cuda_attempted, merged_layer_ready),
     deep_region_phase_milliseconds (merged_layer_ready, outputs_ready),
     deep_region_phase_milliseconds (outputs_ready, cuda_attempted),
     deep_region_phase_milliseconds (cuda_attempted, cpu_setup_done),
@@ -2664,6 +2667,35 @@ try_cuda_m1_width_space_batch (
   return false;
 }
 
+static bool
+try_cuda_m1_raw_width_space_batch (
+  const db::DeepLayer &raw_polygons,
+  const db::CompoundRegionMultiOutputOperationNode &node,
+  db::PropertyConstraint prop_constraint, bool merged_semantics,
+  const db::EdgePair *)
+{
+  if (! merged_semantics) {
+    return false;
+  }
+  db::CudaM1WidthSpaceBuildSpec spec;
+  return
+    node.matches_m1_width_space_checks (
+      spec.width_distance, spec.width_options,
+      spec.spacing_distance, spec.spacing_options,
+      prop_constraint) &&
+    db::cuda_m1_raw_width_space_try_empty (raw_polygons);
+}
+
+template <class TR>
+static bool
+try_cuda_m1_raw_width_space_batch (
+  const db::DeepLayer &,
+  const db::CompoundRegionMultiOutputOperationNode &,
+  db::PropertyConstraint, bool, const TR *)
+{
+  return false;
+}
+
 template <class TR>
 static const char *
 region_cop_multi_output_kind ()
@@ -2690,7 +2722,8 @@ std::vector<Output *> region_cop_multi_with_properties_impl (DeepRegion *region,
         report_deep_region_multi_phases (
           true, "flat-fallback", output_kind, inputs.size (),
           node.outputs (), phase_begin, phase_done, phase_done, phase_done,
-          phase_done, phase_done, phase_done, phase_done, phase_done);
+          phase_done, phase_done, phase_done, phase_done, phase_done,
+          phase_done);
       }
       return std::vector<Output *> ();
     }
@@ -2698,6 +2731,42 @@ std::vector<Output *> region_cop_multi_with_properties_impl (DeepRegion *region,
 
   const DeepRegionPhaseClock::time_point phase_inputs_validated =
     deep_region_phase_now (phase_telemetry);
+  const bool raw_cuda_certified_empty =
+    try_cuda_m1_raw_width_space_batch (
+      region->deep_layer (), node, prop_constraint,
+      region->merged_semantics (),
+      static_cast<const TR *> (0));
+  const DeepRegionPhaseClock::time_point phase_raw_cuda_attempted =
+    deep_region_phase_now (phase_telemetry);
+  if (raw_cuda_certified_empty) {
+    std::vector<std::unique_ptr<Output> > raw_owned_outputs;
+    raw_owned_outputs.reserve (node.outputs ());
+    for (size_t n = 0; n < node.outputs (); ++n) {
+      raw_owned_outputs.push_back (
+        std::unique_ptr<Output> (
+          new Output (region->deep_layer ().derived ())));
+    }
+    const DeepRegionPhaseClock::time_point phase_outputs_ready =
+      deep_region_phase_now (phase_telemetry);
+    std::vector<Output *> outputs;
+    outputs.reserve (raw_owned_outputs.size ());
+    for (typename std::vector<std::unique_ptr<Output> >::iterator o =
+           raw_owned_outputs.begin ();
+         o != raw_owned_outputs.end (); ++o) {
+      outputs.push_back (o->release ());
+    }
+    const DeepRegionPhaseClock::time_point phase_done =
+      deep_region_phase_now (phase_telemetry);
+    report_deep_region_multi_phases (
+      phase_telemetry, "raw-cuda-certified-empty", output_kind,
+      inputs.size (), outputs.size (), phase_begin,
+      phase_inputs_validated, phase_raw_cuda_attempted,
+      phase_raw_cuda_attempted, phase_outputs_ready,
+      phase_outputs_ready, phase_outputs_ready, phase_outputs_ready,
+      phase_outputs_ready, phase_done);
+    return outputs;
+  }
+
   const db::DeepLayer &polygons (region->merged_deep_layer ());
   const DeepRegionPhaseClock::time_point phase_merged_layer_ready =
     deep_region_phase_now (phase_telemetry);
@@ -2716,9 +2785,10 @@ std::vector<Output *> region_cop_multi_with_properties_impl (DeepRegion *region,
   if (owned_outputs.empty ()) {
     report_deep_region_multi_phases (
       phase_telemetry, "no-outputs", output_kind, inputs.size (), 0,
-      phase_begin, phase_inputs_validated, phase_merged_layer_ready,
+      phase_begin, phase_inputs_validated, phase_raw_cuda_attempted,
+      phase_merged_layer_ready, phase_outputs_ready, phase_outputs_ready,
       phase_outputs_ready, phase_outputs_ready, phase_outputs_ready,
-      phase_outputs_ready, phase_outputs_ready, phase_outputs_ready);
+      phase_outputs_ready);
     return std::vector<Output *> ();
   }
 
@@ -2741,9 +2811,9 @@ std::vector<Output *> region_cop_multi_with_properties_impl (DeepRegion *region,
     report_deep_region_multi_phases (
       phase_telemetry, "cuda-certified-empty", output_kind, inputs.size (),
       outputs.size (), phase_begin, phase_inputs_validated,
-      phase_merged_layer_ready, phase_outputs_ready, phase_cuda_attempted,
-      phase_cuda_attempted, phase_cuda_attempted, phase_cuda_attempted,
-      phase_done);
+      phase_raw_cuda_attempted, phase_merged_layer_ready,
+      phase_outputs_ready, phase_cuda_attempted, phase_cuda_attempted,
+      phase_cuda_attempted, phase_cuda_attempted, phase_done);
     return outputs;
   }
 
@@ -2797,9 +2867,9 @@ std::vector<Output *> region_cop_multi_with_properties_impl (DeepRegion *region,
   report_deep_region_multi_phases (
     phase_telemetry, "cpu-complete", output_kind, inputs.size (),
     outputs.size (), phase_begin, phase_inputs_validated,
-    phase_merged_layer_ready, phase_outputs_ready, phase_cuda_attempted,
-    phase_cpu_setup_done, phase_cpu_run_done, phase_cpu_cleanup_done,
-    phase_done);
+    phase_raw_cuda_attempted, phase_merged_layer_ready,
+    phase_outputs_ready, phase_cuda_attempted, phase_cpu_setup_done,
+    phase_cpu_run_done, phase_cpu_cleanup_done, phase_done);
   return outputs;
 }
 

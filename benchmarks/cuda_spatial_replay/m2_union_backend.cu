@@ -13,6 +13,7 @@
 #include "dbCudaActive3Digest.h"
 #include "dbCudaSpatialApi.h"
 #include "contact4_union_resident.cuh"
+#include "m1_width_space_exact_predicate.h"
 #include "m2_manhattan_decompose.h"
 #include "m2_resident_morphology_gpu.cuh"
 #include "manhattan_union_gpu.cuh"
@@ -132,6 +133,8 @@ constexpr std::uint32_t kExpandThreads = 256;
 constexpr std::uint32_t kMaximumBlocks = 65535;
 constexpr std::uint64_t kM1MaxStitchedStripIntervals =
     UINT64_C(128000000);
+constexpr std::uint64_t kM1BaseMaxStitchedStripIntervals =
+    UINT64_C(160000000);
 constexpr char kM2RawDigestMagic[8] =
     {'K', 'M', '2', 'R', 'A', 'W', '0', '1'};
 constexpr char kM1RawDigestMagic[8] =
@@ -676,17 +679,24 @@ bool valid_basic_request(const Request &request)
 
 bool valid_m1_morph_request(const M1MorphRequest &request)
 {
+  const bool suffix_request =
+      request.opcode ==
+          KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M15_9_EMPTY &&
+      request.requested_mask ==
+          KLAYOUT_CUDA_SPATIAL_M1_MORPH_ALL_EMPTY;
+  const bool base_request =
+      request.opcode ==
+          KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY &&
+      request.requested_mask ==
+          KLAYOUT_CUDA_SPATIAL_M1_BASE_ALL_EMPTY;
   if (request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
       request.struct_size != sizeof(request) ||
-      request.opcode !=
-          KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M15_9_EMPTY ||
+      (!suffix_request && !base_request) ||
       request.option_flags !=
           KLAYOUT_CUDA_SPATIAL_M1_MORPH_QUALIFIED_OPTIONS ||
       request.format_version != 1 ||
       request.dbu_per_micron != 2000 ||
       request.device < 0 ||
-      request.requested_mask !=
-          KLAYOUT_CUDA_SPATIAL_M1_MORPH_ALL_EMPTY ||
       request.reserved0 ||
       request.context_reserved || request.cell_reserved ||
       request.polygon_reserved || request.edge_reserved ||
@@ -3760,6 +3770,337 @@ void validate_m1_morph_complete(
   }
 }
 
+struct M1BasePass
+{
+  mu::GpuUnionOutput output;
+  m2m::BaseWidthSpaceContext certificate;
+  std::uint64_t h2d_ns = 0;
+  std::uint64_t rectangle_expand_ns = 0;
+};
+
+M1BasePass run_m1_base_width_space_pass(
+    const Request &raw, const LoweredScene &lowered,
+    const M1MorphRequest &request, bool transpose)
+{
+  const __int128 packed_x_range =
+      transpose
+          ? static_cast<__int128>(raw.scene_top) -
+                raw.scene_bottom
+          : static_cast<__int128>(raw.scene_right) -
+                raw.scene_left;
+  const __int128 packed_y_range =
+      transpose
+          ? static_cast<__int128>(raw.scene_right) -
+                raw.scene_left
+          : static_cast<__int128>(raw.scene_top) -
+                raw.scene_bottom;
+  if (packed_x_range <= 0 || packed_y_range <= 0 ||
+      packed_x_range >
+          std::numeric_limits<std::uint32_t>::max() ||
+      packed_y_range >
+          std::numeric_limits<std::uint32_t>::max()) {
+    coordinate_decline(
+        transpose
+            ? "transposed raw M1 range exceeds exact packed-union capacity"
+            : "raw M1 range exceeds exact packed-union capacity");
+  }
+
+  ExpandedRectangles expanded =
+      expand_rectangles_resident(raw, lowered);
+  M1BasePass pass;
+  pass.h2d_ns = expanded.h2d_ns;
+  pass.rectangle_expand_ns = expanded.expand_ns;
+  if (expanded.status) {
+    throw M2Decline(
+        DeclineKind::coordinate,
+        expanded.status & kExpandTransformOverflow
+            ? KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW
+            : KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT,
+        "raw M1 device expansion failed its exact bounds gate");
+  }
+  if (transpose) {
+    const std::uint64_t transpose_ns =
+        transpose_m1_rectangles_resident(raw, &expanded);
+    if (!checked_add_u64(
+            pass.rectangle_expand_ns, transpose_ns,
+            &pass.rectangle_expand_ns)) {
+      throw std::runtime_error(
+          "raw M1 expansion/transpose timing overflow");
+    }
+    if (expanded.status) {
+      throw M2Decline(
+          DeclineKind::coordinate,
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT,
+          "raw M1 resident coordinate transpose failed its exact "
+          "bounds gate");
+    }
+  }
+
+  mu::GpuUnionLimits union_limits;
+  union_limits.max_rectangles = request.max_rectangles;
+  union_limits.max_x_slabs = request.max_x_slabs;
+  union_limits.max_memberships =
+      request.max_union_memberships;
+  union_limits.max_events = request.max_union_events;
+  union_limits.max_raw_segments =
+      request.max_union_raw_segments;
+  union_limits.max_segments = request.max_union_segments;
+  union_limits.max_slabs_per_rectangle =
+      request.max_slabs_per_rectangle;
+
+  mu::GpuUnionStripWindowLimits window_limits;
+  window_limits.max_window_events = std::min(
+      window_limits.max_window_events, union_limits.max_events);
+  window_limits.max_strip_intervals = std::min(
+      {kM1BaseMaxStitchedStripIntervals,
+       union_limits.max_memberships,
+       union_limits.max_raw_segments / 2});
+  window_limits.max_windows = std::min(
+      window_limits.max_windows, union_limits.max_x_slabs);
+  window_limits.max_window_slabs =
+      static_cast<std::uint32_t>(std::min<std::uint64_t>(
+          window_limits.max_window_slabs,
+          union_limits.max_x_slabs));
+
+  pass.certificate.distance =
+      klayout_cuda::m1_width_space::
+          kQualifiedSceneCoordinateDistance;
+  pass.certificate.origin_x =
+      transpose ? raw.scene_bottom : raw.scene_left;
+  pass.certificate.origin_y =
+      transpose ? raw.scene_left : raw.scene_bottom;
+  pass.certificate.max_corner_endpoints =
+      request.max_union_segments;
+  pass.certificate.max_corner_pair_work =
+      request.max_union_events;
+  const mu::ResidentStripHook hook =
+      m2m::make_base_width_space_hook(&pass.certificate);
+  const double input_prepare_ms =
+      static_cast<double>(
+          pass.h2d_ns + pass.rectangle_expand_ns) /
+      1000000.0;
+  pass.output = mu::gpu_union_resident_windowed_strips(
+      std::move(expanded.rectangles),
+      transpose ? raw.scene_left : raw.scene_bottom,
+      transpose ? raw.scene_right : raw.scene_top,
+      union_limits, window_limits, raw.device,
+      input_prepare_ms, &hook);
+  const m2m::BaseWidthSpaceResult &certificate =
+      pass.certificate.result;
+  if (certificate.device_total_bytes) {
+    if (!pass.output.device_total_bytes ||
+        pass.output.device_total_bytes !=
+            certificate.device_total_bytes ||
+        !certificate.device_free_begin_bytes ||
+        !certificate.device_free_low_bytes ||
+        certificate.device_free_begin_bytes >
+            certificate.device_total_bytes ||
+        certificate.device_free_low_bytes >
+            certificate.device_free_begin_bytes) {
+      throw std::runtime_error(
+          "M1 base-width/space callback memory invariant");
+    }
+    pass.output.device_free_low_bytes =
+        std::min(
+            pass.output.device_free_low_bytes,
+            certificate.device_free_low_bytes);
+  }
+  return pass;
+}
+
+void validate_m1_base_pass_complete(
+    const M1MorphRequest &request,
+    const LoweredScene &lowered,
+    const M1BasePass &pass)
+{
+  const mu::GpuUnionOutput &output = pass.output;
+  const m2m::BaseWidthSpaceResult &certificate =
+      pass.certificate.result;
+  std::uint64_t expected_events = 0;
+  if (!pass.certificate.invoked ||
+      !output.resident_consumer_completed ||
+      output.resident_boundary_consumer_completed ||
+      !output.segments.empty() || output.raw_segments ||
+      output.digest || output.boundary_ms != 0.0 ||
+      output.d2h_ms != 0.0 ||
+      output.rectangle_count != lowered.flat_rectangles ||
+      output.rectangle_count < request.flat_polygon_count ||
+      output.rectangle_count > request.max_rectangles ||
+      !output.x_slabs ||
+      output.x_slabs > request.max_x_slabs ||
+      !output.memberships ||
+      output.memberships > request.max_union_memberships ||
+      !checked_multiply_u64(
+          output.memberships, 2, &expected_events) ||
+      output.event_count != expected_events ||
+      output.event_count > request.max_union_events ||
+      !output.strip_intervals ||
+      output.strip_intervals > output.memberships ||
+      certificate.slabs_checked != output.x_slabs ||
+      certificate.intervals_checked !=
+          output.strip_intervals ||
+      certificate.gaps_checked >
+          certificate.intervals_checked ||
+      certificate.width_violations >
+          certificate.intervals_checked ||
+      certificate.space_violations >
+          certificate.gaps_checked ||
+      !certificate.corner_endpoint_count ||
+      certificate.corner_endpoint_count >
+          request.max_union_segments ||
+      certificate.corner_pair_work >
+          request.max_union_events ||
+      certificate.corner_candidates >
+          certificate.corner_pair_work ||
+      !certificate.device_total_bytes ||
+      certificate.device_total_bytes !=
+          output.device_total_bytes ||
+      !certificate.device_free_begin_bytes ||
+      !certificate.device_free_low_bytes ||
+      certificate.device_free_begin_bytes >
+          certificate.device_total_bytes ||
+      certificate.device_free_low_bytes >
+          certificate.device_free_begin_bytes ||
+      output.device_free_low_bytes >
+          certificate.device_free_low_bytes ||
+      certificate.device_flags != 0 ||
+      !output.device_total_bytes ||
+      !output.device_free_begin_bytes ||
+      !output.device_free_low_bytes ||
+      output.device_free_begin_bytes >
+          output.device_total_bytes ||
+      output.device_free_low_bytes >
+          output.device_free_begin_bytes) {
+    throw std::runtime_error(
+        "M1 resident base-width/space completion invariant failed");
+  }
+}
+
+int run_m1_base_width_space_request(
+    const M1MorphRequest &request, M1MorphResult *result,
+    const Request &raw, const LoweredScene &lowered,
+    Clock::time_point total_begin)
+{
+  M1BasePass original =
+      run_m1_base_width_space_pass(
+          raw, lowered, request, false);
+  copy_m1_union_telemetry(original.output, result);
+  if (original.output.fallback) {
+    result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+    result->fallback_flags =
+        fallback_flags_for_union(original.output);
+    const std::string message =
+        "raw M1 base-width/space x pass: " +
+        original.output.message;
+    set_message(result, message.c_str());
+    result->total_ns = elapsed_ns(total_begin, Clock::now());
+    return result->status;
+  }
+  validate_m1_base_pass_complete(
+      request, lowered, original);
+
+  M1BasePass transposed =
+      run_m1_base_width_space_pass(
+          raw, lowered, request, true);
+  if (transposed.output.fallback) {
+    result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+    result->fallback_flags =
+        fallback_flags_for_union(transposed.output);
+    const std::string message =
+        "raw M1 base-width/space y pass: " +
+        transposed.output.message;
+    set_message(result, message.c_str());
+    result->total_ns = elapsed_ns(total_begin, Clock::now());
+    return result->status;
+  }
+  validate_m1_base_pass_complete(
+      request, lowered, transposed);
+
+  result->x_slab_count =
+      std::max(
+          original.output.x_slabs,
+          transposed.output.x_slabs);
+  result->union_membership_count =
+      std::max(
+          original.output.memberships,
+          transposed.output.memberships);
+  result->union_event_count =
+      std::max(
+          original.output.event_count,
+          transposed.output.event_count);
+  result->strip_interval_count =
+      std::max(
+          original.output.strip_intervals,
+          transposed.output.strip_intervals);
+  result->union_device_free_low_bytes =
+      std::min(
+          original.output.device_free_low_bytes,
+          transposed.output.device_free_low_bytes);
+  const std::uint64_t original_x_membership_ns =
+      milliseconds_to_ns(original.output.x_membership_ms);
+  const std::uint64_t transposed_x_membership_ns =
+      milliseconds_to_ns(transposed.output.x_membership_ms);
+  const std::uint64_t original_strip_scan_ns =
+      milliseconds_to_ns(original.output.strip_scan_ms);
+  const std::uint64_t transposed_strip_scan_ns =
+      milliseconds_to_ns(transposed.output.strip_scan_ms);
+  if (!checked_add_u64(
+          original.h2d_ns, transposed.h2d_ns,
+          &result->h2d_ns) ||
+      !checked_add_u64(
+          original.rectangle_expand_ns,
+          transposed.rectangle_expand_ns,
+          &result->rectangle_expand_ns) ||
+      !checked_add_u64(
+          original_x_membership_ns,
+          transposed_x_membership_ns,
+          &result->x_membership_ns) ||
+      !checked_add_u64(
+          original_strip_scan_ns,
+          transposed_strip_scan_ns,
+          &result->strip_scan_ns)) {
+    throw std::runtime_error(
+        "M1 base-width/space telemetry overflow");
+  }
+  const double certificate_ms =
+      original.certificate.result.elapsed_ms +
+      transposed.certificate.result.elapsed_ms;
+  result->morphology_ns =
+      milliseconds_to_ns(certificate_ms);
+
+  const bool width_violation =
+      original.certificate.result.width_violations ||
+      transposed.certificate.result.width_violations;
+  const bool space_violation =
+      original.certificate.result.space_violations ||
+      transposed.certificate.result.space_violations;
+  const bool corner_candidate =
+      original.certificate.result.corner_candidates ||
+      transposed.certificate.result.corner_candidates;
+  result->fallback_flags =
+      KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE;
+  result->device_flags = 0;
+  result->status = KLAYOUT_CUDA_SPATIAL_OK;
+  if (width_violation || space_violation || corner_candidate) {
+    result->certified_empty_mask = 0;
+    result->disposition =
+        KLAYOUT_CUDA_SPATIAL_M1_MORPH_NOT_EMPTY;
+    set_message(
+        result,
+        "exact raw M1 union has a possible base width/space violation");
+  } else {
+    result->certified_empty_mask =
+        KLAYOUT_CUDA_SPATIAL_M1_BASE_ALL_EMPTY;
+    result->disposition =
+        KLAYOUT_CUDA_SPATIAL_M1_MORPH_COMPLETE;
+    set_message(
+        result,
+        "complete exact raw M1 resident M1.1/M1.2 empty certificate");
+  }
+  result->total_ns = elapsed_ns(total_begin, Clock::now());
+  return result->status;
+}
+
 int run_m1_morph_request(
     const M1MorphRequest *request, M1MorphResult *result)
 {
@@ -3788,6 +4129,11 @@ int run_m1_morph_request(
     const LoweredScene lowered =
         validate_and_lower(raw, kM1RawDigestMagic);
     result->setup_ns = elapsed_ns(setup_begin, Clock::now());
+    if (request->opcode ==
+        KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY) {
+      return run_m1_base_width_space_request(
+          *request, result, raw, lowered, total_begin);
+    }
     const __int128 transposed_y_range =
         static_cast<__int128>(raw.scene_right) -
         raw.scene_left;

@@ -70,7 +70,10 @@ const uint64_t m1_morph_max_rectangles = UINT64_C (64000000);
 const uint64_t m1_morph_max_x_slabs = UINT64_C (32000000);
 const uint64_t m1_morph_max_union_memberships = UINT64_C (256000000);
 const uint64_t m1_morph_max_union_events = UINT64_C (512000000);
+const uint64_t m1_base_max_union_memberships = UINT64_C (1000000000);
+const uint64_t m1_base_max_union_events = UINT64_C (2000000000);
 const uint64_t m1_morph_max_union_raw_segments = UINT64_C (256000000);
+const uint64_t m1_base_max_union_raw_segments = UINT64_C (320000000);
 const uint64_t m1_morph_max_union_segments = UINT64_C (64000000);
 const uint64_t m1_morph_max_slabs_per_rectangle = UINT64_C (256);
 const uint64_t m1_morph_max_output_slabs = UINT64_C (1000000);
@@ -1841,10 +1844,30 @@ bool cuda_well_union_raw_manhattan_build_scene (
   return false;
 }
 
-bool cuda_m1_5_9_try_empty (const db::DeepLayer &raw_metal1)
+static bool cuda_m1_raw_resident_try_empty (
+  const db::DeepLayer &raw_metal1, bool base_width_space)
 {
+  // Keep the new raw M1.1/M1.2 certificate independently switchable from
+  // the established M1.5-.9 resident path.  Besides making deployment
+  // fail-safe, this permits same-binary A/B timing and report gates.
+  if (base_width_space &&
+      ! env_enabled ("KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE")) {
+    return false;
+  }
   const bool telemetry =
-    env_enabled ("KLAYOUT_CUDA_M1_5_9_TELEMETRY");
+    env_enabled (
+      base_width_space
+        ? "KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE_TELEMETRY"
+        : "KLAYOUT_CUDA_M1_5_9_TELEMETRY");
+  const auto resident_limit =
+    [base_width_space] (const char *suffix, uint64_t fallback) {
+      std::string name (
+        base_width_space
+          ? "KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE_"
+          : "KLAYOUT_CUDA_M1_5_9_");
+      name += suffix;
+      return env_u64 (name.c_str (), fallback);
+    };
   const std::chrono::steady_clock::time_point begin =
     std::chrono::steady_clock::now ();
   try {
@@ -1855,69 +1878,77 @@ bool cuda_m1_5_9_try_empty (const db::DeepLayer &raw_metal1)
     }
 
     CudaM1WidthSpaceSceneLimits scene_limits;
-    scene_limits.max_cells = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_CELLS",
+    scene_limits.max_cells = resident_limit (
+      "MAX_CELLS",
       scene_limits.max_cells);
-    scene_limits.max_contexts = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_CONTEXTS",
+    scene_limits.max_contexts = resident_limit (
+      "MAX_CONTEXTS",
       m1_morph_max_contexts);
-    scene_limits.max_stored_polygons = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_STORED_POLYGONS",
+    scene_limits.max_stored_polygons = resident_limit (
+      "MAX_STORED_POLYGONS",
       scene_limits.max_stored_polygons);
-    scene_limits.max_stored_edges = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_STORED_EDGES",
+    scene_limits.max_stored_edges = resident_limit (
+      "MAX_STORED_EDGES",
       scene_limits.max_stored_edges);
-    scene_limits.max_flat_polygons = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_FLAT_POLYGONS",
+    scene_limits.max_flat_polygons = resident_limit (
+      "MAX_FLAT_POLYGONS",
       m1_morph_max_rectangles);
-    scene_limits.max_flat_edges = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_FLAT_EDGES",
+    scene_limits.max_flat_edges = resident_limit (
+      "MAX_FLAT_EDGES",
       scene_limits.max_flat_edges);
 
-    const uint64_t max_rectangles = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_RECTANGLES",
+    const uint64_t max_rectangles = resident_limit (
+      "MAX_RECTANGLES",
       m1_morph_max_rectangles);
-    const uint64_t max_x_slabs = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_X_SLABS",
+    const uint64_t max_x_slabs = resident_limit (
+      "MAX_X_SLABS",
       m1_morph_max_x_slabs);
-    const uint64_t max_union_memberships = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_UNION_MEMBERSHIPS",
-      m1_morph_max_union_memberships);
-    const uint64_t max_union_events = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_UNION_EVENTS",
-      m1_morph_max_union_events);
-    const uint64_t max_union_raw_segments = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_UNION_RAW_SEGMENTS",
-      m1_morph_max_union_raw_segments);
-    const uint64_t max_union_segments = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_UNION_SEGMENTS",
+    const uint64_t max_union_memberships = resident_limit (
+      "MAX_UNION_MEMBERSHIPS",
+      base_width_space
+        ? m1_base_max_union_memberships
+        : m1_morph_max_union_memberships);
+    const uint64_t max_union_events = resident_limit (
+      "MAX_UNION_EVENTS",
+      base_width_space
+        ? m1_base_max_union_events
+        : m1_morph_max_union_events);
+    const uint64_t max_union_raw_segments = resident_limit (
+      "MAX_UNION_RAW_SEGMENTS",
+      base_width_space
+        ? m1_base_max_union_raw_segments
+        : m1_morph_max_union_raw_segments);
+    const uint64_t max_union_segments = resident_limit (
+      "MAX_UNION_SEGMENTS",
       m1_morph_max_union_segments);
-    const uint64_t max_slabs_per_rectangle = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_SLABS_PER_RECTANGLE",
-      m1_morph_max_slabs_per_rectangle);
-    const uint64_t max_morph_output_slabs = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_MORPH_OUTPUT_SLABS",
+    const uint64_t max_slabs_per_rectangle = resident_limit (
+      "MAX_SLABS_PER_RECTANGLE",
+      base_width_space
+        ? m1_morph_max_x_slabs
+        : m1_morph_max_slabs_per_rectangle);
+    const uint64_t max_morph_output_slabs = resident_limit (
+      "MAX_MORPH_OUTPUT_SLABS",
       m1_morph_max_output_slabs);
-    const uint64_t max_morph_output_intervals = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_MORPH_OUTPUT_INTERVALS",
+    const uint64_t max_morph_output_intervals = resident_limit (
+      "MAX_MORPH_OUTPUT_INTERVALS",
       m1_morph_max_output_intervals);
-    const uint64_t max_morph_raw_boundary_segments = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_MORPH_RAW_BOUNDARY_SEGMENTS",
+    const uint64_t max_morph_raw_boundary_segments = resident_limit (
+      "MAX_MORPH_RAW_BOUNDARY_SEGMENTS",
       m1_morph_max_raw_boundary_segments);
-    const uint64_t max_morph_boundary_segments = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_MORPH_BOUNDARY_SEGMENTS",
+    const uint64_t max_morph_boundary_segments = resident_limit (
+      "MAX_MORPH_BOUNDARY_SEGMENTS",
       m1_morph_max_boundary_segments);
-    const uint64_t max_morph_source_visits_per_pass = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_MORPH_SOURCE_VISITS_PER_PASS",
+    const uint64_t max_morph_source_visits_per_pass = resident_limit (
+      "MAX_MORPH_SOURCE_VISITS_PER_PASS",
       m1_morph_max_source_visits_per_pass);
-    const uint64_t max_morph_source_visits_per_band = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_MORPH_SOURCE_VISITS_PER_BAND",
+    const uint64_t max_morph_source_visits_per_band = resident_limit (
+      "MAX_MORPH_SOURCE_VISITS_PER_BAND",
       m1_morph_max_source_visits_per_band);
-    const uint64_t max_morph_long_segments = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_MORPH_LONG_SEGMENTS",
+    const uint64_t max_morph_long_segments = resident_limit (
+      "MAX_MORPH_LONG_SEGMENTS",
       m1_morph_max_long_segments);
-    const uint64_t max_morph_active_slabs = env_u64 (
-      "KLAYOUT_CUDA_M1_5_9_MAX_MORPH_ACTIVE_SLABS",
+    const uint64_t max_morph_active_slabs = resident_limit (
+      "MAX_MORPH_ACTIVE_SLABS",
       m1_morph_max_active_slabs);
     const uint64_t device =
       env_u64 ("KLAYOUT_CUDA_SPATIAL_DEVICE", 0);
@@ -1947,7 +1978,9 @@ bool cuda_m1_5_9_try_empty (const db::DeepLayer &raw_metal1)
           std::numeric_limits<uint32_t>::max () ||
         device > uint64_t (std::numeric_limits<int32_t>::max ())) {
       throw M1WidthSpaceDecline (
-        "an M1.5-.9 capacity or device is invalid");
+        base_width_space
+          ? "an M1.1/M1.2 raw-union capacity or device is invalid"
+          : "an M1.5-.9 capacity or device is invalid");
     }
 
     CudaRawManhattanScene scene;
@@ -1965,7 +1998,9 @@ bool cuda_m1_5_9_try_empty (const db::DeepLayer &raw_metal1)
     request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
     request.struct_size = sizeof (request);
     request.opcode =
-      KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M15_9_EMPTY;
+      base_width_space
+        ? KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY
+        : KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M15_9_EMPTY;
     request.option_flags =
       KLAYOUT_CUDA_SPATIAL_M1_MORPH_QUALIFIED_OPTIONS;
     request.format_version = scene.format_version;
@@ -1973,7 +2008,9 @@ bool cuda_m1_5_9_try_empty (const db::DeepLayer &raw_metal1)
     request.root_cell = scene.root_cell;
     request.device = int32_t (device);
     request.requested_mask =
-      KLAYOUT_CUDA_SPATIAL_M1_MORPH_ALL_EMPTY;
+      base_width_space
+        ? KLAYOUT_CUDA_SPATIAL_M1_BASE_ALL_EMPTY
+        : KLAYOUT_CUDA_SPATIAL_M1_MORPH_ALL_EMPTY;
     request.contexts = scene.contexts.data ();
     request.context_count = scene.contexts.size ();
     request.context_record_bytes = sizeof (CudaM1WidthSpaceContext);
@@ -2036,7 +2073,10 @@ bool cuda_m1_5_9_try_empty (const db::DeepLayer &raw_metal1)
     const std::chrono::steady_clock::time_point done =
       std::chrono::steady_clock::now ();
     if (telemetry) {
-      tl::info << "CUDA M1.5-.9 exact live lowering:"
+      tl::info
+               << (base_width_space
+                     ? "CUDA M1.1/M1.2 raw-union exact live lowering:"
+                     : "CUDA M1.5-.9 exact live lowering:")
                << " outcome="
                << (attempt.disposition ==
                      db::CudaM1ResidentMorphologyAttempt::CertifiedEmpty
@@ -2070,7 +2110,10 @@ bool cuda_m1_5_9_try_empty (const db::DeepLayer &raw_metal1)
   } catch (const std::exception &ex) {
     if (telemetry) {
       try {
-        tl::info << "CUDA M1.5-.9 exact live lowering:"
+        tl::info
+                 << (base_width_space
+                       ? "CUDA M1.1/M1.2 raw-union exact live lowering:"
+                       : "CUDA M1.5-.9 exact live lowering:")
                  << " outcome=cpu-fallback digest=unavailable"
                  << " message=" << ex.what ();
       } catch (...) {
@@ -2080,7 +2123,10 @@ bool cuda_m1_5_9_try_empty (const db::DeepLayer &raw_metal1)
   } catch (...) {
     if (telemetry) {
       try {
-        tl::info << "CUDA M1.5-.9 exact live lowering:"
+        tl::info
+                 << (base_width_space
+                       ? "CUDA M1.1/M1.2 raw-union exact live lowering:"
+                       : "CUDA M1.5-.9 exact live lowering:")
                  << " outcome=cpu-fallback digest=unavailable"
                  << " message=unknown exception";
       } catch (...) {
@@ -2089,6 +2135,17 @@ bool cuda_m1_5_9_try_empty (const db::DeepLayer &raw_metal1)
     }
   }
   return false;
+}
+
+bool cuda_m1_5_9_try_empty (const db::DeepLayer &raw_metal1)
+{
+  return cuda_m1_raw_resident_try_empty (raw_metal1, false);
+}
+
+bool cuda_m1_raw_width_space_try_empty (
+  const db::DeepLayer &raw_metal1)
+{
+  return cuda_m1_raw_resident_try_empty (raw_metal1, true);
 }
 
 bool cuda_m1_width_space_try_empty (

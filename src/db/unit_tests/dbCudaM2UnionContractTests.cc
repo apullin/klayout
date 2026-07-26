@@ -212,6 +212,32 @@ struct M1MorphologyContractFixture
     result.d2h_ns = 0;
     result.total_ns = 100;
   }
+
+  void select_base_width_space ()
+  {
+    request.opcode =
+      KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY;
+    request.requested_mask =
+      KLAYOUT_CUDA_SPATIAL_M1_BASE_ALL_EMPTY;
+    result.opcode = request.opcode;
+    result.requested_mask = request.requested_mask;
+    result.certified_empty_mask = request.requested_mask;
+    result.erode89_output_interval_count = 0;
+    result.erode89_source_visit_count = 0;
+    result.dilate90_output_interval_count = 0;
+    result.dilate90_source_visit_count = 0;
+    result.boundary_source_visit_count = 0;
+    result.erode269_source_visit_count = 0;
+    result.f90_boundary_segment_count = 0;
+    result.f90_long_segment_count = 0;
+    result.f90_space_pair_count = 0;
+    result.f90_space_violation_count = 0;
+    result.f90_space_uncertain_count = 0;
+    result.f270_eroded_interval_count = 0;
+    result.morph_device_total_bytes = 0;
+    result.morph_device_free_begin_bytes = 0;
+    result.morph_device_free_low_bytes = 0;
+  }
 };
 
 static_assert (
@@ -621,4 +647,58 @@ TEST(15_M1MorphologyMemoryAndTimingFailClosed)
     error,
     "CUDA M1 resident morphology backend returned impossible timing "
     "telemetry");
+}
+
+TEST(16_M1BaseWidthSpaceOpcodeAndDisposition)
+{
+  std::string error;
+
+  M1MorphologyContractFixture complete;
+  complete.select_base_width_space ();
+  EXPECT_EQ (
+    db::cuda_spatial_validate_m1_resident_morphology_result (
+      complete.request, complete.result,
+      KLAYOUT_CUDA_SPATIAL_OK, &error),
+    true);
+  EXPECT_EQ (error, "");
+
+  M1MorphologyContractFixture positive;
+  positive.select_base_width_space ();
+  positive.result.disposition =
+    KLAYOUT_CUDA_SPATIAL_M1_MORPH_NOT_EMPTY;
+  positive.result.certified_empty_mask = 0;
+  EXPECT_EQ (
+    db::cuda_spatial_validate_m1_resident_morphology_result (
+      positive.request, positive.result,
+      KLAYOUT_CUDA_SPATIAL_OK, &error),
+    true);
+
+  M1MorphologyContractFixture suffix_counter;
+  suffix_counter.select_base_width_space ();
+  suffix_counter.result.f90_boundary_segment_count = 1;
+  EXPECT_EQ (
+    db::cuda_spatial_validate_m1_resident_morphology_result (
+      suffix_counter.request, suffix_counter.result,
+      KLAYOUT_CUDA_SPATIAL_OK, &error),
+    false);
+  EXPECT_EQ (
+    error,
+    "CUDA M1 base width/space backend returned suffix counters");
+
+  M1MorphologyContractFixture wrong_mask;
+  wrong_mask.select_base_width_space ();
+  wrong_mask.request.requested_mask =
+    KLAYOUT_CUDA_SPATIAL_M1_MORPH_ALL_EMPTY;
+  wrong_mask.result.requested_mask =
+    wrong_mask.request.requested_mask;
+  wrong_mask.result.certified_empty_mask =
+    wrong_mask.request.requested_mask;
+  EXPECT_EQ (
+    db::cuda_spatial_validate_m1_resident_morphology_result (
+      wrong_mask.request, wrong_mask.result,
+      KLAYOUT_CUDA_SPATIAL_OK, &error),
+    false);
+  EXPECT_EQ (
+    error,
+    "host supplied an unqualified M1 resident morphology request");
 }

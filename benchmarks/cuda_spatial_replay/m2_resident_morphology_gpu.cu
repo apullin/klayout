@@ -13,6 +13,8 @@
 
 #include <cuda_runtime.h>
 
+#include <cub/block/block_scan.cuh>
+
 #include <thrust/count.h>
 #include <thrust/copy.h>
 #include <thrust/execution_policy.h>
@@ -28,6 +30,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <climits>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -414,6 +417,700 @@ enum SourceStatus : std::uint32_t
 
 using MorphLimits = morph::Limits;
 using DeviceBandView = morph::DeviceStripView;
+
+enum BaseWidthSpaceStatus : std::uint32_t
+{
+  kBaseWidthSpaceInvalidDistance = 1u << 0,
+  kBaseWidthSpaceInvalidInterval = 1u << 1,
+  kBaseWidthSpaceCounterOverflow = 1u << 2,
+  kBaseWidthSpaceEndpointCoordinate = 1u << 3,
+  kBaseWidthSpaceEndpointEmit = 1u << 4,
+  kBaseWidthSpaceCornerWorkCapacity = 1u << 5,
+};
+
+struct BaseWidthSpaceDeviceCounters
+{
+  unsigned long long gaps_checked;
+  unsigned long long width_violations;
+  unsigned long long space_violations;
+  unsigned long long corner_pair_work;
+  unsigned long long corner_candidates;
+};
+
+void sample_base_width_space_memory(
+    morph::BaseWidthSpaceResult *result)
+{
+  std::size_t free_bytes = 0;
+  std::size_t total_bytes = 0;
+  cuda_require(
+      cudaMemGetInfo(&free_bytes, &total_bytes),
+      "base width/space cudaMemGetInfo");
+  if (!result->device_total_bytes) {
+    result->device_total_bytes = total_bytes;
+    result->device_free_begin_bytes = free_bytes;
+    result->device_free_low_bytes = free_bytes;
+  } else {
+    if (result->device_total_bytes != total_bytes) {
+      throw std::runtime_error(
+          "base width/space device-memory total changed");
+    }
+    result->device_free_low_bytes =
+        std::min<std::uint64_t>(
+            result->device_free_low_bytes, free_bytes);
+  }
+}
+
+__device__ void base_width_space_add(
+    unsigned long long *value, unsigned long long increment,
+    std::uint32_t *status)
+{
+  const unsigned long long previous = atomicAdd(value, increment);
+  if (previous > ULLONG_MAX - increment) {
+    atomicOr(
+        status,
+        static_cast<std::uint32_t>(kBaseWidthSpaceCounterOverflow));
+  }
+}
+
+__global__ void scan_base_width_space_kernel(
+    DeviceBandView source, std::int64_t distance,
+    BaseWidthSpaceDeviceCounters *counters, std::uint32_t *status)
+{
+  if (distance != m1ws::kQualifiedSceneCoordinateDistance) {
+    if (!blockIdx.x && !threadIdx.x) {
+      atomicOr(
+          status,
+          static_cast<std::uint32_t>(kBaseWidthSpaceInvalidDistance));
+    }
+    return;
+  }
+
+  for (std::uint64_t slab =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       slab < source.x_slabs;
+       slab += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const std::uint64_t offset = source.slab_offsets[slab];
+    const std::uint32_t count = source.slab_counts[slab];
+    if (offset > source.interval_count ||
+        count > source.interval_count - offset) {
+      atomicOr(
+          status,
+          static_cast<std::uint32_t>(kBaseWidthSpaceInvalidInterval));
+      continue;
+    }
+
+    unsigned long long local_gaps = 0;
+    unsigned long long local_width_violations = 0;
+    unsigned long long local_space_violations = 0;
+    for (std::uint32_t local = 0; local < count; ++local) {
+      const StripInterval current = source.intervals[offset + local];
+      if (current.slab != slab || current.reserved != 0 ||
+          current.bottom >= current.top) {
+        atomicOr(
+            status,
+            static_cast<std::uint32_t>(kBaseWidthSpaceInvalidInterval));
+        continue;
+      }
+      const std::uint64_t thickness =
+          m1ws::detail::coordinate_gap(current.bottom, current.top);
+      local_width_violations +=
+          thickness <
+          static_cast<std::uint64_t>(distance);
+
+      if (local) {
+        const StripInterval previous =
+            source.intervals[offset + local - 1];
+        if (previous.slab != slab || previous.reserved != 0 ||
+            previous.bottom >= previous.top ||
+            previous.top >= current.bottom) {
+          atomicOr(
+              status,
+              static_cast<std::uint32_t>(
+                  kBaseWidthSpaceInvalidInterval));
+          continue;
+        }
+        ++local_gaps;
+        const std::uint64_t gap =
+            m1ws::detail::coordinate_gap(
+                previous.top, current.bottom);
+        local_space_violations +=
+            gap < static_cast<std::uint64_t>(distance);
+      }
+    }
+
+    if (local_gaps) {
+      base_width_space_add(
+          &counters->gaps_checked, local_gaps, status);
+    }
+    if (local_width_violations) {
+      base_width_space_add(
+          &counters->width_violations,
+          local_width_violations, status);
+    }
+    if (local_space_violations) {
+      base_width_space_add(
+          &counters->space_violations,
+          local_space_violations, status);
+    }
+  }
+}
+
+enum BaseBoundaryKind : std::uint32_t
+{
+  kBaseBoundaryBottom = 0,
+  kBaseBoundaryTop = 1,
+};
+
+struct alignas(16) BaseBoundaryEndpoint
+{
+  std::uint64_t cell_key;
+  std::int64_t x;
+  std::int64_t y;
+  std::uint32_t kind;
+  std::uint32_t reserved;
+};
+
+static_assert(
+    sizeof(BaseBoundaryEndpoint) == 32,
+    "unexpected base-boundary endpoint padding");
+
+__device__ bool slab_has_base_boundary(
+    DeviceBandView source, std::uint32_t slab, std::int64_t coordinate,
+    BaseBoundaryKind kind)
+{
+  const std::uint64_t offset = source.slab_offsets[slab];
+  const std::uint32_t count = source.slab_counts[slab];
+  std::uint32_t first = 0;
+  std::uint32_t last = count;
+  while (first < last) {
+    const std::uint32_t middle = first + (last - first) / 2;
+    const StripInterval interval =
+        source.intervals[offset + middle];
+    const std::int64_t value =
+        kind == kBaseBoundaryBottom
+            ? interval.bottom
+            : interval.top;
+    if (value < coordinate) {
+      first = middle + 1;
+    } else {
+      last = middle;
+    }
+  }
+  if (first >= count) return false;
+  const StripInterval interval =
+      source.intervals[offset + first];
+  return (kind == kBaseBoundaryBottom
+              ? interval.bottom
+              : interval.top) == coordinate;
+}
+
+__device__ std::uint32_t base_boundary_endpoint_mask(
+    DeviceBandView source, std::uint64_t index)
+{
+  const StripInterval interval = source.intervals[index];
+  const std::uint32_t slab = interval.slab;
+  std::uint32_t mask = 0;
+  if (!slab ||
+      !slab_has_base_boundary(
+          source, slab - 1, interval.bottom,
+          kBaseBoundaryBottom)) {
+    mask |= 1u << 0;
+  }
+  if (slab + 1 == source.x_slabs ||
+      !slab_has_base_boundary(
+          source, slab + 1, interval.bottom,
+          kBaseBoundaryBottom)) {
+    mask |= 1u << 1;
+  }
+  if (!slab ||
+      !slab_has_base_boundary(
+          source, slab - 1, interval.top,
+          kBaseBoundaryTop)) {
+    mask |= 1u << 2;
+  }
+  if (slab + 1 == source.x_slabs ||
+      !slab_has_base_boundary(
+          source, slab + 1, interval.top,
+          kBaseBoundaryTop)) {
+    mask |= 1u << 3;
+  }
+  return mask;
+}
+
+__global__ void count_base_boundary_endpoints_kernel(
+    DeviceBandView source, unsigned long long *endpoint_count)
+{
+  __shared__ unsigned long long block_counts[kThreads];
+  unsigned long long local_count = 0;
+  for (std::uint64_t index =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       index < source.interval_count;
+       index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    local_count += static_cast<unsigned long long>(
+        __popc(base_boundary_endpoint_mask(source, index)));
+  }
+  block_counts[threadIdx.x] = local_count;
+  __syncthreads();
+  for (std::uint32_t offset = kThreads / 2; offset; offset /= 2) {
+    if (threadIdx.x < offset) {
+      block_counts[threadIdx.x] +=
+          block_counts[threadIdx.x + offset];
+    }
+    __syncthreads();
+  }
+  if (!threadIdx.x && block_counts[0]) {
+    atomicAdd(endpoint_count, block_counts[0]);
+  }
+}
+
+__device__ BaseBoundaryEndpoint make_base_boundary_endpoint(
+    DeviceBandView source, const StripInterval &interval,
+    std::uint32_t bit, std::int64_t origin_x,
+    std::int64_t origin_y, std::int64_t distance,
+    std::uint32_t *status)
+{
+  BaseBoundaryEndpoint endpoint{};
+  endpoint.x =
+      bit & 1u ? source.xs[interval.slab + 1]
+               : source.xs[interval.slab];
+  endpoint.y =
+      bit >= 2 ? interval.top : interval.bottom;
+  endpoint.kind =
+      bit >= 2 ? kBaseBoundaryTop : kBaseBoundaryBottom;
+
+  const std::uint64_t x_key =
+      m1ws::detail::ordered_key(endpoint.x);
+  const std::uint64_t y_key =
+      m1ws::detail::ordered_key(endpoint.y);
+  const std::uint64_t origin_x_key =
+      m1ws::detail::ordered_key(origin_x);
+  const std::uint64_t origin_y_key =
+      m1ws::detail::ordered_key(origin_y);
+  if (distance <= 0 || x_key < origin_x_key ||
+      y_key < origin_y_key ||
+      x_key - origin_x_key > UINT32_MAX ||
+      y_key - origin_y_key > UINT32_MAX) {
+    atomicOr(
+        status,
+        static_cast<std::uint32_t>(
+            kBaseWidthSpaceEndpointCoordinate));
+    return endpoint;
+  }
+  const std::uint32_t cell_x = static_cast<std::uint32_t>(
+      (x_key - origin_x_key) /
+      static_cast<std::uint64_t>(distance));
+  const std::uint32_t cell_y = static_cast<std::uint32_t>(
+      (y_key - origin_y_key) /
+      static_cast<std::uint64_t>(distance));
+  endpoint.cell_key =
+      (static_cast<std::uint64_t>(cell_x) << 32) | cell_y;
+  return endpoint;
+}
+
+__global__ void emit_base_boundary_endpoints_kernel(
+    DeviceBandView source, std::int64_t origin_x,
+    std::int64_t origin_y, std::int64_t distance,
+    BaseBoundaryEndpoint *endpoints,
+    std::uint64_t endpoint_capacity,
+    unsigned long long *emitted, std::uint32_t *status)
+{
+  using BlockScan = cub::BlockScan<std::uint32_t, kThreads>;
+  __shared__ typename BlockScan::TempStorage scan_storage;
+  __shared__ unsigned long long block_base;
+
+  const std::uint64_t first =
+      static_cast<std::uint64_t>(blockIdx.x) * blockDim.x;
+  const std::uint64_t stride =
+      static_cast<std::uint64_t>(blockDim.x) * gridDim.x;
+  for (std::uint64_t base = first; base < source.interval_count;
+       base += stride) {
+    const std::uint64_t index = base + threadIdx.x;
+    const bool active = index < source.interval_count;
+    const std::uint32_t mask =
+        active ? base_boundary_endpoint_mask(source, index) : 0;
+    const std::uint32_t local_count = __popc(mask);
+    std::uint32_t local_offset = 0;
+    std::uint32_t block_total = 0;
+    BlockScan(scan_storage).ExclusiveSum(
+        local_count, local_offset, block_total);
+    if (!threadIdx.x) {
+      block_base = atomicAdd(
+          emitted,
+          static_cast<unsigned long long>(block_total));
+      if (block_base > endpoint_capacity ||
+          block_total > endpoint_capacity - block_base) {
+        atomicOr(
+            status,
+            static_cast<std::uint32_t>(
+                kBaseWidthSpaceEndpointEmit));
+      }
+    }
+    __syncthreads();
+
+    if (active &&
+        block_base <= endpoint_capacity &&
+        local_count <= endpoint_capacity - block_base &&
+        local_offset <=
+            endpoint_capacity - block_base - local_count) {
+      const StripInterval interval = source.intervals[index];
+      std::uint64_t output = block_base + local_offset;
+      for (std::uint32_t bit = 0; bit < 4; ++bit) {
+        if (mask & (1u << bit)) {
+          endpoints[output++] = make_base_boundary_endpoint(
+              source, interval, bit, origin_x, origin_y,
+              distance, status);
+        }
+      }
+    }
+    __syncthreads();
+  }
+}
+
+struct BaseBoundaryEndpointLess
+{
+  MU_HD bool operator()(
+      const BaseBoundaryEndpoint &first,
+      const BaseBoundaryEndpoint &second) const
+  {
+    if (first.cell_key != second.cell_key) {
+      return first.cell_key < second.cell_key;
+    }
+    if (first.kind != second.kind) {
+      return first.kind < second.kind;
+    }
+    if (first.x != second.x) return first.x < second.x;
+    return first.y < second.y;
+  }
+};
+
+__device__ std::uint64_t lower_bound_base_endpoint_cell(
+    const BaseBoundaryEndpoint *endpoints,
+    std::uint64_t endpoint_count, std::uint64_t cell_key)
+{
+  std::uint64_t first = 0;
+  std::uint64_t last = endpoint_count;
+  while (first < last) {
+    const std::uint64_t middle = first + (last - first) / 2;
+    if (endpoints[middle].cell_key < cell_key) {
+      first = middle + 1;
+    } else {
+      last = middle;
+    }
+  }
+  return first;
+}
+
+__device__ std::uint64_t upper_bound_base_endpoint_cell(
+    const BaseBoundaryEndpoint *endpoints,
+    std::uint64_t endpoint_count, std::uint64_t cell_key)
+{
+  std::uint64_t first = 0;
+  std::uint64_t last = endpoint_count;
+  while (first < last) {
+    const std::uint64_t middle = first + (last - first) / 2;
+    if (cell_key < endpoints[middle].cell_key) {
+      last = middle;
+    } else {
+      first = middle + 1;
+    }
+  }
+  return first;
+}
+
+__device__ std::uint64_t lower_bound_base_endpoint_kind(
+    const BaseBoundaryEndpoint *endpoints, std::uint64_t begin,
+    std::uint64_t end, std::uint32_t kind)
+{
+  while (begin < end) {
+    const std::uint64_t middle = begin + (end - begin) / 2;
+    if (endpoints[middle].kind < kind) {
+      begin = middle + 1;
+    } else {
+      end = middle;
+    }
+  }
+  return begin;
+}
+
+__device__ void base_width_space_add_bounded(
+    unsigned long long *value, unsigned long long increment,
+    unsigned long long maximum, std::uint32_t *status)
+{
+  const unsigned long long previous = atomicAdd(value, increment);
+  if (previous > ULLONG_MAX - increment ||
+      previous > maximum ||
+      increment > maximum - previous) {
+    atomicOr(
+        status,
+        static_cast<std::uint32_t>(
+            kBaseWidthSpaceCornerWorkCapacity));
+  }
+}
+
+__global__ void count_base_boundary_endpoint_pair_work_kernel(
+    const BaseBoundaryEndpoint *endpoints,
+    std::uint64_t endpoint_count, std::uint64_t max_pair_work,
+    BaseWidthSpaceDeviceCounters *counters, std::uint32_t *status)
+{
+  for (std::uint64_t index =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       index < endpoint_count;
+       index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const BaseBoundaryEndpoint endpoint = endpoints[index];
+    const std::uint32_t cell_x =
+        static_cast<std::uint32_t>(endpoint.cell_key >> 32);
+    const std::uint32_t cell_y =
+        static_cast<std::uint32_t>(endpoint.cell_key);
+    unsigned long long local_work = 0;
+    for (int x_delta = -1; x_delta <= 1; ++x_delta) {
+      if ((x_delta < 0 && !cell_x) ||
+          (x_delta > 0 && cell_x == UINT32_MAX)) {
+        continue;
+      }
+      const std::uint32_t neighbor_x =
+          static_cast<std::uint32_t>(
+              static_cast<std::int64_t>(cell_x) + x_delta);
+      for (int y_delta = -1; y_delta <= 1; ++y_delta) {
+        if ((y_delta < 0 && !cell_y) ||
+            (y_delta > 0 && cell_y == UINT32_MAX)) {
+          continue;
+        }
+        const std::uint32_t neighbor_y =
+            static_cast<std::uint32_t>(
+                static_cast<std::int64_t>(cell_y) + y_delta);
+        const std::uint64_t neighbor_key =
+            (static_cast<std::uint64_t>(neighbor_x) << 32) |
+            neighbor_y;
+        const std::uint64_t begin =
+            lower_bound_base_endpoint_cell(
+                endpoints, endpoint_count, neighbor_key);
+        const std::uint64_t end =
+            upper_bound_base_endpoint_cell(
+                endpoints, endpoint_count, neighbor_key);
+        const std::uint64_t top_begin =
+            lower_bound_base_endpoint_kind(
+                endpoints, begin, end, kBaseBoundaryTop);
+        const std::uint64_t opposite_begin =
+            endpoint.kind == kBaseBoundaryBottom ? top_begin : begin;
+        const std::uint64_t opposite_end =
+            endpoint.kind == kBaseBoundaryBottom ? end : top_begin;
+        const std::uint64_t first =
+            opposite_begin > index + 1 ? opposite_begin : index + 1;
+        if (first < opposite_end) {
+          local_work += opposite_end - first;
+        }
+      }
+    }
+    if (local_work) {
+      base_width_space_add_bounded(
+          &counters->corner_pair_work, local_work,
+          max_pair_work, status);
+    }
+  }
+}
+
+__global__ void scan_base_boundary_endpoint_pairs_kernel(
+    const BaseBoundaryEndpoint *endpoints,
+    std::uint64_t endpoint_count, std::int64_t distance,
+    BaseWidthSpaceDeviceCounters *counters, std::uint32_t *status)
+{
+  const std::uint64_t qualified_distance =
+      static_cast<std::uint64_t>(distance);
+  const std::uint64_t qualified_distance_squared =
+      qualified_distance * qualified_distance;
+  for (std::uint64_t index =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       index < endpoint_count;
+       index += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const BaseBoundaryEndpoint endpoint = endpoints[index];
+    const std::uint32_t cell_x =
+        static_cast<std::uint32_t>(endpoint.cell_key >> 32);
+    const std::uint32_t cell_y =
+        static_cast<std::uint32_t>(endpoint.cell_key);
+    unsigned long long local_candidates = 0;
+    for (int x_delta = -1; x_delta <= 1; ++x_delta) {
+      if ((x_delta < 0 && !cell_x) ||
+          (x_delta > 0 && cell_x == UINT32_MAX)) {
+        continue;
+      }
+      const std::uint32_t neighbor_x =
+          static_cast<std::uint32_t>(
+              static_cast<std::int64_t>(cell_x) + x_delta);
+      for (int y_delta = -1; y_delta <= 1; ++y_delta) {
+        if ((y_delta < 0 && !cell_y) ||
+            (y_delta > 0 && cell_y == UINT32_MAX)) {
+          continue;
+        }
+        const std::uint32_t neighbor_y =
+            static_cast<std::uint32_t>(
+                static_cast<std::int64_t>(cell_y) + y_delta);
+        const std::uint64_t neighbor_key =
+            (static_cast<std::uint64_t>(neighbor_x) << 32) |
+            neighbor_y;
+        const std::uint64_t begin =
+            lower_bound_base_endpoint_cell(
+                endpoints, endpoint_count, neighbor_key);
+        const std::uint64_t end =
+            upper_bound_base_endpoint_cell(
+                endpoints, endpoint_count, neighbor_key);
+        const std::uint64_t top_begin =
+            lower_bound_base_endpoint_kind(
+                endpoints, begin, end, kBaseBoundaryTop);
+        const std::uint64_t opposite_begin =
+            endpoint.kind == kBaseBoundaryBottom ? top_begin : begin;
+        const std::uint64_t opposite_end =
+            endpoint.kind == kBaseBoundaryBottom ? end : top_begin;
+        const std::uint64_t first =
+            opposite_begin > index + 1 ? opposite_begin : index + 1;
+        for (std::uint64_t other_index = first;
+             other_index < opposite_end; ++other_index) {
+          const BaseBoundaryEndpoint other =
+              endpoints[other_index];
+          const std::uint64_t x_gap =
+              m1ws::detail::coordinate_gap(
+                  endpoint.x, other.x);
+          const std::uint64_t y_gap =
+              m1ws::detail::coordinate_gap(
+                  endpoint.y, other.y);
+          if (x_gap >= qualified_distance ||
+              y_gap >= qualified_distance ||
+              (y_gap == 0 && x_gap != 0)) {
+            continue;
+          }
+          if (x_gap * x_gap + y_gap * y_gap <
+              qualified_distance_squared) {
+            ++local_candidates;
+          }
+        }
+      }
+    }
+    if (local_candidates) {
+      base_width_space_add(
+          &counters->corner_candidates,
+          local_candidates, status);
+    }
+  }
+}
+
+std::uint64_t certify_base_boundary_endpoints(
+    const DeviceBandView &source,
+    morph::BaseWidthSpaceContext &context,
+    cudaStream_t stream,
+    BaseWidthSpaceDeviceCounters *counters,
+    std::uint32_t *status)
+{
+  if (!context.max_corner_endpoints ||
+      !context.max_corner_pair_work) {
+    throw std::runtime_error(
+        "zero base-width/space corner capacity");
+  }
+  auto policy = thrust::cuda::par.on(stream);
+  thrust::device_vector<unsigned long long> endpoint_count_device(1);
+  thrust::fill(
+      policy, endpoint_count_device.begin(),
+      endpoint_count_device.end(), 0);
+  count_base_boundary_endpoints_kernel<<<
+      launch_blocks(source.interval_count), kThreads, 0, stream>>>(
+      source,
+      thrust::raw_pointer_cast(endpoint_count_device.data()));
+  cuda_require(
+      cudaGetLastError(), "count base boundary endpoints");
+  unsigned long long endpoint_count = 0;
+  cuda_require(
+      cudaMemcpyAsync(
+          &endpoint_count,
+          thrust::raw_pointer_cast(endpoint_count_device.data()),
+          sizeof(endpoint_count), cudaMemcpyDeviceToHost, stream),
+      "base boundary endpoint count D2H");
+  cuda_require(
+      cudaStreamSynchronize(stream),
+      "base boundary endpoint count synchronize");
+  if (!endpoint_count ||
+      endpoint_count > context.max_corner_endpoints) {
+    std::ostringstream message;
+    message << "base boundary endpoint capacity (observed="
+            << endpoint_count << ", maximum="
+            << context.max_corner_endpoints << ")";
+    throw std::runtime_error(message.str());
+  }
+
+  thrust::device_vector<BaseBoundaryEndpoint> endpoints(
+      endpoint_count);
+  thrust::device_vector<unsigned long long> emitted_device(1);
+  sample_base_width_space_memory(
+      &context.result);
+  thrust::fill(
+      policy, emitted_device.begin(), emitted_device.end(), 0);
+  emit_base_boundary_endpoints_kernel<<<
+      launch_blocks(source.interval_count), kThreads, 0, stream>>>(
+      source, context.origin_x, context.origin_y,
+      context.distance,
+      thrust::raw_pointer_cast(endpoints.data()),
+      endpoint_count,
+      thrust::raw_pointer_cast(emitted_device.data()), status);
+  cuda_require(
+      cudaGetLastError(), "emit base boundary endpoints");
+  unsigned long long emitted = 0;
+  cuda_require(
+      cudaMemcpyAsync(
+          &emitted,
+          thrust::raw_pointer_cast(emitted_device.data()),
+          sizeof(emitted), cudaMemcpyDeviceToHost, stream),
+      "base boundary endpoint emitted count D2H");
+  cuda_require(
+      cudaStreamSynchronize(stream),
+      "base boundary endpoint emit synchronize");
+  if (emitted != endpoint_count) {
+    throw std::runtime_error(
+        "base boundary endpoint emit census mismatch");
+  }
+  thrust::sort(
+      policy, endpoints.begin(), endpoints.end(),
+      BaseBoundaryEndpointLess{});
+  sample_base_width_space_memory(
+      &context.result);
+  count_base_boundary_endpoint_pair_work_kernel<<<
+      launch_blocks(endpoint_count), kThreads, 0, stream>>>(
+      thrust::raw_pointer_cast(endpoints.data()),
+      endpoint_count, context.max_corner_pair_work,
+      counters, status);
+  cuda_require(
+      cudaGetLastError(), "count base boundary endpoint pair work");
+  BaseWidthSpaceDeviceCounters preflight_counters{};
+  std::uint32_t preflight_status = 0;
+  cuda_require(
+      cudaMemcpyAsync(
+          &preflight_counters, counters,
+          sizeof(preflight_counters), cudaMemcpyDeviceToHost,
+          stream),
+      "base boundary pair-work preflight counters D2H");
+  cuda_require(
+      cudaMemcpyAsync(
+          &preflight_status, status, sizeof(preflight_status),
+          cudaMemcpyDeviceToHost, stream),
+      "base boundary pair-work preflight status D2H");
+  cuda_require(
+      cudaStreamSynchronize(stream),
+      "base boundary pair-work preflight synchronize");
+  if (preflight_status ||
+      preflight_counters.corner_pair_work >
+          context.max_corner_pair_work) {
+    throw std::runtime_error(
+        "base boundary endpoint pair-work capacity");
+  }
+  scan_base_boundary_endpoint_pairs_kernel<<<
+      launch_blocks(endpoint_count), kThreads, 0, stream>>>(
+      thrust::raw_pointer_cast(endpoints.data()),
+      endpoint_count, context.distance,
+      counters, status);
+  cuda_require(
+      cudaGetLastError(), "scan base boundary endpoint pairs");
+  return endpoint_count;
+}
 
 __global__ void validate_source_slab_ranges_kernel(
     DeviceBandView source, std::uint32_t *status)
@@ -1758,6 +2455,108 @@ LongSpaceCertificate certify_f90_long_edge_space(
         "invalid F90 long-edge certificate capacity");
   }
   return certify_f90_long_edge_space_impl(segments, max_segments);
+}
+
+void consume_base_width_space_hook(
+    cudaStream_t stream, const std::int64_t *xs,
+    std::uint32_t x_slabs,
+    const manhattan_union::StripInterval *intervals,
+    std::uint64_t interval_count,
+    const std::uint64_t *slab_offsets,
+    const std::uint32_t *slab_counts, void *opaque)
+{
+  auto *context = static_cast<BaseWidthSpaceContext *>(opaque);
+  if (!context || context->invoked ||
+      context->distance !=
+          m1_width_space::kQualifiedSceneCoordinateDistance) {
+    throw std::runtime_error(
+        "resident base-width/space hook state");
+  }
+  context->invoked = true;
+  const DeviceStripView source = {
+      xs, x_slabs, intervals, interval_count,
+      slab_offsets, slab_counts};
+  if (!source.xs || !source.x_slabs || !source.intervals ||
+      !source.interval_count || !source.slab_offsets ||
+      !source.slab_counts) {
+    throw std::runtime_error(
+        "invalid resident base-width/space strip view");
+  }
+
+  const auto begin = Clock::now();
+  validate_device_source(source, stream);
+  sample_base_width_space_memory(
+      &context->result);
+  auto policy = thrust::cuda::par.on(stream);
+  thrust::device_vector<BaseWidthSpaceDeviceCounters> counters(1);
+  thrust::device_vector<std::uint32_t> status(1);
+  thrust::fill(
+      policy, counters.begin(), counters.end(),
+      BaseWidthSpaceDeviceCounters{});
+  thrust::fill(policy, status.begin(), status.end(), 0);
+  scan_base_width_space_kernel<<<
+      launch_blocks(source.x_slabs), kThreads, 0, stream>>>(
+      source, context->distance,
+      thrust::raw_pointer_cast(counters.data()),
+      thrust::raw_pointer_cast(status.data()));
+  cuda_require(
+      cudaGetLastError(),
+      "scan resident base width/space");
+  const std::uint64_t corner_endpoint_count =
+      certify_base_boundary_endpoints(
+          source, *context, stream,
+          thrust::raw_pointer_cast(counters.data()),
+          thrust::raw_pointer_cast(status.data()));
+
+  BaseWidthSpaceDeviceCounters host_counters{};
+  cuda_require(
+      cudaMemcpyAsync(
+          &host_counters,
+          thrust::raw_pointer_cast(counters.data()),
+          sizeof(host_counters), cudaMemcpyDeviceToHost, stream),
+      "base width/space counters D2H");
+  const std::uint32_t host_status =
+      copy_device_status(status, stream);
+  cuda_require(
+      cudaStreamSynchronize(stream),
+      "base width/space synchronize");
+
+  context->result.slabs_checked = source.x_slabs;
+  context->result.intervals_checked = source.interval_count;
+  context->result.gaps_checked = host_counters.gaps_checked;
+  context->result.width_violations =
+      host_counters.width_violations;
+  context->result.space_violations =
+      host_counters.space_violations;
+  context->result.corner_endpoint_count =
+      corner_endpoint_count;
+  context->result.corner_pair_work =
+      host_counters.corner_pair_work;
+  context->result.corner_candidates =
+      host_counters.corner_candidates;
+  context->result.device_flags = host_status;
+  context->result.elapsed_ms =
+      elapsed_ms(begin, Clock::now());
+  if (host_status) {
+    throw std::runtime_error(
+        "resident base-width/space device invariant");
+  }
+}
+
+manhattan_union::ResidentStripHook make_base_width_space_hook(
+    BaseWidthSpaceContext *context)
+{
+  if (!context || context->invoked ||
+      context->distance !=
+          m1_width_space::kQualifiedSceneCoordinateDistance) {
+    throw std::runtime_error(
+        "invalid resident base-width/space hook context");
+  }
+  manhattan_union::ResidentStripHook hook;
+  hook.consume = consume_base_width_space_hook;
+  hook.context = context;
+  hook.stop_before_boundary = true;
+  return hook;
 }
 
 Result consume_f90_f270(cudaStream_t stream,

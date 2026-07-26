@@ -424,6 +424,18 @@ DB_PUBLIC bool cuda_m1_5_9_try_empty (
   const db::DeepLayer &raw_metal1);
 
 /**
+ * Try the exact raw-M1 / resident M1.1/M1.2 empty certificate.
+ *
+ * The backend constructs the exact Manhattan union and scans its canonical
+ * strips in both coordinate orientations.  True certifies both complete
+ * width and spacing rule universes empty without first constructing
+ * merged_deep_layer().  False is a normal decline and requires the literal
+ * historical merged-layer transaction.
+ */
+DB_PUBLIC bool cuda_m1_raw_width_space_try_empty (
+  const db::DeepLayer &raw_metal1);
+
+/**
  * Try the live atomic M1 width/spacing empty certificate.
  *
  * The build specification is validated again before any backend call.  True

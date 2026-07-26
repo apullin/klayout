@@ -1774,6 +1774,39 @@ not just wall time.
           specialization.  Evidence is retained under
           `/home/pullin/personal/klayout/.scratchpad/cuda-runs/`.
 
+        - [x] **Move the clean M1.1/.2 ownership boundary ahead of the CPU
+          merge:** the prior live CUDA transaction still paid roughly 44.7--
+          44.9 seconds to construct `merged_deep_layer()` before its fast
+          edge predicate.  A distinct default-off raw-M1 opcode now builds the
+          exact Manhattan union as bounded resident strips and certifies both
+          fixed 130-DBU Euclidean rules without materializing the union
+          boundary.  Original and transposed strip scans cover overlapping
+          projections; a bounded resident endpoint index conservatively
+          catches disjoint-projection diagonal pairs.  Any candidate,
+          capacity failure, unsupported coordinate range, or device invariant
+          retains the literal historical merged-layer transaction.
+
+          The integrity gate compares exact GPU endpoint counts with an
+          independent raster-derived boundary oracle over 17 directed and 32
+          randomized scenes, including strict 129/130 thresholds and diagonal
+          `(90,90)`, `(90,94)`, `(50,119)`, and `(50,120)` cases.  All 49
+          differentials and all 18 editable/non-editable ABI executions pass.
+          CUDA memcheck reports zero errors.  The production 256-Kbit scene
+          has 41,093,878 flat polygons and certifies clean with zero CPU merge
+          time.
+
+          The final same-binary integrity rerun, after adding the bounded
+          opposite-kind pair-work preflight and internal device-memory
+          low-water accounting, measured **57.457 -> 15.977 seconds:
+          41.480 real seconds / 72.194% less isolated-owner wall**
+          (`N=3+3`).  The raw path declines unless merged semantics are
+          requested, and its self-test exercises an intentional capacity
+          rejection.  Every report retained canonical
+          SHA-256
+          `8bb8f17de680d0b74e940e5a8ec3231a569f8e3057a6d6cde958992abfca4769`.
+          Evidence:
+          `.scratchpad/cuda-runs/m1-base-owner-ab3.izYIjW`.
+
       - [x] **Reuse the atomic M1-contact proof for CONTACT.1-.3 and
         METAL1.3:** commit `0c901b5` makes one stronger M1-containment,
         exact-cut, spacing, and enclosure certificate serve all four fixed

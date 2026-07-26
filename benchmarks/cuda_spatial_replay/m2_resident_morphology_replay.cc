@@ -27,6 +27,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <random>
 #include <set>
 #include <sstream>
@@ -473,6 +474,334 @@ void run_differential_gate(int device)
   std::cout << "M2_RESIDENT_MORPH_DIFFERENTIAL PASS checks=" << checks
             << " directed=" << morphology_fixtures().size()
             << " random=64\n";
+}
+
+struct BaseWidthSpaceOracle
+{
+  bool width_violation = false;
+  bool space_violation = false;
+  std::uint64_t horizontal_corner_candidates = 0;
+  std::uint64_t vertical_corner_candidates = 0;
+};
+
+struct BaseBoundaryEndpoint
+{
+  std::int64_t x;
+  std::int64_t y;
+  std::int32_t side;
+};
+
+std::uint64_t coordinate_gap(
+    std::int64_t first, std::int64_t second)
+{
+  const std::uint64_t first_key =
+      static_cast<std::uint64_t>(first) ^ (UINT64_C(1) << 63);
+  const std::uint64_t second_key =
+      static_cast<std::uint64_t>(second) ^ (UINT64_C(1) << 63);
+  return first_key < second_key ? second_key - first_key
+                                : first_key - second_key;
+}
+
+std::uint64_t count_raster_corner_candidates(
+    const std::vector<DirectedSegmentI64> &boundary,
+    SegmentAxis axis)
+{
+  std::vector<BaseBoundaryEndpoint> endpoints;
+  for (const DirectedSegmentI64 &segment : boundary) {
+    if (segment.axis != axis || segment.lo >= segment.hi ||
+        (segment.side != -1 && segment.side != 1)) {
+      continue;
+    }
+    if (axis == SegmentAxis::horizontal) {
+      endpoints.push_back(
+          {segment.lo, segment.fixed, segment.side});
+      endpoints.push_back(
+          {segment.hi, segment.fixed, segment.side});
+    } else {
+      endpoints.push_back(
+          {segment.fixed, segment.lo, segment.side});
+      endpoints.push_back(
+          {segment.fixed, segment.hi, segment.side});
+    }
+  }
+
+  constexpr std::uint64_t distance = 130;
+  constexpr std::uint64_t distance_squared = distance * distance;
+  std::uint64_t candidates = 0;
+  for (std::size_t first = 0; first < endpoints.size(); ++first) {
+    for (std::size_t second = first + 1;
+         second < endpoints.size(); ++second) {
+      const BaseBoundaryEndpoint &a = endpoints[first];
+      const BaseBoundaryEndpoint &b = endpoints[second];
+      if (a.side == b.side) continue;
+      const std::uint64_t x_gap = coordinate_gap(a.x, b.x);
+      const std::uint64_t y_gap = coordinate_gap(a.y, b.y);
+      const std::uint64_t perpendicular_gap =
+          axis == SegmentAxis::horizontal ? y_gap : x_gap;
+      const std::uint64_t projection_gap =
+          axis == SegmentAxis::horizontal ? x_gap : y_gap;
+      if (perpendicular_gap >= distance ||
+          projection_gap >= distance ||
+          (perpendicular_gap == 0 && projection_gap != 0)) {
+        continue;
+      }
+      if (perpendicular_gap * perpendicular_gap +
+              projection_gap * projection_gap <
+          distance_squared) {
+        ++candidates;
+      }
+    }
+  }
+  return candidates;
+}
+
+void scan_raster_orientation(
+    const Cells &cells, bool transpose,
+    BaseWidthSpaceOracle *oracle)
+{
+  if (!oracle || cells.empty()) return;
+  std::map<int, std::vector<int>> slices;
+  for (const Cell &cell : cells) {
+    const int x = transpose ? cell.second : cell.first;
+    const int y = transpose ? cell.first : cell.second;
+    slices[x].push_back(y);
+  }
+  constexpr int distance = 130;
+  for (auto &entry : slices) {
+    std::vector<int> &values = entry.second;
+    std::sort(values.begin(), values.end());
+    values.erase(
+        std::unique(values.begin(), values.end()), values.end());
+    std::size_t begin = 0;
+    while (begin < values.size()) {
+      std::size_t end = begin + 1;
+      while (end < values.size() &&
+             values[end] == values[end - 1] + 1) {
+        ++end;
+      }
+      const int run_low = values[begin];
+      const int run_high = values[end - 1] + 1;
+      oracle->width_violation |=
+          run_high - run_low < distance;
+      if (end < values.size()) {
+        oracle->space_violation |=
+            values[end] - run_high < distance;
+      }
+      begin = end;
+    }
+  }
+}
+
+morph::BaseWidthSpaceResult run_base_strip_pass(
+    const std::vector<RectI64> &rectangles, bool transpose,
+    int device,
+    std::uint64_t max_corner_pair_work =
+        UINT64_C(2000000000))
+{
+  std::vector<RectI64> oriented = rectangles;
+  if (transpose) {
+    for (RectI64 &rectangle : oriented) {
+      rectangle = {
+          rectangle.bottom, rectangle.left,
+          rectangle.top, rectangle.right,
+          rectangle.source_token, rectangle.context_token};
+    }
+  }
+  morph::BaseWidthSpaceContext context;
+  context.distance = 130;
+  context.max_corner_pair_work = max_corner_pair_work;
+  context.origin_x = oriented.front().left;
+  context.origin_y = oriented.front().bottom;
+  for (const RectI64 &rectangle : oriented) {
+    context.origin_x = std::min(context.origin_x, rectangle.left);
+    context.origin_y = std::min(context.origin_y, rectangle.bottom);
+  }
+  const ResidentStripHook hook =
+      morph::make_base_width_space_hook(&context);
+  GpuUnionLimits limits;
+  limits.max_slabs_per_rectangle = 4096;
+  const GpuUnionOutput output =
+      mu::gpu_union_host(oriented, limits, device, &hook);
+  if (output.fallback || !context.invoked ||
+      !output.resident_consumer_completed ||
+      context.result.device_flags) {
+    throw std::runtime_error(
+        "base width/space strip pass failed: " + output.message);
+  }
+  if (context.result.slabs_checked != output.x_slabs ||
+      context.result.intervals_checked !=
+          output.strip_intervals) {
+    throw std::runtime_error(
+        "base width/space strip census mismatch");
+  }
+  return context.result;
+}
+
+void require_base_pair_work_capacity(int device)
+{
+  const std::vector<RectI64> rectangle = {
+      {0, 0, 200, 200, 0, 0}};
+  try {
+    (void)run_base_strip_pass(
+        rectangle, false, device, 1);
+  } catch (const std::runtime_error &error) {
+    if (std::string(error.what()).find(
+            "base boundary endpoint pair-work capacity") !=
+        std::string::npos) {
+      return;
+    }
+    throw;
+  }
+  throw std::runtime_error(
+      "base corner pair-work capacity was not enforced");
+}
+
+void require_base_strip_case(
+    const std::string &name,
+    const std::vector<RectI64> &rectangles, int device)
+{
+  const Cells cells = rasterize(rectangles);
+  BaseWidthSpaceOracle expected;
+  scan_raster_orientation(cells, false, &expected);
+  scan_raster_orientation(cells, true, &expected);
+  const std::vector<DirectedSegmentI64> boundary =
+      raster_boundary(cells);
+  expected.horizontal_corner_candidates =
+      count_raster_corner_candidates(
+          boundary, SegmentAxis::horizontal);
+  expected.vertical_corner_candidates =
+      count_raster_corner_candidates(
+          boundary, SegmentAxis::vertical);
+  const morph::BaseWidthSpaceResult original =
+      run_base_strip_pass(rectangles, false, device);
+  const morph::BaseWidthSpaceResult transposed =
+      run_base_strip_pass(rectangles, true, device);
+  const bool actual_width =
+      original.width_violations ||
+      transposed.width_violations;
+  const bool actual_space =
+      original.space_violations ||
+      transposed.space_violations;
+  if (expected.width_violation != actual_width ||
+      expected.space_violation != actual_space ||
+      expected.horizontal_corner_candidates !=
+          original.corner_candidates ||
+      expected.vertical_corner_candidates !=
+          transposed.corner_candidates) {
+    std::ostringstream message;
+    message << name
+            << ": expected width=" << expected.width_violation
+            << " space=" << expected.space_violation
+            << " horizontal-corners="
+            << expected.horizontal_corner_candidates
+            << " vertical-corners="
+            << expected.vertical_corner_candidates
+            << " actual width=" << actual_width
+            << " space=" << actual_space
+            << " horizontal-corners="
+            << original.corner_candidates
+            << " vertical-corners="
+            << transposed.corner_candidates;
+    throw std::runtime_error(message.str());
+  }
+  if (!original.corner_endpoint_count ||
+      !transposed.corner_endpoint_count ||
+      original.corner_candidates > original.corner_pair_work ||
+      transposed.corner_candidates > transposed.corner_pair_work) {
+    throw std::runtime_error(
+        name + ": base corner-certificate census mismatch");
+  }
+}
+
+void run_base_width_space_strip_gate(int device)
+{
+  const auto rectangle = [](
+      std::int64_t left, std::int64_t bottom,
+      std::int64_t right, std::int64_t top) {
+    return RectI64{left, bottom, right, top, 0, 0};
+  };
+  const std::vector<
+      std::pair<std::string, std::vector<RectI64>>> directed = {
+      {"clean-square", {rectangle(0, 0, 200, 200)}},
+      {"horizontal-width-129", {rectangle(0, 0, 200, 129)}},
+      {"horizontal-width-130", {rectangle(0, 0, 200, 130)}},
+      {"vertical-width-129", {rectangle(0, 0, 129, 200)}},
+      {"vertical-width-130", {rectangle(0, 0, 130, 200)}},
+      {"horizontal-space-129",
+       {rectangle(0, 0, 200, 200),
+        rectangle(0, 329, 200, 529)}},
+      {"horizontal-space-130",
+       {rectangle(0, 0, 200, 200),
+        rectangle(0, 330, 200, 530)}},
+      {"vertical-space-129",
+       {rectangle(0, 0, 200, 200),
+        rectangle(329, 0, 529, 200)}},
+      {"vertical-space-130",
+       {rectangle(0, 0, 200, 200),
+        rectangle(330, 0, 530, 200)}},
+      {"overlap-union",
+       {rectangle(0, 0, 260, 200),
+        rectangle(100, 0, 360, 200)}},
+      {"notch-129",
+       {rectangle(0, 0, 500, 200),
+        rectangle(0, 200, 180, 500),
+        rectangle(309, 200, 500, 500)}},
+      {"notch-130",
+       {rectangle(0, 0, 500, 200),
+        rectangle(0, 200, 180, 500),
+        rectangle(310, 200, 500, 500)}},
+      {"diagonal-90-90-inside",
+       {rectangle(0, 0, 200, 200),
+        rectangle(290, 290, 490, 490)}},
+      {"diagonal-90-94-outside",
+       {rectangle(0, 0, 200, 200),
+        rectangle(290, 294, 490, 494)}},
+      {"diagonal-50-119-inside",
+       {rectangle(0, 0, 200, 200),
+        rectangle(250, 319, 450, 519)}},
+      {"diagonal-50-120-exact",
+       {rectangle(0, 0, 200, 200),
+        rectangle(250, 320, 450, 520)}},
+      {"negative-diagonal-90-90-inside",
+       {rectangle(-500, -500, -300, -300),
+        rectangle(-210, -210, -10, -10)}}};
+  std::uint64_t checks = 0;
+  for (const auto &fixture : directed) {
+    require_base_strip_case(
+        fixture.first, fixture.second, device);
+    ++checks;
+  }
+
+  std::mt19937 generator(0x4d315731);
+  std::uniform_int_distribution<int> coordinate(0, 300);
+  std::uniform_int_distribution<int> extent(1, 220);
+  std::uniform_int_distribution<int> count(1, 8);
+  for (int trial = 0; trial < 32; ++trial) {
+    std::vector<RectI64> rectangles;
+    const int rectangles_in_trial = count(generator);
+    for (int index = 0; index < rectangles_in_trial; ++index) {
+      const int left = coordinate(generator);
+      const int bottom = coordinate(generator);
+      rectangles.push_back(
+          rectangle(
+              left, bottom, left + extent(generator),
+              bottom + extent(generator)));
+    }
+    require_base_strip_case(
+        "base-random-" + std::to_string(trial),
+        rectangles, device);
+    ++checks;
+  }
+  if (checks != directed.size() + 32) {
+    throw std::runtime_error(
+        "base width/space strip check census mismatch");
+  }
+  require_base_pair_work_capacity(device);
+  std::cout << "M1_BASE_WIDTH_SPACE_STRIP_GATE PASS checks="
+            << checks << " directed=" << directed.size()
+            << " random=32 threshold_dbu=130"
+            << " endpoint_certificate=exact-threshold"
+            << " capacity_rejections=1\n";
 }
 
 void require_long_space_certificate(
@@ -1177,6 +1506,7 @@ int main(int argc, char **argv)
       run_morph_x_guard_gate(device);
       run_f90_long_space_certificate_gate();
       run_differential_gate(device);
+      run_base_width_space_strip_gate(device);
     } else {
       if (kact_path.empty() || gt90_path.empty()) {
         print_help(argv[0]);

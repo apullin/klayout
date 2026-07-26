@@ -1238,7 +1238,17 @@ klayout_cuda_spatial_release_m2_union_boundary_v1 (
  */
 enum klayout_cuda_spatial_m1_resident_morphology_opcode
 {
-  KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M15_9_EMPTY = 1
+  KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M15_9_EMPTY = 1,
+  /*
+   * Exact raw-M1 union followed by the fixed FreePDK45 M1.1/M1.2
+   * width/space empty certificate.  The backend scans the canonical strip
+   * representation in both coordinate orientations, so this opcode does not
+   * require or publish a materialized union boundary.  Result union censuses
+   * are the peak of the two independently capacity-bounded orientations;
+   * charged phase times cover both passes (and morphology is a named subset
+   * of strip-scan time rather than an additive component).
+   */
+  KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY = 2
 };
 
 enum klayout_cuda_spatial_m1_resident_morphology_rule
@@ -1247,10 +1257,15 @@ enum klayout_cuda_spatial_m1_resident_morphology_rule
   KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_6_EMPTY = 1u << 1,
   KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_7_EMPTY = 1u << 2,
   KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_8_EMPTY = 1u << 3,
-  KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_9_EMPTY = 1u << 4
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_9_EMPTY = 1u << 4,
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_1_EMPTY = 1u << 5,
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_2_EMPTY = 1u << 6
 };
 
 #define KLAYOUT_CUDA_SPATIAL_M1_MORPH_ALL_EMPTY ((1u << 5) - 1u)
+#define KLAYOUT_CUDA_SPATIAL_M1_BASE_ALL_EMPTY \
+  (KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_1_EMPTY | \
+   KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_2_EMPTY)
 
 enum klayout_cuda_spatial_m1_resident_morphology_option_flag
 {
