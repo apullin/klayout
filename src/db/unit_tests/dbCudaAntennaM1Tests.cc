@@ -11,6 +11,7 @@
 */
 
 #include "dbCudaAntennaM1.h"
+#include "dbCudaAntennaM1Oracle.h"
 
 #include "dbCell.h"
 #include "dbDeepShapeStore.h"
@@ -665,4 +666,526 @@ TEST(4_CaptureDigestAndParentSidecarFailClosedOnDrift)
     false);
   EXPECT_EQ (rebuilt.size (), size_t (1));
   EXPECT_EQ (rebuilt [0], uint32_t (77));
+}
+
+TEST(5_OracleCanonicalizesExactFlatTouchGraph)
+{
+  AntennaFixture fixture;
+  db::Cell &top = fixture.poly.initial_cell ();
+
+  top.shapes (fixture.poly.layer ()).insert (
+    db::Box (2000, 0, 2100, 100));
+  top.shapes (fixture.poly.layer ()).insert (
+    db::Box (2100, 100, 2200, 200));
+  top.shapes (fixture.poly.layer ()).insert (
+    db::Box (3000, 0, 3100, 100));
+  top.shapes (fixture.contact.layer ()).insert (
+    db::Box (3100, 0, 3200, 100));
+  top.shapes (fixture.metal1.layer ()).insert (
+    db::Box (3200, 100, 3300, 200));
+
+  db::CudaAntennaM1Capture capture;
+  EXPECT_EQ (
+    fixture.build (
+      db::CudaAntennaM1CaptureLimits (), capture, 0),
+    true);
+
+  db::CudaAntennaM1Oracle oracle;
+  std::string reason;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_cpu_oracle (
+      capture, db::CudaAntennaM1OracleLimits (),
+      oracle, &reason),
+    true);
+  EXPECT_EQ (reason, "");
+  EXPECT_EQ (oracle.context_count, uint64_t (1));
+  EXPECT_EQ (oracle.graph_node_count, uint64_t (8));
+  EXPECT_EQ (oracle.component_count, uint64_t (5));
+  EXPECT_EQ (oracle.canonical_root_count, uint64_t (5));
+  EXPECT_EQ (oracle.top_context_component_count, uint64_t (5));
+  EXPECT_EQ (oracle.graph_candidate_pair_count, uint64_t (20));
+  EXPECT_EQ (oracle.graph_edge_count, uint64_t (3));
+  EXPECT_EQ (oracle.annotation_candidate_pair_count, uint64_t (4));
+  EXPECT_EQ (oracle.gate_component_count, uint64_t (0));
+  EXPECT_EQ (oracle.diode_exempt_component_count, uint64_t (0));
+  EXPECT_EQ (oracle.gate_area_dbu2, uint64_t (0));
+  EXPECT_EQ (oracle.metal1_area_dbu2, uint64_t (22800));
+
+  const uint64_t labels [] = { 0, 1, 1, 3, 4, 3, 6, 3 };
+  EXPECT_EQ (
+    oracle.canonical_labels ==
+      std::vector<uint64_t> (labels, labels + 8),
+    true);
+  EXPECT_EQ (
+    oracle.domain_component_counts [db::CudaAntennaM1Poly],
+    uint64_t (3));
+  EXPECT_EQ (
+    oracle.domain_component_counts [db::CudaAntennaM1Contact],
+    uint64_t (2));
+  EXPECT_EQ (
+    oracle.domain_component_counts [db::CudaAntennaM1Metal1],
+    uint64_t (2));
+  EXPECT_EQ (oracle.relation_edge_counts [0], uint64_t (1));
+  EXPECT_EQ (oracle.relation_edge_counts [1], uint64_t (0));
+  EXPECT_EQ (oracle.relation_edge_counts [2], uint64_t (0));
+  EXPECT_EQ (oracle.relation_edge_counts [3], uint64_t (1));
+  EXPECT_EQ (oracle.relation_edge_counts [4], uint64_t (1));
+
+  db::CudaAntennaM1Oracle repeated;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_cpu_oracle (
+      capture, db::CudaAntennaM1OracleLimits (),
+      repeated, 0),
+    true);
+  EXPECT_EQ (
+    repeated.canonical_labels == oracle.canonical_labels, true);
+  EXPECT_EQ (
+    repeated.node_identity_digest == oracle.node_identity_digest,
+    true);
+  EXPECT_EQ (
+    repeated.partition_digest == oracle.partition_digest, true);
+  EXPECT_EQ (
+    repeated.connectivity_digest == oracle.connectivity_digest,
+    true);
+  EXPECT_EQ (
+    repeated.annotation_digest == oracle.annotation_digest, true);
+  EXPECT_EQ (repeated.oracle_digest == oracle.oracle_digest, true);
+  EXPECT_EQ (
+    db::cuda_antenna_m1_oracle_text (repeated) ==
+      db::cuda_antenna_m1_oracle_text (oracle),
+    true);
+  const std::string oracle_record =
+    db::cuda_antenna_m1_oracle_text (oracle);
+  EXPECT_EQ (
+    oracle_record.find (
+      "partition_sha256="
+      "564616099e6c478e3938fb1588760f3cffc03151c947dff3486c64c1a21d4526") !=
+      std::string::npos,
+    true);
+  EXPECT_EQ (
+    oracle_record.find (
+      "connectivity_sha256="
+      "7381e5d2740a219901650daaee8970470c502628d818bbf1e49c7fe16fbafb53") !=
+      std::string::npos,
+    true);
+  EXPECT_EQ (
+    oracle_record.find (
+      "oracle_sha256="
+      "87a81358eb9526d414f7c8bbaec2c3dd69001df2e463fb16ef252748cda64174") !=
+      std::string::npos,
+    true);
+
+  //  Annotation-only capture changes must not perturb the graph identity or
+  //  connectivity certificate consumed by a future GPU DSU comparison.
+  fixture.active.initial_cell ().shapes (
+    fixture.active.layer ()).insert (
+      db::Box (5000, 0, 5100, 100));
+  db::CudaAntennaM1Capture annotation_changed_capture;
+  EXPECT_EQ (
+    fixture.build (
+      db::CudaAntennaM1CaptureLimits (),
+      annotation_changed_capture, 0),
+    true);
+  db::CudaAntennaM1Oracle annotation_changed;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_cpu_oracle (
+      annotation_changed_capture,
+      db::CudaAntennaM1OracleLimits (),
+      annotation_changed, 0),
+    true);
+  EXPECT_EQ (
+    annotation_changed.node_identity_digest ==
+      oracle.node_identity_digest,
+    true);
+  EXPECT_EQ (
+    annotation_changed.connectivity_digest ==
+      oracle.connectivity_digest,
+    true);
+  EXPECT_EQ (
+    annotation_changed.partition_digest ==
+      oracle.partition_digest,
+    true);
+  EXPECT_EQ (
+    annotation_changed.annotation_digest ==
+      oracle.annotation_digest,
+    false);
+  EXPECT_EQ (
+    annotation_changed.oracle_digest == oracle.oracle_digest,
+    false);
+}
+
+TEST(6_OracleAnnotatesGateAreaAndFactorZeroDiodeBoundary)
+{
+  AntennaFixture fixture;
+  db::Cell &top = fixture.poly.initial_cell ();
+
+  top.shapes (fixture.poly.layer ()).insert (
+    db::Box (2000, 0, 2100, 100));
+  top.shapes (fixture.contact.layer ()).insert (
+    db::Box (2100, 0, 2200, 100));
+  top.shapes (fixture.metal1.layer ()).insert (
+    db::Box (2200, 0, 2300, 100));
+  top.shapes (fixture.active.layer ()).insert (
+    db::Box (2050, 0, 2150, 100));
+  top.shapes (fixture.nplus.layer ()).insert (
+    db::Box (2050, 0, 2150, 100));
+  top.shapes (fixture.nwell.layer ()).insert (
+    db::Box (2050, 0, 2100, 100));
+
+  //  Gate only touches at x=3100, so its positive-area annotation is empty.
+  top.shapes (fixture.poly.layer ()).insert (
+    db::Box (3000, 0, 3100, 100));
+  top.shapes (fixture.active.layer ()).insert (
+    db::Box (3100, 0, 3200, 100));
+
+  //  NPLUS only touches ACTIVE at x=4000, so this is not a diode.
+  top.shapes (fixture.active.layer ()).insert (
+    db::Box (3900, 0, 4000, 100));
+  top.shapes (fixture.nplus.layer ()).insert (
+    db::Box (4000, 0, 4100, 100));
+  top.shapes (fixture.contact.layer ()).insert (
+    db::Box (4000, 0, 4100, 100));
+
+  db::CudaAntennaM1Capture capture;
+  EXPECT_EQ (
+    fixture.build (
+      db::CudaAntennaM1CaptureLimits (), capture, 0),
+    true);
+  db::CudaAntennaM1Oracle oracle;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_cpu_oracle (
+      capture, db::CudaAntennaM1OracleLimits (), oracle, 0),
+    true);
+
+  EXPECT_EQ (oracle.graph_node_count, uint64_t (8));
+  EXPECT_EQ (oracle.component_count, uint64_t (6));
+  EXPECT_EQ (oracle.graph_candidate_pair_count, uint64_t (22));
+  EXPECT_EQ (oracle.graph_edge_count, uint64_t (2));
+  EXPECT_EQ (oracle.annotation_candidate_pair_count, uint64_t (10));
+  EXPECT_EQ (oracle.gate_component_count, uint64_t (1));
+  EXPECT_EQ (oracle.diode_exempt_component_count, uint64_t (1));
+  EXPECT_EQ (oracle.gate_area_dbu2, uint64_t (5000));
+  EXPECT_EQ (oracle.metal1_area_dbu2, uint64_t (22800));
+
+  const uint64_t labels [] = { 0, 1, 2, 3, 1, 5, 6, 1 };
+  EXPECT_EQ (
+    oracle.canonical_labels ==
+      std::vector<uint64_t> (labels, labels + 8),
+    true);
+}
+
+TEST(7_OraclePreservesParentChildAndSiblingOccurrenceIdentity)
+{
+  AntennaFixture fixture;
+  db::Layout &layout = fixture.poly.layout ();
+  db::Cell &top = fixture.poly.initial_cell ();
+
+  db::Cell &child_contact =
+    layout.cell (layout.add_cell ("ORACLE_CHILD_CONTACT"));
+  child_contact.shapes (fixture.contact.layer ()).insert (
+    db::Box (0, 0, 100, 100));
+  child_contact.shapes (fixture.metal1.layer ()).insert (
+    db::Box (0, 0, 100, 100));
+  top.shapes (fixture.poly.layer ()).insert (
+    db::Box (2000, 0, 2100, 100));
+  top.insert (
+    db::CellInstArray (
+      db::CellInst (child_contact.cell_index ()),
+      db::Trans (db::Vector (2100, 0))));
+
+  db::Cell &child_poly =
+    layout.cell (layout.add_cell ("ORACLE_CHILD_POLY"));
+  child_poly.shapes (fixture.poly.layer ()).insert (
+    db::Box (0, 0, 100, 100));
+  db::Cell &sibling_contact =
+    layout.cell (layout.add_cell ("ORACLE_SIBLING_CONTACT"));
+  sibling_contact.shapes (fixture.contact.layer ()).insert (
+    db::Box (0, 0, 100, 100));
+  sibling_contact.shapes (fixture.metal1.layer ()).insert (
+    db::Box (0, 0, 100, 100));
+  top.insert (
+    db::CellInstArray (
+      db::CellInst (child_poly.cell_index ()),
+      db::Trans (db::Vector (3000, 0))));
+  top.insert (
+    db::CellInstArray (
+      db::CellInst (sibling_contact.cell_index ()),
+      db::Trans (db::Vector (3100, 0))));
+
+  db::CudaAntennaM1Capture capture;
+  EXPECT_EQ (
+    fixture.build (
+      db::CudaAntennaM1CaptureLimits (), capture, 0),
+    true);
+  db::CudaAntennaM1Oracle oracle;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_cpu_oracle (
+      capture, db::CudaAntennaM1OracleLimits (), oracle, 0),
+    true);
+
+  EXPECT_EQ (oracle.context_count, uint64_t (4));
+  EXPECT_EQ (oracle.graph_node_count, uint64_t (9));
+  EXPECT_EQ (oracle.component_count, uint64_t (5));
+  EXPECT_EQ (oracle.top_context_component_count, uint64_t (4));
+  EXPECT_EQ (oracle.graph_candidate_pair_count, uint64_t (27));
+  EXPECT_EQ (oracle.graph_edge_count, uint64_t (4));
+  EXPECT_EQ (oracle.annotation_candidate_pair_count, uint64_t (9));
+  EXPECT_EQ (oracle.metal1_area_dbu2, uint64_t (32800));
+
+  const uint64_t labels [] = { 0, 1, 2, 3, 1, 2, 6, 1, 2 };
+  EXPECT_EQ (
+    oracle.canonical_labels ==
+      std::vector<uint64_t> (labels, labels + 9),
+    true);
+}
+
+TEST(8_OracleBindsTransformsRegularArraysAndCoincidentContexts)
+{
+  AntennaFixture fixture;
+  fixture.add_nested_eight_transform_hierarchy ();
+  db::Layout &layout = fixture.poly.layout ();
+  db::Cell &top = fixture.poly.initial_cell ();
+  db::Cell &array_child =
+    layout.cell (layout.add_cell ("ORACLE_ARRAY_CHILD"));
+  fixture.add_box_to_all (array_child, 0, 0, 20, 10);
+  top.insert (
+    db::CellInstArray (
+      db::CellInst (array_child.cell_index ()),
+      db::Trans (1, true, db::Vector (30000, 20000)),
+      db::Vector (100, 0), db::Vector (), 2, 1));
+
+  //  Identical transforms remain two distinct contexts and occurrence nodes,
+  //  even though exact geometry later joins their components.
+  top.insert (
+    db::CellInstArray (
+      db::CellInst (array_child.cell_index ()),
+      db::Trans (db::Vector (40000, 20000))));
+  top.insert (
+    db::CellInstArray (
+      db::CellInst (array_child.cell_index ()),
+      db::Trans (db::Vector (40000, 20000))));
+
+  db::CudaAntennaM1Capture capture;
+  EXPECT_EQ (
+    fixture.build (
+      db::CudaAntennaM1CaptureLimits (), capture, 0),
+    true);
+  db::CudaAntennaM1Oracle oracle;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_cpu_oracle (
+      capture, db::CudaAntennaM1OracleLimits (), oracle, 0),
+    true);
+
+  EXPECT_EQ (oracle.context_count, uint64_t (21));
+  EXPECT_EQ (oracle.graph_node_count, uint64_t (63));
+  EXPECT_EQ (oracle.component_count, uint64_t (22));
+  EXPECT_EQ (oracle.top_context_component_count, uint64_t (3));
+  EXPECT_EQ (
+    oracle.domain_node_counts [db::CudaAntennaM1Poly],
+    uint64_t (21));
+  EXPECT_EQ (
+    oracle.domain_node_counts [db::CudaAntennaM1Contact],
+    uint64_t (21));
+  EXPECT_EQ (
+    oracle.domain_node_counts [db::CudaAntennaM1Metal1],
+    uint64_t (21));
+
+  db::CudaAntennaM1Oracle repeated;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_cpu_oracle (
+      capture, db::CudaAntennaM1OracleLimits (), repeated, 0),
+    true);
+  EXPECT_EQ (repeated.oracle_digest == oracle.oracle_digest, true);
+  EXPECT_EQ (
+    repeated.canonical_labels == oracle.canonical_labels, true);
+}
+
+TEST(9_OracleLimitsAndCaptureDriftLeaveOutputUntouched)
+{
+  AntennaFixture fixture;
+  db::CudaAntennaM1Capture capture;
+  EXPECT_EQ (
+    fixture.build (
+      db::CudaAntennaM1CaptureLimits (), capture, 0),
+    true);
+
+  db::CudaAntennaM1Oracle sentinel;
+  sentinel.component_count = 777;
+  sentinel.canonical_labels.push_back (77);
+  std::string reason;
+
+  db::CudaAntennaM1OracleLimits graph_limit;
+  graph_limit.max_graph_nodes = 2;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_cpu_oracle (
+      capture, graph_limit, sentinel, &reason),
+    false);
+  EXPECT_EQ (sentinel.component_count, uint64_t (777));
+  EXPECT_EQ (sentinel.canonical_labels.size (), size_t (1));
+  EXPECT_EQ (
+    reason.find ("graph nodes") != std::string::npos, true);
+
+  db::CudaAntennaM1OracleLimits total_limit;
+  total_limit.max_total_flat_polygons = 5;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_cpu_oracle (
+      capture, total_limit, sentinel, &reason),
+    false);
+  EXPECT_EQ (sentinel.component_count, uint64_t (777));
+  EXPECT_EQ (
+    reason.find ("total flat polygons") != std::string::npos, true);
+
+  db::CudaAntennaM1OracleLimits edge_limit;
+  edge_limit.max_total_flat_edges = 1;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_cpu_oracle (
+      capture, edge_limit, sentinel, &reason),
+    false);
+  EXPECT_EQ (sentinel.component_count, uint64_t (777));
+  EXPECT_EQ (
+    reason.find ("total expanded edges") != std::string::npos,
+    true);
+
+  db::CudaAntennaM1OracleLimits graph_pair_limit;
+  graph_pair_limit.max_candidate_pairs = 1;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_cpu_oracle (
+      capture, graph_pair_limit, sentinel, &reason),
+    false);
+  EXPECT_EQ (sentinel.component_count, uint64_t (777));
+  EXPECT_EQ (
+    reason.find ("graph candidate-pair") != std::string::npos,
+    true);
+
+  db::CudaAntennaM1OracleLimits total_pair_limit;
+  total_pair_limit.max_candidate_pairs = 2;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_cpu_oracle (
+      capture, total_pair_limit, sentinel, &reason),
+    false);
+  EXPECT_EQ (sentinel.component_count, uint64_t (777));
+  EXPECT_EQ (
+    reason.find ("total candidate-pair") != std::string::npos,
+    true);
+
+  db::CudaAntennaM1Capture stale = capture;
+  stale.digest [0] ^= UINT8_C (1);
+  EXPECT_EQ (
+    db::cuda_antenna_m1_cpu_oracle (
+      stale, db::CudaAntennaM1OracleLimits (), sentinel, &reason),
+    false);
+  EXPECT_EQ (sentinel.component_count, uint64_t (777));
+  EXPECT_EQ (
+    reason.find ("capture is invalid") != std::string::npos, true);
+
+#if defined(HAVE_64BIT_COORD)
+  AntennaFixture wide;
+  wide.metal1.initial_cell ().shapes (
+    wide.metal1.layer ()).insert (
+      db::Box (
+        0, INT64_C (10000000000),
+        INT64_C (5000000000), INT64_C (15000000000)));
+  db::CudaAntennaM1Capture wide_capture;
+  EXPECT_EQ (
+    wide.build (
+      db::CudaAntennaM1CaptureLimits (), wide_capture, 0),
+    true);
+  EXPECT_EQ (
+    db::cuda_antenna_m1_cpu_oracle (
+      wide_capture, db::CudaAntennaM1OracleLimits (),
+      sentinel, &reason),
+    false);
+  EXPECT_EQ (sentinel.component_count, uint64_t (777));
+  EXPECT_EQ (
+    reason.find ("M1 area exceeds uint64") != std::string::npos,
+    true);
+#endif
+}
+
+TEST(10_OracleFactorZeroDiodeAnnotatesButDoesNotUnionConductorRoots)
+{
+  AntennaFixture fixture;
+  db::Cell &top = fixture.poly.initial_cell ();
+
+  top.shapes (fixture.poly.layer ()).insert (
+    db::Box (1900, 0, 2000, 100));
+  top.shapes (fixture.contact.layer ()).insert (
+    db::Box (2000, 0, 2100, 100));
+  top.shapes (fixture.metal1.layer ()).insert (
+    db::Box (2000, 100, 2100, 200));
+
+  top.shapes (fixture.contact.layer ()).insert (
+    db::Box (2400, 0, 2500, 100));
+  top.shapes (fixture.poly.layer ()).insert (
+    db::Box (2500, 0, 2600, 100));
+  top.shapes (fixture.metal1.layer ()).insert (
+    db::Box (2400, 100, 2500, 200));
+
+  //  One factor-zero diode bar touches both otherwise disconnected CONTACT
+  //  roots.  This conductor-only certificate marks both roots exempt but
+  //  deliberately leaves production's diode-mediated union out of its DSU.
+  top.shapes (fixture.active.layer ()).insert (
+    db::Box (2050, 0, 2450, 100));
+  top.shapes (fixture.nplus.layer ()).insert (
+    db::Box (2050, 0, 2450, 100));
+
+  db::CudaAntennaM1Capture capture;
+  EXPECT_EQ (
+    fixture.build (
+      db::CudaAntennaM1CaptureLimits (), capture, 0),
+    true);
+  db::CudaAntennaM1Oracle oracle;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_cpu_oracle (
+      capture, db::CudaAntennaM1OracleLimits (), oracle, 0),
+    true);
+
+  EXPECT_EQ (oracle.graph_node_count, uint64_t (9));
+  EXPECT_EQ (oracle.component_count, uint64_t (5));
+  EXPECT_EQ (oracle.graph_candidate_pair_count, uint64_t (27));
+  EXPECT_EQ (oracle.graph_edge_count, uint64_t (4));
+  EXPECT_EQ (oracle.annotation_candidate_pair_count, uint64_t (12));
+  EXPECT_EQ (oracle.gate_component_count, uint64_t (0));
+  EXPECT_EQ (oracle.diode_exempt_component_count, uint64_t (2));
+  EXPECT_EQ (oracle.metal1_area_dbu2, uint64_t (32800));
+
+  const uint64_t labels [] = { 0, 1, 2, 3, 1, 2, 6, 1, 2 };
+  EXPECT_EQ (
+    oracle.canonical_labels ==
+      std::vector<uint64_t> (labels, labels + 9),
+    true);
+}
+
+TEST(11_OracleGateEligibilityUsesProductionOneDbuSquaredBoundary)
+{
+  AntennaFixture fixture;
+  db::Cell &top = fixture.poly.initial_cell ();
+
+  top.shapes (fixture.poly.layer ()).insert (
+    db::Box (2000, 0, 2001, 1));
+  top.shapes (fixture.active.layer ()).insert (
+    db::Box (2000, 0, 2001, 1));
+  top.shapes (fixture.poly.layer ()).insert (
+    db::Box (3000, 0, 3002, 1));
+  top.shapes (fixture.active.layer ()).insert (
+    db::Box (3000, 0, 3002, 1));
+
+  db::CudaAntennaM1Capture capture;
+  EXPECT_EQ (
+    fixture.build (
+      db::CudaAntennaM1CaptureLimits (), capture, 0),
+    true);
+  db::CudaAntennaM1Oracle oracle;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_cpu_oracle (
+      capture, db::CudaAntennaM1OracleLimits (), oracle, 0),
+    true);
+
+  EXPECT_EQ (oracle.graph_node_count, uint64_t (5));
+  EXPECT_EQ (oracle.component_count, uint64_t (5));
+  EXPECT_EQ (oracle.graph_candidate_pair_count, uint64_t (7));
+  EXPECT_EQ (oracle.graph_edge_count, uint64_t (0));
+  EXPECT_EQ (oracle.annotation_candidate_pair_count, uint64_t (7));
+  EXPECT_EQ (oracle.gate_area_dbu2, uint64_t (3));
+  EXPECT_EQ (oracle.gate_component_count, uint64_t (1));
 }

@@ -38,6 +38,7 @@
 #include "dbCompoundOperation.h"
 #include "dbCudaActive3.h"
 #include "dbCudaAntennaM1.h"
+#include "dbCudaAntennaM1Oracle.h"
 #include "dbCudaImplant12.h"
 #include "dbCudaImplant15.h"
 #include "dbCudaM1WidthSpace.h"
@@ -1331,6 +1332,15 @@ static bool cuda_antenna_m1_capture_census_enabled ()
          std::strcmp (value, "off") != 0;
 }
 
+static bool cuda_antenna_m1_connectivity_oracle_enabled ()
+{
+  const char *value =
+    std::getenv ("KLAYOUT_CUDA_ANTENNA_M1_CONNECTIVITY_ORACLE");
+  return value && *value && std::strcmp (value, "0") != 0 &&
+         std::strcmp (value, "false") != 0 &&
+         std::strcmp (value, "off") != 0;
+}
+
 static bool cuda_poly34_host_decline (const char *reason)
 {
   try {
@@ -1382,13 +1392,19 @@ static bool cuda_antenna_m1_capture_census (
 {
   //  This hook is diagnostic only.  Even a complete capture returns false so
   //  no caller can mistake a census for an antenna-rule certificate.
-  if (! cuda_antenna_m1_capture_census_enabled ()) {
+  const bool census_requested =
+    cuda_antenna_m1_capture_census_enabled ();
+  const bool oracle_requested =
+    cuda_antenna_m1_connectivity_oracle_enabled ();
+  if (! census_requested && ! oracle_requested) {
     return false;
   }
 
   const std::chrono::steady_clock::time_point begin =
     std::chrono::steady_clock::now ();
   std::string reason;
+  bool census_complete = false;
+  bool oracle_complete = false;
   try {
     const db::Region *regions [db::CudaAntennaM1DomainCount] = {
       poly, active, nplus, nwell, contact, metal1
@@ -1432,7 +1448,7 @@ static bool cuda_antenna_m1_capture_census (
             deep [db::CudaAntennaM1Metal1]->deep_layer (),
             limits, capture, &reason)) {
       //  The exact decline reason is emitted below.
-    } else if (reason.empty ()) {
+    } else if (reason.empty () && census_requested) {
       db::CudaAntennaM1Census census;
       if (! db::cuda_antenna_m1_capture_census (
             capture, census, &reason)) {
@@ -1445,8 +1461,30 @@ static bool cuda_antenna_m1_capture_census (
           << " outcome=complete"
           << " capture_and_census_ms=" << double (elapsed_ns) * 1.0e-6
           << " " << db::cuda_antenna_m1_census_text (census);
-        return false;
+        census_complete = true;
       }
+    }
+    if (reason.empty () && oracle_requested) {
+      db::CudaAntennaM1Oracle result;
+      db::CudaAntennaM1OracleLimits oracle_limits;
+      if (! db::cuda_antenna_m1_cpu_oracle (
+            capture, oracle_limits, result, &reason)) {
+        //  The exact decline reason is emitted below.
+      } else {
+        const uint64_t elapsed_ns = cuda_m2_elapsed_ns (
+          begin, std::chrono::steady_clock::now ());
+        tl::info
+          << "CUDA antenna M1 pre-diode conductor oracle:"
+          << " outcome=complete"
+          << " capture_and_oracle_ms=" << double (elapsed_ns) * 1.0e-6
+          << " " << db::cuda_antenna_m1_oracle_text (result);
+        oracle_complete = true;
+      }
+    }
+    if (reason.empty () &&
+        (! census_requested || census_complete) &&
+        (! oracle_requested || oracle_complete)) {
+      return false;
     }
   } catch (const std::exception &ex) {
     try {
@@ -1461,11 +1499,20 @@ static bool cuda_antenna_m1_capture_census (
   try {
     const uint64_t elapsed_ns = cuda_m2_elapsed_ns (
       begin, std::chrono::steady_clock::now ());
-    tl::info
-      << "CUDA antenna M1 capture census:"
-      << " outcome=declined"
-      << " capture_and_census_ms=" << double (elapsed_ns) * 1.0e-6
-      << " reason=" << (reason.empty () ? "unknown" : reason);
+    if (census_requested && ! census_complete) {
+      tl::info
+        << "CUDA antenna M1 capture census:"
+        << " outcome=declined"
+        << " capture_and_census_ms=" << double (elapsed_ns) * 1.0e-6
+        << " reason=" << (reason.empty () ? "unknown" : reason);
+    }
+    if (oracle_requested && ! oracle_complete) {
+      tl::info
+        << "CUDA antenna M1 pre-diode conductor oracle:"
+        << " outcome=declined"
+        << " capture_and_oracle_ms=" << double (elapsed_ns) * 1.0e-6
+        << " reason=" << (reason.empty () ? "unknown" : reason);
+    }
   } catch (...) {
     //  Census telemetry must never alter the historical CPU antenna path.
   }
@@ -5153,7 +5200,11 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "This internal, environment-gated diagnostic serializes raw FreePDK45 "
     "POLY/ACTIVE/NPLUS/NWELL/CONTACT/M1 with a parent-aware common "
     "hierarchy, validates all digests and capacities, and emits one stable "
-    "census. It always returns false and is not an antenna-rule "
+    "census. KLAYOUT_CUDA_ANTENNA_M1_CONNECTIVITY_ORACLE instead reuses the "
+    "same capture to emit the bounded deterministic pre-diode "
+    "POLY/CONTACT/M1 conductor oracle. Factor-zero diode geometry annotates "
+    "every touched root but deliberately does not union roots through diode. "
+    "It always returns false and is not an antenna-rule "
     "certificate; the complete historical CPU path remains mandatory.\n"
   ) +
   method_ext (
