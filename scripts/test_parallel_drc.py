@@ -793,6 +793,30 @@ class LauncherTests(ReportFixture):
 
                 shard = runtime["drc_shard"]
                 print(f"fake shard {shard}")
+                def record_timeline(event):
+                    timeline = os.environ.get("FAKE_DRC_TIMELINE")
+                    if not timeline:
+                        return
+                    payload = json.dumps(
+                        {
+                            "event": event,
+                            "monotonic_ns": time.monotonic_ns(),
+                            "pid": os.getpid(),
+                            "shard": shard,
+                        },
+                        sort_keys=True,
+                    )
+                    descriptor = os.open(
+                        timeline,
+                        os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+                        0o600,
+                    )
+                    try:
+                        os.write(descriptor, (payload + "\\n").encode("utf-8"))
+                    finally:
+                        os.close(descriptor)
+
+                record_timeline("start")
                 if os.environ.get("FAKE_DRC_ENV_CAPTURE"):
                     capture = Path(os.environ["FAKE_DRC_ENV_CAPTURE"])
                     capture.mkdir(parents=True, exist_ok=True)
@@ -843,6 +867,7 @@ class LauncherTests(ReportFixture):
 
                 source = Path(os.environ["FAKE_DRC_REPORTS"]) / f"{shard}.lyrdb"
                 shutil.copyfile(source, runtime[output_key])
+                record_timeline("complete")
                 """
             ),
             encoding="utf-8",
@@ -1054,6 +1079,168 @@ class LauncherTests(ReportFixture):
             with self.subTest(key=key), self.assertRaises(argparse.ArgumentTypeError):
                 launcher.parse_rd(f"{key}=must-not-override")
 
+    def test_serialized_shard_validation_is_fail_closed(self) -> None:
+        output = self.directory / "serialized-validation.lyrdb"
+        cases = (
+            (
+                "single member",
+                ("--serialized-shard", "odd"),
+                "requires at least two names",
+            ),
+            (
+                "duplicate member",
+                (
+                    "--serialized-shard",
+                    "odd",
+                    "--serialized-shard",
+                    "odd",
+                ),
+                "duplicate --serialized-shard name",
+            ),
+            (
+                "unselected member",
+                (
+                    "--serialized-shard",
+                    "odd",
+                    "--serialized-shard",
+                    "not-selected",
+                ),
+                "not selected by --shard",
+            ),
+        )
+        for label, extra, diagnostic in cases:
+            with self.subTest(label=label):
+                args = launcher.parse_args(
+                    [*self.arguments(output, ("odd", "even")), *extra]
+                )
+                with self.assertRaisesRegex(ValueError, diagnostic):
+                    launcher.validate_args(args)
+
+    def test_serialized_shards_never_overlap_but_ordinary_work_does(self) -> None:
+        serialized_a = self.fake_reports / "serial-a.lyrdb"
+        serialized_b = self.fake_reports / "serial-b.lyrdb"
+        ordinary = self.fake_reports / "ordinary.lyrdb"
+        write_report(
+            serialized_a,
+            ["RULE.A"],
+            [self.items["A-1"], self.items["A-2"]],
+        )
+        write_report(serialized_b, ["RULE.B"], [self.items["B-1"]])
+        write_report(
+            ordinary,
+            ["RULE.C", "RULE.D"],
+            [self.items["C-1"], self.items["D-1"]],
+        )
+        manifest = self.directory / "serialized-manifest.json"
+        merger.create_manifest(
+            self.reference,
+            [
+                ("serial-a", serialized_a),
+                ("serial-b", serialized_b),
+                ("ordinary", ordinary),
+            ],
+            manifest,
+            deck_path=self.deck,
+        )
+
+        output = self.directory / "serialized-output.lyrdb"
+        timeline_path = self.directory / "serialized-timeline.jsonl"
+        arguments = self.arguments(
+            output,
+            ("serial-a", "serial-b", "ordinary"),
+            manifest=manifest,
+        )
+        arguments.extend(
+            (
+                "--serialized-shard",
+                "serial-a",
+                "--serialized-shard",
+                "serial-b",
+            )
+        )
+        stderr = io.StringIO()
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "FAKE_DRC_REPORTS": str(self.fake_reports),
+                    "FAKE_DRC_DELAY": "0.25",
+                    "FAKE_DRC_TIMELINE": str(timeline_path),
+                },
+            ),
+            contextlib.redirect_stderr(stderr),
+        ):
+            result = launcher.main(arguments)
+
+        self.assertEqual(result, 0, stderr.getvalue())
+        events = [
+            json.loads(line)
+            for line in timeline_path.read_text(encoding="utf-8").splitlines()
+        ]
+        event_times = {
+            (event["shard"], event["event"]): event["monotonic_ns"]
+            for event in events
+        }
+        self.assertEqual(
+            set(event_times),
+            {
+                ("serial-a", "start"),
+                ("serial-a", "complete"),
+                ("serial-b", "start"),
+                ("serial-b", "complete"),
+                ("ordinary", "start"),
+                ("ordinary", "complete"),
+            },
+        )
+
+        # The serialized members retain their command-line FIFO order and
+        # never overlap, while the later ordinary shard fills the second slot.
+        self.assertLessEqual(
+            event_times[("serial-a", "complete")],
+            event_times[("serial-b", "start")],
+        )
+        self.assertLess(
+            event_times[("ordinary", "start")],
+            event_times[("serial-a", "complete")],
+        )
+        self.assertLess(
+            event_times[("serial-a", "start")],
+            event_times[("ordinary", "complete")],
+        )
+
+        provenance = json.loads(
+            Path(f"{output}.metadata.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            provenance["configuration"]["serialized_shard_names"],
+            ["serial-a", "serial-b"],
+        )
+        shards = {shard["name"]: shard for shard in provenance["shards"]}
+        self.assertLessEqual(
+            shards["serial-a"]["completion_offset_seconds"],
+            shards["serial-b"]["start_offset_seconds"],
+        )
+        self.assertLess(
+            shards["ordinary"]["start_offset_seconds"],
+            shards["serial-a"]["completion_offset_seconds"],
+        )
+        self.assertLess(
+            shards["serial-a"]["start_offset_seconds"],
+            shards["ordinary"]["completion_offset_seconds"],
+        )
+        for shard in shards.values():
+            self.assertGreaterEqual(shard["start_offset_seconds"], 0)
+            self.assertGreaterEqual(
+                shard["completion_offset_seconds"],
+                shard["start_offset_seconds"],
+            )
+            self.assertAlmostEqual(
+                shard["completion_offset_seconds"]
+                - shard["start_offset_seconds"],
+                shard["wall_seconds"],
+                places=9,
+            )
+
     def test_fake_executable_success_runs_and_merges(self) -> None:
         output = self.directory / "launcher-merged.lyrdb"
         environment_capture = self.directory / "child-environments"
@@ -1170,6 +1357,9 @@ class LauncherTests(ReportFixture):
             "/profiles/train-%h-%p-%m.profraw",
         )
         self.assertEqual(provenance["configuration"]["shard_names"], ["even", "odd"])
+        self.assertEqual(
+            provenance["configuration"]["serialized_shard_names"], []
+        )
         self.assertEqual(provenance["configuration"]["jobs_effective"], 2)
         self.assertEqual(
             provenance["configuration"]["cohort"],
@@ -1209,6 +1399,17 @@ class LauncherTests(ReportFixture):
         self.assertIn("warm-cache", provenance["measurement_semantics"]["cache_state"])
         for shard in provenance["shards"]:
             self.assertGreaterEqual(shard["wall_seconds"], 0)
+            self.assertGreaterEqual(shard["start_offset_seconds"], 0)
+            self.assertGreaterEqual(
+                shard["completion_offset_seconds"],
+                shard["start_offset_seconds"],
+            )
+            self.assertAlmostEqual(
+                shard["completion_offset_seconds"]
+                - shard["start_offset_seconds"],
+                shard["wall_seconds"],
+                places=9,
+            )
             self.assertEqual(shard["returncode"], 0)
             if sys.platform.startswith("linux"):
                 self.assertGreater(shard["peak_rss_kb"], 0)

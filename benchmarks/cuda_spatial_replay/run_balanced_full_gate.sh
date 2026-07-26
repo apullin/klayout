@@ -14,6 +14,7 @@ Usage:
     [--with-active3-well-union|--without-active3-well-union] \
     [--with-contact4-active-union|--without-contact4-active-union] \
     [--with-m2-rules|--without-m2-rules] \
+    [--with-m1-base-width-space|--without-m1-base-width-space] \
     [--with-m1-5-9|--without-m1-5-9] \
     [--with-m2-width-space|--without-m2-width-space] \
     [--with-implant12|--without-implant12] \
@@ -65,6 +66,17 @@ for an explicit same-deck M2-rules candidate or control.
 raw-M1 resident-morphology transaction inside the exact m1_via_class owner,
 then toggle only its runtime environment.  The sole bypass is a complete,
 all-five-bit empty proof; every decline runs the literal M1.5-.9 CPU block.
+
+--with-m1-base-width-space and --without-m1-base-width-space preserve the
+same deck and toggle only the exact pre-merge raw-M1 METAL1.1/.2 transaction.
+The sole bypass is a complete two-bit empty proof; every decline runs the
+literal historical merge and width/space expressions.  An explicitly selected
+M1 runtime mode reserves its owner behind the first launch wave for both the
+on and off controls.  When both M1 modes are selected, the launcher also
+serializes their owner processes under the same schedule: each candidate can
+consume roughly 8 GiB of the device and they must never overlap.  Thus the
+fully split 14-owner plan accepts at most 13 jobs with one explicit M1 mode or
+12 with both.
 
 --with-m2-width-space and --without-m2-width-space preserve the same deck and
 toggle only the separately qualified METAL2.1/.2 runtime transaction.  The
@@ -119,6 +131,7 @@ active3_well_union=-1
 contact4_active_union=-1
 implant12=-1
 m2_rules=-1
+m1_base_width_space=-1
 m1_5_9=-1
 m2_width_space=-1
 poly34=-1
@@ -241,6 +254,18 @@ while (($#)); do
       m2_rules=0
       shift
       ;;
+    --with-m1-base-width-space)
+      ((m1_base_width_space == -1)) ||
+        die "choose exactly one M1 base-width/space runtime mode"
+      m1_base_width_space=1
+      shift
+      ;;
+    --without-m1-base-width-space)
+      ((m1_base_width_space == -1)) ||
+        die "choose exactly one M1 base-width/space runtime mode"
+      m1_base_width_space=0
+      shift
+      ;;
     --with-m1-5-9)
       ((m1_5_9 == -1)) ||
         die "choose exactly one M1.5-.9 runtime mode"
@@ -322,6 +347,17 @@ if ((m2_rules == 1 && m2_width_space == 1)); then
 fi
 if ((contact4 == 0 && contact4_active_union == 1)); then
   die "--with-contact4-active-union requires the fail-closed CONTACT.4 fallback"
+fi
+reserved_m1_owner_count=0
+if ((m1_base_width_space >= 0)); then
+  ((reserved_m1_owner_count += 1))
+fi
+if ((m1_5_9 >= 0)); then
+  ((reserved_m1_owner_count += 1))
+fi
+if ((reserved_m1_owner_count > 0 &&
+      jobs > selected_owner_count - reserved_m1_owner_count)); then
+  die "explicit M1 runtime modes reserve ${reserved_m1_owner_count} owner(s) behind the first wave; require --jobs $((selected_owner_count - reserved_m1_owner_count)) or fewer"
 fi
 
 [[ -x "${klayout}" ]] || die "KLayout is not executable: ${klayout}"
@@ -418,6 +454,14 @@ if ((m1_5_9 >= 0)); then
   m1_5_9_env=(
     "KLAYOUT_CUDA_M1_5_9=${m1_5_9}"
     "KLAYOUT_CUDA_M1_5_9_TELEMETRY=1"
+  )
+fi
+m1_base_width_space_env=()
+if ((m1_base_width_space >= 0)); then
+  m1_base_width_space_env=(
+    "KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE=${m1_base_width_space}"
+    "KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE_TELEMETRY=1"
+    "KLAYOUT_DEEP_REGION_MULTI_TELEMETRY=1"
   )
 fi
 m2_width_space_env=()
@@ -530,14 +574,30 @@ owner_suffix_post=(
   via1_upper_active12
   grid
 )
-if ((m1_5_9 == 1)); then
-  # The exact raw-M1 transaction is the only owner whose resident allocation
-  # approaches the full 10-GiB device.  Keep every long antenna owner in the
-  # first launch wave and queue this now-short owner last; with one fewer job
-  # than owners, early CUDA transactions drain before raw M1 begins.
+if ((m1_base_width_space >= 0 && m1_5_9 >= 0)); then
+  # Launch every non-M1 owner first.  The first freed slot starts base
+  # width/space; the serialized set then holds M1.5-.9 until base completes.
+  # Candidate and control modes retain this identical resource schedule.
+  owner_prefix=()
+  owner_suffix_post+=(antenna_feol m1_width_space m1_via_class)
+elif ((m1_base_width_space >= 0)); then
+  # Queue an explicitly selected base-width/space owner last for both its
+  # candidate and control, after all owners that do not need its reservation.
+  owner_prefix=()
+  owner_suffix_post+=(m1_via_class antenna_feol m1_width_space)
+elif ((m1_5_9 >= 0)); then
+  # Queue an explicitly selected M1.5-.9 owner last for both candidate and
+  # control, preserving one schedule when only its runtime mode changes.
   owner_suffix_post+=(antenna_feol m1_via_class)
 else
   owner_suffix_post+=(m1_via_class antenna_feol)
+fi
+serialized_shard_args=()
+if ((m1_base_width_space >= 0 && m1_5_9 >= 0)); then
+  serialized_shard_args=(
+    --serialized-shard m1_width_space
+    --serialized-shard m1_via_class
+  )
 fi
 shards=("${owner_prefix[@]}")
 if ((split_implant_contact)); then
@@ -599,6 +659,7 @@ set +e
       KLAYOUT_CUDA_ACTIVE3=1 \
       KLAYOUT_CUDA_ACTIVE3_TELEMETRY=1 \
       "${active3_well_union_env[@]}" \
+      "${m1_base_width_space_env[@]}" \
       KLAYOUT_CUDA_M1_WIDTH_SPACE=1 \
       KLAYOUT_CUDA_M1_WIDTH_SPACE_TELEMETRY=1 \
       "${m1_5_9_env[@]}" \
@@ -632,6 +693,7 @@ set +e
         --manifest "${manifest}" \
         "${shard_args[@]}" \
         --jobs "${jobs}" \
+        "${serialized_shard_args[@]}" \
         --cohort-id "${cohort}" \
         --replicate-index 1 \
         --replicate-count 1 \
@@ -687,9 +749,32 @@ else
     die "ACTIVE.3 WELL-union-off control unexpectedly invoked the exact path"
   fi
 fi
-require_telemetry \
-  "CUDA M1 width/space empty certificate: outcome=certified-empty" \
-  "M1 width/space certified-empty"
+if ((m1_base_width_space == 1)); then
+  require_telemetry \
+    "CUDA M1.1/M1.2 raw-union exact live lowering: outcome=certified-empty" \
+    "raw-M1 base-width/space certified-empty"
+  require_telemetry \
+    "KLAYOUT_DEEP_REGION_MULTI outcome=raw-cuda-certified-empty" \
+    "raw-M1 base-width/space pre-merge bypass"
+  if ! grep -R -Eq --include='*.log' -- \
+       'KLAYOUT_DEEP_REGION_MULTI outcome=raw-cuda-certified-empty .*merged_deep_layer_ms=0([.]0+)?([[:space:]]|$)' \
+       "${shard_dir}"; then
+    die "raw-M1 base-width/space certificate did not bypass merged_deep_layer"
+  fi
+  if grep -R -Fq --include='*.log' -- \
+       "CUDA M1 width/space empty certificate:" "${shard_dir}"; then
+    die "raw-M1 base-width/space candidate unexpectedly invoked legacy fallback"
+  fi
+else
+  require_telemetry \
+    "CUDA M1 width/space empty certificate: outcome=certified-empty" \
+    "M1 width/space certified-empty"
+  if ((m1_base_width_space == 0)) &&
+     grep -R -Fq --include='*.log' -- \
+       "CUDA M1.1/M1.2 raw-union" "${shard_dir}"; then
+    die "raw-M1 base-width/space-off control unexpectedly invoked exact CUDA"
+  fi
+fi
 if ((m1_5_9 == 1)); then
   require_telemetry \
     "CUDA M1 exact resident morphology certificate: outcome=certified-empty" \
@@ -796,7 +881,7 @@ if ! cmp -s -- "${reference_canonical}" "${report_canonical}"; then
 fi
 
 grep -R -nE --include='*.log' -- \
-  'CUDA ACTIVE\.3 exact resident WELL-union certificate:|CUDA ACTIVE\.3 exact WELL-union live lowering:|CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M1 exact resident morphology certificate:|CUDA M1\.5-\.9 exact live lowering:|CUDA M1\.5-\.9 transaction:|CUDA M2 width/space empty certificate:|CUDA M2 width/space live lowering:|CUDA M2 exact union boundary:|CUDA M2 live flat operands:|CUDA M2 rules transaction:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA CONTACT\.4 fused ACTIVE-union empty certificate:|CUDA CONTACT\.4 fused ACTIVE-union live lowering:|CUDA CONTACT\.4 empty certificate:|CUDA CONTACT\.4 live lowering:|CUDA IMPLANT\.1/\.2 transaction:|CUDA IMPLANT\.1/\.2 empty certificate:|CUDA IMPLANT\.1/\.2 live lowering:|CUDA POLY\.3/\.4 transaction:|CUDA POLY\.3/\.4 live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_EDGE_CERT ' \
+  'CUDA ACTIVE\.3 exact resident WELL-union certificate:|CUDA ACTIVE\.3 exact WELL-union live lowering:|CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1\.1/M1\.2 raw-union exact live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M1 exact resident morphology certificate:|CUDA M1\.5-\.9 exact live lowering:|CUDA M1\.5-\.9 transaction:|CUDA M2 width/space empty certificate:|CUDA M2 width/space live lowering:|CUDA M2 exact union boundary:|CUDA M2 live flat operands:|CUDA M2 rules transaction:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA CONTACT\.4 fused ACTIVE-union empty certificate:|CUDA CONTACT\.4 fused ACTIVE-union live lowering:|CUDA CONTACT\.4 empty certificate:|CUDA CONTACT\.4 live lowering:|CUDA IMPLANT\.1/\.2 transaction:|CUDA IMPLANT\.1/\.2 empty certificate:|CUDA IMPLANT\.1/\.2 live lowering:|CUDA POLY\.3/\.4 transaction:|CUDA POLY\.3/\.4 live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_REGION_MULTI |KLAYOUT_DEEP_EDGE_CERT ' \
   "${shard_dir}" >"${work}/cuda-telemetry.txt"
 
 grep -E \
@@ -838,4 +923,4 @@ cat -- "${work}/launcher-summary.txt"
 cat -- "${work}/canonical-report-sha256.txt"
 cat -- "${work}/cuda-telemetry.txt"
 echo \
-  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} active3_well_union=${active3_well_union} contact4_active_union=${contact4_active_union} m1_5_9=${m1_5_9} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} poly34=${poly34} prune_poly2=${prune_poly2} split_lower_antenna=${split_lower_antenna} split_upper_antenna=${split_upper_antenna} split_implant_contact=${split_implant_contact} split_active12=${split_active12}"
+  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} active3_well_union=${active3_well_union} contact4_active_union=${contact4_active_union} m1_base_width_space=${m1_base_width_space} m1_5_9=${m1_5_9} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} poly34=${poly34} prune_poly2=${prune_poly2} split_lower_antenna=${split_lower_antenna} split_upper_antenna=${split_upper_antenna} split_implant_contact=${split_implant_contact} split_active12=${split_active12}"

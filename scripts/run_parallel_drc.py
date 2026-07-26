@@ -145,6 +145,8 @@ class ShardResult:
     spec: ShardSpec
     returncode: int
     wall_seconds: float
+    start_offset_seconds: float
+    completion_offset_seconds: float
     peak_rss_kb: int | None
 
 
@@ -357,6 +359,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=positive_int,
         metavar="N",
         help="maximum number of concurrent KLayout processes (all shards if omitted)",
+    )
+    parser.add_argument(
+        "--serialized-shard",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "shard in one global mutually-exclusive set; repeat for every "
+            "member (at least two), which may run alongside non-members but "
+            "never alongside another member"
+        ),
     )
     parser.add_argument(
         "--cohort-id",
@@ -993,6 +1006,11 @@ def _measurement_semantics() -> dict[str, object]:
             "metadata serialization/publication; atomic pair publication is excluded"
         ),
         "peak_rss_caveat": _PEAK_RSS_CAVEAT,
+        "shard_offset_boundary": (
+            "launcher-observed monotonic offsets relative to the start of "
+            "child scheduling; completion includes report existence/size "
+            "validation and start is recorded immediately after child spawn"
+        ),
     }
 
 
@@ -1026,6 +1044,7 @@ def _provenance_prefix(
             "shard_names": (
                 [spec.name for spec in specs] if specs else list(args.shard)
             ),
+            "serialized_shard_names": list(args.serialized_shard),
             "jobs_requested": args.jobs,
             "jobs_effective": jobs,
             "keep_temp": args.keep_temp,
@@ -1077,6 +1096,29 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError(
             "duplicate --shard name(s): " + ", ".join(duplicate_shards)
         )
+
+    if any(not name for name in args.serialized_shard):
+        raise ValueError("--serialized-shard names must not be empty")
+    duplicate_serialized_shards = sorted(
+        name
+        for name in set(args.serialized_shard)
+        if args.serialized_shard.count(name) > 1
+    )
+    if duplicate_serialized_shards:
+        raise ValueError(
+            "duplicate --serialized-shard name(s): "
+            + ", ".join(duplicate_serialized_shards)
+        )
+    unselected_serialized_shards = sorted(
+        set(args.serialized_shard) - set(args.shard)
+    )
+    if unselected_serialized_shards:
+        raise ValueError(
+            "--serialized-shard name(s) not selected by --shard: "
+            + ", ".join(unselected_serialized_shards)
+        )
+    if args.serialized_shard and len(args.serialized_shard) < 2:
+        raise ValueError("--serialized-shard requires at least two names")
 
     duplicate_rd = sorted(
         key for key in {key for key, _ in args.rd}
@@ -1276,6 +1318,7 @@ def run_shards(
     cleanup_states: list[RunningShard] = []
     completed: dict[int, ShardResult] = {}
     aggregate_started = time.monotonic()
+    serialized_shards = frozenset(args.serialized_shard)
 
     def launch(spec: ShardSpec) -> None:
         log_file = spec.log.open("w", encoding="utf-8")
@@ -1306,10 +1349,28 @@ def run_shards(
         if peak_rss_kb is not None:
             state.peak_rss_kb = max(state.peak_rss_kb or 0, peak_rss_kb)
 
+    def take_next_eligible() -> ShardSpec | None:
+        """Take the first FIFO shard not blocked by the serialized set."""
+
+        serialized_member_running = any(
+            state.spec.name in serialized_shards for state in running.values()
+        )
+        for spec in pending:
+            if spec.name not in serialized_shards or not serialized_member_running:
+                pending.remove(spec)
+                return spec
+        return None
+
     try:
         while pending or running:
             while pending and len(running) < jobs:
-                launch(pending.popleft())
+                eligible = take_next_eligible()
+                if eligible is None:
+                    # The remaining queue consists only of serialized members
+                    # blocked by the running member.  Deliberately leave spare
+                    # process slots idle until that member completes.
+                    break
+                launch(eligible)
 
             # Sample before poll(), which may reap a completed process and
             # remove its /proc status entry.
@@ -1358,10 +1419,13 @@ def run_shards(
                     if tail:
                         diagnostic += f"\n--- log tail ---\n{tail}"
                     raise ShardFailure(diagnostic)
+                completion = time.monotonic()
                 completed[state.spec.index] = ShardResult(
                     spec=state.spec,
                     returncode=process.returncode,
-                    wall_seconds=time.monotonic() - state.started,
+                    wall_seconds=completion - state.started,
+                    start_offset_seconds=state.started - aggregate_started,
+                    completion_offset_seconds=completion - aggregate_started,
                     peak_rss_kb=state.peak_rss_kb,
                 )
                 # A successfully validated report completes this child.  Do
@@ -1496,6 +1560,8 @@ def run(args: argparse.Namespace) -> int:
                 "command": build_command(args, result.spec),
                 "returncode": result.returncode,
                 "wall_seconds": result.wall_seconds,
+                "start_offset_seconds": result.start_offset_seconds,
+                "completion_offset_seconds": result.completion_offset_seconds,
                 "peak_rss_kb": result.peak_rss_kb,
                 "peak_rss_source": _peak_rss_source(result.peak_rss_kb),
                 "peak_rss_caveat": _PEAK_RSS_CAVEAT,

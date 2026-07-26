@@ -40,9 +40,31 @@ class BalancedFullGateStaticTest(unittest.TestCase):
         split_upper: bool,
         split_implant_contact: bool,
         split_active12: bool,
+        m1_base_mode_explicit: bool = False,
+        m1_5_9_mode_explicit: bool = False,
     ) -> tuple[str, ...]:
+        if m1_base_mode_explicit and m1_5_9_mode_explicit:
+            owner_prefix = ()
+            dynamic_suffix = (
+                "antenna_feol",
+                "m1_width_space",
+                "m1_via_class",
+            )
+        elif m1_base_mode_explicit:
+            owner_prefix = ()
+            dynamic_suffix = (
+                "m1_via_class",
+                "antenna_feol",
+                "m1_width_space",
+            )
+        elif m1_5_9_mode_explicit:
+            owner_prefix = self.shell_array("owner_prefix")
+            dynamic_suffix = ("antenna_feol", "m1_via_class")
+        else:
+            owner_prefix = self.shell_array("owner_prefix")
+            dynamic_suffix = ("m1_via_class", "antenna_feol")
         return (
-            self.shell_array("owner_prefix")
+            owner_prefix
             + self.shell_array(
                 "owner_implant_split"
                 if split_implant_contact
@@ -61,6 +83,7 @@ class BalancedFullGateStaticTest(unittest.TestCase):
                 else ()
             )
             + self.shell_array("owner_suffix_post")
+            + dynamic_suffix
         )
 
     def test_owner_plans_are_exact_deterministic_and_manifest_complete(
@@ -110,6 +133,56 @@ class BalancedFullGateStaticTest(unittest.TestCase):
                                 split_active12=split_active12,
                             )
 
+    def test_explicit_m1_modes_reorder_only_the_reserved_tail(self) -> None:
+        non_m1 = (
+            "implant_contact",
+            "contact",
+            "antenna_m4_m10",
+            "antenna_m3",
+            "antenna_m2",
+            "antenna_m1",
+            "m2_rules",
+            "m1_enclosure",
+            "active12",
+            "via1_upper_active12",
+            "grid",
+        )
+        cases = (
+            (
+                "base only",
+                True,
+                False,
+                non_m1
+                + ("m1_via_class", "antenna_feol", "m1_width_space"),
+            ),
+            (
+                "M1.5-.9 only",
+                False,
+                True,
+                ("m1_width_space",)
+                + non_m1
+                + ("antenna_feol", "m1_via_class"),
+            ),
+            (
+                "both",
+                True,
+                True,
+                non_m1
+                + ("antenna_feol", "m1_width_space", "m1_via_class"),
+            ),
+        )
+        for label, base_explicit, m1_5_9_explicit, exact_plan in cases:
+            with self.subTest(label=label):
+                self._assert_owner_plan(
+                    exact_plan,
+                    split_lower=True,
+                    split_upper=True,
+                    split_implant_contact=True,
+                    split_active12=True,
+                    m1_base_mode_explicit=base_explicit,
+                    m1_5_9_mode_explicit=m1_5_9_explicit,
+                )
+
     def _assert_owner_plan(
         self,
         exact_plan: tuple[str, ...],
@@ -118,12 +191,16 @@ class BalancedFullGateStaticTest(unittest.TestCase):
         split_upper: bool,
         split_implant_contact: bool,
         split_active12: bool,
+        m1_base_mode_explicit: bool = False,
+        m1_5_9_mode_explicit: bool = False,
     ) -> None:
         plan = self.owner_plan(
             split_lower=split_lower,
             split_upper=split_upper,
             split_implant_contact=split_implant_contact,
             split_active12=split_active12,
+            m1_base_mode_explicit=m1_base_mode_explicit,
+            m1_5_9_mode_explicit=m1_5_9_mode_explicit,
         )
         self.assertEqual(plan, exact_plan)
         self.assertEqual(len(plan), len(set(plan)))
@@ -170,6 +247,7 @@ class BalancedFullGateStaticTest(unittest.TestCase):
             "--with-active3-well-union",
             "--with-contact4-active-union",
             "--with-m2-rules",
+            "--with-m1-base-width-space",
             "--with-m1-5-9",
             "--with-m2-width-space",
             "--with-implant12",
@@ -217,6 +295,130 @@ class BalancedFullGateStaticTest(unittest.TestCase):
             " outcome=certified-empty",
             self.launcher_text,
         )
+
+    def test_m1_base_width_space_is_exact_and_resource_serialized(self) -> None:
+        self.assertIn(
+            '"KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE=${m1_base_width_space}"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE_TELEMETRY=1"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_DEEP_REGION_MULTI_TELEMETRY=1"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            "CUDA M1.1/M1.2 raw-union exact live lowering:"
+            " outcome=certified-empty",
+            self.launcher_text,
+        )
+        self.assertIn(
+            "KLAYOUT_DEEP_REGION_MULTI outcome=raw-cuda-certified-empty",
+            self.launcher_text,
+        )
+        self.assertIn(
+            "--serialized-shard m1_width_space\n"
+            "    --serialized-shard m1_via_class",
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"${serialized_shard_args[@]}"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            "owner_prefix=()\n"
+            "  owner_suffix_post+=(antenna_feol m1_width_space m1_via_class)",
+            self.launcher_text,
+        )
+        self.assertGreaterEqual(
+            self.launcher_text.count(
+                "m1_base_width_space >= 0 && m1_5_9 >= 0"
+            ),
+            2,
+        )
+        self.assertIn(
+            "elif ((m1_base_width_space >= 0)); then",
+            self.launcher_text,
+        )
+        self.assertIn(
+            "owner_suffix_post+=(m1_via_class antenna_feol m1_width_space)",
+            self.launcher_text,
+        )
+        self.assertIn(
+            "elif ((m1_5_9 >= 0)); then",
+            self.launcher_text,
+        )
+        self.assertIn(
+            "owner_suffix_post+=(antenna_feol m1_via_class)",
+            self.launcher_text,
+        )
+
+    def test_combined_raw_m1_mode_reserves_the_first_launch_wave(self) -> None:
+        common = (
+            "--split-lower-antenna",
+            "--split-upper-antenna",
+            "--split-implant-contact",
+            "--split-active12",
+            "--with-m1-base-width-space",
+            "--with-m1-5-9",
+        )
+        rejected = self.run_preflight(*common, "--jobs", "13")
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(
+            "reserve 2 owner(s) behind the first wave; require --jobs 12 or fewer",
+            rejected.stderr,
+        )
+
+        accepted = self.run_preflight(*common, "--jobs", "12")
+        self.assertEqual(accepted.returncode, 2)
+        self.assertNotIn("explicit M1 runtime modes reserve", accepted.stderr)
+        self.assertIn("KLayout is not executable", accepted.stderr)
+
+        unsplit = (
+            "--with-m1-base-width-space",
+            "--with-m1-5-9",
+        )
+        rejected = self.run_preflight(*unsplit, "--jobs", "9")
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(
+            "reserve 2 owner(s) behind the first wave; require --jobs 8 or fewer",
+            rejected.stderr,
+        )
+
+        accepted = self.run_preflight(*unsplit, "--jobs", "8")
+        self.assertEqual(accepted.returncode, 2)
+        self.assertNotIn("explicit M1 runtime modes reserve", accepted.stderr)
+        self.assertIn("KLayout is not executable", accepted.stderr)
+
+    def test_explicit_single_m1_modes_share_a_reserved_schedule(self) -> None:
+        modes = (
+            "--with-m1-base-width-space",
+            "--without-m1-base-width-space",
+            "--with-m1-5-9",
+            "--without-m1-5-9",
+        )
+        splits = (
+            "--split-lower-antenna",
+            "--split-upper-antenna",
+            "--split-implant-contact",
+            "--split-active12",
+        )
+        for mode in modes:
+            with self.subTest(mode=mode):
+                rejected = self.run_preflight(*splits, mode, "--jobs", "14")
+                self.assertEqual(rejected.returncode, 2)
+                self.assertIn(
+                    "reserve 1 owner(s) behind the first wave; "
+                    "require --jobs 13 or fewer",
+                    rejected.stderr,
+                )
+
+                accepted = self.run_preflight(*splits, mode, "--jobs", "13")
+                self.assertEqual(accepted.returncode, 2)
+                self.assertNotIn("reserve 1 owner(s)", accepted.stderr)
+                self.assertIn("KLayout is not executable", accepted.stderr)
 
     def run_preflight(self, *options: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(

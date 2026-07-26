@@ -1807,6 +1807,45 @@ not just wall time.
           Evidence:
           `.scratchpad/cuda-runs/m1-base-owner-ab3.izYIjW`.
 
+        - [x] **Compose raw M1.1/.2 into the exact full launcher with an
+          explicit device-memory schedule:** the generic parallel launcher now
+          accepts a validated mutually-exclusive shard set, schedules the first
+          FIFO member that is not resource-blocked, and records exact child
+          start/completion offsets in provenance. Ordinary owners continue to
+          fill free process slots. The 14-owner gate launches its twelve
+          non-raw owners first, then runs `m1_width_space` and
+          `m1_via_class` sequentially under that resource lock.
+
+          This schedule is required rather than cosmetic. A first 13-job
+          composition began base M1 alongside the initial GPU-heavy wave,
+          reached only 943,259,648 bytes free, declined the CUDA allocation,
+          and was correctly rejected by the fail-closed telemetry gate. In
+          each accepted run, base M1 began at 16.14--16.29 s, completed at
+          31.90--31.96 s, and M1.5-.9 began 0.61--0.65 ms later; the two
+          high-memory transactions never overlapped.
+
+          The exact three-run full cohort measured outer walls of 61.94,
+          61.34, and 61.44 s, averaging **61.573 s**. Against the latest
+          accepted 61.940-second mean, this is **0.367 real seconds / 0.592%
+          less full-launch wall** (`N=3`, cross-run cumulative comparison), not
+          the stale 62.940-second comparison embedded in the initial ad hoc
+          wrapper. Base `m1_width_space`
+          averaged **15.716 s**, versus its prior 56.583-second full-context
+          mean: **40.867 real seconds / 72.23% less owner wall** (also
+          cross-run). `m1_via_class` averaged 13.382 s. Both complete by
+          roughly 45.3 s, below the surviving 56.491-second mean antenna pole,
+          which explains the small end-to-end change.
+
+          Every run reported `raw-cuda-certified-empty`, zero
+          `merged_deep_layer_ms`, and no legacy fallback marker. All six
+          canonical reference/merged reports retained SHA-256
+          `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+          Evidence:
+          `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.e8lq2E`
+          (rejected contention screen) and
+          `.scratchpad/cuda-runs/composed-14-owner-full.mJAK5P`
+          (accepted `N=3` cohort).
+
       - [x] **Reuse the atomic M1-contact proof for CONTACT.1-.3 and
         METAL1.3:** commit `0c901b5` makes one stronger M1-containment,
         exact-cut, spacing, and enclosure certificate serve all four fixed
