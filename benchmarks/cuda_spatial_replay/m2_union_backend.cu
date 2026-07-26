@@ -4840,10 +4840,15 @@ int run_implant15_request(
         implant15_concatenate_rectangles(
             expanded_nplus.rectangles,
             expanded_pplus.rectangles);
-    thrust::device_vector<mu::RectI64> empty;
-    expanded_nplus.rectangles.swap(empty);
-    thrust::device_vector<mu::RectI64> empty_pplus;
-    expanded_pplus.rectangles.swap(empty_pplus);
+    {
+      // Destroy the source allocations now.  Named empty vectors at function
+      // scope would retain both buffers through the original union and its
+      // resident GATE/CONTACT consumers.
+      thrust::device_vector<mu::RectI64> empty_nplus;
+      expanded_nplus.rectangles.swap(empty_nplus);
+      thrust::device_vector<mu::RectI64> empty_pplus;
+      expanded_pplus.rectangles.swap(empty_pplus);
+    }
     m2m::BaseWidthSpaceContext original_certificate;
     original_certificate.profile =
         m2m::BaseWidthSpaceProfile::implant_90;
