@@ -3069,6 +3069,39 @@ not just wall time.
         `.scratchpad/cuda-runs/m1-resident-morph-owner-ab.LUmhBx`, and
         `.scratchpad/cuda-runs/composed-14-owner-full.hxV33P`.
 
+      - [x] **Fuse IMPLANT.1-.5 as one atomic resident CUDA transaction:**
+        the raw owner now composes distinct NPLUS/PPLUS expansion, strict
+        positive-area IMPLANT.5 overlap, implant union, a fused sibling
+        IMPLANT.3/.4 90-DBU width/spacing scan, and separate GATE-140
+        IMPLANT.1 and CONTACT-50 IMPLANT.2 consumers.  It bypasses the five
+        literal CPU rules only when every stage certifies empty; hits,
+        uncertainty, malformed ABI/results, unsupported geometry, capacity
+        limits, and CUDA errors all retain the unchanged CPU block.  Focused
+        exact-predicate, morphology, union, CONTACT.4, broad backend, Ruby/GSI,
+        and host-contract regressions pass, including early IMPLANT.5-hit
+        telemetry, and independent review found no false-clean blocker.
+
+        The committed-state, memory-aware 11-job production A/B/B/A gate
+        (`N=2+2`) measured feature-off controls at 52.63 and 53.24 s and
+        CUDA candidates at 49.93 and 49.93 s by external `/usr/bin/time`.
+        Means are **52.935 -> 49.930 s: 3.005 real seconds / 5.68% less
+        full-launch wall**.  The owner itself fell from a 40.062-second mean
+        to 11.858 s: **28.204 real seconds / 70.40% less owner wall**.  All
+        four reports have canonical SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+        Releasing expanded N/P inputs before the resident consumers returns
+        at least 230.837 MiB immediately.
+
+        A 12-job diagnostic is explicitly rejected as a performance sample:
+        the faster IMPLANT owner launched raw M1 earlier, a concurrent VIA1
+        transaction hit `cudaErrorMemoryAllocation`, correctly fell back to
+        CPU, and made `m1_enclosure` take 142.416 s.  The qualified immediate
+        operating point is 11 jobs; a backend-call-level GPU admission lock
+        remains future schedule hardening.  The new valid full-run roof is the
+        independent antenna cluster at about 41 s.  Commits: `8f56309`,
+        `5f30e74`, and `55e71ad`.  Evidence:
+        `.scratchpad/cuda-runs/implant15-final-abba-20260726`.
+
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
         second and third reusable compositions, separate canonical
