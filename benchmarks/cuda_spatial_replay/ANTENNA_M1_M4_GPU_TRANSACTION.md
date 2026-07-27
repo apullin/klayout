@@ -106,6 +106,25 @@ merged_area(METALk) / merged_area(GATE) <= 300 + epsilon
 Area accumulation must be exact union area, not raw polygon-area summation.
 The host CPU oracle remains the semantic reference for focused fixtures.
 
+The first production backend may use a stricter one-sided certificate instead
+of reconstructing both exact unions:
+
+- sum the exact positive areas of every raw target-metal polygon owned by a
+  conductor root; overlap can only make this an upper bound on merged metal
+  area;
+- enumerate complete positive-area POLY/ACTIVE rectangle intersections and
+  retain the largest single intersection owned by each conductor root; this is
+  a lower bound on merged GATE area;
+- certify a root only with checked integer arithmetic when
+  `metal_upper <= 300 * gate_lower`.
+
+The backend must decline the whole transaction if an eligible gate cannot be
+bounded, if a polygon cannot be exactly rectangulated, or if any count,
+coordinate, multiplication, or reduction overflows.  Diode exemptions may be
+ignored by this certificate because doing so is stricter.  These bounds can
+prove a clean result but can never report a violation or replace the CPU path
+after an uncertain result.
+
 ## Memory plan
 
 The production implementation streams adjacent conductor layers:
@@ -168,7 +187,7 @@ Before production timing is booked:
 - [ ] Extend the reference oracle through M4, including stage-local area and
   diode annotations.
 - [ ] Add the production ABI, loader, exact result validation, and GSI method.
-- [ ] Add the atomic deck fast path; retain all ten literal CPU rules in one
+- [x] Add the atomic deck fast path; retain all ten literal CPU rules in one
   fallback branch.
 - [ ] Pass focused hierarchy, transform, boundary, malformed-result, and
   injected-fallback gates.

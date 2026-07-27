@@ -50,6 +50,9 @@ def source_deck() -> str:
         "raise unless run_other || run_grid || run_antenna\r\n"
         "run_well = run_antenna\r\n"
         "run_active4 = run_antenna\r\n"
+        "poly34_raw_owner = poly34_requested &amp;&amp; DRC "
+        "&amp;&amp; run_poly &amp;&amp; !run_implant_contact "
+        "&amp;&amp; !(ANTENNA &amp;&amp; run_antenna)\r\n"
         "need_gate = a || (ANTENNA &amp;&amp; run_antenna)\r\n"
         "#   ANTENNA checks\r\n"
         "################\r\n"
@@ -68,39 +71,49 @@ def source_deck() -> str:
 
 
 def execute_generated_antenna_section(
-    deck: str, shard: str
+    deck: str, shard: str, *, fused_clean: bool = False
 ) -> tuple[list[str], list[str]]:
     """Evaluate generated static guards and return connects/output categories."""
 
     start = deck.index("#   ANTENNA checks\n")
     end = deck.index("# time spent for the DRC\n", start)
     active = [True]
+    conditions: list[bool] = []
     connects: list[str] = []
     outputs: list[str] = []
 
     for line in deck[start:end].splitlines():
         if line.startswith("if "):
-            tokens = (
-                line.removeprefix("if ")
-                .replace("ANTENNA &amp;&amp; ", "")
-                .split(" || ")
-            )
-            condition = any(
-                token == "ANTENNA"
-                or (
-                    token == "run_antenna_checks"
-                    and (shard == "all" or shard.startswith("antenna_m"))
+            expression = line.removeprefix("if ")
+            if expression == "antenna_m1_m4_clean":
+                condition = fused_clean
+            else:
+                tokens = (
+                    expression.replace("ANTENNA &amp;&amp; ", "").split(" || ")
                 )
-                or (
-                    token.startswith("run_")
-                    and (shard == "all" or token == f"run_{shard}")
+                condition = any(
+                    token == "ANTENNA"
+                    or (
+                        token == "run_antenna_checks"
+                        and (shard == "all" or shard.startswith("antenna_m"))
+                    )
+                    or (
+                        token.startswith("run_")
+                        and (shard == "all" or token == f"run_{shard}")
+                    )
+                    for token in tokens
                 )
-                for token in tokens
-            )
+            conditions.append(condition)
             active.append(active[-1] and condition)
+        elif line == "else":
+            if len(active) == 1:
+                raise AssertionError("unbalanced generated antenna else")
+            conditions[-1] = not conditions[-1]
+            active[-1] = active[-2] and conditions[-1]
         elif line == "end":
             if len(active) == 1:
                 raise AssertionError("unbalanced generated antenna guard")
+            conditions.pop()
             active.pop()
         elif active[-1] and line.startswith("connect("):
             connects.append(line)
@@ -124,14 +137,14 @@ class SplitDeckTest(unittest.TestCase):
         )
         default = split_deck(source_deck())
         explicit_default = split_deck(
-            source_deck(), small_first_diode=False
+            source_deck(), small_first_diode=False, fuse_metal=False
         )
         candidate = split_deck(source_deck(), small_first_diode=True)
 
         self.assertEqual(default, explicit_default)
         self.assertEqual(
             hashlib.sha256(default.encode("utf-8")).hexdigest(),
-            "068c84d65a3951b93610de8d420fba433ab3f06c3dd395390a3dab680b760211",
+            "98f6f991e2c17080e229a68985b023159dfb58d653785f64711da999e69de081",
         )
         self.assertEqual(default.count(historical_line), 1)
         self.assertNotIn(small_first_line, default)
@@ -200,16 +213,7 @@ class SplitDeckTest(unittest.TestCase):
         )
 
     def test_split_rebinds_both_raw_poly34_antenna_dependencies(self) -> None:
-        source = source_deck().replace(
-            "need_gate = a || (ANTENNA &amp;&amp; run_antenna)\r\n",
-            "need_gate = a || (ANTENNA &amp;&amp; run_antenna)\r\n"
-            "poly34_raw_owner = poly34_requested &amp;&amp; DRC "
-            "&amp;&amp; run_poly &amp;&amp; !run_implant_contact "
-            "&amp;&amp; !(ANTENNA &amp;&amp; run_antenna)\r\n",
-            1,
-        )
-
-        result = split_deck(source)
+        result = split_deck(source_deck())
 
         self.assertEqual(
             result.count("(ANTENNA &amp;&amp; run_antenna_checks)\n"),
@@ -388,7 +392,7 @@ class SplitDeckTest(unittest.TestCase):
                     shards,
                 )
 
-    def test_fused_metal_owner_preserves_exact_staged_cpu_chain(self) -> None:
+    def test_fused_metal_owner_has_one_exact_atomic_owner(self) -> None:
         result = split_deck(source_deck(), fuse_metal=True)
         expected_manifest = ((FUSED_METAL_SHARD, ANTENNA_CATEGORIES),)
 
@@ -402,10 +406,89 @@ class SplitDeckTest(unittest.TestCase):
         self.assertIn('drc_shard == "antenna_m1_m4"', result)
         self.assertNotIn('drc_shard == "antenna_m1_m2"', result)
         self.assertNotIn('drc_shard == "antenna_m3_m10"', result)
-        self.assertEqual(result.count("if run_antenna_m1_m4"), 3)
+        self.assertEqual(result.count("run_antenna_m1_m4 ="), 1)
+        self.assertEqual(
+            result.count(
+                "if ANTENNA &amp;&amp; run_antenna_m1_m4"
+            ),
+            2,
+        )
+        self.assertEqual(
+            result.count(
+                "poly.cuda_antenna_m1_m4_raw_clean?("
+                "active, nplus, nwell, cont, metal1, via1, metal2, via2, "
+                "metal3, via3, metal4)"
+            ),
+            1,
+        )
 
+    def test_fused_metal_proves_upper_empty_before_capability_and_call(
+        self,
+    ) -> None:
+        result = split_deck(source_deck(), fuse_metal=True)
+        empty_proofs = [
+            result.index(f"metal{layer}.is_empty?") for layer in range(5, 11)
+        ]
+        capability = result.index(
+            "poly.respond_to?(:cuda_antenna_m1_m4_raw_clean?)"
+        )
+        call = result.index("poly.cuda_antenna_m1_m4_raw_clean?(")
+        first_output = result.index(
+            'antenna_m1_m4_empty.output("METAL1_ANTENNA"'
+        )
+
+        self.assertEqual(empty_proofs, sorted(empty_proofs))
+        self.assertLess(empty_proofs[-1], capability)
+        self.assertLess(capability, call)
+        self.assertLess(call, first_output)
+        self.assertIn(
+            "need_gate = a || (ANTENNA &amp;&amp; run_antenna_checks "
+            "&amp;&amp; !antenna_m1_m4_clean)",
+            result,
+        )
+        self.assertIn(
+            "poly34_raw_owner = poly34_requested &amp;&amp; DRC "
+            "&amp;&amp; run_poly &amp;&amp; !run_implant_contact "
+            "&amp;&amp; !(ANTENNA &amp;&amp; run_antenna_checks)",
+            result,
+        )
+        clean_definition = result.index("antenna_m1_m4_clean = false")
+        self.assertNotIn(
+            "antenna_m1_m4_clean",
+            result[:clean_definition],
+        )
+        self.assertLess(
+            clean_definition,
+            result.index("need_gate = "),
+        )
+        self.assertIn(
+            "rescue StandardError =&gt; antenna_m1_m4_error\n"
+            "    antenna_m1_m4_clean = false\n"
+            "    antenna_m1_m4_empty = nil",
+            result,
+        )
+
+    def test_fused_metal_certified_success_emits_all_ten_empty_outputs(
+        self,
+    ) -> None:
+        result = split_deck(source_deck(), fuse_metal=True)
         connects, outputs = execute_generated_antenna_section(
-            result, FUSED_METAL_SHARD
+            result, FUSED_METAL_SHARD, fused_clean=True
+        )
+        self.assertEqual(connects, [])
+        self.assertEqual(outputs, list(ANTENNA_CATEGORIES))
+        for category in ANTENNA_CATEGORIES:
+            self.assertEqual(
+                result.count(
+                    f'antenna_m1_m4_empty.output("{category}"'
+                ),
+                1,
+            )
+
+    def test_fused_metal_decline_runs_complete_literal_cpu_chain(self) -> None:
+        result = split_deck(source_deck(), fuse_metal=True)
+        connects, outputs = execute_generated_antenna_section(
+            result, FUSED_METAL_SHARD, fused_clean=False
         )
         self.assertEqual(outputs, list(ANTENNA_CATEGORIES))
         self.assertEqual(
@@ -425,11 +508,35 @@ class SplitDeckTest(unittest.TestCase):
                 ],
             ],
         )
+        self.assertEqual(
+            result.count("antenna_check(gate, metal"),
+            len(ANTENNA_CATEGORIES),
+        )
+        self.assertEqual(
+            result.count(
+                "diode = nplus &amp; active - nwell "
+                "# diode recognition layer"
+            ),
+            1,
+        )
         all_connects, all_outputs = execute_generated_antenna_section(
-            result, "all"
+            result, "all", fused_clean=False
         )
         self.assertEqual(all_connects, connects)
         self.assertEqual(all_outputs, outputs)
+
+    def test_fused_metal_rejects_malformed_need_gate_anchor(self) -> None:
+        malformed = source_deck().replace(
+            "need_gate = a || (ANTENNA &amp;&amp; run_antenna)\r\n",
+            "other_gate = a || (ANTENNA &amp;&amp; run_antenna)\r\n",
+            1,
+        )
+        with self.assertRaisesRegex(
+            TransformError,
+            "fused antenna need_gate dependency: expected one source "
+            "match, found 0",
+        ):
+            split_deck(malformed, fuse_metal=True)
 
     def test_fused_metal_owner_rejects_split_modes(self) -> None:
         for split_lower, split_upper in ((True, False), (False, True), (True, True)):

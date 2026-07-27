@@ -130,6 +130,118 @@ def _owner_predicate(shard: str) -> str:
     return f"run_{shard}"
 
 
+def _metal_antenna_output(layer: int, receiver: str) -> str:
+    category = f"METAL{layer}_ANTENNA"
+    description = (
+        f"{category} : Ratio of Maximum Allowed "
+        "(Field poly area or Metal Layer Area) to transistor gate area : 300:1"
+    )
+    return f'{receiver}.output("{category}", "{description}")'
+
+
+def _fused_certificate_prelude() -> str:
+    upper_empty = " &amp;&amp; ".join(
+        f"metal{layer}.is_empty?" for layer in range(5, 11)
+    )
+    return "\n".join(
+        [
+            "# BEGIN KLAYOUT CUDA ANTENNA M1-M4 RAW TRANSACTION",
+            "# The certificate is atomic: raw M5-M10 must first be exactly empty,",
+            "# then one qualified M1-M4 call must certify every staged metal check.",
+            "# Missing capability, a false result, or any exception keeps the flag",
+            "# false and executes the complete literal CPU chain below.",
+            "antenna_m1_m4_clean = false",
+            "antenna_m1_m4_empty = nil",
+            'antenna_m1_m4_reason = "not-owner"',
+            "if ANTENNA &amp;&amp; run_antenna_m1_m4",
+            '  antenna_m1_m4_reason = "upper-metal-nonempty"',
+            "  begin",
+            f"    antenna_m1_m4_upper_empty = {upper_empty}",
+            "    if antenna_m1_m4_upper_empty",
+            '      antenna_m1_m4_reason = "method-unavailable"',
+            "      if poly.respond_to?(:cuda_antenna_m1_m4_raw_clean?)",
+            "        antenna_m1_m4_certified = "
+            "poly.cuda_antenna_m1_m4_raw_clean?("
+            "active, nplus, nwell, cont, metal1, via1, metal2, via2, "
+            "metal3, via3, metal4)",
+            "        if antenna_m1_m4_certified",
+            "          antenna_m1_m4_empty = polygon_layer",
+            "          antenna_m1_m4_clean = true",
+            '          antenna_m1_m4_reason = "certified-empty"',
+            "        else",
+            '          antenna_m1_m4_reason = "certificate-declined"',
+            "        end",
+            "      end",
+            "    end",
+            "  rescue StandardError =&gt; antenna_m1_m4_error",
+            "    antenna_m1_m4_clean = false",
+            "    antenna_m1_m4_empty = nil",
+            '    antenna_m1_m4_reason = "exception:#{antenna_m1_m4_error.class}"',
+            "  end",
+            "end",
+            'info("CUDA ANTENNA M1-M4 raw transaction: '
+            '#{antenna_m1_m4_clean ? \'certified-empty\' : '
+            "'full-cpu-fallback'} reason=#{antenna_m1_m4_reason}\") "
+            "if ANTENNA &amp;&amp; run_antenna_m1_m4",
+            "# END KLAYOUT CUDA ANTENNA M1-M4 RAW TRANSACTION",
+            "",
+        ]
+    )
+
+
+def _fused_antenna_section(small_first_diode: bool) -> str:
+    lines = [
+        "#   ANTENNA checks",
+        "################",
+        "if ANTENNA &amp;&amp; run_antenna_checks",
+        'info("ANTENNA section")',
+        "",
+        "if antenna_m1_m4_clean",
+    ]
+    lines.extend(
+        _metal_antenna_output(layer, "antenna_m1_m4_empty")
+        for layer in range(1, 11)
+    )
+    lines.extend(
+        [
+            "else",
+            (
+                SMALL_FIRST_DIODE_LINE
+                if small_first_diode
+                else HISTORICAL_DIODE_LINE
+            ),
+            "",
+            "# Exact staged literal fallback; keep this complete and in source order.",
+            "connect(gate, poly)",
+            "connect(poly, cont)",
+            "connect(diode, cont)",
+            "connect(cont, metal1)",
+            "",
+            _metal_antenna_output(
+                1, "antenna_check(gate, metal1, 300.0, diode)"
+            ),
+            "",
+        ]
+    )
+    for layer in range(2, 11):
+        lower = layer - 1
+        lines.extend(
+            [
+                f"# build connection of poly+gate to metal{layer}",
+                f"connect(metal{lower}, via{lower})",
+                f"connect(via{lower}, metal{layer})",
+                "",
+                _metal_antenna_output(
+                    layer,
+                    f"antenna_check(gate, metal{layer}, 300.0, diode)",
+                ),
+                "",
+            ]
+        )
+    lines.extend(["end", "", "end", ""])
+    return "\n".join(lines)
+
+
 def _antenna_section(
     split_upper: bool = False,
     split_lower: bool = False,
@@ -137,24 +249,25 @@ def _antenna_section(
     fuse_metal: bool = False,
 ) -> str:
     if fuse_metal:
-        lower_m1_predicate = _owner_predicate(FUSED_METAL_SHARD)
-        lower_m2_predicate = lower_m1_predicate
-    else:
-        lower_m1_predicate = _owner_predicate(
-            M1_SHARD if split_lower else LOWER_SHARD
-        )
-        lower_m2_predicate = _owner_predicate(
-            M2_SHARD if split_lower else LOWER_SHARD
-        )
+        if split_lower or split_upper:
+            raise TransformError(
+                "fused metal owner cannot be combined with lower/upper splits"
+            )
+        return _fused_antenna_section(small_first_diode)
+
+    lower_m1_predicate = _owner_predicate(
+        M1_SHARD if split_lower else LOWER_SHARD
+    )
+    lower_m2_predicate = _owner_predicate(
+        M2_SHARD if split_lower else LOWER_SHARD
+    )
     upper_predicates = [
         _owner_predicate(owner)
         for owner, _categories in metal_owner_manifest(
             split_lower=split_lower,
             split_upper=split_upper,
-            fuse_metal=fuse_metal,
         )
-        if fuse_metal
-        or owner not in (M1_SHARD, M2_SHARD, LOWER_SHARD)
+        if owner not in (M1_SHARD, M2_SHARD, LOWER_SHARD)
     ]
     lines = [
         "#   ANTENNA checks",
@@ -350,11 +463,51 @@ def split_deck(
             f"{'es' if expected_gate_dependencies != 1 else ''}, "
             f"found {gate_dependency_count}"
         )
-    text = text.replace(
-        gate_dependency,
-        "(ANTENNA &amp;&amp; run_antenna_checks)\n",
-        expected_gate_dependencies,
-    )
+    plain_gate_dependency = "(ANTENNA &amp;&amp; run_antenna_checks)\n"
+    if fuse_metal:
+        need_gate_matches = [
+            line
+            for line in text.splitlines(keepends=True)
+            if line.startswith("need_gate = ")
+            and gate_dependency.rstrip("\n") in line
+        ]
+        if len(need_gate_matches) != 1:
+            raise TransformError(
+                "fused antenna need_gate dependency: expected one source "
+                f"match, found {len(need_gate_matches)}"
+            )
+        fused_gate_dependency = (
+            "(ANTENNA &amp;&amp; run_antenna_checks "
+            "&amp;&amp; !antenna_m1_m4_clean)\n"
+        )
+        fused_need_gate = need_gate_matches[0].replace(
+            gate_dependency, fused_gate_dependency, 1
+        )
+        text = _replace_once(
+            text,
+            need_gate_matches[0],
+            _fused_certificate_prelude() + fused_need_gate,
+            "fused antenna certificate insertion",
+        )
+        remaining_dependencies = expected_gate_dependencies - 1
+        if text.count(gate_dependency) != remaining_dependencies:
+            raise TransformError(
+                "fused antenna non-gate dependency: expected "
+                f"{remaining_dependencies} source match"
+                f"{'es' if remaining_dependencies != 1 else ''}, "
+                f"found {text.count(gate_dependency)}"
+            )
+        text = text.replace(
+            gate_dependency,
+            plain_gate_dependency,
+            remaining_dependencies,
+        )
+    else:
+        text = text.replace(
+            gate_dependency,
+            plain_gate_dependency,
+            expected_gate_dependencies,
+        )
 
     start_marker = "#   ANTENNA checks\n"
     end_marker = "# time spent for the DRC\n"
