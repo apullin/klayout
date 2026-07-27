@@ -9,8 +9,11 @@
 #include <cub/device/device_scan.cuh>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <new>
 #include <stdexcept>
@@ -1168,6 +1171,67 @@ private:
   cudaEvent_t m_stop = nullptr;
 };
 
+/*
+ * KLAYOUT_CUDA_CERTIFICATE_TIMING is disabled by default.  Its constructor
+ * performs one getenv and disabled phase marks cost one branch.  Opt-in
+ * timing deliberately synchronizes at each boundary so a production trace
+ * assigns deferred CUDA work to the kernel or CUB operation that issued it.
+ */
+bool certificate_phase_timing_enabled() noexcept
+{
+  const char *value =
+      std::getenv("KLAYOUT_CUDA_CERTIFICATE_TIMING");
+  return value && value[0] &&
+         !(value[0] == '0' && value[1] == '\0');
+}
+
+class CertificatePhaseTelemetry
+{
+public:
+  CertificatePhaseTelemetry(
+      const char *operation, acc::MetalLevel level) noexcept
+      : m_enabled(certificate_phase_timing_enabled()),
+        m_operation(operation),
+        m_level(static_cast<unsigned int>(level)),
+        m_begin(m_enabled ? Clock::now() : Clock::time_point())
+  {
+  }
+
+  void mark(
+      const char *phase, std::uint64_t first_count = 0,
+      std::uint64_t second_count = 0)
+  {
+    if (!m_enabled) return;
+    const cudaError_t sync_status = cudaDeviceSynchronize();
+    cuda_require(
+        sync_status, "certificate phase timing synchronize");
+    const Clock::time_point end = Clock::now();
+    const double milliseconds =
+        std::chrono::duration<double, std::milli>(
+            end - m_begin)
+            .count();
+    std::fprintf(
+        stderr,
+        "klayout.cuda.certificate.phase operation=%s level=%u "
+        "phase=%s wall_ms=%.3f first_count=%llu "
+        "second_count=%llu sync_status=%s\n",
+        m_operation, m_level, phase, milliseconds,
+        static_cast<unsigned long long>(first_count),
+        static_cast<unsigned long long>(second_count),
+        cudaGetErrorName(sync_status));
+    std::fflush(stderr);
+    m_begin = Clock::now();
+  }
+
+private:
+  using Clock = std::chrono::steady_clock;
+
+  bool m_enabled = false;
+  const char *m_operation = nullptr;
+  unsigned int m_level = 0;
+  Clock::time_point m_begin;
+};
+
 class MemoryTracker
 {
 public:
@@ -1449,6 +1513,8 @@ Status Certificate::build_gate_census(
     cuda_require(
         cudaSetDevice(m_impl->config.device),
         "antenna certificate cudaSetDevice");
+    CertificatePhaseTelemetry phases(
+        "build_gate_census", static_cast<MetalLevel>(0));
     MemoryTracker tracker(
         m_impl->config, m_impl->persistent_bytes);
     DeviceBuffer<std::uint32_t> new_gate_present;
@@ -1484,6 +1550,9 @@ Status Certificate::build_gate_census(
             device_bounds.get(), &initial_bounds,
             sizeof(initial_bounds), cudaMemcpyHostToDevice),
         "initialize scene bounds");
+    phases.mark(
+        "allocate_and_clear", annotation_owner_count,
+        poly_count);
 
     EventPair events;
     events.start();
@@ -1513,6 +1582,7 @@ Status Certificate::build_gate_census(
             &host_scalars, device_scalars.get(),
             sizeof(host_scalars), cudaMemcpyDeviceToHost),
         "validation scalar D2H");
+    phases.mark("validate_and_bound", poly_count, active_count);
     Status device_status =
         map_device_status(host_scalars.status);
     if (device_status != Status::success) return device_status;
@@ -1573,6 +1643,9 @@ Status Certificate::build_gate_census(
           cudaMemset(
               active_counts.get(), 0, active_counts.bytes()),
           "clear ACTIVE grid counts");
+      phases.mark(
+          "allocate_grid_counts", grid_cells,
+          host_scalars.active_memberships);
       count_active_memberships_grid_kernel<<<
           launch_blocks(active_count), kThreads>>>(
           device_active, active_count, annotation_owner_count,
@@ -1581,6 +1654,8 @@ Status Certificate::build_gate_census(
       cuda_require(
           cudaGetLastError(),
           "count ACTIVE grid memberships");
+      phases.mark(
+          "count_active_memberships", active_count, grid_cells);
       count_grid_kernel<<<
           launch_blocks(active_count), kThreads>>>(
           device_active, active_count, annotation_owner_count,
@@ -1588,11 +1663,15 @@ Status Certificate::build_gate_census(
           active_counts.get(), device_scalars.get());
       cuda_require(
           cudaGetLastError(), "construct ACTIVE grid counts");
+      phases.mark("count_grid_members", active_count, grid_cells);
       cuda_require(
           cudaMemcpy(
               &host_scalars, device_scalars.get(),
               sizeof(host_scalars), cudaMemcpyDeviceToHost),
           "ACTIVE grid scalar D2H");
+      phases.mark(
+          "grid_admission_copy", host_scalars.active_memberships,
+          grid_cells);
       device_status = map_device_status(host_scalars.status);
       if (device_status != Status::success) return device_status;
 
@@ -1612,6 +1691,7 @@ Status Certificate::build_gate_census(
               active_counts.get(), active_offsets.get(),
               static_cast<int>(grid_cells)),
           "scan ACTIVE grid offsets");
+      phases.mark("scan_grid_offsets", grid_cells, scan_bytes);
       // CUB receives all of its temporary storage explicitly.  Release it
       // before the fill frontier; there is no hidden Thrust allocation.
       scan_scratch.reset();
@@ -1626,17 +1706,24 @@ Status Certificate::build_gate_census(
               active_cursors.get(), active_offsets.get(),
               active_offsets.bytes(), cudaMemcpyDeviceToDevice),
           "initialize ACTIVE grid cursors");
+      phases.mark(
+          "allocate_grid_members", host_scalars.active_memberships,
+          grid_cells);
       fill_grid_kernel<<<
           launch_blocks(active_count), kThreads>>>(
           device_active, active_count, grid,
           active_cursors.get(), active_members.get(),
           &device_scalars.get()->status);
       cuda_require(cudaGetLastError(), "fill ACTIVE grid");
+      phases.mark(
+          "fill_grid_members", host_scalars.active_memberships,
+          active_count);
       cuda_require(
           cudaMemcpy(
               &host_scalars, device_scalars.get(),
               sizeof(host_scalars), cudaMemcpyDeviceToHost),
           "ACTIVE fill scalar D2H");
+      phases.mark("grid_fill_copy", active_count, grid_cells);
       device_status = map_device_status(host_scalars.status);
       if (device_status != Status::success) return device_status;
       active_cursors.reset();
@@ -1648,6 +1735,9 @@ Status Certificate::build_gate_census(
       cuda_require(
           cudaGetLastError(),
           "count gridded POLY/ACTIVE query visits");
+      phases.mark(
+          "count_gate_query_visits", poly_count,
+          host_scalars.active_memberships);
       gate_intersections_grid_kernel<<<
           launch_blocks(poly_count), kThreads>>>(
           device_poly, poly_count, device_active, grid,
@@ -1657,12 +1747,16 @@ Status Certificate::build_gate_census(
       cuda_require(
           cudaGetLastError(),
           "census gridded POLY/ACTIVE intersections");
+      phases.mark(
+          "gate_intersections", poly_count,
+          host_scalars.active_memberships);
     }
     count_gate_owners_kernel<<<
         launch_blocks(annotation_owner_count), kThreads>>>(
         new_gate_present.get(), annotation_owner_count,
         device_scalars.get());
     cuda_require(cudaGetLastError(), "count gate owners");
+    phases.mark("count_gate_owners", annotation_owner_count, 0);
     const float milliseconds = events.stop();
 
     cuda_require(
@@ -1670,6 +1764,9 @@ Status Certificate::build_gate_census(
             &host_scalars, device_scalars.get(),
             sizeof(host_scalars), cudaMemcpyDeviceToHost),
         "gate scalar census D2H");
+    phases.mark(
+        "result_copy", host_scalars.gate_owners,
+        host_scalars.positive_intersections);
     device_status = map_device_status(host_scalars.status);
     if (device_status != Status::success) return device_status;
     // The spatial index is single-use.  Drop every grid allocation before
@@ -1695,6 +1792,7 @@ Status Certificate::build_gate_census(
     m_impl->initialized = true;
     ++m_impl->epoch;
     device_scalars.reset();
+    phases.mark("commit_annotations", replacement_bytes, 0);
 
     GateCensus result;
     result.annotation_owners = annotation_owner_count;
@@ -1762,6 +1860,8 @@ Status Certificate::evaluate_checkpoint(
     cuda_require(
         cudaSetDevice(m_impl->config.device),
         "antenna certificate cudaSetDevice");
+    CertificatePhaseTelemetry phases(
+        "evaluate_checkpoint", level);
     MemoryTracker tracker(
         m_impl->config, m_impl->persistent_bytes);
     DeviceBuffer<std::uint32_t> root_gate_present;
@@ -1808,6 +1908,7 @@ Status Certificate::evaluate_checkpoint(
             device_scalars.get(), 0,
             device_scalars.bytes()),
         "clear checkpoint scalars");
+    phases.mark("allocate_and_clear", label_count, metal_count);
 
     EventPair events;
     events.start();
@@ -1816,6 +1917,7 @@ Status Certificate::evaluate_checkpoint(
         device_labels, label_count,
         &device_scalars.get()->status);
     cuda_require(cudaGetLastError(), "validate canonical labels");
+    phases.mark("validate_labels", label_count, 0);
     reduce_gate_annotations_kernel<<<
         launch_blocks(m_impl->annotation_owner_count),
         kThreads>>>(
@@ -1824,6 +1926,9 @@ Status Certificate::evaluate_checkpoint(
         label_count, root_gate_present.get(),
         root_gate_lower.get(), &device_scalars.get()->status);
     cuda_require(cudaGetLastError(), "reduce gate annotations");
+    phases.mark(
+        "reduce_gate_annotations",
+        m_impl->annotation_owner_count, label_count);
     if (root_diode_word_count) {
       mark_factor_zero_diode_roots_kernel<<<
           launch_blocks(factor_zero_diodes->count), kThreads>>>(
@@ -1835,6 +1940,9 @@ Status Certificate::evaluate_checkpoint(
       cuda_require(
           cudaGetLastError(),
           "mark factor-zero diode roots");
+      phases.mark(
+          "mark_factor_zero_diode_roots",
+          factor_zero_diodes->count, label_count);
     }
     if (metal_count) {
       sum_metal_area_kernel<<<
@@ -1843,6 +1951,7 @@ Status Certificate::evaluate_checkpoint(
           label_count, root_metal_upper.get(),
           &device_scalars.get()->status);
       cuda_require(cudaGetLastError(), "sum target-metal area");
+      phases.mark("sum_metal_area", metal_count, label_count);
     }
     evaluate_roots_kernel<<<
         launch_blocks(label_count), kThreads>>>(
@@ -1853,6 +1962,7 @@ Status Certificate::evaluate_checkpoint(
             : nullptr,
         device_scalars.get());
     cuda_require(cudaGetLastError(), "evaluate antenna roots");
+    phases.mark("evaluate_roots", label_count, 0);
     const float milliseconds = events.stop();
 
     DeviceCheckpointScalars host_scalars;
@@ -1861,6 +1971,9 @@ Status Certificate::evaluate_checkpoint(
             &host_scalars, device_scalars.get(),
             sizeof(host_scalars), cudaMemcpyDeviceToHost),
         "checkpoint scalar census D2H");
+    phases.mark(
+        "result_copy", host_scalars.roots,
+        host_scalars.uncertain_roots);
     const Status device_status =
         map_device_status(host_scalars.status);
     if (device_status != Status::success) return device_status;
@@ -1924,6 +2037,8 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
     return Status::malformed_input;
   }
 
+  CertificatePhaseTelemetry phases(
+      "evaluate_checkpoint_root_cell_refined", level);
   CheckpointCensus preliminary;
   if (known_preliminary) {
     if (!valid_level(level) || !device_labels || !label_count ||
@@ -1971,6 +2086,13 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
     if (preliminary_status != Status::success) {
       return preliminary_status;
     }
+  }
+  try {
+    phases.mark(
+        "preliminary_acquire_or_validate", label_count,
+        preliminary.uncertain_roots);
+  } catch (const CudaFailure &) {
+    return Status::cuda_error;
   }
   preliminary.preliminary_uncertain_roots =
       preliminary.uncertain_roots;
@@ -2058,6 +2180,9 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
             device_bounds.get(), &initial_bounds,
             sizeof(initial_bounds), cudaMemcpyHostToDevice),
         "initialize refinement scene bounds");
+    phases.mark(
+        "allocate_and_clear", label_count,
+        metal_count);
 
     EventPair events;
     events.start();
@@ -2068,6 +2193,7 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
     cuda_require(
         cudaGetLastError(),
         "validate refined checkpoint labels");
+    phases.mark("validate_labels", label_count, 0);
     reduce_gate_annotations_kernel<<<
         launch_blocks(m_impl->annotation_owner_count),
         kThreads>>>(
@@ -2079,6 +2205,9 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
     cuda_require(
         cudaGetLastError(),
         "reduce refined gate annotations");
+    phases.mark(
+        "reduce_gate_annotations",
+        m_impl->annotation_owner_count, label_count);
     if (root_diode_word_count) {
       mark_factor_zero_diode_roots_kernel<<<
           launch_blocks(factor_zero_diodes->count), kThreads>>>(
@@ -2090,6 +2219,9 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
       cuda_require(
           cudaGetLastError(),
           "mark refined factor-zero diode roots");
+      phases.mark(
+          "mark_factor_zero_diode_roots",
+          factor_zero_diodes->count, label_count);
     }
     if (metal_count) {
       sum_metal_area_kernel<<<
@@ -2100,6 +2232,7 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
       cuda_require(
           cudaGetLastError(),
           "sum refined target-metal area");
+      phases.mark("sum_metal_area", metal_count, label_count);
     }
     DeviceCheckpointScalars host_checkpoint_scalars;
     cuda_require(
@@ -2109,6 +2242,10 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
             sizeof(host_checkpoint_scalars),
             cudaMemcpyDeviceToHost),
         "refined checkpoint validation D2H");
+    phases.mark(
+        "annotation_metal_status_copy",
+        host_checkpoint_scalars.roots,
+        host_checkpoint_scalars.uncertain_roots);
     Status device_status =
         map_device_status(host_checkpoint_scalars.status);
     if (device_status != Status::success) return device_status;
@@ -2139,6 +2276,8 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
             &host_gate_scalars, device_gate_scalars.get(),
             sizeof(host_gate_scalars), cudaMemcpyDeviceToHost),
         "refinement geometry validation D2H");
+    phases.mark(
+        "validate_and_bound_geometry", poly_count, active_count);
     device_status = map_device_status(host_gate_scalars.status);
     if (device_status != Status::success) return device_status;
 
@@ -2163,6 +2302,7 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
             &host_bounds, device_bounds.get(),
             sizeof(host_bounds), cudaMemcpyDeviceToHost),
         "refinement scene bounds D2H");
+    phases.mark("bounds_copy", poly_count, active_count);
     device_bounds.reset();
     const std::int64_t minimum_x =
         decode_ordered_signed(host_bounds.minimum_x);
@@ -2211,6 +2351,7 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
         cudaMemset(
             active_counts.get(), 0, active_counts.bytes()),
         "clear refinement ACTIVE grid counts");
+    phases.mark("allocate_grid_counts", grid_cells, active_count);
     count_active_memberships_grid_kernel<<<
         launch_blocks(active_count), kThreads>>>(
         device_active, active_count, label_count, grid,
@@ -2219,6 +2360,8 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
     cuda_require(
         cudaGetLastError(),
         "count refinement ACTIVE grid memberships");
+    phases.mark(
+        "count_active_memberships", active_count, grid_cells);
     count_grid_kernel<<<
         launch_blocks(active_count), kThreads>>>(
         device_active, active_count, label_count, grid,
@@ -2227,11 +2370,15 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
     cuda_require(
         cudaGetLastError(),
         "construct refinement ACTIVE grid counts");
+    phases.mark("count_grid_members", active_count, grid_cells);
     cuda_require(
         cudaMemcpy(
             &host_gate_scalars, device_gate_scalars.get(),
             sizeof(host_gate_scalars), cudaMemcpyDeviceToHost),
         "refinement ACTIVE grid scalar D2H");
+    phases.mark(
+        "grid_admission_copy",
+        host_gate_scalars.active_memberships, grid_cells);
     device_status = map_device_status(host_gate_scalars.status);
     if (device_status != Status::success) return device_status;
 
@@ -2250,6 +2397,7 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
             active_counts.get(), active_offsets.get(),
             static_cast<int>(grid_cells)),
         "scan refinement ACTIVE grid offsets");
+    phases.mark("scan_grid_offsets", grid_cells, scan_bytes);
     scan_scratch.reset();
 
     if (!active_cursors.allocate(grid_cells, &tracker) ||
@@ -2262,6 +2410,9 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
             active_cursors.get(), active_offsets.get(),
             active_offsets.bytes(), cudaMemcpyDeviceToDevice),
         "initialize refinement ACTIVE grid cursors");
+    phases.mark(
+        "allocate_grid_members",
+        host_gate_scalars.active_memberships, grid_cells);
     fill_grid_kernel<<<
         launch_blocks(active_count), kThreads>>>(
         device_active, active_count, grid,
@@ -2270,11 +2421,15 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
     cuda_require(
         cudaGetLastError(),
         "fill refinement ACTIVE grid");
+    phases.mark(
+        "fill_grid_members",
+        host_gate_scalars.active_memberships, active_count);
     cuda_require(
         cudaMemcpy(
             &host_gate_scalars, device_gate_scalars.get(),
             sizeof(host_gate_scalars), cudaMemcpyDeviceToHost),
         "refinement ACTIVE fill scalar D2H");
+    phases.mark("grid_fill_copy", active_count, grid_cells);
     device_status = map_device_status(host_gate_scalars.status);
     if (device_status != Status::success) return device_status;
     active_cursors.reset();
@@ -2294,6 +2449,9 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
     cuda_require(
         cudaGetLastError(),
         "count root-cell refinement work");
+    phases.mark(
+        "count_refinement_work", poly_count,
+        host_gate_scalars.active_memberships);
     DeviceRefinementScalars host_refinement_scalars;
     cuda_require(
         cudaMemcpy(
@@ -2302,6 +2460,10 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
             sizeof(host_refinement_scalars),
             cudaMemcpyDeviceToHost),
         "root-cell refinement count D2H");
+    phases.mark(
+        "refinement_count_copy",
+        host_refinement_scalars.records,
+        host_refinement_scalars.candidate_visits);
     device_status =
         map_device_status(host_refinement_scalars.status);
     if (device_status != Status::success) return device_status;
@@ -2324,6 +2486,9 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
          !sorted_areas.allocate(record_count, &tracker))) {
       return Status::capacity_exceeded;
     }
+    phases.mark(
+        "allocate_refinement_records", record_count,
+        host_refinement_scalars.candidate_visits);
 
     if (record_count) {
       fill_root_cell_refinement_records_kernel<<<
@@ -2341,6 +2506,9 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
       cuda_require(
           cudaGetLastError(),
           "fill root-cell refinement records");
+      phases.mark(
+          "fill_refinement_records", record_count,
+          host_refinement_scalars.candidate_visits);
       cuda_require(
           cudaMemcpy(
               &host_refinement_scalars,
@@ -2348,6 +2516,10 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
               sizeof(host_refinement_scalars),
               cudaMemcpyDeviceToHost),
           "root-cell refinement fill D2H");
+      phases.mark(
+          "refinement_fill_copy",
+          host_refinement_scalars.filled_records,
+          host_refinement_scalars.positive_cell_witnesses);
       device_status =
           map_device_status(host_refinement_scalars.status);
       if (device_status != Status::success) return device_status;
@@ -2363,6 +2535,7 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
       active_members.reset();
       active_offsets.reset();
       active_counts.reset();
+      phases.mark("release_active_grid", record_count, 0);
 
       std::size_t sort_bytes = 0;
       cuda_require(
@@ -2374,15 +2547,19 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
       if (!sort_scratch.allocate(sort_bytes, &tracker)) {
         return Status::capacity_exceeded;
       }
+      phases.mark(
+          "allocate_sort_scratch", record_count, sort_bytes);
       cuda_require(
           cub::DeviceRadixSort::SortPairs(
               sort_scratch.get(), sort_bytes, input_keys.get(),
               sorted_keys.get(), input_areas.get(),
               sorted_areas.get(), static_cast<int>(record_count)),
           "sort root-cell refinement records");
+      phases.mark("sort_refinement_records", record_count, sort_bytes);
       sort_scratch.reset();
       input_keys.reset();
       input_areas.reset();
+      phases.mark("release_sort_inputs", record_count, 0);
 
       reset_uncertain_root_gate_lower_kernel<<<
           launch_blocks(label_count), kThreads>>>(
@@ -2394,6 +2571,7 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
       cuda_require(
           cudaGetLastError(),
           "reset uncertain root gate lower bounds");
+      phases.mark("reset_uncertain_roots", label_count, record_count);
       accumulate_sorted_root_cell_areas_kernel<<<
           launch_blocks(record_count), kThreads>>>(
           sorted_keys.get(), sorted_areas.get(), record_count,
@@ -2402,6 +2580,8 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
       cuda_require(
           cudaGetLastError(),
           "accumulate disjoint root-cell gate witnesses");
+      phases.mark(
+          "accumulate_root_cell_areas", record_count, label_count);
     }
 
     cuda_require(
@@ -2420,6 +2600,7 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
     cuda_require(
         cudaGetLastError(),
         "evaluate root-cell refined antenna roots");
+    phases.mark("evaluate_refined_roots", label_count, record_count);
     const float milliseconds = events.stop();
 
     cuda_require(
@@ -2436,6 +2617,10 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
             sizeof(host_refinement_scalars),
             cudaMemcpyDeviceToHost),
         "root-cell refined census D2H");
+    phases.mark(
+        "result_copy",
+        host_checkpoint_scalars.uncertain_roots,
+        host_refinement_scalars.root_cells);
     device_status =
         map_device_status(
             host_checkpoint_scalars.status |
