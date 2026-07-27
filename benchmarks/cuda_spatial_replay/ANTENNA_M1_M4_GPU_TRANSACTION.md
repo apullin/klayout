@@ -224,6 +224,8 @@ Before production timing is booked:
   traverse each occupied cell cooperatively on the GPU.
 - [x] Implement memory-bounded logical metal stages as domain sub-appends,
   removing the duplicated assembled geometry frontier.
+- [x] Compact exact connectivity memberships from 24 to 16 bytes with a
+  lossless signed-64-bit cell key and block-reduced bounds.
 - [ ] Demonstrate an accounted peak within the 10,240-MiB qualification card,
   including caller staging and temporary sort/reduction storage.
 - [ ] Run matched repeated full-launch control/candidate trials and book only

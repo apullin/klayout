@@ -874,6 +874,51 @@ std::vector<std::uint32_t> copy_resident_labels(
   return labels;
 }
 
+void test_compact_cell_keys()
+{
+  ac::Config config = base_config(1, 10);
+  allow(&config, 0, 0);
+  ac::Connectivity gpu(config);
+  Oracle oracle(config);
+  constexpr std::int64_t base = INT64_C(50000000000);
+  run_stage(
+      &gpu, &oracle,
+      {{base, -base, base + 10, -base + 10, 0, 0},
+       {base + 10, -base + 2, base + 20, -base + 8, 1, 0}},
+      2, "compact cell key beyond int32 bins");
+
+  ac::Config multiblock_config = base_config(1, 10);
+  allow(&multiblock_config, 0, 0);
+  ac::Connectivity multiblock_gpu(multiblock_config);
+  Oracle multiblock_oracle(multiblock_config);
+  std::vector<ac::RectI64> multiblock_rectangles;
+  multiblock_rectangles.reserve(600);
+  constexpr std::int64_t low = INT64_C(-9000000000000000000);
+  constexpr std::int64_t high = INT64_C(9000000000000000000);
+  for (std::uint32_t owner = 0; owner < 600; ++owner) {
+    const std::int64_t x =
+        owner < 300 ? low + owner * 20
+                    : high - (owner - 300) * 20;
+    multiblock_rectangles.push_back(
+        {x, 0, x + 1, 1, owner, 0});
+  }
+  run_stage(
+      &multiblock_gpu, &multiblock_oracle,
+      multiblock_rectangles, multiblock_rectangles.size(),
+      "compact cell key multi-block extreme bounds");
+
+  ac::Config overflow_config = base_config(1, 1);
+  allow(&overflow_config, 0, 0);
+  ac::Connectivity overflow_gpu(overflow_config);
+  const std::array<ac::RectI64, 2> unrepresentable_grid = {{
+      {INT64_MIN, INT64_MIN, INT64_MIN + 1, INT64_MIN + 1, 0, 0},
+      {INT64_MAX - 1, INT64_MAX - 1, INT64_MAX, INT64_MAX, 1, 0}}};
+  require_failure_unchanged(
+      &overflow_gpu, unrepresentable_grid.data(),
+      unrepresentable_grid.size(), ac::Status::capacity_exceeded,
+      "compact cell key bounding-grid overflow", 2);
+}
+
 void test_resident_label_view()
 {
   ac::Config config = base_config(1, 8);
@@ -1084,13 +1129,14 @@ int main()
     test_staged_antenna_bridge(true);
     test_fail_closed_paths();
     test_device_input();
+    test_compact_cell_keys();
     test_resident_label_view();
     test_consuming_device_ownership();
     test_seeded_random_differentials(false);
     test_seeded_random_differentials(true);
     std::cout
         << "antenna_connectivity_gpu_test: PASS"
-        << " directed=13 random_seeds=24 stages_per_seed=4"
+        << " directed=14 random_seeds=24 stages_per_seed=4"
         << std::endl;
     return EXIT_SUCCESS;
   } catch (const std::exception &error) {

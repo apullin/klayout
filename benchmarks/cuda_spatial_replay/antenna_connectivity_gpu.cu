@@ -233,22 +233,20 @@ ac::Status validate_config(const ac::Config &config)
 
 struct CellMember
 {
-  std::int64_t x;
-  std::int64_t y;
+  std::uint64_t cell;
   std::uint32_t node;
   std::uint32_t reserved;
 };
 
 static_assert(sizeof(ac::RectI64) == 40, "RectI64 size changed");
-static_assert(sizeof(CellMember) == 24, "CellMember size changed");
+static_assert(sizeof(CellMember) == 16, "CellMember size changed");
 
 struct CellMemberLess
 {
   __host__ __device__ bool operator()(
       const CellMember &first, const CellMember &second) const
   {
-    if (first.x != second.x) return first.x < second.x;
-    if (first.y != second.y) return first.y < second.y;
+    if (first.cell != second.cell) return first.cell < second.cell;
     return first.node < second.node;
   }
 };
@@ -258,9 +256,19 @@ struct SameCell
   __host__ __device__ bool operator()(
       const CellMember &first, const CellMember &second) const
   {
-    return first.x == second.x && first.y == second.y;
+    return first.cell == second.cell;
   }
 };
+
+struct CellBounds
+{
+  unsigned long long minimum_x;
+  unsigned long long minimum_y;
+  unsigned long long maximum_x;
+  unsigned long long maximum_y;
+};
+
+static_assert(sizeof(CellBounds) == 32, "CellBounds size changed");
 
 struct IsSet
 {
@@ -300,6 +308,13 @@ __device__ std::int64_t floor_div_device(
   std::int64_t quotient = value / divisor;
   if (value % divisor < 0) --quotient;
   return quotient;
+}
+
+__host__ __device__ std::uint64_t ordered_i64(
+    std::int64_t value)
+{
+  return static_cast<std::uint64_t>(value) ^
+         UINT64_C(0x8000000000000000);
 }
 
 __device__ bool inclusive_span_size(
@@ -362,8 +377,10 @@ __global__ void count_memberships_kernel(
     std::uint32_t domain_count, std::int64_t bin_size,
     std::uint64_t closed_domains,
     std::uint32_t *owner_domains,
-    std::uint64_t *membership_counts, std::uint32_t *status)
+    std::uint64_t *membership_counts,
+    unsigned long long *cell_bounds, std::uint32_t *status)
 {
+  CellBounds local = {ULLONG_MAX, ULLONG_MAX, 0, 0};
   for (std::uint64_t id =
            static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
            threadIdx.x;
@@ -424,6 +441,48 @@ __global__ void count_memberships_kernel(
       continue;
     }
     membership_counts[id] = width * height;
+    const unsigned long long ordered_x0 = ordered_i64(x0);
+    const unsigned long long ordered_y0 = ordered_i64(y0);
+    const unsigned long long ordered_x1 = ordered_i64(x1);
+    const unsigned long long ordered_y1 = ordered_i64(y1);
+    local.minimum_x = min(local.minimum_x, ordered_x0);
+    local.minimum_y = min(local.minimum_y, ordered_y0);
+    local.maximum_x = max(local.maximum_x, ordered_x1);
+    local.maximum_y = max(local.maximum_y, ordered_y1);
+  }
+
+  __shared__ CellBounds block_bounds[kThreads];
+  block_bounds[threadIdx.x] = local;
+  __syncthreads();
+  for (std::uint32_t stride = blockDim.x / 2; stride;
+       stride /= 2) {
+    if (threadIdx.x < stride) {
+      const CellBounds other =
+          block_bounds[threadIdx.x + stride];
+      CellBounds &current = block_bounds[threadIdx.x];
+      if (other.minimum_x <= other.maximum_x) {
+        if (current.minimum_x <= current.maximum_x) {
+          current.minimum_x =
+              min(current.minimum_x, other.minimum_x);
+          current.minimum_y =
+              min(current.minimum_y, other.minimum_y);
+          current.maximum_x =
+              max(current.maximum_x, other.maximum_x);
+          current.maximum_y =
+              max(current.maximum_y, other.maximum_y);
+        } else {
+          current = other;
+        }
+      }
+    }
+    __syncthreads();
+  }
+  if (!threadIdx.x &&
+      block_bounds[0].minimum_x <= block_bounds[0].maximum_x) {
+    atomicMin(cell_bounds + 0, block_bounds[0].minimum_x);
+    atomicMin(cell_bounds + 1, block_bounds[0].minimum_y);
+    atomicMax(cell_bounds + 2, block_bounds[0].maximum_x);
+    atomicMax(cell_bounds + 3, block_bounds[0].maximum_y);
   }
 }
 
@@ -446,7 +505,8 @@ __global__ void validate_new_owners_kernel(
 __global__ void fill_memberships_kernel(
     const ac::RectI64 *rectangles, std::uint64_t count,
     std::int64_t bin_size, const std::uint64_t *offsets,
-    CellMember *members)
+    std::uint64_t minimum_x, std::uint64_t minimum_y,
+    std::uint64_t grid_height, CellMember *members)
 {
   for (std::uint64_t id =
            static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
@@ -465,8 +525,11 @@ __global__ void fill_memberships_kernel(
     std::uint64_t cursor = offsets[id];
     for (std::int64_t y = y0;; ++y) {
       for (std::int64_t x = x0;; ++x) {
+        const std::uint64_t cell =
+            (ordered_i64(x) - minimum_x) * grid_height +
+            (ordered_i64(y) - minimum_y);
         members[cursor++] = {
-            x, y, static_cast<std::uint32_t>(id), 0};
+            cell, static_cast<std::uint32_t>(id), 0};
         if (x == x1) break;
       }
       if (y == y1) break;
@@ -1353,6 +1416,10 @@ Status Connectivity::append_stage_impl(
         config.relation_rows.begin(),
         config.relation_rows.end());
     thrust::device_vector<std::uint32_t> device_status(1, 0);
+    const std::array<unsigned long long, 4> initial_cell_bounds = {
+        ULLONG_MAX, ULLONG_MAX, 0, 0};
+    thrust::device_vector<unsigned long long> cell_bounds(
+        initial_cell_bounds.begin(), initial_cell_bounds.end());
     if (!vector_allocation_admitted<std::uint64_t>(
             config, total_rectangle_count)) {
       return Status::capacity_exceeded;
@@ -1368,6 +1435,7 @@ Status Connectivity::append_stage_impl(
         m_impl->closed_domains,
         thrust::raw_pointer_cast(work_owner_domains.data()),
         thrust::raw_pointer_cast(membership_counts.data()),
+        thrust::raw_pointer_cast(cell_bounds.data()),
         thrust::raw_pointer_cast(device_status.data()));
     cuda_require(
         cudaGetLastError(),
@@ -1390,6 +1458,36 @@ Status Connectivity::append_stage_impl(
         device_status,
         "antenna connectivity membership status D2H");
     if (flags) return map_device_status(flags);
+    std::array<unsigned long long, 4> host_cell_bounds{};
+    cuda_require(
+        cudaMemcpy(
+            host_cell_bounds.data(),
+            thrust::raw_pointer_cast(cell_bounds.data()),
+            sizeof(host_cell_bounds), cudaMemcpyDeviceToHost),
+        "antenna connectivity cell bounds D2H");
+    release_device_vector(&cell_bounds);
+    const auto inclusive_ordered_span =
+        [](std::uint64_t low, std::uint64_t high,
+           std::uint64_t *size) {
+          if (high < low || high - low == UINT64_MAX) {
+            return false;
+          }
+          *size = high - low + 1;
+          return true;
+        };
+    std::uint64_t grid_width = 0;
+    std::uint64_t grid_height = 0;
+    std::uint64_t grid_cells = 0;
+    if (!inclusive_ordered_span(
+            host_cell_bounds[0], host_cell_bounds[2],
+            &grid_width) ||
+        !inclusive_ordered_span(
+            host_cell_bounds[1], host_cell_bounds[3],
+            &grid_height) ||
+        !byte_product(grid_width, grid_height, &grid_cells) ||
+        !grid_cells) {
+      return Status::capacity_exceeded;
+    }
 
     const std::uint64_t membership_total = thrust::reduce(
         thrust::device, membership_counts.begin(),
@@ -1424,6 +1522,7 @@ Status Connectivity::append_stage_impl(
         thrust::raw_pointer_cast(work_rectangles.data()),
         total_rectangle_count, config.bin_size,
         thrust::raw_pointer_cast(membership_offsets.data()),
+        host_cell_bounds[0], host_cell_bounds[1], grid_height,
         thrust::raw_pointer_cast(members.data()));
     cuda_require(
         cudaGetLastError(),
