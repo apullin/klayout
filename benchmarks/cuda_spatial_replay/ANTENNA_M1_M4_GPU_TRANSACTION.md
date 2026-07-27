@@ -247,11 +247,19 @@ Before production timing is booked:
   frontier strands about 2.28 GiB and prevents the M2 certificate from
   entering under the 9-GiB transaction cap.  The exact integrated replay now
   completes all four checkpoints under the cap.
-- [ ] Fuse the overwhelmingly singleton M2 edge stream into one exact pass.
+- [x] Fuse the overwhelmingly singleton M2 edge stream into one exact pass.
   VIA1 has one rectangle for every one of its 20,178,022 owners, and M2 has
   only 468 more rectangles than its 22,945,976 owners.  Union and census
   singleton-singleton edges during the count pass, then restrict the fill
-  pass to pairs involving a multi-rectangle owner.
+  pass to pairs involving a multi-rectangle owner.  Rejected as a production
+  speed optimization: the exact isolated replay was 333.32 seconds versus
+  the prior 323.64-second record, 9.68 seconds or 3.0% slower.  It did reduce
+  peak device memory from 8,595 to 7,769 MiB, but M2 remained 324.50 seconds.
+- [ ] Collapse identical single-rectangle conductor geometry into an exact
+  weighted quotient before spatial enumeration.  The authenticated
+  production census projects 61.1% fewer M1 rectangles, 90.7% fewer VIA1
+  rectangles, and 74.2% fewer M2 rectangles while preserving the exact
+  weighted internal pair totals and all multi-tile exceptions.
 - [ ] Enumerate only canonical-start membership buckets.  A count-only
   production projection removes 682.7 million M2 pair tests (21.1%) by
   requiring a pair's cell to contain its maximum left and bottom coordinate;
