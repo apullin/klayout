@@ -397,6 +397,20 @@ Before production timing is booked:
   fallback-clean, and retained the canonical report hash.  The initial
   CONTACT.4-OOM diagnostic and a semantically invalid, over-conservative
   antenna-capacity precheck are explicitly rejected rather than booked.
+- [x] Compose the builder-authenticated antenna census with the raw-WELL GRID
+  certificate in the coordinated jobs-10 full gate.  Three exact internal
+  full-launch walls were 37.520, 37.002, and 37.654 seconds (37.392 seconds
+  mean), versus the preceding accepted jobs-10 record of 39.836, 39.914, and
+  39.772 seconds (39.841 seconds mean): **2.449 real seconds or 6.15% less**.
+  This is a successive `N=3` accepted-record comparison, not an interleaved
+  A/B.  Every antenna sample reported `census=builder-authenticated`, zero
+  re-audit time, a raw certified-empty result, and no target-path
+  fallback/decline.  The exact canonical report SHA-256 remained
+  `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+  Evidence:
+  `.scratchpad/cuda-runs/combined-full-grid-census-candidate.{zeEFWe,Zb6gtr,4L2k8i}`
+  and
+  `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.{IfJwuM,OJyi6q,qB9NQp}`.
 - [ ] Run matched repeated full-launch control/candidate trials and book only
   the measured real-seconds and percent reduction.
 - [x] Re-profile the new roof and select the next largest contiguous target.

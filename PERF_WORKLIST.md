@@ -3208,6 +3208,30 @@ not just wall time.
         deferred hashes without rerunning a sample.  Evidence:
         `.scratchpad/cuda-runs/grid-well-raw-cert-ab.AY03kS`.
 
+      - [x] **Compose the raw-WELL GRID certificate and builder-authenticated
+        antenna census in the coordinated jobs-10 full gate:** three exact
+        internal full-launch screens measured **37.520, 37.002, and 37.654 s**
+        (37.392 s mean, 0.652 s range).  Against the immediately preceding
+        accepted jobs-10 screens at 39.836, 39.914, and 39.772 s (39.841 s
+        mean), this is **2.449 real seconds / 6.15% less full-launch wall**.
+        This is an `N=3` successive accepted-record comparison, not an
+        interleaved A/B.  External wrapper walls were 38.64, 38.14, and
+        38.75 s.
+
+        All three GRID transactions reported the raw rectilinear-lattice
+        certificate, and all three antenna transactions reported
+        `census=builder-authenticated`, zero re-audit time, and a raw
+        certified-empty result.  Neither target path declined or fell back.
+        Every merged report retained canonical SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+        Independent manifest comparison found only `deck_sha256` changed:
+        all 157 category records, category ownership/order, all other fields,
+        and the 11-shard order remained identical.  Each run's pinned runtime
+        hash list was also unchanged before and after execution.  Evidence:
+        `.scratchpad/cuda-runs/combined-full-grid-census-candidate.{zeEFWe,Zb6gtr,4L2k8i}`
+        and
+        `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.{IfJwuM,OJyi6q,qB9NQp}`.
+
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
         second and third reusable compositions, separate canonical

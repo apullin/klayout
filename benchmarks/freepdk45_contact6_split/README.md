@@ -104,6 +104,22 @@ and two built merges.  All six reports retained canonical shard SHA-256
 This is an owner-only result pending the coordinated full gate.  Evidence:
 `.scratchpad/cuda-runs/grid-well-raw-cert-ab.AY03kS`.
 
+That pending gate is now closed.  With the raw-WELL certificate composed with
+the builder-authenticated antenna census, three exact jobs-10 internal
+full-launch walls were 37.520, 37.002, and 37.654 seconds (37.392 seconds
+mean), versus the preceding accepted jobs-10 record at 39.836, 39.914, and
+39.772 seconds (39.841 seconds mean): **2.449 real seconds / 6.15% less
+full-launch wall**.  This is a successive `N=3` accepted-record comparison,
+not an interleaved A/B.  Each GRID sample reported
+`KLAYOUT_RAW_UNION_GRID_CERT outcome=certified-empty` with
+`reason=raw-rectilinear-lattice-proof`, no target-path fallback/decline, and
+the exact canonical report SHA-256
+`01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+Evidence:
+`.scratchpad/cuda-runs/combined-full-grid-census-candidate.{zeEFWe,Zb6gtr,4L2k8i}`
+and
+`.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.{IfJwuM,OJyi6q,qB9NQp}`.
+
 The qualified executable, CUDA backend, transformed deck, deck-bound
 manifest, and x2 input SHA-256 values are respectively:
 
