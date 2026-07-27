@@ -80,6 +80,9 @@ struct Limits
   std::uint64_t max_pair_occurrences = UINT64_C(1000000000);
   std::uint64_t max_unique_candidates = UINT64_C(500000000);
   std::uint32_t max_cell_members = 1000000;
+  // Conservative pre-filter work guard.  A cell whose full k*(k-1)/2 pair
+  // universe exceeds this bound declines before the serial relation filter.
+  std::uint64_t max_pair_tests_per_cell = UINT64_C(100000000);
   std::uint32_t max_dsu_iterations = 128;
   // Hard admission envelope.  Every major allocation and sort scratch
   // frontier is checked against both cudaMemGetInfo() and this cap before the

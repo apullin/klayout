@@ -101,6 +101,17 @@ bool byte_product(
   return true;
 }
 
+struct SaturatingAddU64
+{
+  __host__ __device__ std::uint64_t operator()(
+      std::uint64_t first, std::uint64_t second) const
+  {
+    return first > UINT64_MAX - second
+               ? UINT64_MAX
+               : first + second;
+  }
+};
+
 bool device_bytes_admitted(
     const ac::Config &config, std::uint64_t requested_bytes)
 {
@@ -174,6 +185,7 @@ ac::Status validate_config(const ac::Config &config)
       !config.limits.max_pair_occurrences ||
       !config.limits.max_unique_candidates ||
       !config.limits.max_cell_members ||
+      !config.limits.max_pair_tests_per_cell ||
       !config.limits.max_dsu_iterations ||
       !config.limits.max_device_bytes ||
       config.limits.min_device_free_after_bytes >=
@@ -462,6 +474,7 @@ __global__ void count_pair_occurrences_kernel(
     const std::uint64_t *relation_rows,
     std::uint32_t stage_begin,
     std::uint32_t max_cell_members,
+    std::uint64_t max_pair_tests_per_cell,
     std::uint64_t *pair_counts,
     std::uint32_t *status)
 {
@@ -473,6 +486,15 @@ __global__ void count_pair_occurrences_kernel(
     const std::uint64_t begin = group_offsets[group];
     const std::uint64_t count = group_counts[group];
     if (count > max_cell_members) {
+      atomicOr(status, std::uint32_t(kCellCapacity));
+      pair_counts[group] = 0;
+      continue;
+    }
+    const std::uint64_t half = count / 2;
+    const std::uint64_t other =
+        count & 1 ? count : count ? count - 1 : 0;
+    const std::uint64_t pair_tests = half * other;
+    if (pair_tests > max_pair_tests_per_cell) {
       atomicOr(status, std::uint32_t(kCellCapacity));
       pair_counts[group] = 0;
       continue;
@@ -1116,6 +1138,17 @@ Status Connectivity::append_stage_impl(
         "antenna connectivity membership status D2H");
     if (flags) return map_device_status(flags);
 
+    const std::uint64_t membership_total = thrust::reduce(
+        thrust::device, membership_counts.begin(),
+        membership_counts.end(), UINT64_C(0),
+        SaturatingAddU64());
+    if (!membership_total || membership_total == UINT64_MAX ||
+        membership_total > config.limits.max_memberships) {
+      return Status::capacity_exceeded;
+    }
+
+    // Only scan after a saturating aggregate proves that every prefix and the
+    // terminal offset fit uint64 and the configured allocation envelope.
     if (!vector_allocation_admitted<std::uint64_t>(
             config, total_rectangle_count)) {
       return Status::capacity_exceeded;
@@ -1126,14 +1159,6 @@ Status Connectivity::append_stage_impl(
         thrust::device, membership_counts.begin(),
         membership_counts.end(), membership_offsets.begin(),
         UINT64_C(0));
-    const std::uint64_t membership_total = thrust::reduce(
-        thrust::device, membership_counts.begin(),
-        membership_counts.end(), UINT64_C(0),
-        thrust::plus<std::uint64_t>());
-    if (!membership_total ||
-        membership_total > config.limits.max_memberships) {
-      return Status::capacity_exceeded;
-    }
 
     if (!vector_allocation_admitted<CellMember>(
             config, membership_total)) {
@@ -1212,6 +1237,7 @@ Status Connectivity::append_stage_impl(
         thrust::raw_pointer_cast(work_rectangles.data()),
         thrust::raw_pointer_cast(relation_rows.data()),
         stage_begin, config.limits.max_cell_members,
+        config.limits.max_pair_tests_per_cell,
         thrust::raw_pointer_cast(pair_counts.data()),
         thrust::raw_pointer_cast(device_status.data()));
     cuda_require(
@@ -1227,8 +1253,9 @@ Status Connectivity::append_stage_impl(
 
     const std::uint64_t pair_occurrences = thrust::reduce(
         thrust::device, pair_counts.begin(), pair_counts.end(),
-        UINT64_C(0), thrust::plus<std::uint64_t>());
-    if (pair_occurrences >
+        UINT64_C(0), SaturatingAddU64());
+    if (pair_occurrences == UINT64_MAX ||
+        pair_occurrences >
         config.limits.max_pair_occurrences) {
       return Status::capacity_exceeded;
     }

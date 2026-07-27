@@ -616,6 +616,32 @@ void test_fail_closed_paths()
       &membership_gpu, &broad, 1,
       ac::Status::capacity_exceeded, "membership capacity");
 
+  ac::Config overflow_config = base_config(1, 2);
+  allow(&overflow_config, 0, 0);
+  overflow_config.limits.max_memberships = UINT64_MAX;
+  ac::Connectivity overflow_gpu(overflow_config);
+  const std::array<ac::RectI64, 2> overflowing_memberships = {{
+      {INT64_MIN, 0, INT64_MAX, 1, 0, 0},
+      {INT64_MIN, 0, INT64_MAX, 1, 1, 0}}};
+  require_failure_unchanged(
+      &overflow_gpu, overflowing_memberships.data(),
+      overflowing_memberships.size(),
+      ac::Status::capacity_exceeded,
+      "saturating membership total", 2);
+
+  ac::Config cell_work_config = base_config(1, 100);
+  allow(&cell_work_config, 0, 0);
+  cell_work_config.limits.max_pair_tests_per_cell = 2;
+  ac::Connectivity cell_work_gpu(cell_work_config);
+  const std::array<ac::RectI64, 3> dense_cell = {{
+      {1, 1, 2, 2, 0, 0},
+      {3, 1, 4, 2, 1, 0},
+      {5, 1, 6, 2, 2, 0}}};
+  require_failure_unchanged(
+      &cell_work_gpu, dense_cell.data(), dense_cell.size(),
+      ac::Status::capacity_exceeded,
+      "dense-cell pair-test guard", 3);
+
   ac::Config byte_cap_config = base_config(1, 10);
   allow(&byte_cap_config, 0, 0);
   byte_cap_config.limits.max_device_bytes =
