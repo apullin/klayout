@@ -294,17 +294,37 @@ Before production timing is booked:
   unchanged-output, memcheck, and racecheck gates; its isolated exact
   production replay reduced wall from 320.96 to 216.98 seconds, saving
   103.98 real seconds (32.4% less time).
-- [ ] Retain the preliminary device root annotations through root-cell
+- [x] Retain the preliminary device root annotations through root-cell
   refinement, eliminating the third gate/metal/root reduction while
-  preserving the 10-GiB transaction cap.
-- [ ] Remove M2 root-reduction contention.  Complete phase telemetry assigns
+  preserving the 10-GiB transaction cap.  Deferred as unnecessary after the
+  one-shot atomic fix reduced the repeated M2 metal reduction to 8.14 ms;
+  retaining a cross-call device workspace no longer clears the whole-run
+  threshold.
+- [x] Remove M2 root-reduction contention.  Complete phase telemetry assigns
   102.98 seconds to the first certificate evaluation; instrument and replace
   the contended per-tile/per-owner atomics with exact sorted or segmented
-  reductions.
-- [ ] Optimize the true root-cell refinement remainder: ACTIVE grid build,
+  reductions.  Commit `96a722e` replaced retrying checked CAS loops with one
+  hardware `atomicAdd` plus exact prior-value overflow detection.  Directed
+  exact-`ULLONG_MAX`, deliberate `2^64` overflow/unchanged-output, focused,
+  smoke, memcheck, and racecheck gates passed.  The isolated exact replay
+  reduced wall from 216.98 to 10.32 seconds, removing 206.66 real seconds
+  (95.2% less time); M2 evaluation fell to 19.5 ms and refinement to 258 ms.
+- [x] Optimize the true root-cell refinement remainder: ACTIVE grid build,
   uncertain POLY/ACTIVE record generation, CUB key/area sort, and equal-key
   maximum-area accumulation.  Measure each phase independently before
-  selecting the next kernel.
+  selecting the next kernel.  Fine telemetry now accounts for the complete
+  258-ms M2 refinement, only 2.5% of the 10.32-second process wall; defer
+  further kernel work unless a low-risk fusion appears.
+- [ ] Re-evaluate the banked exact geometry quotient now that certificate
+  contention is gone.  M1 plus M2 stages now total 3.86 seconds (37.4% of
+  process wall), so the previously sub-threshold connectivity reductions can
+  again clear the 5% whole-run gate.
+- [ ] Reduce the 3.89-second request identity/setup path.  Attribute compact
+  hierarchy validation and digest work separately, then add exact immutable
+  capture caching or a faster checked implementation without weakening the
+  request/capture identity contract.
+- [ ] Account for and reduce the 1.57-second wrapper/process overhead outside
+  the 8.74-second backend transaction.
 - [x] Demonstrate an accounted peak within the 10,240-MiB qualification card,
   including caller staging and temporary sort/reduction storage.
 - [ ] Run matched repeated full-launch control/candidate trials and book only
