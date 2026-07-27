@@ -1072,6 +1072,57 @@ void test_arithmetic_overflow_is_uncertain_failure()
   require(
       std::memcmp(&sentinel, &expected, sizeof(sentinel)) == 0,
       "overflow changed checkpoint output");
+
+  constexpr std::int64_t two_to_31 = INT64_C(2147483648);
+  constexpr std::int64_t two_to_32 = INT64_C(4294967296);
+  const std::vector<ac::RectI64> exact_maximum_sum = {
+      // 2^32 * 2^31 = 2^63.
+      rectangle(0, 0, two_to_32, two_to_31, 2),
+      // 1 * INT64_MAX = 2^63 - 1.
+      rectangle(
+          two_to_32 + 1, 0, two_to_32 + 2,
+          INT64_MAX, 2)};
+  DeviceArray<ac::RectI64> device_exact_maximum(
+      exact_maximum_sum);
+  acc::CheckpointCensus exact_maximum;
+  require_status(
+      certificate.evaluate_checkpoint(
+          acc::MetalLevel::metal4,
+          device_exact_maximum.get(),
+          device_exact_maximum.size(), device_labels.get(),
+          labels.size(), &exact_maximum),
+      acc::Status::success,
+      "checked atomic exact ULLONG_MAX sum");
+  require(
+      exact_maximum.roots_with_metal == 1 &&
+          exact_maximum.uncertain_roots == 1,
+      "exact ULLONG_MAX metal sum changed checkpoint census");
+
+  const std::vector<ac::RectI64> overflowing_sum = {
+      rectangle(0, 0, two_to_32, two_to_31, 2),
+      rectangle(
+          two_to_32 + 1, 0, 2 * two_to_32 + 1,
+          two_to_31, 2)};
+  DeviceArray<ac::RectI64> device_overflowing_sum(
+      overflowing_sum);
+  acc::CheckpointCensus addition_sentinel;
+  addition_sentinel.labels = 31337;
+  addition_sentinel.uncertain_roots = 424242;
+  const acc::CheckpointCensus addition_expected =
+      addition_sentinel;
+  require_status(
+      certificate.evaluate_checkpoint(
+          acc::MetalLevel::metal4,
+          device_overflowing_sum.get(),
+          device_overflowing_sum.size(), device_labels.get(),
+          labels.size(), &addition_sentinel),
+      acc::Status::arithmetic_overflow,
+      "checked atomic addition overflow");
+  require(
+      std::memcmp(
+          &addition_sentinel, &addition_expected,
+          sizeof(addition_sentinel)) == 0,
+      "atomic addition overflow changed checkpoint output");
 }
 
 void test_spatial_candidate_scaling()
