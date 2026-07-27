@@ -713,6 +713,79 @@ void test_spatial_candidate_scaling()
       "spatial path regressed toward Cartesian product");
 }
 
+void test_query_visit_block_reduction_and_exact_cap()
+{
+  constexpr std::uint32_t poly_count = 257;
+  const std::uint64_t owner_count =
+      static_cast<std::uint64_t>(poly_count) + 1;
+  std::vector<ac::RectI64> poly;
+  poly.reserve(poly_count);
+  for (std::uint32_t id = 0; id < poly_count; ++id) {
+    poly.push_back(rectangle(0, 0, 10, 10, id));
+  }
+  const std::vector<ac::RectI64> active = {
+      rectangle(0, 0, 10, 10, poly_count)};
+  DeviceArray<ac::RectI64> device_poly(poly);
+  DeviceArray<ac::RectI64> device_active(active);
+
+  acc::Config exact_config = base_config();
+  exact_config.limits.max_query_visits = poly_count;
+  acc::Certificate exact_certificate(exact_config);
+  acc::GateCensus exact;
+  require_status(
+      exact_certificate.build_gate_census(
+          device_poly.get(), device_poly.size(),
+          device_active.get(), device_active.size(),
+          owner_count, &exact),
+      acc::Status::success, "block query-visit exact cap");
+  require(
+      exact.candidate_visits == poly_count,
+      "block query-visit reduction changed exact counter");
+  require(
+      exact.positive_intersections == poly_count &&
+          exact.gate_owners == poly_count,
+      "block query-visit reduction changed exact predicates");
+
+  acc::Config limited_config = base_config();
+  limited_config.limits.max_query_visits = poly_count - 1;
+  acc::Certificate limited_certificate(limited_config);
+  acc::GateCensus baseline;
+  require_status(
+      limited_certificate.build_gate_census(
+          device_poly.get(), 1, device_active.get(),
+          device_active.size(), owner_count, &baseline),
+      acc::Status::success, "block query-visit cap baseline");
+  acc::GateAnnotationDeviceView before;
+  require_status(
+      limited_certificate.device_gate_view(&before),
+      acc::Status::success, "block query-visit cap baseline view");
+
+  acc::GateCensus sentinel;
+  sentinel.annotation_owners = UINT64_C(0x12345678);
+  sentinel.candidate_visits = UINT64_C(0x87654321);
+  const acc::GateCensus expected = sentinel;
+  require_status(
+      limited_certificate.build_gate_census(
+          device_poly.get(), device_poly.size(),
+          device_active.get(), device_active.size(),
+          owner_count, &sentinel),
+      acc::Status::capacity_exceeded,
+      "block query-visit one-below cap");
+  require(
+      std::memcmp(&sentinel, &expected, sizeof(sentinel)) == 0,
+      "block query-visit cap changed output");
+  acc::GateAnnotationDeviceView after;
+  require_status(
+      limited_certificate.device_gate_view(&after),
+      acc::Status::success, "block query-visit post-cap view");
+  require(
+      after.epoch == before.epoch &&
+          after.gate_present == before.gate_present &&
+          after.max_single_intersection_area ==
+              before.max_single_intersection_area,
+      "block query-visit cap changed persistent annotations");
+}
+
 void test_extreme_and_negative_grid_boundaries()
 {
   {
@@ -871,6 +944,7 @@ int main()
     test_failures_are_transactional_and_budgeted();
     test_arithmetic_overflow_is_uncertain_failure();
     test_spatial_candidate_scaling();
+    test_query_visit_block_reduction_and_exact_cap();
     test_extreme_and_negative_grid_boundaries();
     test_seeded_cpu_differential();
     std::cout << "antenna_clean_certificate_gpu_test: PASS\n";

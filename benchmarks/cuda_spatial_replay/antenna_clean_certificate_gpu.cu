@@ -373,17 +373,98 @@ __global__ void fill_grid_kernel(
   }
 }
 
+__global__ void count_gate_query_visits_grid_kernel(
+    const ac::RectI64 *poly, std::uint64_t poly_count,
+    Grid grid,
+    const std::uint32_t *active_counts,
+    unsigned long long max_query_visits,
+    DeviceGateScalars *scalars)
+{
+  __shared__ unsigned long long thread_visits[kThreads];
+  __shared__ unsigned int thread_status[kThreads];
+
+  const std::uint64_t first =
+      static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+      threadIdx.x;
+  const std::uint64_t stride =
+      static_cast<std::uint64_t>(blockDim.x) * gridDim.x;
+  unsigned long long local_visits = 0;
+  unsigned int local_status = 0;
+  for (std::uint64_t poly_id = first; poly_id < poly_count;
+       poly_id += stride) {
+    const ac::RectI64 poly_rectangle = poly[poly_id];
+    std::int64_t x0 = 0;
+    std::int64_t y0 = 0;
+    std::int64_t x1 = 0;
+    std::int64_t y1 = 0;
+    if (!grid_span(
+            poly_rectangle, grid, &x0, &y0, &x1, &y1)) {
+      local_status |= kMalformed;
+      continue;
+    }
+    for (std::int64_t y = y0;
+         y <= y1 && !(local_status & kCapacity); ++y) {
+      for (std::int64_t x = x0;
+           x <= x1 && !(local_status & kCapacity); ++x) {
+        const std::uint64_t cell = grid_index(grid, x, y);
+        const std::uint32_t count = active_counts[cell];
+        if (local_visits > max_query_visits ||
+            count > max_query_visits - local_visits) {
+          local_status |= kCapacity;
+        } else {
+          local_visits += count;
+        }
+      }
+    }
+    if (local_status & kCapacity) break;
+  }
+
+  thread_visits[threadIdx.x] = local_visits;
+  thread_status[threadIdx.x] = local_status;
+  __syncthreads();
+
+  // The block leader performs a bounded reduction and makes one reservation
+  // in the global counter.  This replaces one contended 64-bit CAS per
+  // POLY/grid-cell membership with at most one CAS per block while preserving
+  // the exact successful counter and fail-closed query-visit ceiling.
+  if (threadIdx.x == 0) {
+    unsigned long long block_visits = 0;
+    unsigned int block_status = 0;
+    for (std::uint32_t lane = 0; lane < blockDim.x; ++lane) {
+      block_status |= thread_status[lane];
+      const unsigned long long visits = thread_visits[lane];
+      if (block_visits > max_query_visits ||
+          visits > max_query_visits - block_visits) {
+        block_status |= kCapacity;
+      } else {
+        block_visits += visits;
+      }
+    }
+    if (!(block_status & kCapacity) && block_visits &&
+        !atomic_add_limited(
+            &scalars->candidate_visits, block_visits,
+            max_query_visits)) {
+      block_status |= kCapacity;
+    }
+    if (block_status) atomicOr(&scalars->status, block_status);
+  }
+}
+
 __global__ void gate_intersections_grid_kernel(
     const ac::RectI64 *poly, std::uint64_t poly_count,
     const ac::RectI64 *active, Grid grid,
     const std::uint32_t *active_counts,
     const std::uint32_t *active_offsets,
     const std::uint32_t *active_members,
-    unsigned long long max_query_visits,
     std::uint32_t *gate_present,
     unsigned long long *gate_lower,
     DeviceGateScalars *scalars)
 {
+  // The preceding visit-count kernel is an exact admission pass.  CUDA
+  // launches in the same stream are ordered, so a failed cap or malformed
+  // span prevents all predicate work without a host round trip.
+  if (scalars->status) return;
+
   const std::uint64_t first =
       static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
       threadIdx.x;
@@ -401,19 +482,11 @@ __global__ void gate_intersections_grid_kernel(
       atomicOr(&scalars->status, kMalformed);
       continue;
     }
-    bool over_capacity = false;
-    for (std::int64_t y = y0; y <= y1 && !over_capacity; ++y) {
-      for (std::int64_t x = x0; x <= x1 && !over_capacity; ++x) {
+    for (std::int64_t y = y0; y <= y1; ++y) {
+      for (std::int64_t x = x0; x <= x1; ++x) {
         const std::uint64_t cell = grid_index(grid, x, y);
         const std::uint32_t begin = active_offsets[cell];
         const std::uint32_t count = active_counts[cell];
-        if (!atomic_add_limited(
-                &scalars->candidate_visits, count,
-                max_query_visits)) {
-          atomicOr(&scalars->status, kCapacity);
-          over_capacity = true;
-          break;
-        }
         const std::uint32_t end = begin + count;
         for (std::uint32_t slot = begin; slot < end; ++slot) {
           const ac::RectI64 active_rectangle =
@@ -1102,13 +1175,19 @@ Status Certificate::build_gate_census(
       if (device_status != Status::success) return device_status;
       active_cursors.reset();
 
+      count_gate_query_visits_grid_kernel<<<
+          launch_blocks(poly_count), kThreads>>>(
+          device_poly, poly_count, grid, active_counts.get(),
+          limits.max_query_visits, device_scalars.get());
+      cuda_require(
+          cudaGetLastError(),
+          "count gridded POLY/ACTIVE query visits");
       gate_intersections_grid_kernel<<<
           launch_blocks(poly_count), kThreads>>>(
           device_poly, poly_count, device_active, grid,
           active_counts.get(), active_offsets.get(),
-          active_members.get(), limits.max_query_visits,
-          new_gate_present.get(), new_gate_lower.get(),
-          device_scalars.get());
+          active_members.get(), new_gate_present.get(),
+          new_gate_lower.get(), device_scalars.get());
       cuda_require(
           cudaGetLastError(),
           "census gridded POLY/ACTIVE intersections");
