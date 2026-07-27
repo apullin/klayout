@@ -2186,6 +2186,28 @@ void run_transaction(
           cert::MetalLevel level, const ac::StageCensus &graph,
           Clock::time_point stage_begin) {
         require_logical_stage_capacity(graph, request);
+        for (std::uint32_t low = 0; low < 12; ++low) {
+          for (std::uint32_t high = low; high < 12; ++high) {
+            const std::size_t slot =
+                static_cast<std::size_t>(low) *
+                    ac::kMaximumDomains +
+                high;
+            if (!graph.candidates_by_relation[slot] &&
+                !graph.edges_by_relation[slot]) {
+              continue;
+            }
+            std::fprintf(
+                stderr,
+                "ANTENNA_CONNECTIVITY_RELATION "
+                "stage=%zu low=%u high=%u "
+                "candidates=%llu edges=%llu\n",
+                index + 1, low, high,
+                static_cast<unsigned long long>(
+                    graph.candidates_by_relation[slot]),
+                static_cast<unsigned long long>(
+                    graph.edges_by_relation[slot]));
+          }
+        }
         /*
          * Re-expand only after append_stage_consuming has destroyed its
          * membership/sort scratch and released the compact append source.

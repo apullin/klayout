@@ -1093,6 +1093,7 @@ __device__ std::uint32_t find_root_atomic(
     std::uint32_t *parents, std::uint32_t node,
     std::uint64_t node_count, std::uint32_t *status)
 {
+  const std::uint32_t start = node;
   std::uint32_t current = node;
   for (std::uint64_t step = 0; step < node_count; ++step) {
     const std::uint32_t parent =
@@ -1101,8 +1102,24 @@ __device__ std::uint32_t find_root_atomic(
       atomicOr(status, std::uint32_t(kInvalidParent));
       return UINT32_MAX;
     }
-    if (parent == current) return current;
-    current = parent;
+    if (parent == current) {
+      atomicMin(parents + start, current);
+      return current;
+    }
+    const std::uint32_t grandparent =
+        atomicAdd(parents + parent, 0u);
+    if (grandparent >= node_count || grandparent > parent) {
+      atomicOr(status, std::uint32_t(kInvalidParent));
+      return UINT32_MAX;
+    }
+    /*
+     * Parent links only move toward smaller canonical labels.  Atomic path
+     * halving therefore preserves the component/minimum-root invariant while
+     * preventing a long streaming edge pass from repeatedly walking the
+     * transient chains it creates.
+     */
+    atomicMin(parents + current, grandparent);
+    current = grandparent;
   }
   atomicOr(status, std::uint32_t(kInvalidParent));
   return UINT32_MAX;
