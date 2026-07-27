@@ -56,6 +56,22 @@ target_link_libraries(antenna_connectivity_gpu_test PRIVATE
   antenna_connectivity_gpu
 )
 
+add_library(antenna_factor_zero_diode_gpu STATIC
+  antenna_factor_zero_diode_gpu.cu
+)
+target_compile_options(antenna_factor_zero_diode_gpu PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(antenna_factor_zero_diode_gpu PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+  POSITION_INDEPENDENT_CODE ON
+)
+target_link_libraries(antenna_factor_zero_diode_gpu PUBLIC
+  antenna_connectivity_gpu
+)
+
 add_library(antenna_clean_certificate_gpu STATIC
   antenna_clean_certificate_gpu.cu
 )
@@ -85,6 +101,22 @@ set_target_properties(antenna_clean_certificate_gpu_test PROPERTIES
 )
 target_link_libraries(antenna_clean_certificate_gpu_test PRIVATE
   antenna_clean_certificate_gpu
+)
+
+add_executable(antenna_factor_zero_diode_gpu_test
+  antenna_factor_zero_diode_gpu_test.cu
+)
+target_compile_options(antenna_factor_zero_diode_gpu_test PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(antenna_factor_zero_diode_gpu_test PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+)
+target_link_libraries(antenna_factor_zero_diode_gpu_test PRIVATE
+  antenna_clean_certificate_gpu
+  antenna_factor_zero_diode_gpu
 )
 
 add_executable(manhattan_union_replay
@@ -212,6 +244,7 @@ set_target_properties(klayout_cuda_spatial_backend PROPERTIES
 target_link_libraries(klayout_cuda_spatial_backend PRIVATE
   antenna_clean_certificate_gpu
   antenna_connectivity_gpu
+  antenna_factor_zero_diode_gpu
   contact4_union_resident_gpu
   manhattan_union_gpu_core
   m2_resident_morphology_gpu
@@ -238,6 +271,7 @@ set_target_properties(antenna_m1_m4_backend_smoke PROPERTIES
 target_link_libraries(antenna_m1_m4_backend_smoke PRIVATE
   antenna_clean_certificate_gpu
   antenna_connectivity_gpu
+  antenna_factor_zero_diode_gpu
 )
 
 set(KLAYOUT_ANTENNA_HOST_DB "" CACHE FILEPATH
@@ -268,6 +302,7 @@ if(KLAYOUT_ANTENNA_HOST_DB)
   target_link_libraries(antenna_m1_m4_host_acceptance PRIVATE
     antenna_clean_certificate_gpu
     antenna_connectivity_gpu
+    antenna_factor_zero_diode_gpu
     ${KLAYOUT_ANTENNA_HOST_DB}
   )
   if(KLAYOUT_ANTENNA_HOST_CXX_RUNTIME)

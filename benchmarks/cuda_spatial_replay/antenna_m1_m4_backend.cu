@@ -14,6 +14,7 @@
 
 #include "antenna_clean_certificate_gpu.cuh"
 #include "antenna_connectivity_gpu.cuh"
+#include "antenna_factor_zero_diode_gpu.cuh"
 #include "dbCudaActive3Digest.h"
 #include "dbCudaAntennaM4Evidence.h"
 #include "m2_manhattan_decompose.h"
@@ -43,6 +44,7 @@
 namespace {
 
 namespace ac = klayout_cuda::antenna_connectivity;
+namespace afd = klayout_cuda::antenna_factor_zero_diode;
 namespace cert = klayout_cuda::antenna_clean_certificate;
 namespace md = klayout_cuda::m2_manhattan_decompose;
 
@@ -360,6 +362,70 @@ struct Identity
   std::uint64_t total_expanded_bytes = 0;
   std::uint64_t estimated_peak_bytes = 0;
 };
+
+bool rectangle_contains(
+    const RectangleTemplate &outer,
+    const RectangleTemplate &inner)
+{
+  return outer.left <= inner.left &&
+         outer.bottom <= inner.bottom &&
+         outer.right >= inner.right &&
+         outer.top >= inner.top;
+}
+
+std::vector<std::uint8_t> local_diode_contact_witness_templates(
+    const Identity &identity)
+{
+  const DomainSummary &active = identity.domains[1];
+  const DomainSummary &nplus = identity.domains[2];
+  const DomainSummary &contact = identity.domains[4];
+  if (active.cells.size() != contact.cells.size() ||
+      nplus.cells.size() != contact.cells.size()) {
+    internal_decline(
+        "diode witness domains do not share one cell table");
+  }
+
+  std::vector<std::uint8_t> witnesses(
+      contact.rectangles.size(), 0);
+  for (std::size_t cell_id = 0;
+       cell_id < contact.cells.size(); ++cell_id) {
+    const LoweredCell &contact_cell = contact.cells[cell_id];
+    const LoweredCell &active_cell = active.cells[cell_id];
+    const LoweredCell &nplus_cell = nplus.cells[cell_id];
+    for (std::uint32_t local = 0;
+         local < contact_cell.rectangle_count; ++local) {
+      const std::uint64_t contact_index =
+          contact_cell.rectangle_begin + local;
+      const RectangleTemplate &candidate =
+          contact.rectangles[contact_index];
+      bool inside_active = false;
+      for (std::uint32_t active_local = 0;
+           active_local < active_cell.rectangle_count;
+           ++active_local) {
+        if (rectangle_contains(
+                active.rectangles[
+                    active_cell.rectangle_begin + active_local],
+                candidate)) {
+          inside_active = true;
+          break;
+        }
+      }
+      if (!inside_active) continue;
+      for (std::uint32_t nplus_local = 0;
+           nplus_local < nplus_cell.rectangle_count;
+           ++nplus_local) {
+        if (rectangle_contains(
+                nplus.rectangles[
+                    nplus_cell.rectangle_begin + nplus_local],
+                candidate)) {
+          witnesses[contact_index] = 1;
+          break;
+        }
+      }
+    }
+  }
+  return witnesses;
+}
 
 std::pair<std::int64_t, std::int64_t>
 transform_point_host(const Context &context, std::int64_t x, std::int64_t y)
@@ -1231,7 +1297,10 @@ __global__ void expand_domain_kernel(
     const std::uint64_t *rectangle_offsets,
     const std::uint64_t *owner_offsets,
     std::uint64_t owner_base, std::uint32_t domain,
-    bool collapse_owner, ac::RectI64 *output,
+    bool collapse_owner,
+    const std::uint8_t *template_annotations,
+    std::uint32_t *owner_annotations,
+    ac::RectI64 *output,
     unsigned long long *bounds_and_status)
 {
   const std::uint64_t first =
@@ -1288,6 +1357,16 @@ __global__ void expand_domain_kernel(
           collapse_owner ? 0 : static_cast<std::uint32_t>(owner);
       rectangle.domain = domain;
       output[output_begin + local] = rectangle;
+      if (template_annotations &&
+          owner_annotations &&
+          template_annotations[
+              cell.rectangle_begin + local]) {
+        atomicExch(
+            owner_annotations +
+                owner_offsets[context_id] +
+                input.polygon_local,
+            1u);
+      }
       atomicMin(bounds_and_status + 0, ordered_i64(left));
       atomicMin(bounds_and_status + 1, ordered_i64(bottom));
       atomicMax(bounds_and_status + 2, ordered_i64(right));
@@ -1299,6 +1378,7 @@ __global__ void expand_domain_kernel(
 struct Expansion
 {
   thrust::device_vector<ac::RectI64> rectangles;
+  thrust::device_vector<std::uint32_t> owner_annotations;
 };
 
 class DeviceExpander
@@ -1325,8 +1405,16 @@ public:
 
   Expansion expand(
       const DomainSummary &summary, std::uint32_t role,
-      std::uint64_t owner_base, bool collapse_owner)
+      std::uint64_t owner_base, bool collapse_owner,
+      const std::vector<std::uint8_t> *template_annotations =
+          nullptr)
   {
+    if (template_annotations &&
+        template_annotations->size() !=
+            summary.rectangles.size()) {
+      internal_decline(
+          "domain template annotation size is inconsistent");
+    }
     std::uint64_t known_bytes = 0;
     known_bytes = add_or_malformed(
         known_bytes,
@@ -1356,6 +1444,22 @@ public:
     known_bytes = add_or_malformed(
         known_bytes, 5 * sizeof(unsigned long long),
         "known device bytes");
+    if (template_annotations) {
+      known_bytes = add_or_malformed(
+          known_bytes,
+          multiply_or_malformed(
+              template_annotations->size(),
+              sizeof(std::uint8_t),
+              "device template annotation bytes"),
+          "known device bytes");
+      known_bytes = add_or_malformed(
+          known_bytes,
+          multiply_or_malformed(
+              summary.flat_polygons,
+              sizeof(std::uint32_t),
+              "device owner annotation bytes"),
+          "known device bytes");
+    }
     m_memory->admit_growth(known_bytes, "compact domain expansion");
 
     const auto h2d_begin = Clock::now();
@@ -1366,6 +1470,10 @@ public:
         summary.context_rectangle_offsets);
     thrust::device_vector<std::uint64_t> owner_offsets(
         summary.context_owner_offsets);
+    thrust::device_vector<std::uint8_t> annotations;
+    if (template_annotations) {
+      annotations = *template_annotations;
+    }
     thrust::device_vector<unsigned long long> bounds(5);
     const unsigned long long initial_bounds[5] = {
         ULLONG_MAX, ULLONG_MAX, 0, 0, 0};
@@ -1377,6 +1485,18 @@ public:
     Expansion expansion;
     expansion.rectangles.resize(
         static_cast<std::size_t>(summary.flat_rectangles));
+    if (template_annotations) {
+      expansion.owner_annotations.resize(
+          static_cast<std::size_t>(summary.flat_polygons));
+      cuda_require(
+          cudaMemset(
+              thrust::raw_pointer_cast(
+                  expansion.owner_annotations.data()),
+              0,
+              expansion.owner_annotations.size() *
+                  sizeof(std::uint32_t)),
+          "clear expanded owner annotations");
+    }
     cuda_require(cudaDeviceSynchronize(), "upload compact domain");
     m_memory->observe();
     *m_h2d_ns = add_or_malformed(
@@ -1391,6 +1511,13 @@ public:
         thrust::raw_pointer_cast(rectangle_offsets.data()),
         thrust::raw_pointer_cast(owner_offsets.data()),
         owner_base, role, collapse_owner,
+        template_annotations
+            ? thrust::raw_pointer_cast(annotations.data())
+            : nullptr,
+        template_annotations
+            ? thrust::raw_pointer_cast(
+                  expansion.owner_annotations.data())
+            : nullptr,
         thrust::raw_pointer_cast(expansion.rectangles.data()),
         thrust::raw_pointer_cast(bounds.data()));
     cuda_require(cudaGetLastError(), "launch domain expansion");
@@ -1470,6 +1597,21 @@ void require_certificate(cert::Status status, const char *operation)
       std::string(operation) + ": " + cert::status_string(status));
 }
 
+void require_factor_zero_diode(
+    afd::Status status, const char *operation)
+{
+  if (status == afd::Status::success) return;
+  if (status == afd::Status::capacity_exceeded) {
+    capacity(
+        std::string(operation) + ": " +
+            afd::status_string(status),
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY);
+  }
+  internal_decline(
+      std::string(operation) + ": " +
+      afd::status_string(status));
+}
+
 ac::Config connectivity_config(const Request &request)
 {
   ac::Config config;
@@ -1517,6 +1659,92 @@ ac::Config connectivity_config(const Request &request)
           request.capacity.max_dsu_iterations);
   config.limits.max_device_bytes = request.capacity.max_device_bytes;
   return config;
+}
+
+afd::Config factor_zero_diode_config(const Request &request)
+{
+  afd::Config config;
+  config.device = request.device;
+  config.bin_size = std::max<std::int64_t>(
+      1, (request.dbu_per_micron +
+          kConnectivityBinsPerMicron - 1) /
+             kConnectivityBinsPerMicron);
+  config.limits = connectivity_config(request).limits;
+  return config;
+}
+
+void filter_factor_zero_diode_contacts(
+    const Request &request, DeviceMemoryAccount *memory,
+    std::uint64_t contact_owner_count,
+    std::uint64_t nwell_owner_count,
+    Expansion *contact, Expansion *nwell)
+{
+  if (!contact || !nwell ||
+      contact->owner_annotations.size() !=
+          contact_owner_count) {
+    internal_decline(
+        "factor-zero diode witness inputs are inconsistent");
+  }
+  const std::uint64_t contact_rectangle_count =
+      contact->rectangles.size();
+  const std::uint64_t total_rectangles = add_or_malformed(
+      contact_rectangle_count, nwell->rectangles.size(),
+      "diode witness rectangle count");
+  memory->admit_growth(
+      multiply_or_malformed(
+          total_rectangles, sizeof(ac::RectI64),
+          "diode witness concatenation bytes"),
+      "concatenate diode witness geometry");
+  contact->rectangles.reserve(
+      static_cast<std::size_t>(total_rectangles));
+  contact->rectangles.resize(
+      static_cast<std::size_t>(total_rectangles));
+  if (!nwell->rectangles.empty()) {
+    cuda_require(
+        cudaMemcpy(
+            thrust::raw_pointer_cast(contact->rectangles.data()) +
+                contact_rectangle_count,
+            thrust::raw_pointer_cast(nwell->rectangles.data()),
+            nwell->rectangles.size() * sizeof(ac::RectI64),
+            cudaMemcpyDeviceToDevice),
+        "concatenate diode witness NWELL geometry");
+  }
+  nwell->rectangles.clear();
+  nwell->rectangles.shrink_to_fit();
+  cuda_require(
+      cudaDeviceSynchronize(),
+      "complete diode witness geometry concatenation");
+  memory->observe();
+
+  afd::ContactWitnessCensus census;
+  require_factor_zero_diode(
+      afd::filter_contact_witnesses(
+          factor_zero_diode_config(request),
+          std::move(contact->rectangles),
+          contact_owner_count, nwell_owner_count,
+          &contact->owner_annotations, &census),
+      "filter factor-zero diode CONTACT witnesses");
+  if (!contact->rectangles.empty()) {
+    internal_decline(
+        "factor-zero diode filter did not consume geometry");
+  }
+  std::fprintf(
+      stderr,
+      "ANTENNA_DIODE_WITNESS "
+      "local_nplus_active_contacts=%llu "
+      "well_rejected_contacts=%llu "
+      "exact_witness_contacts=%llu memberships=%llu "
+      "pair_occurrences=%llu exact_edges=%llu\n",
+      static_cast<unsigned long long>(
+          census.local_nplus_active_contacts),
+      static_cast<unsigned long long>(
+          census.well_rejected_contacts),
+      static_cast<unsigned long long>(
+          census.exact_witness_contacts),
+      static_cast<unsigned long long>(census.memberships),
+      static_cast<unsigned long long>(census.pair_occurrences),
+      static_cast<unsigned long long>(census.exact_edges));
+  memory->observe();
 }
 
 cert::Config certificate_config(const Request &request)
@@ -1836,7 +2064,7 @@ void fill_stage_result(
   stage.evaluated_count =
       checkpoint.ratio_certified_roots +
       checkpoint.uncertain_roots;
-  stage.exempt_count = 0;
+  stage.exempt_count = checkpoint.diode_exempt_roots;
   stage.retained_rectangle_count = graph.retained_rectangles;
   stage.released_rectangle_count = graph.released_rectangles;
   stage.dsu_iteration_count = graph.dsu_iterations;
@@ -1882,6 +2110,11 @@ void run_transaction(
   require_certificate(
       certificate.configuration_status(),
       "configure clean certificate");
+  const std::vector<std::uint8_t>
+      diode_contact_template_witnesses =
+          local_diode_contact_witness_templates(identity);
+  thrust::device_vector<std::uint32_t>
+      diode_contact_witnesses;
 
   Expansion poly = expander.expand(
       identity.domains[0], 0, owner_bases[0], false);
@@ -1967,6 +2200,18 @@ void run_transaction(
             connectivity.device_label_view(&labels),
             "obtain resident connectivity labels");
         cert::CheckpointCensus checkpoint;
+        cert::FactorZeroDiodeDeviceView diode_view;
+        const cert::FactorZeroDiodeDeviceView *diode_view_ptr =
+            nullptr;
+        if (!diode_contact_witnesses.empty()) {
+          diode_view.contact_present =
+              thrust::raw_pointer_cast(
+                  diode_contact_witnesses.data());
+          diode_view.owner_begin = owner_bases[4];
+          diode_view.count =
+              diode_contact_witnesses.size();
+          diode_view_ptr = &diode_view;
+        }
         require_certificate(
             certificate.set_external_live_device_bytes(
                 memory.external_live_bytes(
@@ -1977,7 +2222,7 @@ void run_transaction(
                 level,
                 thrust::raw_pointer_cast(metal.rectangles.data()),
                 metal.rectangles.size(), labels.labels, labels.count,
-                &checkpoint),
+                &checkpoint, diode_view_ptr),
             "evaluate resident antenna checkpoint");
         memory.observe_component_peak(checkpoint.peak_live_bytes);
         memory.observe();
@@ -2054,6 +2299,19 @@ void run_transaction(
     append_domain(
         &poly, identity.domains[0].flat_polygons,
         (UINT64_C(1) << 4) - 1, &graph, true);
+    Expansion diode_contact = expander.expand(
+        identity.domains[4], 0, 0, false,
+        &diode_contact_template_witnesses);
+    Expansion diode_nwell = expander.expand(
+        identity.domains[3], 1,
+        identity.domains[4].flat_polygons, false);
+    filter_factor_zero_diode_contacts(
+        request, &memory,
+        identity.domains[4].flat_polygons,
+        identity.domains[3].flat_polygons,
+        &diode_contact, &diode_nwell);
+    diode_contact_witnesses =
+        std::move(diode_contact.owner_annotations);
     Expansion contact = expander.expand(
         identity.domains[4], 4, owner_bases[4], false);
     append_domain(
