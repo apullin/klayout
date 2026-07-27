@@ -140,6 +140,15 @@ sum of all twelve flattened domains.  Device admission is explicit and
 fail-closed.  The production launcher must also prevent this transaction
 from overlapping another high-residency backend call on the 10-GiB device.
 
+The qualification target is the local RTX 3080 with 10,240 MiB of device
+memory.  A 16-GiB card may diagnose a rejected allocation frontier, but it
+does not qualify the production path.  The default transaction budget must
+leave explicit CUDA/runtime headroom, account for caller-owned staging and
+sort/reduction scratch as well as steady-state arrays, and report its
+conservative peak in the result.  An unaccounted temporary, a peak above the
+request budget, or insufficient free memory declines the entire transaction
+to the literal CPU path.
+
 ## Atomic result contract
 
 The backend echoes every request identity, digest, capacity, count, and
@@ -193,6 +202,8 @@ Before production timing is booked:
   injected-fallback gates.
 - [ ] Pass the clean production report and nonempty hierarchical fixture
   integrity gates.
+- [ ] Demonstrate an accounted peak within the 10,240-MiB qualification card,
+  including caller staging and temporary sort/reduction storage.
 - [ ] Run matched repeated full-launch control/candidate trials and book only
   the measured real-seconds and percent reduction.
 - [ ] Re-profile the new roof and select the next largest contiguous target.
