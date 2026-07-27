@@ -229,6 +229,27 @@ DB_PUBLIC bool cuda_antenna_m1_build_capture (
   std::string *decline_reason = 0);
 
 /**
+ * Capture and return the census authenticated by that same build.
+ *
+ * This overload is for an immediate, immutable hand-off from the builder to
+ * a transaction.  "capture" and "authenticated_census" are both left
+ * unchanged on failure.  A capture received from any other source, or
+ * modified after this call, must still use cuda_antenna_m1_capture_census for
+ * a complete audit.
+ */
+DB_PUBLIC bool cuda_antenna_m1_build_capture (
+  const db::DeepLayer &raw_poly,
+  const db::DeepLayer &raw_active,
+  const db::DeepLayer &raw_nplus,
+  const db::DeepLayer &raw_nwell,
+  const db::DeepLayer &raw_contact,
+  const db::DeepLayer &raw_metal1,
+  const CudaAntennaM1CaptureLimits &limits,
+  CudaAntennaM1Capture &capture,
+  CudaAntennaM1Census &authenticated_census,
+  std::string *decline_reason = 0);
+
+/**
  * Materialize one byte-identical legacy raw-Manhattan scene.
  *
  * The operation is explicit because it temporarily duplicates the shared

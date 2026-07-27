@@ -345,6 +345,18 @@ Before production timing is booked:
   untrusted caller-supplied digest or pointer identity alone is never a hit.
   Revalidate mutable request options and capacity on every execution while
   reusing contexts, rectangulation, offsets, census, and derived digests.
+- [x] Reuse builder-authenticated M1/M4 capture censuses instead of immediately
+  rewalking fresh immutable captures.  Private builder overloads return the
+  exact census used to bind each capture; public/untrusted capture APIs retain
+  the full audit.  A same-binary re-audit control exact-compares every field
+  and fails closed on mismatch.  Twenty-three focused tests pass.  A
+  sequential `N=3+3` isolated-owner gate measured **30.420 to 27.253 seconds:
+  3.167 real seconds / 10.41% less**, with all reports and identities exact.
+  Control telemetry charged 3.178--3.193 seconds to re-audit; candidates
+  reported `census=builder-authenticated` and zero re-audit time.  Evidence:
+  `.scratchpad/cuda-runs/antenna-prepared-census-ab.31DpxF`.  The earlier
+  opt-in-missing CPU-fallback run is retained but explicitly rejected at
+  `.scratchpad/cuda-runs/antenna-prepared-census-ab.lRcxAa`.
 - [ ] Reduce the remaining one-shot M1-domain identity pole.  The three-run
   setup trace assigns 1.755-1.782 seconds to parallel domain lowering, set
   almost entirely by role 5 (M1): about 0.56 seconds of rectangulation and

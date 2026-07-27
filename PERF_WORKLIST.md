@@ -3143,6 +3143,38 @@ not just wall time.
         `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.E1m6Vp` and
         `.scratchpad/cuda-runs/jobs10-exact-repeat.9D2kXm`.
 
+      - [x] **Reuse the census already authenticated by fresh antenna capture
+        builders:** M1 and M4 builders now return the exact census used to bind
+        their immutable captures, and the same-stack transaction consumes it
+        without immediately walking and hashing every domain again.  The
+        reduced trust path is private and accepts no caller-supplied
+        capture/census pair; public and GSI capture APIs retain the complete
+        audit.  A same-binary control can explicitly re-audit and exact-compare
+        every census and digest field with
+        `KLAYOUT_CUDA_ANTENNA_REAUDIT_BUILDER_CENSUS=1`, failing closed on any
+        mismatch.  Twenty-three focused M1/M4/transaction tests pass,
+        including direct prepared-versus-public audit equality, post-build
+        corruption rejection, and unchanged dual outputs on failure.
+
+        A sequential control/candidate/candidate/control/control/candidate
+        isolated fused-owner gate measured controls at **30.32, 30.42, and
+        30.52 s** and candidates at **27.22, 27.32, and 27.22 s**.  Means are
+        **30.420 to 27.253 s: 3.167 real seconds / 10.41% less owner wall**
+        (`N=3+3`, same binary).  Control re-audit telemetry was 3192.806,
+        3177.828, and 3185.370 ms; candidates charged exactly zero re-audit
+        time.  All six transactions certified without fallback, normalized
+        capture/backend identities matched, and every report retained
+        canonical shard SHA-256
+        `bfd0e34c391db46066a2b88d2dc10909a5a4e2576b76d361ac48fcb9b8672000`.
+        This is an isolated-owner result; the coordinated grid/full gate
+        remains open.  Evidence:
+        `.scratchpad/cuda-runs/antenna-prepared-census-ab.31DpxF`.
+
+        A first harness attempt without the explicit fused-antenna opt-in took
+        the exact CPU fallback and stopped before sample two.  Its 97.26-second
+        wall is rejected and excluded; evidence is retained at
+        `.scratchpad/cuda-runs/antenna-prepared-census-ab.lRcxAa`.
+
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
         second and third reusable compositions, separate canonical

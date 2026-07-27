@@ -11,6 +11,7 @@
 */
 
 #include "dbCudaAntennaM4.h"
+#include "dbCudaAntennaM4Transaction.h"
 
 #include "dbCell.h"
 #include "dbDeepShapeStore.h"
@@ -147,6 +148,18 @@ struct AntennaM4Fixture
       poly, active, nplus, nwell, contact, metal1,
       via1, metal2, via2, metal3, via3, metal4,
       limits, capture, reason);
+  }
+
+  bool build (
+    const db::CudaAntennaM4CaptureLimits &limits,
+    db::CudaAntennaM4Capture &capture,
+    db::CudaAntennaM4Census &authenticated_census,
+    std::string *reason = 0)
+  {
+    return db::cuda_antenna_m4_build_capture (
+      poly, active, nplus, nwell, contact, metal1,
+      via1, metal2, via2, metal3, via3, metal4,
+      limits, capture, authenticated_census, reason);
   }
 };
 
@@ -623,4 +636,123 @@ TEST(4_CaptureDigestAndMaterializationFailClosedOnDrift)
   EXPECT_EQ (
     db::cuda_antenna_m4_capture_digest (lower_drift, digest), false);
   EXPECT_EQ (digest == sentinel, true);
+}
+
+TEST(5_BuilderAuthenticatedCensusMatchesAuditAndAuditRejectsDrift)
+{
+  AntennaM4Fixture fixture;
+  fixture.add_nested_eight_transform_hierarchy ();
+  db::CudaAntennaM4Capture capture;
+  db::CudaAntennaM4Census authenticated;
+  std::string reason;
+  EXPECT_EQ (
+    fixture.build (
+      db::CudaAntennaM4CaptureLimits (), capture, authenticated, &reason),
+    true);
+  EXPECT_EQ (reason, "");
+  EXPECT_EQ (authenticated.capture_digest == capture.digest, true);
+  EXPECT_EQ (
+    authenticated.lower_capture_digest == capture.lower.digest, true);
+
+  db::CudaAntennaM4Census audited;
+  EXPECT_EQ (
+    db::cuda_antenna_m4_capture_census (capture, audited, &reason), true);
+  EXPECT_EQ (reason, "");
+  EXPECT_EQ (
+    db::cuda_antenna_m4_census_text (authenticated),
+    db::cuda_antenna_m4_census_text (audited));
+  EXPECT_EQ (
+    db::cuda_antenna_m1_m4_census_equal (authenticated, audited), true);
+  db::CudaAntennaM4Census mismatched = audited;
+  ++mismatched.domains [db::CudaAntennaM4Metal2].stored_edge_count;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_m4_census_equal (authenticated, mismatched), false);
+  mismatched = audited;
+  mismatched.capture_digest [0] ^= UINT8_C (1);
+  EXPECT_EQ (
+    db::cuda_antenna_m1_m4_census_equal (authenticated, mismatched), false);
+
+  db::CudaAntennaM4Capture drift = capture;
+  ++drift.upper_domains [
+      db::CudaAntennaM4Via2 -
+      db::CudaAntennaM1DomainCount].edges [0].x2;
+  db::CudaAntennaM4Census audit_sentinel;
+  audit_sentinel.shared_cell_count = 777;
+  EXPECT_EQ (
+    db::cuda_antenna_m4_capture_census (
+      drift, audit_sentinel, &reason),
+    false);
+  EXPECT_EQ (audit_sentinel.shared_cell_count, uint64_t (777));
+  EXPECT_EQ (reason.empty (), false);
+
+  mark_physical (fixture.via2, 99);
+  db::CudaAntennaM4Capture capture_sentinel;
+  capture_sentinel.format_version = 77;
+  db::CudaAntennaM4Census census_sentinel;
+  census_sentinel.shared_cell_count = 888;
+  EXPECT_EQ (
+    fixture.build (
+      db::CudaAntennaM4CaptureLimits (), capture_sentinel,
+      census_sentinel, &reason),
+    false);
+  EXPECT_EQ (capture_sentinel.format_version, uint32_t (77));
+  EXPECT_EQ (census_sentinel.shared_cell_count, uint64_t (888));
+}
+
+TEST(6_M1BuilderAuthenticatedCensusMatchesAuditAndPreservesOutputsOnFailure)
+{
+  AntennaM4Fixture fixture;
+  fixture.add_nested_eight_transform_hierarchy ();
+
+  db::CudaAntennaM1Capture legacy_capture;
+  std::string reason;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_build_capture (
+      fixture.poly, fixture.active, fixture.nplus, fixture.nwell,
+      fixture.contact, fixture.metal1,
+      db::CudaAntennaM1CaptureLimits (), legacy_capture, &reason),
+    true);
+  EXPECT_EQ (reason, "");
+
+  db::CudaAntennaM1Capture prepared_capture;
+  db::CudaAntennaM1Census authenticated;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_build_capture (
+      fixture.poly, fixture.active, fixture.nplus, fixture.nwell,
+      fixture.contact, fixture.metal1,
+      db::CudaAntennaM1CaptureLimits (), prepared_capture,
+      authenticated, &reason),
+    true);
+  EXPECT_EQ (reason, "");
+  EXPECT_EQ (prepared_capture.digest == legacy_capture.digest, true);
+  EXPECT_EQ (
+    prepared_capture.hierarchy_digest ==
+      legacy_capture.hierarchy_digest,
+    true);
+  EXPECT_EQ (authenticated.capture_digest == prepared_capture.digest, true);
+
+  db::CudaAntennaM1Census audited;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_capture_census (
+      prepared_capture, audited, &reason),
+    true);
+  EXPECT_EQ (reason, "");
+  EXPECT_EQ (
+    db::cuda_antenna_m1_census_text (authenticated),
+    db::cuda_antenna_m1_census_text (audited));
+
+  db::CudaAntennaM1Capture capture_sentinel;
+  capture_sentinel.source_root_cell_index = 777;
+  db::CudaAntennaM1Census census_sentinel;
+  census_sentinel.shared_cell_count = 888;
+  EXPECT_EQ (
+    db::cuda_antenna_m1_build_capture (
+      fixture.poly, fixture.active, fixture.active, fixture.nwell,
+      fixture.contact, fixture.metal1,
+      db::CudaAntennaM1CaptureLimits (), capture_sentinel,
+      census_sentinel, &reason),
+    false);
+  EXPECT_EQ (capture_sentinel.source_root_cell_index, uint64_t (777));
+  EXPECT_EQ (census_sentinel.shared_cell_count, uint64_t (888));
+  EXPECT_EQ (reason.find ("distinct") != std::string::npos, true);
 }

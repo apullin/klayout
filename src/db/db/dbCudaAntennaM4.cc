@@ -983,16 +983,25 @@ void validate_layer_bindings (const CudaAntennaM4Capture &capture)
   }
 }
 
-void derive_census (
+void derive_census_from_authenticated_lower (
   const CudaAntennaM4Capture &capture,
+  const CudaAntennaM1Census &lower,
   CudaAntennaM4Census &census)
 {
   validate_layer_bindings (capture);
-  CudaAntennaM1Census lower;
-  std::string reason;
-  if (! cuda_antenna_m1_capture_census (capture.lower, lower, &reason)) {
+  if (lower.format_version != capture.lower.format_version ||
+      lower.dbu_per_micron != capture.lower.dbu_per_micron ||
+      lower.root_cell != capture.lower.root_cell ||
+      lower.source_root_cell_index !=
+        capture.lower.source_root_cell_index ||
+      lower.shared_cell_count != capture.lower.source_cell_indices.size () ||
+      lower.shared_context_count != capture.lower.contexts.size () ||
+      lower.context_parent_record_count !=
+        capture.lower.context_parent_ids.size () ||
+      lower.hierarchy_digest != capture.lower.hierarchy_digest ||
+      lower.capture_digest != capture.lower.digest) {
     throw AntennaM4Decline (
-      std::string ("embedded M1 capture is inconsistent: ") + reason);
+      "builder-authenticated embedded M1 census is inconsistent");
   }
 
   CudaAntennaM4Census candidate;
@@ -1090,6 +1099,19 @@ void derive_census (
       "M1-through-M4 antenna estimated peak bytes overflow uint64");
   }
   census = candidate;
+}
+
+void derive_census (
+  const CudaAntennaM4Capture &capture,
+  CudaAntennaM4Census &census)
+{
+  CudaAntennaM1Census lower;
+  std::string reason;
+  if (! cuda_antenna_m1_capture_census (capture.lower, lower, &reason)) {
+    throw AntennaM4Decline (
+      std::string ("embedded M1 capture is inconsistent: ") + reason);
+  }
+  derive_census_from_authenticated_lower (capture, lower, census);
 }
 
 std::array<uint8_t, 32> capture_digest (
@@ -1305,6 +1327,7 @@ bool cuda_antenna_m4_build_capture (
   const db::DeepLayer &raw_metal4,
   const CudaAntennaM4CaptureLimits &limits,
   CudaAntennaM4Capture &capture,
+  CudaAntennaM4Census &authenticated_census,
   std::string *decline_reason)
 {
   try {
@@ -1326,20 +1349,15 @@ bool cuda_antenna_m4_build_capture (
     lower_limits.max_estimated_peak_bytes =
       limits.max_estimated_peak_bytes;
     std::string lower_reason;
+    CudaAntennaM1Census lower_census;
     if (! cuda_antenna_m1_build_capture (
           raw_poly, raw_active, raw_nplus, raw_nwell, raw_contact,
-          raw_metal1, lower_limits, candidate.lower, &lower_reason)) {
+          raw_metal1, lower_limits, candidate.lower, lower_census,
+          &lower_reason)) {
       throw AntennaM4Decline (
         std::string ("embedded M1 capture declined: ") + lower_reason);
     }
 
-    CudaAntennaM1Census lower_census;
-    if (! cuda_antenna_m1_capture_census (
-          candidate.lower, lower_census, &lower_reason)) {
-      throw AntennaM4Decline (
-        std::string ("embedded M1 capture census declined: ") +
-        lower_reason);
-    }
     uint64_t admitted_stored_bytes = lower_census.total_stored_bytes;
     checked_accumulate (
       capture_header_stored_bytes (), admitted_stored_bytes,
@@ -1382,11 +1400,14 @@ bool cuda_antenna_m4_build_capture (
     }
 
     CudaAntennaM4Census census;
-    derive_census (candidate, census);
+    derive_census_from_authenticated_lower (
+      candidate, lower_census, census);
     validate_capture_limits (limits, census);
     candidate.digest = capture_digest (candidate, census);
+    census.capture_digest = candidate.digest;
 
     capture.swap (candidate);
+    authenticated_census = census;
     set_reason (decline_reason, "");
     return true;
   } catch (const std::exception &ex) {
@@ -1395,6 +1416,30 @@ bool cuda_antenna_m4_build_capture (
     set_reason (decline_reason, "unknown exception");
   }
   return false;
+}
+
+bool cuda_antenna_m4_build_capture (
+  const db::DeepLayer &raw_poly,
+  const db::DeepLayer &raw_active,
+  const db::DeepLayer &raw_nplus,
+  const db::DeepLayer &raw_nwell,
+  const db::DeepLayer &raw_contact,
+  const db::DeepLayer &raw_metal1,
+  const db::DeepLayer &raw_via1,
+  const db::DeepLayer &raw_metal2,
+  const db::DeepLayer &raw_via2,
+  const db::DeepLayer &raw_metal3,
+  const db::DeepLayer &raw_via3,
+  const db::DeepLayer &raw_metal4,
+  const CudaAntennaM4CaptureLimits &limits,
+  CudaAntennaM4Capture &capture,
+  std::string *decline_reason)
+{
+  CudaAntennaM4Census authenticated_census;
+  return cuda_antenna_m4_build_capture (
+    raw_poly, raw_active, raw_nplus, raw_nwell, raw_contact, raw_metal1,
+    raw_via1, raw_metal2, raw_via2, raw_metal3, raw_via3, raw_metal4,
+    limits, capture, authenticated_census, decline_reason);
 }
 
 bool cuda_antenna_m4_materialize_domain_scene (

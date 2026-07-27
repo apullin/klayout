@@ -19,6 +19,15 @@
 namespace db
 {
 
+struct CudaAntennaM4Census;
+
+/**
+ * Exact field-wise comparison used by the optional prepared-census re-audit.
+ */
+DB_PUBLIC bool cuda_antenna_m1_m4_census_equal (
+  const CudaAntennaM4Census &first,
+  const CudaAntennaM4Census &second);
+
 /**
  * Try the optional conservative ANTENNA.M1-through-M4 clean certificate.
  *

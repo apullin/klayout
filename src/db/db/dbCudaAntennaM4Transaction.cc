@@ -370,7 +370,63 @@ static_assert (
     offsetof (klayout_cuda_spatial_m1_width_space_edge_v1, y2),
   "ANTENNA.M1-M4 edge ABI layout mismatch");
 
+bool domain_census_equal (
+  const CudaAntennaM1DomainCensus &first,
+  const CudaAntennaM1DomainCensus &second)
+{
+  return
+    first.role == second.role &&
+    first.physical_layer == second.physical_layer &&
+    first.datatype == second.datatype &&
+    first.source_layer_index == second.source_layer_index &&
+    first.stored_cell_count == second.stored_cell_count &&
+    first.stored_context_count == second.stored_context_count &&
+    first.nonempty_context_count == second.nonempty_context_count &&
+    first.stored_polygon_count == second.stored_polygon_count &&
+    first.stored_edge_count == second.stored_edge_count &&
+    first.expanded_polygon_count == second.expanded_polygon_count &&
+    first.expanded_edge_count == second.expanded_edge_count &&
+    first.stored_bytes == second.stored_bytes &&
+    first.legacy_stored_bytes == second.legacy_stored_bytes &&
+    first.expanded_geometry_bytes == second.expanded_geometry_bytes &&
+    first.scene_digest == second.scene_digest;
+}
+
 } // anonymous namespace
+
+bool cuda_antenna_m1_m4_census_equal (
+  const CudaAntennaM4Census &first,
+  const CudaAntennaM4Census &second)
+{
+  if (first.format_version != second.format_version ||
+      first.reserved != second.reserved ||
+      first.shared_cell_count != second.shared_cell_count ||
+      first.shared_context_count != second.shared_context_count ||
+      first.context_parent_record_count !=
+        second.context_parent_record_count ||
+      first.stored_cell_records != second.stored_cell_records ||
+      first.stored_polygon_count != second.stored_polygon_count ||
+      first.stored_edge_count != second.stored_edge_count ||
+      first.expanded_polygon_count != second.expanded_polygon_count ||
+      first.expanded_edge_count != second.expanded_edge_count ||
+      first.total_stored_bytes != second.total_stored_bytes ||
+      first.total_expanded_geometry_bytes !=
+        second.total_expanded_geometry_bytes ||
+      first.estimated_peak_bytes != second.estimated_peak_bytes ||
+      first.hierarchy_digest != second.hierarchy_digest ||
+      first.lower_capture_digest != second.lower_capture_digest ||
+      first.capture_digest != second.capture_digest) {
+    return false;
+  }
+  for (size_t domain = 0;
+       domain < CudaAntennaM4DomainCount; ++domain) {
+    if (! domain_census_equal (
+          first.domains [domain], second.domains [domain])) {
+      return false;
+    }
+  }
+  return true;
+}
 
 bool cuda_antenna_m1_m4_try_raw_empty (
   const db::DeepLayer &raw_poly,
@@ -415,22 +471,39 @@ bool cuda_antenna_m1_m4_try_raw_empty (
       capacity.max_estimated_peak_bytes;
 
     CudaAntennaM4Capture capture;
+    CudaAntennaM4Census census;
     std::string reason;
     if (! cuda_antenna_m4_build_capture (
           raw_poly, raw_active, raw_nplus, raw_nwell, raw_contact,
           raw_metal1, raw_via1, raw_metal2, raw_via2, raw_metal3,
-          raw_via3, raw_metal4, limits, capture, &reason)) {
+          raw_via3, raw_metal4, limits, capture, census, &reason)) {
       throw AntennaM1M4Decline (
         reason.empty ()
           ? "unable to build the compact ANTENNA.M1-M4 capture"
           : reason);
     }
-    CudaAntennaM4Census census;
-    if (! cuda_antenna_m4_capture_census (capture, census, &reason)) {
-      throw AntennaM1M4Decline (
-        reason.empty ()
-          ? "unable to validate the compact ANTENNA.M1-M4 capture"
-          : reason);
+    const std::chrono::steady_clock::time_point build_done =
+      std::chrono::steady_clock::now ();
+    const bool reaudited =
+      env_enabled ("KLAYOUT_CUDA_ANTENNA_REAUDIT_BUILDER_CENSUS");
+    std::chrono::steady_clock::time_point census_done = build_done;
+    if (reaudited) {
+      CudaAntennaM4Census audited_census;
+      if (! cuda_antenna_m4_capture_census (
+            capture, audited_census, &reason)) {
+        throw AntennaM1M4Decline (
+          reason.empty ()
+            ? "unable to re-audit the compact ANTENNA.M1-M4 capture"
+            : reason);
+      }
+      if (! cuda_antenna_m1_m4_census_equal (
+            census, audited_census)) {
+        throw AntennaM1M4Decline (
+          "builder-authenticated ANTENNA.M1-M4 census disagrees with "
+          "the full re-audit");
+      }
+      census = audited_census;
+      census_done = std::chrono::steady_clock::now ();
     }
 
     const uint64_t device =
@@ -489,6 +562,17 @@ bool cuda_antenna_m1_m4_try_raw_empty (
         << " contexts=" << census.shared_context_count
         << " stored_polygons=" << census.stored_polygon_count
         << " expanded_polygons=" << census.expanded_polygon_count
+        << " census="
+        << (reaudited ? "builder-reaudited" : "builder-authenticated")
+        << " build_ms="
+        << std::chrono::duration<double, std::milli> (
+             build_done - begin).count ()
+        << " reaudit_ms="
+        << std::chrono::duration<double, std::milli> (
+             census_done - build_done).count ()
+        << " request_ms="
+        << std::chrono::duration<double, std::milli> (
+             call_begin - census_done).count ()
         << " capture_ms="
         << std::chrono::duration<double, std::milli> (
              call_begin - begin).count ()
