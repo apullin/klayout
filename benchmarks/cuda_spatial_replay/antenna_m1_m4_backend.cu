@@ -34,11 +34,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
+#include <future>
 #include <limits>
 #include <mutex>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -432,10 +435,19 @@ struct SetupTiming
   std::uint64_t hierarchy_digest_ns = 0;
   std::array<std::uint64_t, 12> domain_total_ns{};
   std::array<DomainSetupTiming, 12> domains{};
+  std::uint64_t domain_lower_wall_ns = 0;
+  std::uint64_t domain_finalize_wall_ns = 0;
   std::uint64_t aggregate_capacity_ns = 0;
   std::uint64_t lower_capture_digest_ns = 0;
   std::uint64_t full_capture_digest_ns = 0;
   std::uint64_t census_ns = 0;
+};
+
+struct LoweredDomain
+{
+  DomainSummary summary;
+  DomainSetupTiming timing;
+  std::uint64_t total_ns = 0;
 };
 
 bool setup_timing_enabled()
@@ -454,14 +466,17 @@ double nanoseconds_to_milliseconds(std::uint64_t nanoseconds)
 void report_setup_timing(const SetupTiming &timing)
 {
   if (!timing.enabled) return;
-  std::uint64_t domains_ns = 0;
+  std::uint64_t domain_cpu_ns = 0;
   for (const std::uint64_t duration : timing.domain_total_ns) {
-    domains_ns += duration;
+    domain_cpu_ns += duration;
   }
+  const std::uint64_t domain_wall_ns =
+      timing.domain_lower_wall_ns +
+      timing.domain_finalize_wall_ns;
   const std::uint64_t attributed_ns =
       timing.telemetry_init_ns + timing.request_header_ns +
       timing.hierarchy_validate_ns + timing.hierarchy_digest_ns +
-      domains_ns + timing.aggregate_capacity_ns +
+      domain_wall_ns + timing.aggregate_capacity_ns +
       timing.lower_capture_digest_ns +
       timing.full_capture_digest_ns + timing.census_ns;
   const std::uint64_t unattributed_ns =
@@ -473,7 +488,9 @@ void report_setup_timing(const SetupTiming &timing)
       "KLAYOUT_CUDA_ANTENNA_SETUP populate=%u total_ms=%.3f "
       "telemetry_init_ms=%.3f request_header_ms=%.3f "
       "hierarchy_validate_ms=%.3f hierarchy_digest_ms=%.3f "
-      "domains_ms=%.3f aggregate_capacity_ms=%.3f "
+      "domains_ms=%.3f domain_lower_wall_ms=%.3f "
+      "domain_finalize_wall_ms=%.3f domain_cpu_ms=%.3f "
+      "aggregate_capacity_ms=%.3f "
       "lower_capture_digest_ms=%.3f full_capture_digest_ms=%.3f "
       "census_ms=%.3f unattributed_ms=%.3f\n",
       timing.populate ? 1u : 0u,
@@ -482,7 +499,10 @@ void report_setup_timing(const SetupTiming &timing)
       nanoseconds_to_milliseconds(timing.request_header_ns),
       nanoseconds_to_milliseconds(timing.hierarchy_validate_ns),
       nanoseconds_to_milliseconds(timing.hierarchy_digest_ns),
-      nanoseconds_to_milliseconds(domains_ns),
+      nanoseconds_to_milliseconds(domain_wall_ns),
+      nanoseconds_to_milliseconds(timing.domain_lower_wall_ns),
+      nanoseconds_to_milliseconds(timing.domain_finalize_wall_ns),
+      nanoseconds_to_milliseconds(domain_cpu_ns),
       nanoseconds_to_milliseconds(timing.aggregate_capacity_ns),
       nanoseconds_to_milliseconds(timing.lower_capture_digest_ns),
       nanoseconds_to_milliseconds(timing.full_capture_digest_ns),
@@ -1299,15 +1319,66 @@ Identity derive_identity(Request &request, bool populate)
   identity.hierarchy_digest = derived_hierarchy_digest;
   identity.total_stored_bytes = shared_lower_stored_bytes(request);
   std::set<std::uint32_t> source_layers;
-  std::uint64_t total_rectangles = 0;
   for (std::size_t role = 0; role < 12; ++role) {
-    auto &domain = request.domains[role];
-    if (!source_layers.insert(domain.source_layer_index).second) {
+    if (!source_layers.insert(
+            request.domains[role].source_layer_index).second) {
       malformed("source-layer identity is duplicated");
     }
-    identity.domains[role] = lower_domain(
-        request, role, contexts,
-        timing.enabled ? &timing.domains[role] : nullptr);
+  }
+
+  std::array<LoweredDomain, 12> lowered_domains;
+  std::array<std::exception_ptr, 12> lower_errors{};
+  const unsigned int advertised_workers =
+      std::thread::hardware_concurrency();
+  const std::size_t worker_count = std::min<std::size_t>(
+      12, advertised_workers ? advertised_workers : 1);
+  const auto lower_worker = [&](std::size_t worker) {
+    for (std::size_t role = worker; role < 12;
+         role += worker_count) {
+      try {
+        LoweredDomain lowered;
+        OptionalCpuPhaseClock total(timing.enabled);
+        lowered.summary = lower_domain(
+            request, role, contexts,
+            timing.enabled ? &lowered.timing : nullptr);
+        if (timing.enabled) lowered.total_ns = total.split();
+        lowered_domains[role] = std::move(lowered);
+      } catch (...) {
+        lower_errors[role] = std::current_exception();
+      }
+    }
+  };
+  if (worker_count == 1) {
+    lower_worker(0);
+  } else {
+    std::array<std::future<void>, 12> workers;
+    for (std::size_t worker = 0; worker < worker_count; ++worker) {
+      workers[worker] = std::async(
+          std::launch::async, lower_worker, worker);
+    }
+    for (std::size_t worker = 0; worker < worker_count; ++worker) {
+      workers[worker].get();
+    }
+  }
+  for (std::size_t role = 0; role < 12; ++role) {
+    if (lower_errors[role]) {
+      std::rethrow_exception(lower_errors[role]);
+    }
+  }
+  if (timing.enabled) {
+    timing.domain_lower_wall_ns = phases.split();
+  }
+
+  std::uint64_t total_rectangles = 0;
+  for (std::size_t role = 0; role < 12; ++role) {
+    OptionalCpuPhaseClock finalize(timing.enabled);
+    auto &domain = request.domains[role];
+    identity.domains[role] =
+        std::move(lowered_domains[role].summary);
+    if (timing.enabled) {
+      timing.domains[role] =
+          lowered_domains[role].timing;
+    }
     const DomainSummary &summary = identity.domains[role];
     if (populate) {
       domain.nonempty_context_count = summary.nonempty_contexts;
@@ -1367,8 +1438,12 @@ Identity derive_identity(Request &request, bool populate)
         identity.total_stored_bytes, summary.stored_bytes,
         "stored byte census");
     if (timing.enabled) {
-      timing.domain_total_ns[role] = phases.split();
+      timing.domain_total_ns[role] =
+          lowered_domains[role].total_ns + finalize.split();
     }
+  }
+  if (timing.enabled) {
+    timing.domain_finalize_wall_ns = phases.split();
   }
   identity.estimated_peak_bytes = add_or_malformed(
       identity.total_stored_bytes, identity.total_expanded_bytes,
