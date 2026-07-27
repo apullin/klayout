@@ -236,16 +236,27 @@ Before production timing is booked:
   GATE lower-bound refinement.  On the independent-x2 production replay this
   closes the M1 frontier from 1,566 uncertain roots to zero; the first exact
   integrated replay reached M2.
-- [ ] Prune staged exact connectivity work before enumeration: never rescan
+- [x] Prune staged exact connectivity work before enumeration: never rescan
   old-old rectangle pairs, and generate only new/new or new/allowed-neighbor
-  pairs within each cell.  The first M2-reaching replay exposed 103.5 seconds
-  in the VIA1 append and 209.1 seconds in the M2 append from rejecting these
-  impossible pairs after enumeration.
-- [ ] Compact the retained rectangle allocation after the M2 append.  Only
+  pairs within each cell.  This exact optimization passed 22 directed and 96
+  seeded staged differentials.  The production replay showed that it is a
+  qualified structural win rather than the expected wall-time win: M2 still
+  contains 1,637,538,138 genuine exact owner edges and remained the roof.
+- [x] Compact the retained rectangle allocation after the M2 append.  Only
   22,946,444 M2 rectangles remain, while the reserved 84,223,436-rectangle
   frontier strands about 2.28 GiB and prevents the M2 certificate from
-  entering under the 9-GiB transaction cap.
-- [ ] Demonstrate an accounted peak within the 10,240-MiB qualification card,
+  entering under the 9-GiB transaction cap.  The exact integrated replay now
+  completes all four checkpoints under the cap.
+- [ ] Fuse the overwhelmingly singleton M2 edge stream into one exact pass.
+  VIA1 has one rectangle for every one of its 20,178,022 owners, and M2 has
+  only 468 more rectangles than its 22,945,976 owners.  Union and census
+  singleton-singleton edges during the count pass, then restrict the fill
+  pass to pairs involving a multi-rectangle owner.
+- [ ] Enumerate only canonical-start membership buckets.  A count-only
+  production projection removes 682.7 million M2 pair tests (21.1%) by
+  requiring a pair's cell to contain its maximum left and bottom coordinate;
+  this remains unmeasured wall-time opportunity.
+- [x] Demonstrate an accounted peak within the 10,240-MiB qualification card,
   including caller staging and temporary sort/reduction storage.
 - [ ] Run matched repeated full-launch control/candidate trials and book only
   the measured real-seconds and percent reduction.
