@@ -2257,7 +2257,8 @@ void run_transaction(
                   thrust::raw_pointer_cast(
                       metal.rectangles.data()),
                   metal.rectangles.size(), labels.labels,
-                  labels.count, &refined_checkpoint),
+                  labels.count, &refined_checkpoint,
+                  diode_view_ptr),
               "refine antenna gate lower bound by root cell");
           memory.observe_component_peak(
               refined_checkpoint.peak_live_bytes);

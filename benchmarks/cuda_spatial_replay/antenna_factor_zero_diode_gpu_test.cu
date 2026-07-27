@@ -146,7 +146,7 @@ void exemptions_do_not_join_roots_test()
       rectangle(0, 20, 20, 120, 4, 5),
       rectangle(30, 20, 50, 120, 5, 5)};
   const std::vector<std::uint32_t> labels =
-      {0, 1, 2, 3, 0, 1};
+      {0, 1, 0, 1, 0, 1};
   thrust::device_vector<ac::RectI64> device_poly(poly);
   thrust::device_vector<ac::RectI64> device_active(active);
   thrust::device_vector<ac::RectI64> device_metal(metal);
