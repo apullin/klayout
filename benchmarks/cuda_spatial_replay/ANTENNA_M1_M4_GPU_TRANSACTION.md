@@ -213,6 +213,14 @@ Before production timing is booked:
   integrity gates.
 - [ ] Package the exact compact production capture and standalone replay for
   the high-memory remote watershed.
+- [x] Capture and hash the exact FreePDK45 independent-x2 production request;
+  retain its canonical 18.7-MiB compressed replay artifact.
+- [x] Replace the production gate census's per-visit global atomic with an
+  exact block-reduced admission pass.
+- [x] Filter exact touching pairs before occurrence materialization and
+  traverse each occupied cell cooperatively on the GPU.
+- [ ] Split logical metal stages into memory-bounded domain sub-appends so the
+  full replay stays below the 9-GiB device cap.
 - [ ] Demonstrate an accounted peak within the 10,240-MiB qualification card,
   including caller staging and temporary sort/reduction storage.
 - [ ] Run matched repeated full-launch control/candidate trials and book only

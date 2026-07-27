@@ -61,6 +61,8 @@ static_assert(sizeof(Edge) == 32, "edge ABI padding changed");
 
 constexpr std::uint32_t kThreads = 256;
 constexpr std::uint32_t kMaximumBlocks = 65535;
+constexpr std::uint32_t kConnectivityBinsPerMicron = 2;
+constexpr std::uint32_t kCertificateBinsPerMicron = 16;
 constexpr std::int64_t kCoordinateLimit = INT64_C(1000000000000);
 constexpr std::uint32_t kPhysicalLayers[12] = {
     9, 1, 4, 3, 10, 11, 12, 13, 14, 15, 16, 17};
@@ -1472,7 +1474,11 @@ ac::Config connectivity_config(const Request &request)
 {
   ac::Config config;
   config.domain_count = 12;
-  config.bin_size = request.dbu_per_micron;
+  config.exact_filter_before_materialization = true;
+  config.bin_size = std::max<std::int64_t>(
+      1, (request.dbu_per_micron +
+          kConnectivityBinsPerMicron - 1) /
+             kConnectivityBinsPerMicron);
   config.device = request.device;
   const std::uint32_t neighbors[9][3] = {
       {0, 4, UINT32_MAX},
@@ -1504,6 +1510,8 @@ ac::Config connectivity_config(const Request &request)
       static_cast<std::uint32_t>(request.capacity.max_cell_members);
   config.limits.max_pair_tests_per_cell =
       request.capacity.max_rule_work;
+  config.limits.max_total_pair_tests =
+      request.capacity.max_rule_work;
   config.limits.max_dsu_iterations =
       static_cast<std::uint32_t>(
           request.capacity.max_dsu_iterations);
@@ -1515,7 +1523,10 @@ cert::Config certificate_config(const Request &request)
 {
   cert::Config config;
   config.device = request.device;
-  config.grid_cell_size = request.dbu_per_micron;
+  config.grid_cell_size = std::max<std::int64_t>(
+      1, (request.dbu_per_micron +
+          kCertificateBinsPerMicron - 1) /
+             kCertificateBinsPerMicron);
   config.limits.max_live_device_bytes =
       request.capacity.max_device_bytes;
   config.limits.max_annotation_owners =

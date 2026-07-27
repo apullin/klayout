@@ -79,6 +79,13 @@ std::uint32_t launch_blocks(std::uint64_t count)
           (count + kThreads - 1) / kThreads, kMaximumBlocks));
 }
 
+std::uint32_t launch_group_blocks(std::uint64_t group_count)
+{
+  if (!group_count) return 0;
+  return static_cast<std::uint32_t>(
+      std::min<std::uint64_t>(group_count, kMaximumBlocks));
+}
+
 template <class T>
 void release_device_vector(thrust::device_vector<T> *values)
 {
@@ -186,6 +193,8 @@ ac::Status validate_config(const ac::Config &config)
       !config.limits.max_unique_candidates ||
       !config.limits.max_cell_members ||
       !config.limits.max_pair_tests_per_cell ||
+      (config.exact_filter_before_materialization &&
+       !config.limits.max_total_pair_tests) ||
       !config.limits.max_dsu_iterations ||
       !config.limits.max_device_bytes ||
       config.limits.min_device_free_after_bytes >=
@@ -465,6 +474,224 @@ __global__ void fill_memberships_kernel(
   }
 }
 
+__device__ std::uint64_t full_pair_count(std::uint64_t count)
+{
+  const std::uint64_t half = count / 2;
+  const std::uint64_t other =
+      count & 1 ? count : count ? count - 1 : 0;
+  return half * other;
+}
+
+__device__ std::uint64_t triangular_row_begin(
+    std::uint64_t count, std::uint64_t row)
+{
+  // row * (2 * count - row - 1) / 2, divided before multiplying.
+  std::uint64_t first = row;
+  std::uint64_t second = 2 * count - row - 1;
+  if (first & 1) {
+    second /= 2;
+  } else {
+    first /= 2;
+  }
+  return first * second;
+}
+
+__device__ bool decode_triangular_pair(
+    std::uint64_t count, std::uint64_t pair,
+    std::uint64_t *first, std::uint64_t *second)
+{
+  if (count < 2 || pair >= full_pair_count(count)) return false;
+  std::uint64_t low = 0;
+  std::uint64_t high = count;
+  while (low + 1 < high) {
+    const std::uint64_t middle = low + (high - low) / 2;
+    if (triangular_row_begin(count, middle) <= pair) {
+      low = middle;
+    } else {
+      high = middle;
+    }
+  }
+  const std::uint64_t row_begin =
+      triangular_row_begin(count, low);
+  const std::uint64_t column = low + 1 + (pair - row_begin);
+  if (column >= count) return false;
+  *first = low;
+  *second = column;
+  return true;
+}
+
+__device__ bool exact_pair_key(
+    const CellMember *members, std::uint64_t group_begin,
+    std::uint64_t group_count, std::uint64_t local_pair,
+    const ac::RectI64 *rectangles,
+    const std::uint64_t *relation_rows,
+    std::uint32_t stage_begin, std::uint64_t *key,
+    std::uint32_t *status)
+{
+  std::uint64_t first_offset = 0;
+  std::uint64_t second_offset = 0;
+  if (!decode_triangular_pair(
+          group_count, local_pair, &first_offset,
+          &second_offset)) {
+    atomicOr(status, std::uint32_t(kPairCountOverflow));
+    return false;
+  }
+  const std::uint32_t first =
+      members[group_begin + first_offset].node;
+  const std::uint32_t second =
+      members[group_begin + second_offset].node;
+  const ac::RectI64 first_rectangle = rectangles[first];
+  const ac::RectI64 second_rectangle = rectangles[second];
+  if (first_rectangle.owner < stage_begin &&
+      second_rectangle.owner < stage_begin) {
+    return false;
+  }
+  if (first_rectangle.owner != second_rectangle.owner &&
+      !allowed_relation(
+          first_rectangle.domain, second_rectangle.domain,
+          relation_rows)) {
+    return false;
+  }
+  if (first_rectangle.owner == second_rectangle.owner &&
+      positive_area_overlap(first_rectangle, second_rectangle)) {
+    atomicOr(status, std::uint32_t(kOverlappingOwnerTiles));
+    return false;
+  }
+  if (!closed_touch_or_overlap(
+          first_rectangle, second_rectangle)) {
+    return false;
+  }
+  *key = pair_key(first, second);
+  return true;
+}
+
+__global__ void count_full_pair_tests_kernel(
+    const std::uint64_t *group_counts, std::uint64_t group_count,
+    std::uint32_t max_cell_members,
+    std::uint64_t max_pair_tests_per_cell,
+    std::uint64_t *pair_test_counts, std::uint32_t *status)
+{
+  for (std::uint64_t group =
+           static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+           threadIdx.x;
+       group < group_count;
+       group += static_cast<std::uint64_t>(blockDim.x) * gridDim.x) {
+    const std::uint64_t count = group_counts[group];
+    if (count > max_cell_members) {
+      atomicOr(status, std::uint32_t(kCellCapacity));
+      pair_test_counts[group] = 0;
+      continue;
+    }
+    const std::uint64_t tests = full_pair_count(count);
+    if (tests > max_pair_tests_per_cell) {
+      atomicOr(status, std::uint32_t(kCellCapacity));
+      pair_test_counts[group] = 0;
+      continue;
+    }
+    pair_test_counts[group] = tests;
+  }
+}
+
+__global__ void count_exact_pair_occurrences_parallel_kernel(
+    const CellMember *members,
+    const std::uint64_t *group_offsets,
+    const std::uint64_t *group_counts,
+    const std::uint64_t *pair_test_offsets,
+    std::uint64_t total_pair_tests,
+    std::uint64_t group_count,
+    const ac::RectI64 *rectangles,
+    const std::uint64_t *relation_rows,
+    std::uint32_t stage_begin,
+    std::uint64_t *pair_counts, std::uint32_t *status)
+{
+  __shared__ unsigned long long partial[kThreads];
+  for (std::uint64_t group = blockIdx.x; group < group_count;
+       group += gridDim.x) {
+    const std::uint64_t begin = group_offsets[group];
+    const std::uint64_t count = group_counts[group];
+    const std::uint64_t test_begin = pair_test_offsets[group];
+    const std::uint64_t test_end =
+        group + 1 < group_count
+            ? pair_test_offsets[group + 1]
+            : total_pair_tests;
+    const std::uint64_t tests = test_end - test_begin;
+    if (!tests) {
+      if (!threadIdx.x) pair_counts[group] = 0;
+      continue;
+    }
+    unsigned long long local = 0;
+    for (std::uint64_t pair = threadIdx.x; pair < tests;
+         pair += blockDim.x) {
+      std::uint64_t key = 0;
+      if (exact_pair_key(
+              members, begin, count, pair, rectangles,
+              relation_rows, stage_begin, &key, status)) {
+        ++local;
+      }
+    }
+    partial[threadIdx.x] = local;
+    __syncthreads();
+    for (std::uint32_t offset = blockDim.x / 2; offset;
+         offset /= 2) {
+      if (threadIdx.x < offset) {
+        partial[threadIdx.x] +=
+            partial[threadIdx.x + offset];
+      }
+      __syncthreads();
+    }
+    if (!threadIdx.x) pair_counts[group] = partial[0];
+    __syncthreads();
+  }
+}
+
+__global__ void fill_exact_pair_occurrences_parallel_kernel(
+    const CellMember *members,
+    const std::uint64_t *group_offsets,
+    const std::uint64_t *group_counts,
+    const std::uint64_t *pair_test_offsets,
+    std::uint64_t total_pair_tests,
+    std::uint64_t group_count,
+    const ac::RectI64 *rectangles,
+    const std::uint64_t *relation_rows,
+    std::uint32_t stage_begin,
+    const std::uint64_t *pair_offsets,
+    const std::uint64_t *pair_counts,
+    std::uint64_t *pairs, std::uint32_t *status)
+{
+  __shared__ unsigned long long cursor;
+  for (std::uint64_t group = blockIdx.x; group < group_count;
+       group += gridDim.x) {
+    const std::uint64_t begin = group_offsets[group];
+    const std::uint64_t count = group_counts[group];
+    const std::uint64_t test_begin = pair_test_offsets[group];
+    const std::uint64_t test_end =
+        group + 1 < group_count
+            ? pair_test_offsets[group + 1]
+            : total_pair_tests;
+    const std::uint64_t tests = test_end - test_begin;
+    if (!tests) continue;
+    if (!threadIdx.x) cursor = pair_offsets[group];
+    __syncthreads();
+    for (std::uint64_t pair = threadIdx.x; pair < tests;
+         pair += blockDim.x) {
+      std::uint64_t key = 0;
+      if (exact_pair_key(
+              members, begin, count, pair, rectangles,
+              relation_rows, stage_begin, &key, status)) {
+        const unsigned long long output =
+            atomicAdd(&cursor, 1ull);
+        pairs[output] = key;
+      }
+    }
+    __syncthreads();
+    if (!threadIdx.x &&
+        cursor != pair_offsets[group] + pair_counts[group]) {
+      atomicOr(status, std::uint32_t(kPairCountOverflow));
+    }
+    __syncthreads();
+  }
+}
+
 __global__ void count_pair_occurrences_kernel(
     const CellMember *members,
     const std::uint64_t *group_offsets,
@@ -473,6 +700,7 @@ __global__ void count_pair_occurrences_kernel(
     const ac::RectI64 *rectangles,
     const std::uint64_t *relation_rows,
     std::uint32_t stage_begin,
+    bool exact_filter_before_materialization,
     std::uint32_t max_cell_members,
     std::uint64_t max_pair_tests_per_cell,
     std::uint64_t *pair_counts,
@@ -520,6 +748,19 @@ __global__ void count_pair_occurrences_kernel(
                 relation_rows)) {
           continue;
         }
+        if (exact_filter_before_materialization) {
+          if (first_rectangle.owner == second_rectangle.owner &&
+              positive_area_overlap(
+                  first_rectangle, second_rectangle)) {
+            atomicOr(
+                status, std::uint32_t(kOverlappingOwnerTiles));
+            continue;
+          }
+          if (!closed_touch_or_overlap(
+                  first_rectangle, second_rectangle)) {
+            continue;
+          }
+        }
         if (pairs == UINT64_MAX) {
           atomicOr(status, std::uint32_t(kPairCountOverflow));
           pair_counts[group] = 0;
@@ -540,6 +781,7 @@ __global__ void fill_pair_occurrences_kernel(
     const ac::RectI64 *rectangles,
     const std::uint64_t *relation_rows,
     std::uint32_t stage_begin,
+    bool exact_filter_before_materialization,
     const std::uint64_t *pair_offsets,
     std::uint64_t *pairs)
 {
@@ -570,6 +812,17 @@ __global__ void fill_pair_occurrences_kernel(
                 first_rectangle.domain, second_rectangle.domain,
                 relation_rows)) {
           continue;
+        }
+        if (exact_filter_before_materialization) {
+          if (first_rectangle.owner == second_rectangle.owner &&
+              positive_area_overlap(
+                  first_rectangle, second_rectangle)) {
+            continue;
+          }
+          if (!closed_touch_or_overlap(
+                  first_rectangle, second_rectangle)) {
+            continue;
+          }
         }
         pairs[cursor++] = pair_key(first, second);
       }
@@ -1228,28 +1481,100 @@ Status Connectivity::append_stage_impl(
     }
     thrust::device_vector<std::uint64_t>
         pair_counts(group_count, 0);
-    count_pair_occurrences_kernel<<<
-        launch_blocks(group_count), kThreads>>>(
-        thrust::raw_pointer_cast(members.data()),
-        thrust::raw_pointer_cast(group_offsets.data()),
-        thrust::raw_pointer_cast(group_counts.data()),
-        group_count,
-        thrust::raw_pointer_cast(work_rectangles.data()),
-        thrust::raw_pointer_cast(relation_rows.data()),
-        stage_begin, config.limits.max_cell_members,
-        config.limits.max_pair_tests_per_cell,
-        thrust::raw_pointer_cast(pair_counts.data()),
-        thrust::raw_pointer_cast(device_status.data()));
-    cuda_require(
-        cudaGetLastError(),
-        "antenna connectivity pair-count launch");
-    cuda_require(
-        cudaDeviceSynchronize(),
-        "antenna connectivity pair-count synchronize");
-    flags = read_device_status(
-        device_status,
-        "antenna connectivity pair-count status D2H");
-    if (flags) return map_device_status(flags);
+    thrust::device_vector<std::uint64_t> pair_test_offsets;
+    std::uint64_t total_pair_tests = 0;
+    if (config.exact_filter_before_materialization) {
+      if (!vector_allocation_admitted<std::uint64_t>(
+              config, group_count)) {
+        return Status::capacity_exceeded;
+      }
+      thrust::device_vector<std::uint64_t>
+          pair_test_counts(group_count);
+      count_full_pair_tests_kernel<<<
+          launch_blocks(group_count), kThreads>>>(
+          thrust::raw_pointer_cast(group_counts.data()),
+          group_count, config.limits.max_cell_members,
+          config.limits.max_pair_tests_per_cell,
+          thrust::raw_pointer_cast(pair_test_counts.data()),
+          thrust::raw_pointer_cast(device_status.data()));
+      cuda_require(
+          cudaGetLastError(),
+          "antenna connectivity pair-work-count launch");
+      cuda_require(
+          cudaDeviceSynchronize(),
+          "antenna connectivity pair-work-count synchronize");
+      flags = read_device_status(
+          device_status,
+          "antenna connectivity pair-work-count status D2H");
+      if (flags) return map_device_status(flags);
+
+      total_pair_tests = thrust::reduce(
+          thrust::device, pair_test_counts.begin(),
+          pair_test_counts.end(), UINT64_C(0),
+          SaturatingAddU64());
+      if (total_pair_tests == UINT64_MAX ||
+          total_pair_tests >
+              config.limits.max_total_pair_tests) {
+        return Status::capacity_exceeded;
+      }
+      if (!vector_allocation_admitted<std::uint64_t>(
+              config, group_count)) {
+        return Status::capacity_exceeded;
+      }
+      pair_test_offsets.resize(group_count);
+      thrust::exclusive_scan(
+          thrust::device, pair_test_counts.begin(),
+          pair_test_counts.end(), pair_test_offsets.begin(),
+          UINT64_C(0));
+      release_device_vector(&pair_test_counts);
+
+      count_exact_pair_occurrences_parallel_kernel<<<
+          launch_group_blocks(group_count), kThreads>>>(
+          thrust::raw_pointer_cast(members.data()),
+          thrust::raw_pointer_cast(group_offsets.data()),
+          thrust::raw_pointer_cast(group_counts.data()),
+          thrust::raw_pointer_cast(pair_test_offsets.data()),
+          total_pair_tests, group_count,
+          thrust::raw_pointer_cast(work_rectangles.data()),
+          thrust::raw_pointer_cast(relation_rows.data()),
+          stage_begin,
+          thrust::raw_pointer_cast(pair_counts.data()),
+          thrust::raw_pointer_cast(device_status.data()));
+      cuda_require(
+          cudaGetLastError(),
+          "antenna connectivity exact pair-count launch");
+      cuda_require(
+          cudaDeviceSynchronize(),
+          "antenna connectivity exact pair-count synchronize");
+      flags = read_device_status(
+          device_status,
+          "antenna connectivity exact pair-count status D2H");
+      if (flags) return map_device_status(flags);
+    } else {
+      count_pair_occurrences_kernel<<<
+          launch_blocks(group_count), kThreads>>>(
+          thrust::raw_pointer_cast(members.data()),
+          thrust::raw_pointer_cast(group_offsets.data()),
+          thrust::raw_pointer_cast(group_counts.data()),
+          group_count,
+          thrust::raw_pointer_cast(work_rectangles.data()),
+          thrust::raw_pointer_cast(relation_rows.data()),
+          stage_begin, false,
+          config.limits.max_cell_members,
+          config.limits.max_pair_tests_per_cell,
+          thrust::raw_pointer_cast(pair_counts.data()),
+          thrust::raw_pointer_cast(device_status.data()));
+      cuda_require(
+          cudaGetLastError(),
+          "antenna connectivity pair-count launch");
+      cuda_require(
+          cudaDeviceSynchronize(),
+          "antenna connectivity pair-count synchronize");
+      flags = read_device_status(
+          device_status,
+          "antenna connectivity pair-count status D2H");
+      if (flags) return map_device_status(flags);
+    }
 
     const std::uint64_t pair_occurrences = thrust::reduce(
         thrust::device, pair_counts.begin(), pair_counts.end(),
@@ -1269,7 +1594,9 @@ Status Connectivity::append_stage_impl(
     thrust::exclusive_scan(
         thrust::device, pair_counts.begin(), pair_counts.end(),
         pair_offsets.begin(), UINT64_C(0));
-    release_device_vector(&pair_counts);
+    if (!config.exact_filter_before_materialization) {
+      release_device_vector(&pair_counts);
+    }
     if (!vector_allocation_admitted<std::uint64_t>(
             config, pair_occurrences)) {
       return Status::capacity_exceeded;
@@ -1277,24 +1604,53 @@ Status Connectivity::append_stage_impl(
     thrust::device_vector<std::uint64_t>
         candidate_pairs(pair_occurrences);
     if (pair_occurrences) {
-      fill_pair_occurrences_kernel<<<
-          launch_blocks(group_count), kThreads>>>(
-          thrust::raw_pointer_cast(members.data()),
-          thrust::raw_pointer_cast(group_offsets.data()),
-          thrust::raw_pointer_cast(group_counts.data()),
-          group_count,
-          thrust::raw_pointer_cast(work_rectangles.data()),
-          thrust::raw_pointer_cast(relation_rows.data()),
-          stage_begin,
-          thrust::raw_pointer_cast(pair_offsets.data()),
-          thrust::raw_pointer_cast(candidate_pairs.data()));
-      cuda_require(
-          cudaGetLastError(),
-          "antenna connectivity pair-fill launch");
-      cuda_require(
-          cudaDeviceSynchronize(),
-          "antenna connectivity pair-fill synchronize");
+      if (config.exact_filter_before_materialization) {
+        fill_exact_pair_occurrences_parallel_kernel<<<
+            launch_group_blocks(group_count), kThreads>>>(
+            thrust::raw_pointer_cast(members.data()),
+            thrust::raw_pointer_cast(group_offsets.data()),
+            thrust::raw_pointer_cast(group_counts.data()),
+            thrust::raw_pointer_cast(pair_test_offsets.data()),
+            total_pair_tests, group_count,
+            thrust::raw_pointer_cast(work_rectangles.data()),
+            thrust::raw_pointer_cast(relation_rows.data()),
+            stage_begin,
+            thrust::raw_pointer_cast(pair_offsets.data()),
+            thrust::raw_pointer_cast(pair_counts.data()),
+            thrust::raw_pointer_cast(candidate_pairs.data()),
+            thrust::raw_pointer_cast(device_status.data()));
+        cuda_require(
+            cudaGetLastError(),
+            "antenna connectivity exact pair-fill launch");
+        cuda_require(
+            cudaDeviceSynchronize(),
+            "antenna connectivity exact pair-fill synchronize");
+        flags = read_device_status(
+            device_status,
+            "antenna connectivity exact pair-fill status D2H");
+        if (flags) return map_device_status(flags);
+      } else {
+        fill_pair_occurrences_kernel<<<
+            launch_blocks(group_count), kThreads>>>(
+            thrust::raw_pointer_cast(members.data()),
+            thrust::raw_pointer_cast(group_offsets.data()),
+            thrust::raw_pointer_cast(group_counts.data()),
+            group_count,
+            thrust::raw_pointer_cast(work_rectangles.data()),
+            thrust::raw_pointer_cast(relation_rows.data()),
+            stage_begin, false,
+            thrust::raw_pointer_cast(pair_offsets.data()),
+            thrust::raw_pointer_cast(candidate_pairs.data()));
+        cuda_require(
+            cudaGetLastError(),
+            "antenna connectivity pair-fill launch");
+        cuda_require(
+            cudaDeviceSynchronize(),
+            "antenna connectivity pair-fill synchronize");
+      }
     }
+    release_device_vector(&pair_counts);
+    release_device_vector(&pair_test_offsets);
     release_device_vector(&members);
     release_device_vector(&group_offsets);
     release_device_vector(&group_counts);

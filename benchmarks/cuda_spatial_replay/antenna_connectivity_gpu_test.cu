@@ -58,6 +58,7 @@ ac::Config base_config(std::uint32_t domains, std::int64_t bin_size)
   config.limits.max_pair_occurrences = 10000000;
   config.limits.max_unique_candidates = 2000000;
   config.limits.max_cell_members = 10000;
+  config.limits.max_total_pair_tests = 10000000;
   config.limits.max_dsu_iterations = 128;
   return config;
 }
@@ -229,8 +230,17 @@ struct Oracle
                 overlap_x1 - overlap_x0 + 1) *
             static_cast<std::uint64_t>(
                 overlap_y1 - overlap_y0 + 1);
-        census.pair_occurrences += occurrences;
+        const bool exact_touch =
+            touches(first_rectangle, second_rectangle);
+        if (!config.exact_filter_before_materialization ||
+            exact_touch) {
+          census.pair_occurrences += occurrences;
+        }
         if (same_owner) continue;
+        if (config.exact_filter_before_materialization &&
+            !exact_touch) {
+          continue;
+        }
         const std::uint32_t low_owner = std::min(
             first_rectangle.owner, second_rectangle.owner);
         const std::uint32_t high_owner = std::max(
@@ -239,7 +249,7 @@ struct Oracle
             (static_cast<std::uint64_t>(low_owner) << 32) |
             high_owner;
         owner_candidates.insert(owner_pair);
-        if (touches(first_rectangle, second_rectangle)) {
+        if (exact_touch) {
           owner_edges.insert(owner_pair);
         }
       }
@@ -389,6 +399,12 @@ ac::StageCensus run_stage(
   return census;
 }
 
+void require_failure_unchanged(
+    ac::Connectivity *gpu, const ac::RectI64 *stage,
+    std::uint64_t count, ac::Status expected,
+    const std::string &name, std::uint64_t new_node_count = 1,
+    std::uint64_t close_domain_mask = 0);
+
 void test_touching_and_relation_census()
 {
   ac::Config config = base_config(2, 10);
@@ -445,6 +461,108 @@ void test_multibin_deduplication()
           "multi-bin pair was not deduplicated exactly once");
 }
 
+void test_exact_filter_before_materialization()
+{
+  ac::Config broad_config = base_config(2, 100);
+  require(!broad_config.exact_filter_before_materialization,
+          "exact filtering is not opt-in");
+  allow(&broad_config, 0, 0);
+  allow(&broad_config, 1, 1);
+  allow(&broad_config, 0, 1);
+  const std::vector<ac::RectI64> stage = {
+      {0, 0, 10, 10, 0, 0},
+      {90, 90, 99, 99, 1, 0},  // broad same-cell false candidate
+      {10, 0, 20, 10, 2, 1},   // exact edge touch to owner 0
+      {30, 30, 40, 40, 3, 1}}; // broad same-cell false candidate
+
+  ac::Connectivity broad_gpu(broad_config);
+  Oracle broad_oracle(broad_config);
+  const ac::StageCensus broad = run_stage(
+      &broad_gpu, &broad_oracle, stage, 4,
+      "broad materialization control");
+  require(broad.pair_occurrences == 6 &&
+              broad.unique_candidates == 6 &&
+              broad.exact_edges == 1,
+          "broad control did not expose false candidates");
+
+  ac::Config exact_config = broad_config;
+  exact_config.exact_filter_before_materialization = true;
+  ac::Connectivity exact_gpu(exact_config);
+  Oracle exact_oracle(exact_config);
+  const ac::StageCensus exact = run_stage(
+      &exact_gpu, &exact_oracle, stage, 4,
+      "exact filter before materialization");
+  require(exact.pair_occurrences == 1 &&
+              exact.unique_candidates == 1 &&
+              exact.exact_edges == 1,
+          "exact filter retained a broad false candidate");
+
+  std::vector<ac::RectI64> strided_stage;
+  for (std::uint32_t owner = 0; owner < 33; ++owner) {
+    const std::int64_t left =
+        static_cast<std::int64_t>(owner) * 2;
+    strided_stage.push_back(
+        {left, 0, left + 2, 10, owner, 0});
+  }
+  ac::Connectivity strided_gpu(exact_config);
+  Oracle strided_oracle(exact_config);
+  const ac::StageCensus strided = run_stage(
+      &strided_gpu, &strided_oracle, strided_stage, 33,
+      "exact parallel pair stride");
+  require(strided.pair_occurrences == 32 &&
+              strided.unique_candidates == 32 &&
+              strided.exact_edges == 32,
+          "exact parallel pair stride lost a neighbor edge");
+
+  std::vector<std::uint32_t> broad_labels;
+  std::vector<std::uint32_t> exact_labels;
+  require_status(
+      broad_gpu.snapshot_labels(&broad_labels),
+      ac::Status::success, "broad control labels");
+  require_status(
+      exact_gpu.snapshot_labels(&exact_labels),
+      ac::Status::success, "exact filter labels");
+  require(exact_labels == broad_labels &&
+              exact_labels ==
+                  std::vector<std::uint32_t>({0, 1, 0, 3}),
+          "exact filtering changed connectivity");
+
+  exact_config.limits.max_pair_occurrences = 1;
+  ac::Connectivity exact_bounded(exact_config);
+  Oracle exact_bounded_oracle(exact_config);
+  run_stage(
+      &exact_bounded, &exact_bounded_oracle, stage, 4,
+      "exact occurrence capacity");
+
+  ac::Config exact_work_bounded = exact_config;
+  exact_work_bounded.limits.max_pair_occurrences = 100;
+  exact_work_bounded.limits.max_total_pair_tests = 5;
+  ac::Connectivity exact_work_bounded_gpu(exact_work_bounded);
+  require_failure_unchanged(
+      &exact_work_bounded_gpu, stage.data(), stage.size(),
+      ac::Status::capacity_exceeded,
+      "exact aggregate pair-work capacity", 4);
+
+  broad_config.limits.max_pair_occurrences = 1;
+  ac::Connectivity broad_bounded(broad_config);
+  require_failure_unchanged(
+      &broad_bounded, stage.data(), stage.size(),
+      ac::Status::capacity_exceeded,
+      "broad occurrence capacity", 4);
+
+  ac::Config overlap_config = base_config(1, 100);
+  allow(&overlap_config, 0, 0);
+  overlap_config.exact_filter_before_materialization = true;
+  ac::Connectivity overlap_gpu(overlap_config);
+  const std::array<ac::RectI64, 2> overlapping_tiles = {{
+      {0, 0, 10, 10, 0, 0},
+      {5, 0, 15, 10, 0, 0}}};
+  require_failure_unchanged(
+      &overlap_gpu, overlapping_tiles.data(),
+      overlapping_tiles.size(), ac::Status::malformed_input,
+      "exact-filter overlapping owner tiles");
+}
+
 void test_concave_owner_rectangulation()
 {
   ac::Config config = base_config(1, 5);
@@ -469,9 +587,10 @@ void test_concave_owner_rectangulation()
           "concave owner did not connect exactly");
 }
 
-void test_staged_antenna_bridge()
+void test_staged_antenna_bridge(bool exact_filter)
 {
   ac::Config config = base_config(10, 8);
+  config.exact_filter_before_materialization = exact_filter;
   for (std::uint32_t domain = 0; domain < 10; ++domain) {
     allow(&config, domain, domain);
   }
@@ -542,8 +661,8 @@ void test_staged_antenna_bridge()
 void require_failure_unchanged(
     ac::Connectivity *gpu, const ac::RectI64 *stage,
     std::uint64_t count, ac::Status expected,
-    const std::string &name, std::uint64_t new_node_count = 1,
-    std::uint64_t close_domain_mask = 0)
+    const std::string &name, std::uint64_t new_node_count,
+    std::uint64_t close_domain_mask)
 {
   const std::uint64_t old_count = gpu->node_count();
   std::vector<std::uint32_t> before;
@@ -884,13 +1003,14 @@ void test_consuming_device_ownership()
       "poisoned resident view");
 }
 
-void test_seeded_random_differentials()
+void test_seeded_random_differentials(bool exact_filter)
 {
   constexpr std::uint32_t kSeeds = 12;
   constexpr std::uint32_t kStages = 4;
   constexpr std::uint32_t kRectanglesPerStage = 18;
   for (std::uint32_t seed = 0; seed < kSeeds; ++seed) {
     ac::Config config = base_config(6, 7);
+    config.exact_filter_before_materialization = exact_filter;
     for (std::uint32_t domain = 0; domain < 6; ++domain) {
       allow(&config, domain, domain);
       if (domain + 1 < 6) allow(&config, domain, domain + 1);
@@ -937,6 +1057,7 @@ void test_seeded_random_differentials()
         stage.push_back(rectangle);
       }
       const std::string name =
+          std::string(exact_filter ? "exact " : "broad ") +
           "random seed " + std::to_string(seed) +
           " stage " + std::to_string(stage_id);
       run_stage(
@@ -957,16 +1078,19 @@ int main()
         "no CUDA device available");
     test_touching_and_relation_census();
     test_multibin_deduplication();
+    test_exact_filter_before_materialization();
     test_concave_owner_rectangulation();
-    test_staged_antenna_bridge();
+    test_staged_antenna_bridge(false);
+    test_staged_antenna_bridge(true);
     test_fail_closed_paths();
     test_device_input();
     test_resident_label_view();
     test_consuming_device_ownership();
-    test_seeded_random_differentials();
+    test_seeded_random_differentials(false);
+    test_seeded_random_differentials(true);
     std::cout
         << "antenna_connectivity_gpu_test: PASS"
-        << " directed=9 random_seeds=12 stages_per_seed=4"
+        << " directed=13 random_seeds=24 stages_per_seed=4"
         << std::endl;
     return EXIT_SUCCESS;
   } catch (const std::exception &error) {

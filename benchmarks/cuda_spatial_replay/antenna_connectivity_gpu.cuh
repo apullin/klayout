@@ -81,8 +81,12 @@ struct Limits
   std::uint64_t max_unique_candidates = UINT64_C(500000000);
   std::uint32_t max_cell_members = 1000000;
   // Conservative pre-filter work guard.  A cell whose full k*(k-1)/2 pair
-  // universe exceeds this bound declines before the serial relation filter.
+  // universe exceeds this bound declines before relation/predicate testing.
   std::uint64_t max_pair_tests_per_cell = UINT64_C(100000000);
+  // Aggregate broad-pair traversal guard for the exact-filtered parallel
+  // path.  This is checked from per-cell pair counts before any pair-test
+  // kernel is launched.
+  std::uint64_t max_total_pair_tests = UINT64_C(100000000);
   std::uint32_t max_dsu_iterations = 128;
   // Hard admission envelope.  Every major allocation and sort scratch
   // frontier is checked against both cudaMemGetInfo() and this cap before the
@@ -105,6 +109,11 @@ struct Config
   // outside domain_count must be zero.  Diagonal bits opt each domain into
   // same-domain connectivity.
   std::array<std::uint64_t, kMaximumDomains> relation_rows{};
+  // Production-local low-materialization mode.  Grid-cell pairs are still
+  // traversed exactly, but only closed-touching same-owner tile edges and
+  // closed-touching allowed cross-owner edges enter the occurrence stream.
+  // The default retains the historical broad-candidate census and behavior.
+  bool exact_filter_before_materialization = false;
   std::int64_t bin_size = 2000;
   int device = 0;
   Limits limits;
