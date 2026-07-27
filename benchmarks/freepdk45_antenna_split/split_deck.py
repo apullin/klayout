@@ -21,6 +21,11 @@ The optional ``--split-lower`` mode replaces the lower owner with two:
 * ``antenna_m1``: METAL1_ANTENNA
 * ``antenna_m2``: METAL2_ANTENNA
 
+The mutually exclusive ``--fuse-metal`` mode assigns all ten metal checks to
+one ``antenna_m1_m4`` owner.  METAL5 through METAL10 remain in that exact CPU
+owner even when they are empty on the current workload; the name describes the
+last non-empty layer rather than weakening the output contract.
+
 The optional ``--small-first-diode`` mode reassociates the exact diode set
 expression from ``nplus & (active - nwell)`` to
 ``(nplus & active) - nwell`` so the smaller intersection is formed first.
@@ -48,6 +53,7 @@ M1_SHARD = "antenna_m1"
 M2_SHARD = "antenna_m2"
 M3_SHARD = "antenna_m3"
 M4_UPPER_SHARD = "antenna_m4_m10"
+FUSED_METAL_SHARD = "antenna_m1_m4"
 ANTENNA_CATEGORIES = tuple(f"METAL{layer}_ANTENNA" for layer in range(1, 11))
 HISTORICAL_DIODE_LINE = (
     "diode = nplus &amp; active - nwell # diode recognition layer"
@@ -69,9 +75,19 @@ def _replace_once(text: str, old: str, new: str, label: str) -> str:
 
 
 def metal_owner_manifest(
-    *, split_lower: bool = False, split_upper: bool = False
+    *,
+    split_lower: bool = False,
+    split_upper: bool = False,
+    fuse_metal: bool = False,
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """Return the deterministic metal-output ownership contract."""
+
+    if fuse_metal:
+        if split_lower or split_upper:
+            raise TransformError(
+                "fused metal owner cannot be combined with lower/upper splits"
+            )
+        return ((FUSED_METAL_SHARD, ANTENNA_CATEGORIES),)
 
     lower = (
         (
@@ -93,14 +109,19 @@ def metal_owner_manifest(
 
 
 def antenna_shards(
-    *, split_lower: bool = False, split_upper: bool = False
+    *,
+    split_lower: bool = False,
+    split_upper: bool = False,
+    fuse_metal: bool = False,
 ) -> tuple[str, ...]:
     """Return the deterministic antenna shard list used by launch harnesses."""
 
     return (FEOL_SHARD,) + tuple(
         owner
         for owner, _categories in metal_owner_manifest(
-            split_lower=split_lower, split_upper=split_upper
+            split_lower=split_lower,
+            split_upper=split_upper,
+            fuse_metal=fuse_metal,
         )
     )
 
@@ -113,19 +134,27 @@ def _antenna_section(
     split_upper: bool = False,
     split_lower: bool = False,
     small_first_diode: bool = False,
+    fuse_metal: bool = False,
 ) -> str:
-    lower_m1_predicate = _owner_predicate(
-        M1_SHARD if split_lower else LOWER_SHARD
-    )
-    lower_m2_predicate = _owner_predicate(
-        M2_SHARD if split_lower else LOWER_SHARD
-    )
+    if fuse_metal:
+        lower_m1_predicate = _owner_predicate(FUSED_METAL_SHARD)
+        lower_m2_predicate = lower_m1_predicate
+    else:
+        lower_m1_predicate = _owner_predicate(
+            M1_SHARD if split_lower else LOWER_SHARD
+        )
+        lower_m2_predicate = _owner_predicate(
+            M2_SHARD if split_lower else LOWER_SHARD
+        )
     upper_predicates = [
         _owner_predicate(owner)
         for owner, _categories in metal_owner_manifest(
-            split_lower=split_lower, split_upper=split_upper
+            split_lower=split_lower,
+            split_upper=split_upper,
+            fuse_metal=fuse_metal,
         )
-        if owner not in (M1_SHARD, M2_SHARD, LOWER_SHARD)
+        if fuse_metal
+        or owner not in (M1_SHARD, M2_SHARD, LOWER_SHARD)
     ]
     lines = [
         "#   ANTENNA checks",
@@ -200,7 +229,11 @@ def _antenna_section(
         )
         first_upper = 4
     else:
-        lines.append("if run_antenna_m3_m10")
+        if len(upper_predicates) != 1:
+            raise TransformError(
+                "unsplit upper antenna section must have exactly one owner"
+            )
+        lines.append(f"if {upper_predicates[0]}")
         first_upper = 3
 
     for layer in range(first_upper, 11):
@@ -226,6 +259,7 @@ def split_deck(
     split_lower: bool = False,
     split_upper: bool = False,
     small_first_diode: bool = False,
+    fuse_metal: bool = False,
 ) -> str:
     """Return a deterministic LF-normalized antenna-sharded deck."""
 
@@ -240,6 +274,7 @@ def split_deck(
             M2_SHARD,
             M3_SHARD,
             M4_UPPER_SHARD,
+            FUSED_METAL_SHARD,
         )
     ):
         raise TransformError("source deck is already antenna-split")
@@ -259,7 +294,9 @@ def split_deck(
             )
 
     metal_owners = metal_owner_manifest(
-        split_lower=split_lower, split_upper=split_upper
+        split_lower=split_lower,
+        split_upper=split_upper,
+        fuse_metal=fuse_metal,
     )
     owner_declaration = (
         'run_antenna_feol = drc_shard == "all" || '
@@ -331,6 +368,7 @@ def split_deck(
             split_upper=split_upper,
             split_lower=split_lower,
             small_first_diode=small_first_diode,
+            fuse_metal=fuse_metal,
         )
         + text[end:]
     )
@@ -386,6 +424,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="form the exact diode recognition layer from its smaller operand first",
     )
+    parser.add_argument(
+        "--fuse-metal",
+        action="store_true",
+        help="assign METAL1-through-METAL10 antenna checks to one staged owner",
+    )
     return parser.parse_args()
 
 
@@ -402,6 +445,7 @@ def main() -> int:
             split_lower=args.split_lower,
             split_upper=args.split_upper,
             small_first_diode=args.small_first_diode,
+            fuse_metal=args.fuse_metal,
         )
         _write_atomic(args.output, transformed)
     except (OSError, UnicodeDecodeError, TransformError) as exc:

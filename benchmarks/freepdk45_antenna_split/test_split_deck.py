@@ -13,6 +13,7 @@ import unittest
 from split_deck import (
     ANTENNA_CATEGORIES,
     FEOL_SHARD,
+    FUSED_METAL_SHARD,
     LOWER_SHARD,
     M1_SHARD,
     M2_SHARD,
@@ -387,6 +388,65 @@ class SplitDeckTest(unittest.TestCase):
                     shards,
                 )
 
+    def test_fused_metal_owner_preserves_exact_staged_cpu_chain(self) -> None:
+        result = split_deck(source_deck(), fuse_metal=True)
+        expected_manifest = ((FUSED_METAL_SHARD, ANTENNA_CATEGORIES),)
+
+        self.assertEqual(
+            metal_owner_manifest(fuse_metal=True), expected_manifest
+        )
+        self.assertEqual(
+            antenna_shards(fuse_metal=True),
+            (FEOL_SHARD, FUSED_METAL_SHARD),
+        )
+        self.assertIn('drc_shard == "antenna_m1_m4"', result)
+        self.assertNotIn('drc_shard == "antenna_m1_m2"', result)
+        self.assertNotIn('drc_shard == "antenna_m3_m10"', result)
+        self.assertEqual(result.count("if run_antenna_m1_m4"), 3)
+
+        connects, outputs = execute_generated_antenna_section(
+            result, FUSED_METAL_SHARD
+        )
+        self.assertEqual(outputs, list(ANTENNA_CATEGORIES))
+        self.assertEqual(
+            connects,
+            [
+                "connect(gate, poly)",
+                "connect(poly, cont)",
+                "connect(diode, cont)",
+                "connect(cont, metal1)",
+                *[
+                    connect
+                    for layer in range(2, 11)
+                    for connect in (
+                        f"connect(metal{layer - 1}, via{layer - 1})",
+                        f"connect(via{layer - 1}, metal{layer})",
+                    )
+                ],
+            ],
+        )
+        all_connects, all_outputs = execute_generated_antenna_section(
+            result, "all"
+        )
+        self.assertEqual(all_connects, connects)
+        self.assertEqual(all_outputs, outputs)
+
+    def test_fused_metal_owner_rejects_split_modes(self) -> None:
+        for split_lower, split_upper in ((True, False), (False, True), (True, True)):
+            with self.subTest(
+                split_lower=split_lower, split_upper=split_upper
+            ):
+                with self.assertRaisesRegex(
+                    TransformError,
+                    "fused metal owner cannot be combined",
+                ):
+                    split_deck(
+                        source_deck(),
+                        split_lower=split_lower,
+                        split_upper=split_upper,
+                        fuse_metal=True,
+                    )
+
     def test_split_lower_cli_generation_is_byte_deterministic(self) -> None:
         script = Path(__file__).with_name("split_deck.py")
         with tempfile.TemporaryDirectory() as directory:
@@ -402,6 +462,31 @@ class SplitDeckTest(unittest.TestCase):
                         str(script),
                         "--split-lower",
                         "--split-upper",
+                        str(source),
+                        str(output),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(first.read_bytes(), second.read_bytes())
+            self.assertNotIn(b"\r", first.read_bytes())
+
+    def test_fused_metal_cli_generation_is_byte_deterministic(self) -> None:
+        script = Path(__file__).with_name("split_deck.py")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.lydrc"
+            first = root / "first.lydrc"
+            second = root / "second.lydrc"
+            source.write_bytes(source_deck().encode("utf-8"))
+            for output in (first, second):
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "--fuse-metal",
                         str(source),
                         str(output),
                     ],
