@@ -506,6 +506,12 @@ processes request 22 inner workers. Its full report retained canonical SHA-256
 the antenna critical lane fell from 96.431 to 57.769 s while unchanged M2
 kept full wall flat at 101.36 -> 101.66 s.
 
+The mutually exclusive `--fuse-metal-antenna` mode selects one
+`antenna_m1_m4` owner for all ten metal outputs. It preserves the literal
+staged CPU chain and is the fallback/hook point for the atomic M1-through-M4
+CUDA transaction. With no other owner splits it selects nine owners; with
+both implant/contact and ACTIVE.1/.2 splits it selects eleven.
+
 ```sh
 bash benchmarks/cuda_spatial_replay/run_balanced_full_gate.sh \
   --klayout /path/to/cuda/klayout \

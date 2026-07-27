@@ -9,6 +9,7 @@ Usage:
     --manifest PATH --input PATH --top-cell NAME --reference PATH \
     [--python PATH] [--timeout-seconds N] [--jobs 8..14] \
     [--split-lower-antenna] [--split-upper-antenna] \
+    [--fuse-metal-antenna] \
     [--split-implant-contact] [--split-active12] \
     [--without-contact4] \
     [--with-active3-well-union|--without-active3-well-union] \
@@ -26,9 +27,12 @@ Regenerates the qualified FreePDK45 live-CUDA deck, applies the antenna split,
 coalesces CONTACT.6 into the grid owner, and runs the exact balanced full-launch
 gate. With --split-lower-antenna, METAL1 and METAL2 checks use separate
 owners. With --split-upper-antenna, METAL3 and METAL4-through-METAL10 checks
-use separate owners. The modes compose: the selected plan has ten owners by
-default and up to fourteen with all four splits. --split-implant-contact moves
-the intact IMPLANT.1-.5 and CONTACT.1-.5 blocks into separate owners.
+use separate owners. The two split modes compose. The mutually exclusive
+--fuse-metal-antenna mode assigns all ten metal checks to one exact staged
+owner, providing the literal CPU fallback for the M1-through-M4 CUDA
+transaction. The selected plan has nine owners in fused mode, ten by default,
+and up to fourteen with all four splits. --split-implant-contact moves the
+intact IMPLANT.1-.5 and CONTACT.1-.5 blocks into separate owners.
 --split-active12 moves the intact ACTIVE.1/.2 block out of the upper-metal
 owner. CUDA resource limits remain fixed; the launcher may use 8 through 14
 process slots, never more slots than selected owners.
@@ -149,6 +153,7 @@ prune_poly2=0
 jobs=8
 split_lower_antenna=0
 split_upper_antenna=0
+fuse_metal_antenna=0
 split_implant_contact=0
 split_active12=0
 
@@ -210,6 +215,10 @@ while (($#)); do
       ;;
     --split-upper-antenna)
       split_upper_antenna=1
+      shift
+      ;;
+    --fuse-metal-antenna)
+      fuse_metal_antenna=1
       shift
       ;;
     --split-implant-contact)
@@ -358,9 +367,13 @@ done
   die "--timeout-seconds must be a positive integer"
 [[ "${jobs}" =~ ^[0-9]+$ ]] && ((jobs >= 8 && jobs <= 14)) ||
   die "--jobs must be an integer from 8 through 14"
+if ((fuse_metal_antenna &&
+      (split_lower_antenna || split_upper_antenna))); then
+  die "--fuse-metal-antenna cannot be combined with antenna split modes"
+fi
 selected_owner_count=$((
   10 + split_lower_antenna + split_upper_antenna +
-  split_implant_contact + split_active12
+  split_implant_contact + split_active12 - fuse_metal_antenna
 ))
 ((jobs <= selected_owner_count)) ||
   die "--jobs ${jobs} exceeds selected ${selected_owner_count}-owner plan"
@@ -549,6 +562,9 @@ fi
 if ((split_upper_antenna)); then
   antenna_split_args+=(--split-upper)
 fi
+if ((fuse_metal_antenna)); then
+  antenna_split_args+=(--fuse-metal)
+fi
 run_transform "antenna split" \
   "${python}" "${antenna_split}" \
     "${antenna_split_args[@]}" "${live_deck}" "${antenna_deck}"
@@ -597,6 +613,7 @@ owner_upper_joined=(antenna_m3_m10)
 owner_upper_split=(antenna_m4_m10 antenna_m3)
 owner_lower_joined=(antenna_m1_m2)
 owner_lower_split=(antenna_m2 antenna_m1)
+owner_metal_fused=(antenna_m1_m4)
 owner_suffix_pre=(
   m2_rules
   m1_enclosure
@@ -637,15 +654,19 @@ if ((split_implant_contact)); then
 else
   shards+=("${owner_implant_joined[@]}")
 fi
-if ((split_upper_antenna)); then
-  shards+=("${owner_upper_split[@]}")
+if ((fuse_metal_antenna)); then
+  shards+=("${owner_metal_fused[@]}")
 else
-  shards+=("${owner_upper_joined[@]}")
-fi
-if ((split_lower_antenna)); then
-  shards+=("${owner_lower_split[@]}")
-else
-  shards+=("${owner_lower_joined[@]}")
+  if ((split_upper_antenna)); then
+    shards+=("${owner_upper_split[@]}")
+  else
+    shards+=("${owner_upper_joined[@]}")
+  fi
+  if ((split_lower_antenna)); then
+    shards+=("${owner_lower_split[@]}")
+  else
+    shards+=("${owner_lower_joined[@]}")
+  fi
 fi
 shards+=("${owner_suffix_pre[@]}")
 if ((split_active12)); then

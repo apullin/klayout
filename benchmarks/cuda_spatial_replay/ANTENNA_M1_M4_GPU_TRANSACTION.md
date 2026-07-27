@@ -142,3 +142,29 @@ Before production timing is booked:
    GPU fallback;
 6. repeated matched full-launch trials demonstrate real critical-path wall
    reduction.
+
+## Retained worklist
+
+- [x] Reconstruct the qualified 49.93-second critical path and repeated
+  antenna work census.
+- [x] Recover, port, and test the deterministic six-domain CPU conductor
+  oracle.
+- [x] Specify the atomic staged transaction, semantics, memory plan, and
+  fail-closed result contract.
+- [x] Add the exact `antenna_m1_m4` CPU owner and balanced-launch scheduling
+  mode without changing the default deck.
+- [ ] Complete and test the compact shared-hierarchy twelve-domain capture.
+- [ ] Complete the reusable staged CUDA connectivity/DSU core and randomized
+  CPU differential.
+- [ ] Extend the reference oracle through M4, including stage-local area and
+  diode annotations.
+- [ ] Add the production ABI, loader, exact result validation, and GSI method.
+- [ ] Add the atomic deck fast path; retain all ten literal CPU rules in one
+  fallback branch.
+- [ ] Pass focused hierarchy, transform, boundary, malformed-result, and
+  injected-fallback gates.
+- [ ] Pass the clean production report and nonempty hierarchical fixture
+  integrity gates.
+- [ ] Run matched repeated full-launch control/candidate trials and book only
+  the measured real-seconds and percent reduction.
+- [ ] Re-profile the new roof and select the next largest contiguous target.

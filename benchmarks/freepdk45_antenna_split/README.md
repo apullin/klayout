@@ -13,6 +13,12 @@ M3 without evaluating M3, then evaluates M4 through M10.  `drc_shard=all`
 still performs every historical connect/check in its original order exactly
 once.
 
+Passing `--fuse-metal` instead replaces both metal owners with one
+`antenna_m1_m4` owner. It runs all ten historical checks in their original
+staged order and is the literal CPU fallback/hook point for the atomic
+M1-through-M4 CUDA transaction. The name reflects the last nonempty layer in
+the current workload; METAL5 through METAL10 remain owned and checked.
+
 Generate a candidate deck with:
 
 ```sh
@@ -21,6 +27,9 @@ python3 benchmarks/freepdk45_antenna_split/split_deck.py \
 
 python3 benchmarks/freepdk45_antenna_split/split_deck.py \
   --split-upper input.lydrc output-upper-split.lydrc
+
+python3 benchmarks/freepdk45_antenna_split/split_deck.py \
+  --fuse-metal input.lydrc output-fused.lydrc
 ```
 
 The transform preserves `drc_shard=all` order and fails if its expected source
@@ -48,6 +57,10 @@ default, eleven with either optional split, or twelve with both. Do not just
 reassign the old manifest: the proof must include the nonempty hierarchical
 fixture from `antenna_fixture.rb`, because the older FreePDK45 sentinels
 contain no antenna markers.
+
+`--fuse-metal` is mutually exclusive with both split modes and reduces the
+complete full-launch plan by one owner relative to the default joined plan.
+It likewise requires a newly bound manifest.
 
 KLayout emits antenna diagnostic tag declarations and tagged values in
 process-dependent order. The merger treats those named fields as associative,

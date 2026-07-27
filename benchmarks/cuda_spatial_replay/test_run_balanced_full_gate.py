@@ -38,6 +38,7 @@ class BalancedFullGateStaticTest(unittest.TestCase):
         *,
         split_lower: bool,
         split_upper: bool,
+        fuse_metal: bool = False,
         split_implant_contact: bool,
         split_active12: bool,
         m1_base_mode_explicit: bool = False,
@@ -70,11 +71,19 @@ class BalancedFullGateStaticTest(unittest.TestCase):
                 if split_implant_contact
                 else "owner_implant_joined"
             )
-            + self.shell_array(
-                "owner_upper_split" if split_upper else "owner_upper_joined"
-            )
-            + self.shell_array(
-                "owner_lower_split" if split_lower else "owner_lower_joined"
+            + (
+                self.shell_array("owner_metal_fused")
+                if fuse_metal
+                else self.shell_array(
+                    "owner_upper_split"
+                    if split_upper
+                    else "owner_upper_joined"
+                )
+                + self.shell_array(
+                    "owner_lower_split"
+                    if split_lower
+                    else "owner_lower_joined"
+                )
             )
             + self.shell_array("owner_suffix_pre")
             + (
@@ -183,12 +192,47 @@ class BalancedFullGateStaticTest(unittest.TestCase):
                     m1_5_9_mode_explicit=m1_5_9_explicit,
                 )
 
+    def test_fused_metal_owner_replaces_four_split_owners_exactly(
+        self,
+    ) -> None:
+        for split_implant_contact in (False, True):
+            for split_active12 in (False, True):
+                exact_plan = (
+                    ("m1_width_space",)
+                    + (
+                        ("implant_contact", "contact")
+                        if split_implant_contact
+                        else ("implant_contact",)
+                    )
+                    + ("antenna_m1_m4", "m2_rules", "m1_enclosure")
+                    + (("active12",) if split_active12 else ())
+                    + (
+                        "via1_upper_active12",
+                        "grid",
+                        "m1_via_class",
+                        "antenna_feol",
+                    )
+                )
+                with self.subTest(
+                    split_implant_contact=split_implant_contact,
+                    split_active12=split_active12,
+                ):
+                    self._assert_owner_plan(
+                        exact_plan,
+                        split_lower=False,
+                        split_upper=False,
+                        fuse_metal=True,
+                        split_implant_contact=split_implant_contact,
+                        split_active12=split_active12,
+                    )
+
     def _assert_owner_plan(
         self,
         exact_plan: tuple[str, ...],
         *,
         split_lower: bool,
         split_upper: bool,
+        fuse_metal: bool = False,
         split_implant_contact: bool,
         split_active12: bool,
         m1_base_mode_explicit: bool = False,
@@ -197,6 +241,7 @@ class BalancedFullGateStaticTest(unittest.TestCase):
         plan = self.owner_plan(
             split_lower=split_lower,
             split_upper=split_upper,
+            fuse_metal=fuse_metal,
             split_implant_contact=split_implant_contact,
             split_active12=split_active12,
             m1_base_mode_explicit=m1_base_mode_explicit,
@@ -213,6 +258,7 @@ class BalancedFullGateStaticTest(unittest.TestCase):
                 antenna_shards(
                     split_lower=split_lower,
                     split_upper=split_upper,
+                    fuse_metal=fuse_metal,
                 )
             ),
         )
@@ -232,6 +278,12 @@ class BalancedFullGateStaticTest(unittest.TestCase):
             "fi",
             self.launcher_text,
         )
+        self.assertIn(
+            "if ((fuse_metal_antenna)); then\n"
+            "  antenna_split_args+=(--fuse-metal)\n"
+            "fi",
+            self.launcher_text,
+        )
         completed = subprocess.run(
             ["bash", str(LAUNCHER), "--help"],
             check=False,
@@ -242,6 +294,7 @@ class BalancedFullGateStaticTest(unittest.TestCase):
         for option in (
             "--split-lower-antenna",
             "--split-upper-antenna",
+            "--fuse-metal-antenna",
             "--split-implant-contact",
             "--split-active12",
             "--with-active3-well-union",
@@ -256,6 +309,21 @@ class BalancedFullGateStaticTest(unittest.TestCase):
             "--prune-poly2",
         ):
             self.assertIn(option, completed.stderr)
+
+    def test_fused_metal_owner_rejects_antenna_split_modes(self) -> None:
+        for split_option in (
+            "--split-lower-antenna",
+            "--split-upper-antenna",
+        ):
+            with self.subTest(split_option=split_option):
+                completed = self.run_preflight(
+                    "--fuse-metal-antenna", split_option
+                )
+                self.assertEqual(completed.returncode, 2)
+                self.assertIn(
+                    "--fuse-metal-antenna cannot be combined",
+                    completed.stderr,
+                )
 
     def test_active3_well_union_control_and_candidate_share_one_deck(
         self,
@@ -504,6 +572,10 @@ class BalancedFullGateStaticTest(unittest.TestCase):
         rejected = (
             (("--jobs", "11"), "selected 10-owner plan"),
             (
+                ("--fuse-metal-antenna", "--jobs", "10"),
+                "selected 9-owner plan",
+            ),
+            (
                 ("--split-lower-antenna", "--jobs", "12"),
                 "selected 11-owner plan",
             ),
@@ -529,8 +601,16 @@ class BalancedFullGateStaticTest(unittest.TestCase):
 
         accepted = (
             ("--jobs", "10"),
+            ("--fuse-metal-antenna", "--jobs", "9"),
             ("--split-lower-antenna", "--jobs", "11"),
             ("--split-upper-antenna", "--jobs", "11"),
+            (
+                "--fuse-metal-antenna",
+                "--split-implant-contact",
+                "--split-active12",
+                "--jobs",
+                "11",
+            ),
             (
                 "--split-lower-antenna",
                 "--split-upper-antenna",
