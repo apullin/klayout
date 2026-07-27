@@ -183,14 +183,29 @@ void complete_smoke()
 #endif
   const std::uint64_t retained[4] = {1, 1, 1, 0};
   const std::uint64_t released[4] = {2, 2, 2, 3};
+  /*
+   * Every tiny rectangle occupies one connectivity bin.  These totals are
+   * therefore a directed assertion that the adapter reports the exact sum of
+   * its hidden domain sub-appends (3 sub-appends for M1, 2 thereafter), not
+   * merely the final sub-append census.
+   */
+  const std::uint64_t memberships[4] = {5, 4, 4, 4};
+  const std::uint64_t occupied_cells[4] = {3, 2, 2, 2};
   for (std::size_t stage = 0; stage < 4; ++stage) {
     require(
         result.stages[stage].retained_rectangle_count ==
             retained[stage] &&
             result.stages[stage].released_rectangle_count ==
                 released[stage] &&
+            result.stages[stage].membership_count ==
+                memberships[stage] &&
+            result.stages[stage].occupied_cell_count ==
+                occupied_cells[stage] &&
+            result.stages[stage].pair_occurrence_count == 2 &&
+            result.stages[stage].unique_owner_candidate_count == 2 &&
+            result.stages[stage].edge_count == 2 &&
             result.stages[stage].uncertainty_count == 0,
-        "stage closure census is inconsistent");
+        "logical stage aggregation or closure census is inconsistent");
   }
 }
 

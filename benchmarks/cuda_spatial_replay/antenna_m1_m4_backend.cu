@@ -2,10 +2,10 @@
  * Exact high-memory CUDA adapter for the compact M1-through-M4 antenna
  * transaction.
  *
- * This first production implementation deliberately favors a clear watershed
- * over the eventual 10-GiB streaming schedule.  It validates and decomposes
- * each stored contour once, expands occurrences on the GPU, and executes one
- * ordered resident connectivity/certificate transaction.  All bounded
+ * It validates and decomposes each stored contour once, expands occurrences
+ * on the GPU, and executes one ordered resident connectivity/certificate
+ * transaction.  Connectivity is appended one domain at a time so the compact
+ * source plus the exact retained frontier fits a 10-GiB device.  All bounded
  * failures return FALLBACK; COMPLETE is emitted only after all four exact
  * checkpoints are clean.
  */
@@ -1550,31 +1550,6 @@ cert::Config certificate_config(const Request &request)
   return config;
 }
 
-thrust::device_vector<ac::RectI64> assemble_stage(
-    std::initializer_list<const Expansion *> inputs,
-    DeviceMemoryAccount *memory)
-{
-  std::uint64_t total = 0;
-  for (const Expansion *input : inputs) {
-    total = add_or_malformed(
-        total, input->rectangles.size(), "stage rectangle count");
-  }
-  memory->admit_growth(
-      multiply_or_malformed(
-          total, sizeof(ac::RectI64), "stage rectangle bytes"),
-      "stage assembly");
-  thrust::device_vector<ac::RectI64> output(
-      static_cast<std::size_t>(total));
-  auto cursor = output.begin();
-  for (const Expansion *input : inputs) {
-    cursor = thrust::copy(
-        input->rectangles.begin(), input->rectangles.end(), cursor);
-  }
-  cuda_require(cudaDeviceSynchronize(), "assemble staged rectangles");
-  memory->observe();
-  return output;
-}
-
 void fill_hierarchy_echo(const Request &request, Result *result)
 {
   auto &echo = result->hierarchy;
@@ -1690,6 +1665,154 @@ void populate_domain_evidence(
   }
 }
 
+void merge_stage_census(
+    ac::StageCensus *aggregate, const ac::StageCensus &part,
+    bool first)
+{
+  const std::uint64_t part_nodes = add_or_malformed(
+      part.previous_nodes, part.appended_nodes,
+      "sub-append node census");
+  const std::uint64_t part_rectangles = add_or_malformed(
+      part.previous_rectangles, part.appended_rectangles,
+      "sub-append rectangle census");
+  const std::uint64_t part_disposition = add_or_malformed(
+      part.retained_rectangles, part.released_rectangles,
+      "sub-append closure census");
+  if (part.total_nodes != part_nodes ||
+      part.total_rectangles != part_rectangles ||
+      part.total_rectangles != part_disposition) {
+    internal_decline("sub-append returned an inconsistent census");
+  }
+
+  if (first) {
+    *aggregate = part;
+    return;
+  }
+  if (part.previous_nodes != aggregate->total_nodes ||
+      part.previous_rectangles != aggregate->retained_rectangles ||
+      (part.closed_domain_mask & aggregate->closed_domain_mask) !=
+          aggregate->closed_domain_mask) {
+    internal_decline("sub-append frontier is not continuous");
+  }
+
+  aggregate->appended_nodes = add_or_malformed(
+      aggregate->appended_nodes, part.appended_nodes,
+      "logical-stage node census");
+  aggregate->total_nodes = part.total_nodes;
+  aggregate->appended_rectangles = add_or_malformed(
+      aggregate->appended_rectangles, part.appended_rectangles,
+      "logical-stage rectangle census");
+  aggregate->total_rectangles = add_or_malformed(
+      aggregate->previous_rectangles,
+      aggregate->appended_rectangles,
+      "logical-stage rectangle census");
+  aggregate->retained_rectangles = part.retained_rectangles;
+  aggregate->retained_rectangle_capacity =
+      part.retained_rectangle_capacity;
+  aggregate->released_rectangles = add_or_malformed(
+      aggregate->released_rectangles, part.released_rectangles,
+      "logical-stage closure census");
+  aggregate->closed_domain_mask = part.closed_domain_mask;
+  aggregate->memberships = add_or_malformed(
+      aggregate->memberships, part.memberships,
+      "logical-stage membership census");
+  aggregate->occupied_cells = add_or_malformed(
+      aggregate->occupied_cells, part.occupied_cells,
+      "logical-stage occupied-cell census");
+  aggregate->pair_occurrences = add_or_malformed(
+      aggregate->pair_occurrences, part.pair_occurrences,
+      "logical-stage pair census");
+  aggregate->unique_candidates = add_or_malformed(
+      aggregate->unique_candidates, part.unique_candidates,
+      "logical-stage candidate census");
+  aggregate->exact_edges = add_or_malformed(
+      aggregate->exact_edges, part.exact_edges,
+      "logical-stage edge census");
+  if (part.dsu_iterations >
+      std::numeric_limits<std::uint32_t>::max() -
+          aggregate->dsu_iterations) {
+    internal_decline("logical-stage DSU census overflows uint32");
+  }
+  aggregate->dsu_iterations += part.dsu_iterations;
+  for (std::size_t index = 0; index < ac::kRelationSlots; ++index) {
+    aggregate->candidates_by_relation[index] = add_or_malformed(
+        aggregate->candidates_by_relation[index],
+        part.candidates_by_relation[index],
+        "logical-stage relation candidate census");
+    aggregate->edges_by_relation[index] = add_or_malformed(
+        aggregate->edges_by_relation[index],
+        part.edges_by_relation[index],
+        "logical-stage relation edge census");
+  }
+
+  if (aggregate->total_nodes !=
+          add_or_malformed(
+              aggregate->previous_nodes, aggregate->appended_nodes,
+              "logical-stage node census") ||
+      aggregate->total_rectangles !=
+          add_or_malformed(
+              aggregate->retained_rectangles,
+              aggregate->released_rectangles,
+              "logical-stage closure census")) {
+    internal_decline("logical-stage aggregate is inconsistent");
+  }
+}
+
+std::uint64_t maximum_connectivity_frontier(
+    const Identity &identity)
+{
+  const auto pair_frontier =
+      [&](std::size_t first, std::size_t second) {
+        return add_or_malformed(
+            identity.domains[first].flat_rectangles,
+            identity.domains[second].flat_rectangles,
+            "connectivity frontier");
+      };
+  std::uint64_t maximum = identity.domains[0].flat_rectangles;
+  const std::size_t adjacent_domains[][2] = {
+      {0, 4}, {4, 5}, {5, 6}, {6, 7}, {7, 8},
+      {8, 9}, {9, 10}, {10, 11}};
+  for (const auto &domains : adjacent_domains) {
+    maximum = std::max(
+        maximum, pair_frontier(domains[0], domains[1]));
+  }
+  return maximum;
+}
+
+void require_logical_stage_capacity(
+    const ac::StageCensus &graph, const Request &request)
+{
+  if (graph.memberships > request.capacity.max_memberships ||
+      graph.occupied_cells > graph.memberships) {
+    capacity("logical-stage membership census exceeds capacity");
+  }
+  if (graph.pair_occurrences >
+      request.capacity.max_pair_occurrences) {
+    capacity(
+        "logical-stage pair census exceeds capacity",
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY);
+  }
+  if (graph.unique_candidates > graph.pair_occurrences ||
+      graph.unique_candidates >
+          request.capacity.max_unique_candidates) {
+    capacity(
+        "logical-stage candidate census exceeds capacity",
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY);
+  }
+  if (graph.exact_edges > graph.unique_candidates ||
+      graph.exact_edges > request.capacity.max_rule_work) {
+    capacity(
+        "logical-stage edge census exceeds rule-work capacity",
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY);
+  }
+  if (graph.dsu_iterations >
+      request.capacity.max_dsu_iterations) {
+    capacity(
+        "logical-stage DSU census exceeds capacity",
+        KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY);
+  }
+}
+
 void fill_stage_result(
     std::size_t index, const ac::StageCensus &graph,
     const cert::CheckpointCensus &checkpoint,
@@ -1779,21 +1902,63 @@ void run_transaction(
   active.rectangles.clear();
   active.rectangles.shrink_to_fit();
 
-  auto execute_stage =
-      [&](std::size_t index,
-          std::initializer_list<const Expansion *> inputs,
-          const Expansion &metal, std::uint64_t new_nodes,
-          std::uint64_t close_mask, cert::MetalLevel level) {
-        const auto stage_begin = Clock::now();
-        thrust::device_vector<ac::RectI64> staged =
-            assemble_stage(inputs, &memory);
-        ac::StageCensus graph;
+  /*
+   * The first consuming append adopts POLY's allocation.  Reserve the exact
+   * largest adjacent-domain frontier now, while ACTIVE and gate-census
+   * scratch are gone.  Every later append then copies into this stable
+   * allocation and releases its source before constructing grid/sort
+   * scratch; device_vector's geometric growth cannot transiently cross the
+   * admitted cap.
+   */
+  const std::uint64_t frontier_rectangles =
+      maximum_connectivity_frontier(identity);
+  if (frontier_rectangles > poly.rectangles.capacity()) {
+    memory.admit_growth(
+        multiply_or_malformed(
+            frontier_rectangles, sizeof(ac::RectI64),
+            "reserved connectivity frontier bytes"),
+        "reserve exact connectivity frontier");
+    poly.rectangles.reserve(
+        static_cast<std::size_t>(frontier_rectangles));
+    cuda_require(
+        cudaDeviceSynchronize(),
+        "reserve exact connectivity frontier");
+    memory.observe();
+  }
+
+  auto append_domain =
+      [&](Expansion *expansion, std::uint64_t new_nodes,
+          std::uint64_t close_mask, ac::StageCensus *aggregate,
+          bool first) {
+        ac::StageCensus part;
         require_connectivity(
             connectivity.append_stage_consuming(
-                std::move(staged), new_nodes, close_mask, nullptr,
-                &graph),
-            "append resident antenna stage");
+                std::move(expansion->rectangles), new_nodes,
+                close_mask, nullptr, &part),
+            "append resident antenna domain");
         memory.observe();
+        if (!expansion->rectangles.empty() ||
+            part.closed_domain_mask != close_mask) {
+          internal_decline(
+              "consuming sub-append did not consume or close exactly");
+        }
+        merge_stage_census(aggregate, part, first);
+      };
+
+  auto checkpoint_stage =
+      [&](std::size_t index, std::uint32_t metal_role,
+          cert::MetalLevel level, const ac::StageCensus &graph,
+          Clock::time_point stage_begin) {
+        require_logical_stage_capacity(graph, request);
+        /*
+         * Re-expand only after append_stage_consuming has destroyed its
+         * membership/sort scratch and released the compact append source.
+         * The retained graph copy and this certificate view are the only
+         * expanded copies alive at the checkpoint.
+         */
+        Expansion metal = expander.expand(
+            identity.domains[metal_role], metal_role,
+            owner_bases[metal_role], false);
         ac::DeviceLabelView labels;
         require_connectivity(
             connectivity.device_label_view(&labels),
@@ -1825,65 +1990,77 @@ void run_transaction(
             elapsed_ns(stage_begin, Clock::now()), request, result);
       };
 
-  Expansion contact = expander.expand(
-      identity.domains[4], 4, owner_bases[4], false);
-  Expansion m1 = expander.expand(
-      identity.domains[5], 5, owner_bases[5], false);
-  const std::uint64_t stage1_nodes = add_or_malformed(
-      add_or_malformed(
-          identity.domains[0].flat_polygons,
-          identity.domains[4].flat_polygons, "M1 stage nodes"),
-      identity.domains[5].flat_polygons, "M1 stage nodes");
-  execute_stage(
-      0, {&poly, &contact, &m1}, m1, stage1_nodes,
-      (UINT64_C(1) << 6) - 1, cert::MetalLevel::metal1);
-  poly.rectangles.clear();
-  poly.rectangles.shrink_to_fit();
-  contact.rectangles.clear();
-  contact.rectangles.shrink_to_fit();
-  m1.rectangles.clear();
-  m1.rectangles.shrink_to_fit();
+  {
+    const auto stage_begin = Clock::now();
+    ac::StageCensus graph;
+    append_domain(
+        &poly, identity.domains[0].flat_polygons,
+        (UINT64_C(1) << 4) - 1, &graph, true);
+    Expansion contact = expander.expand(
+        identity.domains[4], 4, owner_bases[4], false);
+    append_domain(
+        &contact, identity.domains[4].flat_polygons,
+        (UINT64_C(1) << 5) - 1, &graph, false);
+    Expansion m1 = expander.expand(
+        identity.domains[5], 5, owner_bases[5], false);
+    append_domain(
+        &m1, identity.domains[5].flat_polygons,
+        (UINT64_C(1) << 6) - 1, &graph, false);
+    checkpoint_stage(
+        0, 5, cert::MetalLevel::metal1, graph, stage_begin);
+  }
 
-  Expansion via1 = expander.expand(
-      identity.domains[6], 6, owner_bases[6], false);
-  Expansion m2 = expander.expand(
-      identity.domains[7], 7, owner_bases[7], false);
-  execute_stage(
-      1, {&via1, &m2}, m2,
-      identity.domains[6].flat_polygons +
-          identity.domains[7].flat_polygons,
-      (UINT64_C(1) << 6) | (UINT64_C(1) << 7),
-      cert::MetalLevel::metal2);
-  via1.rectangles.clear();
-  via1.rectangles.shrink_to_fit();
-  m2.rectangles.clear();
-  m2.rectangles.shrink_to_fit();
+  {
+    const auto stage_begin = Clock::now();
+    ac::StageCensus graph;
+    Expansion via1 = expander.expand(
+        identity.domains[6], 6, owner_bases[6], false);
+    append_domain(
+        &via1, identity.domains[6].flat_polygons,
+        (UINT64_C(1) << 7) - 1, &graph, true);
+    Expansion m2 = expander.expand(
+        identity.domains[7], 7, owner_bases[7], false);
+    append_domain(
+        &m2, identity.domains[7].flat_polygons,
+        (UINT64_C(1) << 8) - 1, &graph, false);
+    checkpoint_stage(
+        1, 7, cert::MetalLevel::metal2, graph, stage_begin);
+  }
 
-  Expansion via2 = expander.expand(
-      identity.domains[8], 8, owner_bases[8], false);
-  Expansion m3 = expander.expand(
-      identity.domains[9], 9, owner_bases[9], false);
-  execute_stage(
-      2, {&via2, &m3}, m3,
-      identity.domains[8].flat_polygons +
-          identity.domains[9].flat_polygons,
-      (UINT64_C(1) << 8) | (UINT64_C(1) << 9),
-      cert::MetalLevel::metal3);
-  via2.rectangles.clear();
-  via2.rectangles.shrink_to_fit();
-  m3.rectangles.clear();
-  m3.rectangles.shrink_to_fit();
+  {
+    const auto stage_begin = Clock::now();
+    ac::StageCensus graph;
+    Expansion via2 = expander.expand(
+        identity.domains[8], 8, owner_bases[8], false);
+    append_domain(
+        &via2, identity.domains[8].flat_polygons,
+        (UINT64_C(1) << 9) - 1, &graph, true);
+    Expansion m3 = expander.expand(
+        identity.domains[9], 9, owner_bases[9], false);
+    append_domain(
+        &m3, identity.domains[9].flat_polygons,
+        (UINT64_C(1) << 10) - 1, &graph, false);
+    checkpoint_stage(
+        2, 9, cert::MetalLevel::metal3, graph, stage_begin);
+  }
 
-  Expansion via3 = expander.expand(
-      identity.domains[10], 10, owner_bases[10], false);
-  Expansion m4 = expander.expand(
-      identity.domains[11], 11, owner_bases[11], false);
-  execute_stage(
-      3, {&via3, &m4}, m4,
-      identity.domains[10].flat_polygons +
-          identity.domains[11].flat_polygons,
-      (UINT64_C(1) << 10) | (UINT64_C(1) << 11),
-      cert::MetalLevel::metal4);
+  {
+    const auto stage_begin = Clock::now();
+    ac::StageCensus graph;
+    Expansion via3 = expander.expand(
+        identity.domains[10], 10, owner_bases[10], false);
+    append_domain(
+        &via3, identity.domains[10].flat_polygons,
+        (UINT64_C(1) << 11) - 1, &graph, true);
+    Expansion m4 = expander.expand(
+        identity.domains[11], 11, owner_bases[11], false);
+    append_domain(
+        &m4, identity.domains[11].flat_polygons,
+        KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_ALL_DOMAINS,
+        &graph, false);
+    checkpoint_stage(
+        3, 11, cert::MetalLevel::metal4, graph, stage_begin);
+  }
 
   result->status = KLAYOUT_CUDA_SPATIAL_OK;
   result->fallback_flags = KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE;
