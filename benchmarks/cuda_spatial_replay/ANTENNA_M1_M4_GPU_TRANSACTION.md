@@ -260,6 +260,11 @@ Before production timing is booked:
   production census projects 61.1% fewer M1 rectangles, 90.7% fewer VIA1
   rectangles, and 74.2% fewer M2 rectangles while preserving the exact
   weighted internal pair totals and all multi-tile exceptions.
+- [ ] Replace the comparison sort of 145–173 million 16-byte `CellMember`
+  records with a stable radix sort of 64-bit cell keys and 32-bit rectangle
+  nodes.  Membership fill is initially ordered by rectangle node, so sort
+  stability preserves the exact old/new split required by staged pruning;
+  qualify both wall time and the 10-GiB temporary-memory frontier.
 - [ ] Enumerate only canonical-start membership buckets.  A count-only
   production projection removes 682.7 million M2 pair tests (21.1%) by
   requiring a pair's cell to contain its maximum left and bottom coordinate;
