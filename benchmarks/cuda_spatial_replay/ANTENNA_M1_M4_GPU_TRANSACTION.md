@@ -286,11 +286,14 @@ Before production timing is booked:
   banked at `fork/canonical-bucket-frontier`.  Production integration is
   deferred because the eliminated enumeration kernels are no longer on the
   critical path.
-- [ ] Reuse the verified preliminary checkpoint census when root-cell
+- [x] Reuse the verified preliminary checkpoint census when root-cell
   refinement begins instead of rerunning the complete preliminary
   certificate.  The exact M2 phase trace measured the duplicated pass at
   102.98 seconds; the reuse path must retain unchanged-output failure and
-  identity/counter validation.
+  identity/counter validation.  Commit `4c30180` passed focused,
+  unchanged-output, memcheck, and racecheck gates; its isolated exact
+  production replay reduced wall from 320.96 to 216.98 seconds, saving
+  103.98 real seconds (32.4% less time).
 - [ ] Retain the preliminary device root annotations through root-cell
   refinement, eliminating the third gate/metal/root reduction while
   preserving the 10-GiB transaction cap.
