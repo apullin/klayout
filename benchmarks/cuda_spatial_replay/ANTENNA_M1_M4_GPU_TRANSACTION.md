@@ -375,6 +375,20 @@ Before production timing is booked:
   unchanged.  The full gate now rejects any VIA1-stack error/decline or
   M1-contact CPU fallback instead of accepting a different owner’s successful
   duplicate transaction.
+- [x] Admit the first serialized M1 owner into the coordinated first wave.
+  CONTACT.4 fused ACTIVE-union now takes the shared device lease only after
+  host lowering, and jobs-10 starts `m1_width_space` immediately while retaining
+  strict `m1_width_space`-before-`m1_via_class` serialization.  Three
+  corrected-code full walls were 39.836, 39.914, and 39.772 seconds (39.841
+  seconds mean): **5.957 real seconds or 13.01% less** than the immediately
+  preceding 45.798-second jobs-9 record.  All three screens were exact,
+  fallback-clean, and retained the canonical report hash.  The initial
+  CONTACT.4-OOM diagnostic and a semantically invalid, over-conservative
+  antenna-capacity precheck are explicitly rejected rather than booked.
 - [ ] Run matched repeated full-launch control/candidate trials and book only
   the measured real-seconds and percent reduction.
-- [ ] Re-profile the new roof and select the next largest contiguous target.
+- [x] Re-profile the new roof and select the next largest contiguous target.
+  The current exact screen ends fused antenna at 35.040 seconds, grid at
+  33.533 seconds, antenna FEOL at 32.379 seconds, and ACTIVE.1/.2 at 30.072
+  seconds.  A 5% next step therefore requires coordinated antenna plus grid
+  reductions; a 10% step also requires antenna FEOL.

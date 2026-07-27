@@ -417,9 +417,16 @@ fi
 if ((m1_5_9 >= 0)); then
   ((reserved_m1_owner_count += 1))
 fi
-if ((reserved_m1_owner_count > 0 &&
-      jobs > selected_owner_count - reserved_m1_owner_count)); then
-  die "explicit M1 runtime modes reserve ${reserved_m1_owner_count} owner(s) behind the first wave; require --jobs $((selected_owner_count - reserved_m1_owner_count)) or fewer"
+m1_first_wave_reservation=${reserved_m1_owner_count}
+if ((antenna_m1_m4 >= 0 && reserved_m1_owner_count == 2)); then
+  # The explicit fused-antenna mode enables the cross-process CUDA device
+  # lease.  Admit the first serialized M1 owner into the initial wave; the
+  # runner still holds the second M1 owner until the first one completes.
+  m1_first_wave_reservation=1
+fi
+if ((m1_first_wave_reservation > 0 &&
+      jobs > selected_owner_count - m1_first_wave_reservation)); then
+  die "explicit M1 runtime modes reserve ${m1_first_wave_reservation} owner(s) behind the first wave; require --jobs $((selected_owner_count - m1_first_wave_reservation)) or fewer"
 fi
 
 [[ -x "${klayout}" ]] || die "KLayout is not executable: ${klayout}"

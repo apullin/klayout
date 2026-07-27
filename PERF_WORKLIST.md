@@ -3116,6 +3116,33 @@ not just wall time.
         screen.  Evidence:
         `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.jvZfsk`.
 
+      - [x] **Admit the first serialized M1 owner into the coordinated CUDA
+        launch wave:** the explicit fused-antenna mode now permits jobs-10
+        while the parallel runner continues to hold `m1_via_class` until
+        `m1_width_space` completes.  CONTACT.4 fused ACTIVE-union joins the
+        same cross-process device lease after its host lowering, closing the
+        only memory-allocation race exposed by the first diagnostic.
+
+        Three corrected-code exact screens measured **39.836, 39.914, and
+        39.772 s** full-launch wall (39.841 s mean, 0.142 s range).  Against
+        the immediately preceding exact jobs-9 record, this is **45.798 to
+        39.841 s: 5.957 real seconds / 13.01% less** (`N=1` prior record versus
+        `N=3` current screens, not a paired A/B).  External wall was 40.03,
+        40.13, and 39.93 s.  Every required CUDA transaction certified without
+        a disallowed fallback and every merged report retained canonical
+        SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+
+        The failed first diagnostic is retained as a rejected result: without
+        the CONTACT.4 lease, concurrent raw M1 caused
+        `cudaErrorMemoryAllocation`, followed by exact CPU fallback.  A later
+        conservative antenna-capacity precheck was also rejected during review
+        because it confused a global used-memory ceiling with transaction
+        demand; it and its smoke test were removed before the accepted runs.
+        Evidence:
+        `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.E1m6Vp` and
+        `.scratchpad/cuda-runs/jobs10-exact-repeat.9D2kXm`.
+
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
         second and third reusable compositions, separate canonical

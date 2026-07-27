@@ -4133,6 +4133,8 @@ int run_contact4_active_union_request(
         validate_and_lower(active, kActiveRawDigestMagic);
     validate_without_lowering(contact, kContactRawDigestMagic);
     result->setup_ns = elapsed_ns(setup_begin, Clock::now());
+    klayout_cuda::DevicePhaseLease device_lease(
+        request->device, "contact4_active_union");
 
     ExpandedRectangles expanded_active =
         expand_rectangles_resident(active, active_lowered);

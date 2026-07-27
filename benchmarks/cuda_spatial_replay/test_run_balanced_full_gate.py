@@ -635,6 +635,54 @@ class BalancedFullGateStaticTest(unittest.TestCase):
         self.assertNotIn("explicit M1 runtime modes reserve", accepted.stderr)
         self.assertIn("KLayout is not executable", accepted.stderr)
 
+    def test_device_lease_admits_one_serial_m1_owner_in_first_wave(self) -> None:
+        common = (
+            "--fuse-metal-antenna",
+            "--split-implant-contact",
+            "--split-active12",
+            "--with-m1-base-width-space",
+            "--with-m1-5-9",
+        )
+        for antenna_mode in (
+            "--with-antenna-m1-m4",
+            "--without-antenna-m1-m4",
+        ):
+            with self.subTest(antenna_mode=antenna_mode):
+                rejected = self.run_preflight(
+                    *common, antenna_mode, "--jobs", "11"
+                )
+                self.assertEqual(rejected.returncode, 2)
+                self.assertIn(
+                    "reserve 1 owner(s) behind the first wave; "
+                    "require --jobs 10 or fewer",
+                    rejected.stderr,
+                )
+
+                accepted = self.run_preflight(
+                    *common, antenna_mode, "--jobs", "10"
+                )
+                self.assertEqual(accepted.returncode, 2)
+                self.assertNotIn(
+                    "explicit M1 runtime modes reserve", accepted.stderr
+                )
+                self.assertIn("KLayout is not executable", accepted.stderr)
+
+        fused_without_explicit_lease = self.run_preflight(
+            "--fuse-metal-antenna",
+            "--split-implant-contact",
+            "--split-active12",
+            "--with-m1-base-width-space",
+            "--with-m1-5-9",
+            "--jobs",
+            "10",
+        )
+        self.assertEqual(fused_without_explicit_lease.returncode, 2)
+        self.assertIn(
+            "reserve 2 owner(s) behind the first wave; "
+            "require --jobs 9 or fewer",
+            fused_without_explicit_lease.stderr,
+        )
+
     def test_explicit_single_m1_modes_share_a_reserved_schedule(self) -> None:
         modes = (
             "--with-m1-base-width-space",
