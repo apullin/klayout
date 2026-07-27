@@ -4715,6 +4715,8 @@ int run_implant15_request(
             request->capacity.max_rectangles) {
       capacity("combined raw IMPLANT rectangles exceed capacity");
     }
+    klayout_cuda::DevicePhaseLease device_lease(
+        request->device, "implant15");
 
     ExpandedRectangles expanded_nplus =
         expand_rectangles_resident(nplus, nplus_lowered);

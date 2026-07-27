@@ -915,6 +915,15 @@ require_telemetry \
 require_telemetry \
   "CUDA M1 contact transaction: certified-empty" \
   "M1-contact certified-empty"
+if grep -R -Eq --include='*.log' -- \
+     'CUDA VIA1 stack empty certificate: outcome=(error|fallback|uncertain)' \
+     "${shard_dir}"; then
+  die "a VIA1-stack transaction declined or failed during the full gate"
+fi
+if grep -R -Fq --include='*.log' -- \
+     "CUDA M1 contact transaction: full-cpu-fallback" "${shard_dir}"; then
+  die "an M1-contact transaction unexpectedly selected CPU fallback"
+fi
 if ((contact4_active_union == 1)); then
   require_telemetry \
     "CUDA CONTACT.4 fused ACTIVE-union empty certificate: outcome=certified-empty" \

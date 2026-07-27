@@ -365,6 +365,16 @@ Before production timing is booked:
   correctness win, not a new whole-run speed record.  Telemetry showed M1
   acquiring immediately, antenna waiting 1.410 seconds, and M1.5-M1.9
   acquiring immediately after the preceding device phase.
+- [x] Compose the previously qualified atomic IMPLANT.1-.5 transaction with
+  the fused antenna schedule by extending the same device lease to IMPLANT
+  and VIA1-stack phases.  The exact full-launch wall fell from 50.080 to
+  45.798 seconds: 4.282 real seconds or 8.5% less time.  External wall fell
+  from 50.33 to 46.04 seconds.  The IMPLANT owner fell from 40.448 to 11.926
+  seconds (28.522 seconds or 70.5% less), every relevant CUDA transaction
+  certified without fallback, and the canonical report hash remained
+  unchanged.  The full gate now rejects any VIA1-stack error/decline or
+  M1-contact CPU fallback instead of accepting a different owner’s successful
+  duplicate transaction.
 - [ ] Run matched repeated full-launch control/candidate trials and book only
   the measured real-seconds and percent reduction.
 - [ ] Re-profile the new roof and select the next largest contiguous target.

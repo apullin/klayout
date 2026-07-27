@@ -447,6 +447,26 @@ class BalancedFullGateStaticTest(unittest.TestCase):
             self.launcher_text,
         )
 
+    def test_full_gate_rejects_any_via1_or_m1_contact_fallback(
+        self,
+    ) -> None:
+        self.assertIn(
+            "a VIA1-stack transaction declined or failed during the full gate",
+            self.launcher_text,
+        )
+        self.assertIn(
+            "outcome=(error|fallback|uncertain)",
+            self.launcher_text,
+        )
+        self.assertIn(
+            "an M1-contact transaction unexpectedly selected CPU fallback",
+            self.launcher_text,
+        )
+        self.assertIn(
+            "CUDA M1 contact transaction: full-cpu-fallback",
+            self.launcher_text,
+        )
+
     def test_m1_5_9_control_and_candidate_share_one_deck(self) -> None:
         self.assertIn(
             "m1_5_9_generator_args=(--m1-5-9)",

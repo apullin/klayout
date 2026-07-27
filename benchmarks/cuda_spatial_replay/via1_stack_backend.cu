@@ -8,6 +8,7 @@
 
 #include "dbCudaSpatialApi.h"
 #include "dbCudaVia1StackDigest.h"
+#include "cuda_device_phase_lease.h"
 
 #include <cuda_runtime.h>
 
@@ -1676,6 +1677,8 @@ run_via_request(const ViaRequest *request, ViaResult *result)
   const auto total_begin = Clock::now();
   try {
     std::lock_guard<std::mutex> lock(via_pipeline_mutex());
+    klayout_cuda::DevicePhaseLease device_lease(
+        request->device, "via1_stack");
     const ViaPipelineResult pipeline = run_via_pipeline(*request);
     result->fallback_flags = pipeline.fallback_flags;
     result->device_flags = pipeline.device_flags;

@@ -3102,6 +3102,20 @@ not just wall time.
         `5f30e74`, and `55e71ad`.  Evidence:
         `.scratchpad/cuda-runs/implant15-final-abba-20260726`.
 
+        The later fused-antenna composition closes that device-admission
+        follow-up with one bounded cross-process lease shared by IMPLANT.1-.5,
+        VIA1-stack, resident M1, and fused antenna device phases.  An exact
+        11-owner/jobs-9 production screen changed full-launch wall from
+        **50.080 to 45.798 s: 4.282 real seconds / 8.55% less**, while the
+        IMPLANT owner changed 40.448 to 11.926 s (**28.522 real seconds /
+        70.52% less**).  Every relevant CUDA transaction certified without
+        fallback and the merged report retained canonical SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+        The full gate now rejects any VIA1-stack decline/error or M1-contact
+        CPU fallback, closing the masking bug exposed by the first combined
+        screen.  Evidence:
+        `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.jvZfsk`.
+
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
         second and third reusable compositions, separate canonical
