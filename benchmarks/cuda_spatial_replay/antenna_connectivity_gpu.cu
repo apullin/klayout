@@ -583,6 +583,63 @@ __device__ bool decode_triangular_pair(
   return true;
 }
 
+__device__ std::uint64_t first_new_member_offset(
+    const CellMember *members, std::uint64_t group_begin,
+    std::uint64_t group_count,
+    std::uint64_t previous_rectangle_count)
+{
+  /*
+   * CellMemberLess orders equal-cell memberships by rectangle node.  Every
+   * append adds all new rectangles after the retained prefix, so each cell
+   * has one exact old/new split even when the appended owners span multiple
+   * domains.
+   */
+  std::uint64_t low = 0;
+  std::uint64_t high = group_count;
+  while (low < high) {
+    const std::uint64_t middle = low + (high - low) / 2;
+    if (members[group_begin + middle].node <
+        previous_rectangle_count) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+}
+
+__device__ std::uint64_t staged_pair_count(
+    std::uint64_t old_count, std::uint64_t group_count)
+{
+  const std::uint64_t new_count = group_count - old_count;
+  return old_count * new_count + full_pair_count(new_count);
+}
+
+__device__ bool decode_staged_pair(
+    std::uint64_t old_count, std::uint64_t group_count,
+    std::uint64_t pair, std::uint64_t *first,
+    std::uint64_t *second)
+{
+  const std::uint64_t new_count = group_count - old_count;
+  if (!new_count || pair >= staged_pair_count(
+                                old_count, group_count)) {
+    return false;
+  }
+  const std::uint64_t old_new_count = old_count * new_count;
+  if (pair < old_new_count) {
+    *first = pair / new_count;
+    *second = old_count + pair % new_count;
+    return true;
+  }
+  if (!decode_triangular_pair(
+          new_count, pair - old_new_count, first, second)) {
+    return false;
+  }
+  *first += old_count;
+  *second += old_count;
+  return true;
+}
+
 __device__ std::int64_t decode_ordered_i64(
     std::uint64_t value)
 {
@@ -676,8 +733,11 @@ __device__ bool exact_pair_key(
   return true;
 }
 
-__global__ void count_full_pair_tests_kernel(
+__global__ void count_staged_pair_tests_kernel(
+    const CellMember *members,
+    const std::uint64_t *group_offsets,
     const std::uint64_t *group_counts, std::uint64_t group_count,
+    std::uint64_t previous_rectangle_count,
     std::uint32_t max_cell_members,
     std::uint64_t max_pair_tests_per_cell,
     std::uint64_t *pair_test_counts, std::uint32_t *status)
@@ -693,7 +753,11 @@ __global__ void count_full_pair_tests_kernel(
       pair_test_counts[group] = 0;
       continue;
     }
-    const std::uint64_t tests = full_pair_count(count);
+    const std::uint64_t old_count = first_new_member_offset(
+        members, group_offsets[group], count,
+        previous_rectangle_count);
+    const std::uint64_t tests =
+        staged_pair_count(old_count, count);
     if (tests > max_pair_tests_per_cell) {
       atomicOr(status, std::uint32_t(kCellCapacity));
       pair_test_counts[group] = 0;
@@ -865,7 +929,7 @@ __global__ void count_owner_rectangles_kernel(
 
 __device__ ExactStreamKind classify_exact_stream_pair(
     const CellMember *members, std::uint64_t group_begin,
-    std::uint64_t group_count, std::uint64_t local_pair,
+    std::uint64_t first_offset, std::uint64_t second_offset,
     const ac::RectI64 *rectangles,
     const std::uint64_t *relation_rows,
     const std::uint32_t *owner_rectangles,
@@ -874,14 +938,6 @@ __device__ ExactStreamKind classify_exact_stream_pair(
     std::uint32_t *compact_relation, std::uint32_t domain_count,
     std::uint32_t *status)
 {
-  std::uint64_t first_offset = 0;
-  std::uint64_t second_offset = 0;
-  if (!decode_triangular_pair(
-          group_count, local_pair, &first_offset,
-          &second_offset)) {
-    atomicOr(status, std::uint32_t(kPairCountOverflow));
-    return kExactNone;
-  }
   const std::uint32_t first =
       members[group_begin + first_offset].node;
   const std::uint32_t second =
@@ -941,6 +997,7 @@ __global__ void count_exact_streams_parallel_kernel(
     const std::uint64_t *pair_test_offsets,
     std::uint64_t total_pair_tests,
     std::uint64_t group_count,
+    std::uint64_t previous_rectangle_count,
     const ac::RectI64 *rectangles,
     const std::uint64_t *relation_rows,
     const std::uint32_t *owner_rectangles,
@@ -954,6 +1011,7 @@ __global__ void count_exact_streams_parallel_kernel(
   __shared__ ExactStreamCounts partial[kThreads];
   __shared__ std::int64_t cell_left;
   __shared__ std::int64_t cell_bottom;
+  __shared__ std::uint64_t old_count;
   for (std::uint64_t group = blockIdx.x; group < group_count;
        group += gridDim.x) {
     const std::uint64_t begin = group_offsets[group];
@@ -976,15 +1034,26 @@ __global__ void count_exact_streams_parallel_kernel(
       cell_origin(
           members[begin].cell, minimum_x, minimum_y,
           grid_height, bin_size, &cell_left, &cell_bottom);
+      old_count = first_new_member_offset(
+          members, begin, count, previous_rectangle_count);
     }
     __syncthreads();
     ExactStreamCounts local = {0, 0, 0};
     for (std::uint64_t pair = threadIdx.x; pair < tests;
          pair += blockDim.x) {
+      std::uint64_t first_offset = 0;
+      std::uint64_t second_offset = 0;
+      if (!decode_staged_pair(
+              old_count, count, pair, &first_offset,
+              &second_offset)) {
+        atomicOr(status, std::uint32_t(kPairCountOverflow));
+        continue;
+      }
       std::uint64_t key = 0;
       std::uint32_t relation = 0;
       const ExactStreamKind kind = classify_exact_stream_pair(
-          members, begin, count, pair, rectangles, relation_rows,
+          members, begin, first_offset, second_offset,
+          rectangles, relation_rows,
           owner_rectangles, stage_begin, cell_left, cell_bottom,
           &key, &relation, domain_count, status);
       if (kind == kExactTileEdge) {
@@ -1067,6 +1136,7 @@ __global__ void fill_exact_streams_parallel_kernel(
     const std::uint64_t *pair_test_offsets,
     std::uint64_t total_pair_tests,
     std::uint64_t group_count,
+    std::uint64_t previous_rectangle_count,
     const ac::RectI64 *rectangles,
     const std::uint64_t *relation_rows,
     const std::uint32_t *owner_rectangles,
@@ -1086,6 +1156,7 @@ __global__ void fill_exact_streams_parallel_kernel(
   __shared__ unsigned long long exception_cursor;
   __shared__ std::int64_t cell_left;
   __shared__ std::int64_t cell_bottom;
+  __shared__ std::uint64_t old_count;
   const std::uint32_t relation_count =
       domain_count * domain_count;
   for (std::uint32_t relation = threadIdx.x;
@@ -1111,14 +1182,25 @@ __global__ void fill_exact_streams_parallel_kernel(
       cell_origin(
           members[begin].cell, minimum_x, minimum_y,
           grid_height, bin_size, &cell_left, &cell_bottom);
+      old_count = first_new_member_offset(
+          members, begin, count, previous_rectangle_count);
     }
     __syncthreads();
     for (std::uint64_t pair = threadIdx.x; pair < tests;
          pair += blockDim.x) {
+      std::uint64_t first_offset = 0;
+      std::uint64_t second_offset = 0;
+      if (!decode_staged_pair(
+              old_count, count, pair, &first_offset,
+              &second_offset)) {
+        atomicOr(status, std::uint32_t(kPairCountOverflow));
+        continue;
+      }
       std::uint64_t key = 0;
       std::uint32_t relation = 0;
       const ExactStreamKind kind = classify_exact_stream_pair(
-          members, begin, count, pair, rectangles, relation_rows,
+          members, begin, first_offset, second_offset,
+          rectangles, relation_rows,
           owner_rectangles, stage_begin, cell_left, cell_bottom,
           &key, &relation, domain_count, status);
       if (kind == kExactTileEdge) {
@@ -1722,10 +1804,13 @@ ac::Status run_exact_streaming(
   }
   thrust::device_vector<std::uint64_t>
       pair_test_counts(group_count);
-  count_full_pair_tests_kernel<<<
+  count_staged_pair_tests_kernel<<<
       launch_blocks(group_count), kThreads>>>(
+      thrust::raw_pointer_cast(members->data()),
+      thrust::raw_pointer_cast(group_offsets->data()),
       thrust::raw_pointer_cast(group_counts->data()),
-      group_count, config.limits.max_cell_members,
+      group_count, previous_rectangle_count,
+      config.limits.max_cell_members,
       config.limits.max_pair_tests_per_cell,
       thrust::raw_pointer_cast(pair_test_counts.data()),
       thrust::raw_pointer_cast(device_status->data()));
@@ -1783,6 +1868,7 @@ ac::Status run_exact_streaming(
       thrust::raw_pointer_cast(group_counts->data()),
       thrust::raw_pointer_cast(pair_test_offsets.data()),
       total_pair_tests, group_count,
+      previous_rectangle_count,
       thrust::raw_pointer_cast(rectangles->data()),
       thrust::raw_pointer_cast(relation_rows->data()),
       thrust::raw_pointer_cast(owner_rectangle_counts.data()),
@@ -1862,6 +1948,7 @@ ac::Status run_exact_streaming(
       thrust::raw_pointer_cast(group_counts->data()),
       thrust::raw_pointer_cast(pair_test_offsets.data()),
       total_pair_tests, group_count,
+      previous_rectangle_count,
       thrust::raw_pointer_cast(rectangles->data()),
       thrust::raw_pointer_cast(relation_rows->data()),
       thrust::raw_pointer_cast(owner_rectangle_counts.data()),
@@ -2511,10 +2598,13 @@ Status Connectivity::append_stage_impl(
       }
       thrust::device_vector<std::uint64_t>
           pair_test_counts(group_count);
-      count_full_pair_tests_kernel<<<
+      count_staged_pair_tests_kernel<<<
           launch_blocks(group_count), kThreads>>>(
+          thrust::raw_pointer_cast(members.data()),
+          thrust::raw_pointer_cast(group_offsets.data()),
           thrust::raw_pointer_cast(group_counts.data()),
-          group_count, config.limits.max_cell_members,
+          group_count, previous_rectangle_count,
+          config.limits.max_cell_members,
           config.limits.max_pair_tests_per_cell,
           thrust::raw_pointer_cast(pair_test_counts.data()),
           thrust::raw_pointer_cast(device_status.data()));

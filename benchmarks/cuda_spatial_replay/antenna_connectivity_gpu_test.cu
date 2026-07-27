@@ -636,6 +636,52 @@ void test_exact_filter_before_materialization()
       "exact-filter overlapping owner tiles");
 }
 
+void test_exact_staged_pair_work_pruning()
+{
+  /*
+   * Both old rectangles and the appended rectangle occupy one broad cell but
+   * are geometrically disjoint.  The first append requires one pair test.
+   * The second requires exactly old(2) x new(1) = 2 tests; rescanning the
+   * old-old pair would require three and exceed this deliberately tight cap.
+   */
+  ac::Config config = base_config(1, 100);
+  config.exact_filter_before_materialization = true;
+  allow(&config, 0, 0);
+  config.limits.max_pair_tests_per_cell = 2;
+  config.limits.max_total_pair_tests = 2;
+  const std::vector<ac::RectI64> old = {
+      {1, 1, 2, 2, 0, 0},
+      {10, 1, 11, 2, 1, 0}};
+  const ac::RectI64 appended = {20, 1, 21, 2, 2, 0};
+
+  ac::Connectivity gpu(config);
+  Oracle oracle(config);
+  run_stage(
+      &gpu, &oracle, old, 2,
+      "exact staged-work old baseline");
+  const ac::StageCensus staged = run_stage(
+      &gpu, &oracle, {appended}, 1,
+      "exact staged-work old-new only");
+  require(
+      staged.pair_occurrences == 0 &&
+          staged.unique_candidates == 0 &&
+          staged.exact_edges == 0,
+      "staged-work pruning changed exact census");
+
+  ac::Config bounded = config;
+  bounded.limits.max_pair_tests_per_cell = 1;
+  bounded.limits.max_total_pair_tests = 1;
+  ac::Connectivity bounded_gpu(bounded);
+  Oracle bounded_oracle(bounded);
+  run_stage(
+      &bounded_gpu, &bounded_oracle, old, 2,
+      "exact staged-work bounded baseline");
+  require_failure_unchanged(
+      &bounded_gpu, &appended, 1,
+      ac::Status::capacity_exceeded,
+      "exact staged-work old-new capacity");
+}
+
 void test_exact_streaming_owner_path()
 {
   ac::Config config = base_config(1, 10);
@@ -1456,6 +1502,7 @@ int main()
     test_multibin_deduplication();
     test_exact_canonical_cell_emission();
     test_exact_filter_before_materialization();
+    test_exact_staged_pair_work_pruning();
     test_exact_streaming_owner_path();
     test_concave_owner_rectangulation();
     test_staged_antenna_bridge(false);
@@ -1470,7 +1517,7 @@ int main()
     test_seeded_random_differentials(true);
     std::cout
         << "antenna_connectivity_gpu_test: PASS"
-        << " directed=21 random_seeds=24 stages_per_seed=4"
+        << " directed=22 random_seeds=24 stages_per_seed=4"
         << " cas_seeds=12"
         << std::endl;
     return EXIT_SUCCESS;
