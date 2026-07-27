@@ -229,6 +229,9 @@ Before production timing is booked:
 - [x] Emit exact rectangle pairs only from their canonical shared cell,
   removing multi-cell duplicates and the exact-path rectangle-key
   sort/unique pass.
+- [x] Stream exact owner connectivity with root-only CAS unions and compact
+  same-owner/multi-rectangle exception streams, eliminating the
+  rectangle-cardinality tile and owner fan-out arrays.
 - [ ] Demonstrate an accounted peak within the 10,240-MiB qualification card,
   including caller staging and temporary sort/reduction storage.
 - [ ] Run matched repeated full-launch control/candidate trials and book only

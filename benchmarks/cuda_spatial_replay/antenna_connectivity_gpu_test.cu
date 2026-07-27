@@ -636,6 +636,140 @@ void test_exact_filter_before_materialization()
       "exact-filter overlapping owner tiles");
 }
 
+void test_exact_streaming_owner_path()
+{
+  ac::Config config = base_config(1, 10);
+  config.exact_filter_before_materialization = true;
+  allow(&config, 0, 0);
+
+  {
+    ac::Connectivity gpu(config);
+    Oracle oracle(config);
+    const ac::StageCensus census = run_stage(
+        &gpu, &oracle,
+        {{0, 0, 40, 40, 0, 0},
+         {40, 10, 80, 30, 1, 0}},
+        2, "exact streaming singleton multi-bin");
+    require(
+        census.pair_occurrences == 1 &&
+            census.unique_candidates == 1 &&
+            census.exact_edges == 1,
+        "exact singleton multi-bin edge was not emitted once");
+  }
+
+  {
+    ac::Connectivity gpu(config);
+    Oracle oracle(config);
+    const ac::StageCensus census = run_stage(
+        &gpu, &oracle,
+        {{0, 0, 10, 10, 0, 0},
+         {10, 0, 20, 10, 0, 0},
+         {5, 10, 15, 20, 1, 0}},
+        2, "exact streaming multi-tile to singleton");
+    require(
+        census.pair_occurrences == 3 &&
+            census.unique_candidates == 1 &&
+            census.exact_edges == 1,
+        "multi-tile/singleton owner edge was not deduplicated");
+  }
+
+  {
+    ac::Connectivity gpu(config);
+    Oracle oracle(config);
+    const ac::StageCensus census = run_stage(
+        &gpu, &oracle,
+        {{0, 0, 10, 10, 0, 0},
+         {10, 0, 20, 10, 0, 0},
+         {0, 10, 10, 20, 1, 0},
+         {10, 10, 20, 20, 1, 0}},
+        2, "exact streaming two multi-tile owners");
+    require(
+        census.pair_occurrences == 6 &&
+            census.unique_candidates == 1 &&
+            census.exact_edges == 1,
+        "two multi-tile owners did not collapse to one owner edge");
+  }
+
+  {
+    ac::Connectivity gpu(config);
+    Oracle oracle(config);
+    const ac::StageCensus census = run_stage(
+        &gpu, &oracle,
+        {{0, 0, 10, 10, 0, 0},
+         {10, 0, 20, 10, 0, 0},
+         {20, 0, 30, 10, 0, 0},
+         {30, 0, 40, 10, 1, 0}},
+        2, "exact streaming tile chain and cross edge");
+    require(
+        census.pair_occurrences == 3 &&
+            census.unique_candidates == 1 &&
+            census.exact_edges == 1,
+        "tile chain and cross-owner edge census is wrong");
+  }
+
+  {
+    std::vector<ac::RectI64> base = {
+        {0, 4, 4, 6, 0, 0},
+        {4, 6, 8, 8, 1, 0},
+        {4, 2, 8, 4, 2, 0},
+        {8, 4, 12, 6, 3, 0}};
+    for (std::uint32_t leaf = 0; leaf < 32; ++leaf) {
+      const std::int64_t left =
+          static_cast<std::int64_t>(leaf) * 16;
+      base.push_back(
+          {left, 110, left + 8, 120, 4 + leaf, 0});
+    }
+    // Keep the star center's owner higher than every leaf so concurrent
+    // unions contend on the same root and must exercise CAS retry.
+    base.push_back({0, 100, 512, 110, 36, 0});
+    for (std::uint32_t seed = 0; seed < 12; ++seed) {
+      std::vector<ac::RectI64> stage = base;
+      std::mt19937_64 random(
+          UINT64_C(0xc45d1a6000000000) + seed);
+      std::shuffle(stage.begin(), stage.end(), random);
+      ac::Connectivity gpu(config);
+      Oracle oracle(config);
+      const ac::StageCensus census = run_stage(
+          &gpu, &oracle, stage, stage.size(),
+          "exact streaming seeded CAS diamond/star " +
+              std::to_string(seed));
+      require(
+          census.pair_occurrences == 36 &&
+              census.unique_candidates == 36 &&
+              census.exact_edges == 36 &&
+              census.dsu_iterations == 1,
+          "seeded CAS diamond/star edge census is wrong");
+    }
+  }
+
+  {
+    ac::Connectivity gpu(config);
+    Oracle oracle(config);
+    run_stage(
+        &gpu, &oracle,
+        {{0, 0, 10, 10, 0, 0},
+         {10, 0, 20, 10, 1, 0},
+         {40, 0, 50, 10, 2, 0},
+         {50, 0, 60, 10, 3, 0}},
+        4, "exact streaming staged prior parents");
+    const ac::StageCensus bridge = run_stage(
+        &gpu, &oracle, {{20, 0, 40, 10, 4, 0}}, 1,
+        "exact streaming staged prior-root bridge");
+    require(
+        bridge.pair_occurrences == 2 &&
+            bridge.unique_candidates == 2 &&
+            bridge.exact_edges == 2,
+        "staged prior-root bridge edge census is wrong");
+    std::vector<std::uint32_t> labels;
+    require_status(
+        gpu.snapshot_labels(&labels), ac::Status::success,
+        "exact streaming staged prior-root snapshot");
+    require(
+        labels == std::vector<std::uint32_t>({0, 0, 0, 0, 0}),
+        "staged prior parents were not merged through the new owner");
+  }
+}
+
 void test_concave_owner_rectangulation()
 {
   ac::Config config = base_config(1, 5);
@@ -1198,6 +1332,7 @@ int main()
     test_multibin_deduplication();
     test_exact_canonical_cell_emission();
     test_exact_filter_before_materialization();
+    test_exact_streaming_owner_path();
     test_concave_owner_rectangulation();
     test_staged_antenna_bridge(false);
     test_staged_antenna_bridge(true);
@@ -1210,7 +1345,8 @@ int main()
     test_seeded_random_differentials(true);
     std::cout
         << "antenna_connectivity_gpu_test: PASS"
-        << " directed=15 random_seeds=24 stages_per_seed=4"
+        << " directed=21 random_seeds=24 stages_per_seed=4"
+        << " cas_seeds=12"
         << std::endl;
     return EXIT_SUCCESS;
   } catch (const std::exception &error) {
