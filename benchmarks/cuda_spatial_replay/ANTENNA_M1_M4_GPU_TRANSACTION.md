@@ -322,10 +322,34 @@ Before production timing is booked:
   contention is gone.  M1 plus M2 stages now total 3.86 seconds (37.4% of
   process wall), so the previously sub-threshold connectivity reductions can
   again clear the 5% whole-run gate.
-- [ ] Reduce the 3.89-second request identity/setup path.  Attribute compact
-  hierarchy validation and digest work separately, then add exact immutable
-  capture caching or a faster checked implementation without weakening the
-  request/capture identity contract.
+- [x] Reduce the 3.89-second request identity/setup path.  Opt-in
+  `KLAYOUT_CUDA_ANTENNA_SETUP_TIMING` now partitions request validation,
+  hierarchy validation/digest, all twelve domain lowerings, both capture
+  digests, and census validation; each domain is further partitioned into
+  header, rectangulation, context census, accounting, scene digest, and
+  final identity checks.  Deterministic indexed workers lower the twelve
+  immutable domains concurrently, join every result before mutating a
+  populate request, and rethrow per-domain failures in role order.  Three
+  exact standalone capture-replay processes measured 8.27, 8.35, and
+  8.29 seconds versus matched 10.27, 10.37, and 10.32-second controls:
+  10.320 to 8.303 seconds mean, removing 2.017 real seconds (19.5% less).
+  Backend time fell from 8,737.861 to 6,711.590 ms (23.2% less) and setup
+  from 3,898.209 to 1,897.924 ms (51.3% less).  All three returned zero
+  fallback with clean/certified masks `0xf`, closed-domain mask `0xfff`,
+  and the exact clean certificate.  This is a standalone authenticated
+  capture-replay result, not yet a full KLayout/deck launch result.
+- [ ] Add a sealed immutable-capture identity cache for a warmed server.
+  A cache hit must be keyed by an owning, immutable prepared handle created
+  only after the initial full hierarchy/domain/digest validation; an
+  untrusted caller-supplied digest or pointer identity alone is never a hit.
+  Revalidate mutable request options and capacity on every execution while
+  reusing contexts, rectangulation, offsets, census, and derived digests.
+- [ ] Reduce the remaining one-shot M1-domain identity pole.  The three-run
+  setup trace assigns 1.755-1.782 seconds to parallel domain lowering, set
+  almost entirely by role 5 (M1): about 0.56 seconds of rectangulation and
+  1.16 seconds of scalar scene SHA-256.  Evaluate deterministic per-cell
+  rectangulation and an exact hardware-SHA/canonical bulk-update path before
+  changing the digest contract.
 - [ ] Account for and reduce the 1.57-second wrapper/process overhead outside
   the 8.74-second backend transaction.
 - [x] Demonstrate an accounted peak within the 10,240-MiB qualification card,
