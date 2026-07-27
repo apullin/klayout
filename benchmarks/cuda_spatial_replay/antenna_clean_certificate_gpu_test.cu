@@ -522,13 +522,21 @@ acc::CheckpointCensus run_root_cell_checkpoint(
   DeviceArray<ac::RectI64> device_active(active);
   DeviceArray<ac::RectI64> device_metal(metal);
   DeviceArray<std::uint32_t> device_labels(labels);
+  acc::CheckpointCensus preliminary;
+  require_status(
+      certificate->evaluate_checkpoint(
+          level, device_metal.get(), device_metal.size(),
+          device_labels.get(), device_labels.size(),
+          &preliminary),
+      acc::Status::success, name + " preliminary");
   acc::CheckpointCensus result;
   require_status(
       certificate->evaluate_checkpoint_root_cell_refined(
           level, device_poly.get(), device_poly.size(),
           device_active.get(), device_active.size(),
           device_metal.get(), device_metal.size(),
-          device_labels.get(), device_labels.size(), &result),
+          device_labels.get(), device_labels.size(), &result,
+          nullptr, &preliminary),
       acc::Status::success, name);
   require(
       result.preliminary_uncertain_roots > 0 &&
@@ -861,7 +869,7 @@ void test_factor_zero_diode_exemption_is_annotation_only()
           device_poly.size(), device_active.get(),
           device_active.size(), device_metal.get(),
           device_metal.size(), device_labels.get(),
-          device_labels.size(), &refined, &diode_view),
+          device_labels.size(), &refined, &diode_view, &exempt),
       acc::Status::success,
       "factor-zero diode refined checkpoint");
   require(
@@ -870,6 +878,28 @@ void test_factor_zero_diode_exemption_is_annotation_only()
           refined.preliminary_uncertain_roots == 0 &&
           refined.refinement_records == 0,
       "factor-zero diode should avoid unnecessary refinement");
+
+  acc::CheckpointCensus mismatched_preliminary = exempt;
+  --mismatched_preliminary.labels;
+  acc::CheckpointCensus reuse_sentinel;
+  reuse_sentinel.labels = UINT64_C(0x13572468);
+  const acc::CheckpointCensus reuse_sentinel_expected =
+      reuse_sentinel;
+  require_status(
+      certificate.evaluate_checkpoint_root_cell_refined(
+          acc::MetalLevel::metal1, device_poly.get(),
+          device_poly.size(), device_active.get(),
+          device_active.size(), device_metal.get(),
+          device_metal.size(), device_labels.get(),
+          device_labels.size(), &reuse_sentinel, &diode_view,
+          &mismatched_preliminary),
+      acc::Status::malformed_input,
+      "mismatched preliminary checkpoint reuse");
+  require(
+      std::memcmp(
+          &reuse_sentinel, &reuse_sentinel_expected,
+          sizeof(reuse_sentinel)) == 0,
+      "mismatched preliminary reuse changed output");
 
   acc::FactorZeroDiodeDeviceView malformed = diode_view;
   malformed.owner_begin = labels.size();

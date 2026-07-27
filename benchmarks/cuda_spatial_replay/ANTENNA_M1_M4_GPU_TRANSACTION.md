@@ -255,26 +255,53 @@ Before production timing is booked:
   speed optimization: the exact isolated replay was 333.32 seconds versus
   the prior 323.64-second record, 9.68 seconds or 3.0% slower.  It did reduce
   peak device memory from 8,595 to 7,769 MiB, but M2 remained 324.50 seconds.
-- [ ] Collapse identical single-rectangle conductor geometry into an exact
+- [x] Collapse identical single-rectangle conductor geometry into an exact
   weighted quotient before spatial enumeration.  The authenticated
   production census projects 61.1% fewer M1 rectangles, 90.7% fewer VIA1
   rectangles, and 74.2% fewer M2 rectangles while preserving the exact
-  weighted internal pair totals and all multi-tile exceptions.
-- [ ] Replace the comparison sort of 145–173 million 16-byte `CellMember`
+  weighted internal pair totals and all multi-tile exceptions.  The exact
+  device seam and production predictor are banked on
+  `fork/antenna-geometry-quotient`; complete phase telemetry showed that
+  VIA1 plus M2 connectivity append is only 1.487 seconds, below 0.5% of the
+  320.96-second run, so active integration is deferred.
+- [x] Replace the comparison sort of 145–173 million 16-byte `CellMember`
   records with a stable radix sort of 64-bit cell keys and 32-bit rectangle
   nodes.  Membership fill is initially ordered by rectangle node, so sort
   stability preserves the exact old/new split required by staged pruning;
-  qualify both wall time and the 10-GiB temporary-memory frontier.
-- [ ] Reuse hierarchy-local conductor forests.  Precompute the exact
+  a 50-million-record exact microbenchmark was bit-for-bit identical and
+  reduced sort time from 61.71 to 21.58 ms (65.0%).  Because the complete
+  connectivity append is only 1.487 seconds, production integration is
+  deferred until the certificate roof is removed.
+- [x] Reuse hierarchy-local conductor forests.  Precompute the exact
   same-context connectivity forest once for each of the 273 source cells,
   instantiate those forest edges across 849,265 occurrence contexts, and
   leave cross-context touching pairs to the global grid.  Prove transform,
   array, and boundary-touch equivalence before measuring the removed spatial
-  work.
-- [ ] Enumerate only canonical-start membership buckets.  A count-only
+  work.  Deferred before implementation because complete connectivity now
+  measures below 0.5% of whole-run wall.
+- [x] Enumerate only canonical-start membership buckets.  A count-only
   production projection removes 682.7 million M2 pair tests (21.1%) by
   requiring a pair's cell to contain its maximum left and bottom coordinate;
-  this remains unmeasured wall-time opportunity.
+  exact focused implementation, oracle, memcheck, and racecheck gates are
+  banked at `fork/canonical-bucket-frontier`.  Production integration is
+  deferred because the eliminated enumeration kernels are no longer on the
+  critical path.
+- [ ] Reuse the verified preliminary checkpoint census when root-cell
+  refinement begins instead of rerunning the complete preliminary
+  certificate.  The exact M2 phase trace measured the duplicated pass at
+  102.98 seconds; the reuse path must retain unchanged-output failure and
+  identity/counter validation.
+- [ ] Retain the preliminary device root annotations through root-cell
+  refinement, eliminating the third gate/metal/root reduction while
+  preserving the 10-GiB transaction cap.
+- [ ] Remove M2 root-reduction contention.  Complete phase telemetry assigns
+  102.98 seconds to the first certificate evaluation; instrument and replace
+  the contended per-tile/per-owner atomics with exact sorted or segmented
+  reductions.
+- [ ] Optimize the true root-cell refinement remainder: ACTIVE grid build,
+  uncertain POLY/ACTIVE record generation, CUB key/area sort, and equal-key
+  maximum-area accumulation.  Measure each phase independently before
+  selecting the next kernel.
 - [x] Demonstrate an accounted peak within the 10,240-MiB qualification card,
   including caller staging and temporary sort/reduction storage.
 - [ ] Run matched repeated full-launch control/candidate trials and book only

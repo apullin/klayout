@@ -2321,7 +2321,7 @@ void run_transaction(
                       metal.rectangles.data()),
                   metal.rectangles.size(), labels.labels,
                   labels.count, &refined_checkpoint,
-                  diode_view_ptr),
+                  diode_view_ptr, &checkpoint),
               "refine antenna gate lower bound by root cell");
           report_backend_phase(
               index, "checkpoint_refine",

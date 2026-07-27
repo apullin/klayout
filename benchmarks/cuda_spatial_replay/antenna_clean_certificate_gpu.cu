@@ -1912,7 +1912,8 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
     const std::uint32_t *device_labels,
     std::uint64_t label_count,
     CheckpointCensus *census,
-    const FactorZeroDiodeDeviceView *factor_zero_diodes) const noexcept
+    const FactorZeroDiodeDeviceView *factor_zero_diodes,
+    const CheckpointCensus *known_preliminary) const noexcept
 {
   if (!m_impl || m_impl->config_status != Status::success) {
     return m_impl ? m_impl->config_status : Status::host_error;
@@ -1924,11 +1925,52 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
   }
 
   CheckpointCensus preliminary;
-  const Status preliminary_status = evaluate_checkpoint(
-      level, device_metal, metal_count, device_labels, label_count,
-      &preliminary, factor_zero_diodes);
-  if (preliminary_status != Status::success) {
-    return preliminary_status;
+  if (known_preliminary) {
+    if (!valid_level(level) || !device_labels || !label_count ||
+        (metal_count && !device_metal) ||
+        label_count < m_impl->annotation_owner_count ||
+        (factor_zero_diodes &&
+         ((factor_zero_diodes->count &&
+           !factor_zero_diodes->contact_present) ||
+          factor_zero_diodes->owner_begin > label_count ||
+          factor_zero_diodes->count >
+              label_count - factor_zero_diodes->owner_begin)) ||
+        label_count > m_impl->config.limits.max_labels ||
+        label_count > UINT32_MAX ||
+        metal_count > m_impl->config.limits.max_metal_tiles) {
+      return Status::malformed_input;
+    }
+    preliminary = *known_preliminary;
+    if (preliminary.level != level ||
+        preliminary.labels != label_count ||
+        preliminary.metal_tiles != metal_count ||
+        preliminary.clean_certificate !=
+            (preliminary.uncertain_roots == 0) ||
+        preliminary.roots > label_count ||
+        preliminary.roots_with_metal > preliminary.roots ||
+        preliminary.roots_without_gate > preliminary.roots ||
+        preliminary.gate_roots_without_metal >
+            preliminary.roots ||
+        preliminary.diode_exempt_roots > preliminary.roots ||
+        preliminary.ratio_certified_roots >
+            preliminary.roots ||
+        preliminary.uncertain_roots > preliminary.roots ||
+        preliminary.preliminary_uncertain_roots ||
+        preliminary.refinement_records ||
+        preliminary.refinement_candidate_visits ||
+        preliminary.refinement_root_cells ||
+        preliminary.persistent_bytes != m_impl->persistent_bytes ||
+        preliminary.peak_live_bytes <
+            preliminary.persistent_bytes) {
+      return Status::malformed_input;
+    }
+  } else {
+    const Status preliminary_status = evaluate_checkpoint(
+        level, device_metal, metal_count, device_labels, label_count,
+        &preliminary, factor_zero_diodes);
+    if (preliminary_status != Status::success) {
+      return preliminary_status;
+    }
   }
   preliminary.preliminary_uncertain_roots =
       preliminary.uncertain_roots;

@@ -239,6 +239,10 @@ public:
    * uncertainty.  All input arrays are non-owning device pointers.  Any
    * malformed geometry, capacity limit, arithmetic overflow, or CUDA error
    * leaves caller output unchanged and preserves fail-closed fallback.
+   * When supplied, preliminary must be the unchanged result of an immediate
+   * evaluate_checkpoint call over the same level, metal, labels, and diode
+   * view.  Reusing it avoids repeating the complete first-pass reduction;
+   * inconsistent census identity or counters are rejected.
    */
   Status evaluate_checkpoint_root_cell_refined(
       MetalLevel level,
@@ -252,6 +256,8 @@ public:
       std::uint64_t label_count,
       CheckpointCensus *census,
       const FactorZeroDiodeDeviceView *factor_zero_diodes =
+          nullptr,
+      const CheckpointCensus *preliminary =
           nullptr) const noexcept;
 
   Status device_gate_view(
