@@ -5,6 +5,7 @@
 #include "antenna_clean_certificate_gpu.cuh"
 
 #include <cuda_runtime.h>
+#include <cub/device/device_radix_sort.cuh>
 #include <cub/device/device_scan.cuh>
 
 #include <algorithm>
@@ -107,8 +108,19 @@ struct DeviceCheckpointScalars
   unsigned long long roots_with_metal = 0;
   unsigned long long roots_without_gate = 0;
   unsigned long long gate_roots_without_metal = 0;
+  unsigned long long diode_exempt_roots = 0;
   unsigned long long ratio_certified_roots = 0;
   unsigned long long uncertain_roots = 0;
+  unsigned int status = 0;
+};
+
+struct DeviceRefinementScalars
+{
+  unsigned long long records = 0;
+  unsigned long long candidate_visits = 0;
+  unsigned long long filled_records = 0;
+  unsigned long long positive_cell_witnesses = 0;
+  unsigned long long root_cells = 0;
   unsigned int status = 0;
 };
 
@@ -147,6 +159,96 @@ __device__ bool checked_intersection_area(
       poly.bottom > active.bottom ? poly.bottom : active.bottom;
   const std::int64_t top =
       poly.top < active.top ? poly.top : active.top;
+  if (left >= right || bottom >= top) {
+    *area = 0;
+    return true;
+  }
+  const unsigned long long width =
+      static_cast<unsigned long long>(right) -
+      static_cast<unsigned long long>(left);
+  const unsigned long long height =
+      static_cast<unsigned long long>(top) -
+      static_cast<unsigned long long>(bottom);
+  if (width && height > ULLONG_MAX / width) return false;
+  *area = width * height;
+  return true;
+}
+
+__device__ bool root_needs_gate_refinement(
+    std::uint32_t gate_present, unsigned long long gate_lower,
+    unsigned long long metal_upper)
+{
+  if (!gate_present || !metal_upper) return false;
+  if (gate_lower <= 1 || gate_lower > ULLONG_MAX / 300ull) {
+    return true;
+  }
+  return metal_upper > 300ull * gate_lower;
+}
+
+__device__ bool root_is_diode_exempt(
+    const std::uint32_t *root_exempt_bits, std::uint32_t root)
+{
+  return root_exempt_bits &&
+         (root_exempt_bits[root >> 5] &
+          static_cast<std::uint32_t>(1u << (root & 31)));
+}
+
+__device__ bool checked_cell_interval(
+    std::int64_t cell, std::int64_t cell_size,
+    std::int64_t *begin, std::int64_t *end)
+{
+  // floor_div_device can identify a mathematical cell whose lower boundary
+  // lies just below INT64_MIN.  Such a boundary cannot be represented
+  // exactly, so refinement declines instead of risking cross-cell overlap.
+  if (cell < INT64_MIN / cell_size ||
+      cell > INT64_MAX / cell_size) {
+    return false;
+  }
+  *begin = cell * cell_size;
+  // A final mathematical cell may extend past INT64_MAX.  Clamping its
+  // exclusive upper boundary is exact for all representable input
+  // rectangle coordinates.
+  *end = *begin > INT64_MAX - cell_size
+             ? INT64_MAX
+             : *begin + cell_size;
+  return *begin < *end;
+}
+
+__device__ bool checked_cell_clipped_intersection_area(
+    const ac::RectI64 &poly, const ac::RectI64 &active,
+    std::int64_t cell_x, std::int64_t cell_y,
+    std::int64_t cell_size, unsigned long long *area)
+{
+  std::int64_t cell_left = 0;
+  std::int64_t cell_right = 0;
+  std::int64_t cell_bottom = 0;
+  std::int64_t cell_top = 0;
+  if (!checked_cell_interval(
+          cell_x, cell_size, &cell_left, &cell_right) ||
+      !checked_cell_interval(
+          cell_y, cell_size, &cell_bottom, &cell_top)) {
+    return false;
+  }
+  const std::int64_t intersection_left =
+      poly.left > active.left ? poly.left : active.left;
+  const std::int64_t intersection_right =
+      poly.right < active.right ? poly.right : active.right;
+  const std::int64_t intersection_bottom =
+      poly.bottom > active.bottom ? poly.bottom : active.bottom;
+  const std::int64_t intersection_top =
+      poly.top < active.top ? poly.top : active.top;
+  const std::int64_t left =
+      intersection_left > cell_left
+          ? intersection_left : cell_left;
+  const std::int64_t right =
+      intersection_right < cell_right
+          ? intersection_right : cell_right;
+  const std::int64_t bottom =
+      intersection_bottom > cell_bottom
+          ? intersection_bottom : cell_bottom;
+  const std::int64_t top =
+      intersection_top < cell_top
+          ? intersection_top : cell_top;
   if (left >= right || bottom >= top) {
     *area = 0;
     return true;
@@ -660,6 +762,37 @@ __global__ void reduce_gate_annotations_kernel(
   }
 }
 
+__global__ void mark_factor_zero_diode_roots_kernel(
+    const std::uint32_t *contact_present,
+    std::uint64_t contact_owner_begin,
+    std::uint64_t contact_count,
+    const std::uint32_t *labels, std::uint64_t label_count,
+    std::uint32_t *root_exempt_bits, unsigned int *status)
+{
+  const std::uint64_t first =
+      static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+      threadIdx.x;
+  const std::uint64_t stride =
+      static_cast<std::uint64_t>(blockDim.x) * gridDim.x;
+  for (std::uint64_t local = first; local < contact_count;
+       local += stride) {
+    if (!contact_present[local]) continue;
+    const std::uint64_t owner = contact_owner_begin + local;
+    if (owner >= label_count) {
+      atomicOr(status, kMalformed);
+      continue;
+    }
+    const std::uint32_t root = labels[owner];
+    if (root >= label_count || labels[root] != root) {
+      atomicOr(status, kMalformed);
+      continue;
+    }
+    atomicOr(
+        root_exempt_bits + (root >> 5),
+        static_cast<std::uint32_t>(1u << (root & 31)));
+  }
+}
+
 __global__ void sum_metal_area_kernel(
     const ac::RectI64 *metal, std::uint64_t metal_count,
     const std::uint32_t *labels, std::uint64_t label_count,
@@ -696,6 +829,7 @@ __global__ void evaluate_roots_kernel(
     const std::uint32_t *root_gate_present,
     const unsigned long long *root_gate_lower,
     const unsigned long long *root_metal_upper,
+    const std::uint32_t *root_diode_exempt_bits,
     DeviceCheckpointScalars *scalars)
 {
   const std::uint64_t first =
@@ -711,6 +845,10 @@ __global__ void evaluate_roots_kernel(
     if (metal) atomicAdd(&scalars->roots_with_metal, 1ull);
     if (!root_gate_present[root]) {
       atomicAdd(&scalars->roots_without_gate, 1ull);
+      continue;
+    }
+    if (root_is_diode_exempt(root_diode_exempt_bits, root)) {
+      atomicAdd(&scalars->diode_exempt_roots, 1ull);
       continue;
     }
     if (!metal) {
@@ -732,6 +870,259 @@ __global__ void evaluate_roots_kernel(
     } else {
       atomicAdd(&scalars->uncertain_roots, 1ull);
     }
+  }
+}
+
+__global__ void count_root_cell_refinement_work_kernel(
+    const ac::RectI64 *poly, std::uint64_t poly_count,
+    const std::uint32_t *labels, std::uint64_t label_count,
+    const std::uint32_t *root_gate_present,
+    const unsigned long long *root_gate_lower,
+    const unsigned long long *root_metal_upper,
+    const std::uint32_t *root_diode_exempt_bits,
+    Grid grid, const std::uint32_t *active_counts,
+    unsigned long long max_records,
+    unsigned long long max_candidate_visits,
+    DeviceRefinementScalars *scalars)
+{
+  __shared__ unsigned long long thread_records[kThreads];
+  __shared__ unsigned long long thread_visits[kThreads];
+  __shared__ unsigned int thread_status[kThreads];
+
+  const std::uint64_t first =
+      static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+      threadIdx.x;
+  const std::uint64_t stride =
+      static_cast<std::uint64_t>(blockDim.x) * gridDim.x;
+  unsigned long long local_records = 0;
+  unsigned long long local_visits = 0;
+  unsigned int local_status = 0;
+  for (std::uint64_t poly_id = first; poly_id < poly_count;
+       poly_id += stride) {
+    const ac::RectI64 rectangle = poly[poly_id];
+    if (!valid_rectangle(rectangle, label_count)) {
+      local_status |= kMalformed;
+      continue;
+    }
+    const std::uint32_t root = labels[rectangle.owner];
+    if (root >= label_count || labels[root] != root) {
+      local_status |= kMalformed;
+      continue;
+    }
+    if (!root_needs_gate_refinement(
+            root_gate_present[root], root_gate_lower[root],
+            root_metal_upper[root]) ||
+        root_is_diode_exempt(root_diode_exempt_bits, root)) {
+      continue;
+    }
+    std::int64_t x0 = 0;
+    std::int64_t y0 = 0;
+    std::int64_t x1 = 0;
+    std::int64_t y1 = 0;
+    if (!grid_span(rectangle, grid, &x0, &y0, &x1, &y1)) {
+      local_status |= kMalformed;
+      continue;
+    }
+    for (std::int64_t y = y0;
+         y <= y1 && !(local_status & kCapacity); ++y) {
+      for (std::int64_t x = x0;
+           x <= x1 && !(local_status & kCapacity); ++x) {
+        const std::uint64_t cell = grid_index(grid, x, y);
+        if (local_records >= max_records) {
+          local_status |= kCapacity;
+          break;
+        }
+        ++local_records;
+        const unsigned long long count = active_counts[cell];
+        if (local_visits > max_candidate_visits ||
+            count > max_candidate_visits - local_visits) {
+          local_status |= kCapacity;
+          break;
+        }
+        local_visits += count;
+      }
+    }
+    if (local_status & kCapacity) break;
+  }
+
+  thread_records[threadIdx.x] = local_records;
+  thread_visits[threadIdx.x] = local_visits;
+  thread_status[threadIdx.x] = local_status;
+  __syncthreads();
+
+  if (threadIdx.x == 0) {
+    unsigned long long block_records = 0;
+    unsigned long long block_visits = 0;
+    unsigned int block_status = 0;
+    for (std::uint32_t lane = 0; lane < blockDim.x; ++lane) {
+      block_status |= thread_status[lane];
+      const unsigned long long records = thread_records[lane];
+      const unsigned long long visits = thread_visits[lane];
+      if (block_records > max_records ||
+          records > max_records - block_records ||
+          block_visits > max_candidate_visits ||
+          visits > max_candidate_visits - block_visits) {
+        block_status |= kCapacity;
+      } else {
+        block_records += records;
+        block_visits += visits;
+      }
+    }
+    if (!(block_status & kCapacity) &&
+        ((!atomic_add_limited(
+              &scalars->records, block_records, max_records)) ||
+         (!atomic_add_limited(
+              &scalars->candidate_visits, block_visits,
+              max_candidate_visits)))) {
+      block_status |= kCapacity;
+    }
+    if (block_status) atomicOr(&scalars->status, block_status);
+  }
+}
+
+__global__ void fill_root_cell_refinement_records_kernel(
+    const ac::RectI64 *poly, std::uint64_t poly_count,
+    const ac::RectI64 *active,
+    const std::uint32_t *labels, std::uint64_t label_count,
+    const std::uint32_t *root_gate_present,
+    const unsigned long long *root_gate_lower,
+    const unsigned long long *root_metal_upper,
+    const std::uint32_t *root_diode_exempt_bits,
+    Grid grid, const std::uint32_t *active_counts,
+    const std::uint32_t *active_offsets,
+    const std::uint32_t *active_members,
+    unsigned long long record_count,
+    unsigned long long *record_keys,
+    unsigned long long *record_areas,
+    DeviceRefinementScalars *scalars)
+{
+  if (scalars->status) return;
+
+  const std::uint64_t first =
+      static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+      threadIdx.x;
+  const std::uint64_t stride =
+      static_cast<std::uint64_t>(blockDim.x) * gridDim.x;
+  for (std::uint64_t poly_id = first; poly_id < poly_count;
+       poly_id += stride) {
+    const ac::RectI64 poly_rectangle = poly[poly_id];
+    const std::uint32_t root = labels[poly_rectangle.owner];
+    if (!root_needs_gate_refinement(
+            root_gate_present[root], root_gate_lower[root],
+            root_metal_upper[root]) ||
+        root_is_diode_exempt(root_diode_exempt_bits, root)) {
+      continue;
+    }
+    std::int64_t x0 = 0;
+    std::int64_t y0 = 0;
+    std::int64_t x1 = 0;
+    std::int64_t y1 = 0;
+    if (!grid_span(
+            poly_rectangle, grid, &x0, &y0, &x1, &y1)) {
+      atomicOr(&scalars->status, kMalformed);
+      continue;
+    }
+    for (std::int64_t y = y0; y <= y1; ++y) {
+      for (std::int64_t x = x0; x <= x1; ++x) {
+        const unsigned long long slot =
+            atomicAdd(&scalars->filled_records, 1ull);
+        if (slot >= record_count) {
+          atomicOr(&scalars->status, kCapacity);
+          continue;
+        }
+        const std::uint64_t cell = grid_index(grid, x, y);
+        if (cell > UINT32_MAX) {
+          atomicOr(&scalars->status, kCapacity);
+          continue;
+        }
+        unsigned long long maximum_area = 0;
+        const std::uint32_t begin = active_offsets[cell];
+        const std::uint32_t end =
+            begin + active_counts[cell];
+        for (std::uint32_t index = begin; index < end; ++index) {
+          const ac::RectI64 active_rectangle =
+              active[active_members[index]];
+          unsigned long long area = 0;
+          if (!checked_cell_clipped_intersection_area(
+                  poly_rectangle, active_rectangle, x, y,
+                  grid.cell_size, &area)) {
+            atomicOr(&scalars->status, kOverflow);
+            continue;
+          }
+          if (area > maximum_area) maximum_area = area;
+        }
+        record_keys[slot] =
+            (static_cast<unsigned long long>(root) << 32) |
+            static_cast<std::uint32_t>(cell);
+        record_areas[slot] = maximum_area;
+        if (maximum_area) {
+          atomicAdd(
+              &scalars->positive_cell_witnesses, 1ull);
+        }
+      }
+    }
+  }
+}
+
+__global__ void reset_uncertain_root_gate_lower_kernel(
+    const std::uint32_t *labels, std::uint64_t label_count,
+    const std::uint32_t *root_gate_present,
+    unsigned long long *root_gate_lower,
+    const unsigned long long *root_metal_upper,
+    const std::uint32_t *root_diode_exempt_bits)
+{
+  const std::uint64_t first =
+      static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+      threadIdx.x;
+  const std::uint64_t stride =
+      static_cast<std::uint64_t>(blockDim.x) * gridDim.x;
+  for (std::uint64_t root = first; root < label_count;
+       root += stride) {
+    if (labels[root] == root &&
+        root_needs_gate_refinement(
+            root_gate_present[root], root_gate_lower[root],
+            root_metal_upper[root]) &&
+        !root_is_diode_exempt(root_diode_exempt_bits, root)) {
+      root_gate_lower[root] = 0;
+    }
+  }
+}
+
+__global__ void accumulate_sorted_root_cell_areas_kernel(
+    const unsigned long long *keys,
+    const unsigned long long *areas,
+    unsigned long long count,
+    std::uint64_t label_count,
+    unsigned long long *root_gate_lower,
+    DeviceRefinementScalars *scalars)
+{
+  const std::uint64_t first =
+      static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+      threadIdx.x;
+  const std::uint64_t stride =
+      static_cast<std::uint64_t>(blockDim.x) * gridDim.x;
+  for (std::uint64_t index = first; index < count;
+       index += stride) {
+    const unsigned long long key = keys[index];
+    if (index && keys[index - 1] == key) continue;
+    unsigned long long maximum_area = areas[index];
+    std::uint64_t next = index + 1;
+    while (next < count && keys[next] == key) {
+      if (areas[next] > maximum_area) {
+        maximum_area = areas[next];
+      }
+      ++next;
+    }
+    const std::uint32_t root =
+        static_cast<std::uint32_t>(key >> 32);
+    if (root >= label_count ||
+        (maximum_area &&
+         !atomic_add_checked(
+             root_gate_lower + root, maximum_area))) {
+      atomicOr(&scalars->status, kOverflow);
+      continue;
+    }
+    if (maximum_area) atomicAdd(&scalars->root_cells, 1ull);
   }
 }
 
@@ -977,6 +1368,8 @@ struct Certificate::Impl
         !configuration.limits.max_active_memberships ||
         configuration.limits.max_active_memberships > UINT32_MAX ||
         !configuration.limits.max_query_visits ||
+        !configuration.limits.max_refinement_records ||
+        configuration.limits.max_refinement_records > INT_MAX ||
         !configuration.limits.max_cell_members) {
       config_status = Status::invalid_configuration;
     }
@@ -1338,7 +1731,8 @@ Status Certificate::evaluate_checkpoint(
     std::uint64_t metal_count,
     const std::uint32_t *device_labels,
     std::uint64_t label_count,
-    CheckpointCensus *census) const noexcept
+    CheckpointCensus *census,
+    const FactorZeroDiodeDeviceView *factor_zero_diodes) const noexcept
 {
   if (!m_impl || m_impl->config_status != Status::success) {
     return m_impl ? m_impl->config_status : Status::host_error;
@@ -1347,6 +1741,14 @@ Status Certificate::evaluate_checkpoint(
   if (!census || !valid_level(level) || !device_labels ||
       !label_count || (metal_count && !device_metal) ||
       label_count < m_impl->annotation_owner_count) {
+    return Status::malformed_input;
+  }
+  if (factor_zero_diodes &&
+      ((factor_zero_diodes->count &&
+        !factor_zero_diodes->contact_present) ||
+       factor_zero_diodes->owner_begin > label_count ||
+       factor_zero_diodes->count >
+           label_count - factor_zero_diodes->owner_begin)) {
     return Status::malformed_input;
   }
   const Limits &limits = m_impl->config.limits;
@@ -1365,10 +1767,17 @@ Status Certificate::evaluate_checkpoint(
     DeviceBuffer<std::uint32_t> root_gate_present;
     DeviceBuffer<unsigned long long> root_gate_lower;
     DeviceBuffer<unsigned long long> root_metal_upper;
+    DeviceBuffer<std::uint32_t> root_diode_exempt_bits;
     DeviceBuffer<DeviceCheckpointScalars> device_scalars;
+    const std::uint64_t root_diode_word_count =
+        factor_zero_diodes && factor_zero_diodes->count
+            ? (label_count + 31) / 32
+            : 0;
     if (!root_gate_present.allocate(label_count, &tracker) ||
         !root_gate_lower.allocate(label_count, &tracker) ||
         !root_metal_upper.allocate(label_count, &tracker) ||
+        !root_diode_exempt_bits.allocate(
+            root_diode_word_count, &tracker) ||
         !device_scalars.allocate(1, &tracker)) {
       return Status::capacity_exceeded;
     }
@@ -1387,6 +1796,13 @@ Status Certificate::evaluate_checkpoint(
             root_metal_upper.get(), 0,
             root_metal_upper.bytes()),
         "clear root metal upper bounds");
+    if (root_diode_word_count) {
+      cuda_require(
+          cudaMemset(
+              root_diode_exempt_bits.get(), 0,
+              root_diode_exempt_bits.bytes()),
+          "clear root factor-zero diode exemptions");
+    }
     cuda_require(
         cudaMemset(
             device_scalars.get(), 0,
@@ -1408,6 +1824,18 @@ Status Certificate::evaluate_checkpoint(
         label_count, root_gate_present.get(),
         root_gate_lower.get(), &device_scalars.get()->status);
     cuda_require(cudaGetLastError(), "reduce gate annotations");
+    if (root_diode_word_count) {
+      mark_factor_zero_diode_roots_kernel<<<
+          launch_blocks(factor_zero_diodes->count), kThreads>>>(
+          factor_zero_diodes->contact_present,
+          factor_zero_diodes->owner_begin,
+          factor_zero_diodes->count, device_labels,
+          label_count, root_diode_exempt_bits.get(),
+          &device_scalars.get()->status);
+      cuda_require(
+          cudaGetLastError(),
+          "mark factor-zero diode roots");
+    }
     if (metal_count) {
       sum_metal_area_kernel<<<
           launch_blocks(metal_count), kThreads>>>(
@@ -1420,6 +1848,9 @@ Status Certificate::evaluate_checkpoint(
         launch_blocks(label_count), kThreads>>>(
         device_labels, label_count, root_gate_present.get(),
         root_gate_lower.get(), root_metal_upper.get(),
+        root_diode_word_count
+            ? root_diode_exempt_bits.get()
+            : nullptr,
         device_scalars.get());
     cuda_require(cudaGetLastError(), "evaluate antenna roots");
     const float milliseconds = events.stop();
@@ -1447,6 +1878,8 @@ Status Certificate::evaluate_checkpoint(
         host_scalars.roots_without_gate;
     result.gate_roots_without_metal =
         host_scalars.gate_roots_without_metal;
+    result.diode_exempt_roots =
+        host_scalars.diode_exempt_roots;
     result.ratio_certified_roots =
         host_scalars.ratio_certified_roots;
     result.uncertain_roots =
@@ -1457,6 +1890,546 @@ Status Certificate::evaluate_checkpoint(
     result.peak_live_bytes =
         tracker.accounting().peak_live_bytes;
     result.kernel_milliseconds = milliseconds;
+    *census = result;
+    return Status::success;
+  } catch (const CudaFailure &) {
+    return Status::cuda_error;
+  } catch (const std::bad_alloc &) {
+    return Status::host_error;
+  } catch (...) {
+    return Status::host_error;
+  }
+}
+
+Status Certificate::evaluate_checkpoint_root_cell_refined(
+    MetalLevel level,
+    const antenna_connectivity::RectI64 *device_poly,
+    std::uint64_t poly_count,
+    const antenna_connectivity::RectI64 *device_active,
+    std::uint64_t active_count,
+    const antenna_connectivity::RectI64 *device_metal,
+    std::uint64_t metal_count,
+    const std::uint32_t *device_labels,
+    std::uint64_t label_count,
+    CheckpointCensus *census,
+    const FactorZeroDiodeDeviceView *factor_zero_diodes) const noexcept
+{
+  if (!m_impl || m_impl->config_status != Status::success) {
+    return m_impl ? m_impl->config_status : Status::host_error;
+  }
+  if (!m_impl->initialized) return Status::not_initialized;
+  if (!census || (poly_count && !device_poly) ||
+      (active_count && !device_active)) {
+    return Status::malformed_input;
+  }
+
+  CheckpointCensus preliminary;
+  const Status preliminary_status = evaluate_checkpoint(
+      level, device_metal, metal_count, device_labels, label_count,
+      &preliminary, factor_zero_diodes);
+  if (preliminary_status != Status::success) {
+    return preliminary_status;
+  }
+  preliminary.preliminary_uncertain_roots =
+      preliminary.uncertain_roots;
+  if (!preliminary.uncertain_roots) {
+    *census = preliminary;
+    return Status::success;
+  }
+
+  const Limits &limits = m_impl->config.limits;
+  if (poly_count > limits.max_poly_tiles ||
+      active_count > limits.max_active_tiles ||
+      active_count > UINT32_MAX) {
+    return Status::capacity_exceeded;
+  }
+
+  try {
+    cuda_require(
+        cudaSetDevice(m_impl->config.device),
+        "antenna root-cell refinement cudaSetDevice");
+    MemoryTracker tracker(
+        m_impl->config, m_impl->persistent_bytes);
+    DeviceBuffer<std::uint32_t> root_gate_present;
+    DeviceBuffer<unsigned long long> root_gate_lower;
+    DeviceBuffer<unsigned long long> root_metal_upper;
+    DeviceBuffer<std::uint32_t> root_diode_exempt_bits;
+    DeviceBuffer<DeviceCheckpointScalars> device_checkpoint_scalars;
+    DeviceBuffer<DeviceGateScalars> device_gate_scalars;
+    DeviceBuffer<DeviceRefinementScalars> device_refinement_scalars;
+    DeviceBuffer<DeviceBounds> device_bounds;
+    const std::uint64_t root_diode_word_count =
+        factor_zero_diodes && factor_zero_diodes->count
+            ? (label_count + 31) / 32
+            : 0;
+    if (!root_gate_present.allocate(label_count, &tracker) ||
+        !root_gate_lower.allocate(label_count, &tracker) ||
+        !root_metal_upper.allocate(label_count, &tracker) ||
+        !root_diode_exempt_bits.allocate(
+            root_diode_word_count, &tracker) ||
+        !device_checkpoint_scalars.allocate(1, &tracker) ||
+        !device_gate_scalars.allocate(1, &tracker) ||
+        !device_refinement_scalars.allocate(1, &tracker) ||
+        !device_bounds.allocate(1, &tracker)) {
+      return Status::capacity_exceeded;
+    }
+    cuda_require(
+        cudaMemset(
+            root_gate_present.get(), 0,
+            root_gate_present.bytes()),
+        "clear refined root gate presence");
+    cuda_require(
+        cudaMemset(
+            root_gate_lower.get(), 0,
+            root_gate_lower.bytes()),
+        "clear refined root gate lower bounds");
+    cuda_require(
+        cudaMemset(
+            root_metal_upper.get(), 0,
+            root_metal_upper.bytes()),
+        "clear refined root metal upper bounds");
+    if (root_diode_word_count) {
+      cuda_require(
+          cudaMemset(
+              root_diode_exempt_bits.get(), 0,
+              root_diode_exempt_bits.bytes()),
+          "clear refined root factor-zero diode exemptions");
+    }
+    cuda_require(
+        cudaMemset(
+            device_checkpoint_scalars.get(), 0,
+            device_checkpoint_scalars.bytes()),
+        "clear refined checkpoint scalars");
+    cuda_require(
+        cudaMemset(
+            device_gate_scalars.get(), 0,
+            device_gate_scalars.bytes()),
+        "clear refinement grid scalars");
+    cuda_require(
+        cudaMemset(
+            device_refinement_scalars.get(), 0,
+            device_refinement_scalars.bytes()),
+        "clear root-cell refinement scalars");
+    const DeviceBounds initial_bounds;
+    cuda_require(
+        cudaMemcpy(
+            device_bounds.get(), &initial_bounds,
+            sizeof(initial_bounds), cudaMemcpyHostToDevice),
+        "initialize refinement scene bounds");
+
+    EventPair events;
+    events.start();
+    validate_labels_kernel<<<
+        launch_blocks(label_count), kThreads>>>(
+        device_labels, label_count,
+        &device_checkpoint_scalars.get()->status);
+    cuda_require(
+        cudaGetLastError(),
+        "validate refined checkpoint labels");
+    reduce_gate_annotations_kernel<<<
+        launch_blocks(m_impl->annotation_owner_count),
+        kThreads>>>(
+        m_impl->gate_present, m_impl->gate_lower,
+        m_impl->annotation_owner_count, device_labels,
+        label_count, root_gate_present.get(),
+        root_gate_lower.get(),
+        &device_checkpoint_scalars.get()->status);
+    cuda_require(
+        cudaGetLastError(),
+        "reduce refined gate annotations");
+    if (root_diode_word_count) {
+      mark_factor_zero_diode_roots_kernel<<<
+          launch_blocks(factor_zero_diodes->count), kThreads>>>(
+          factor_zero_diodes->contact_present,
+          factor_zero_diodes->owner_begin,
+          factor_zero_diodes->count, device_labels,
+          label_count, root_diode_exempt_bits.get(),
+          &device_checkpoint_scalars.get()->status);
+      cuda_require(
+          cudaGetLastError(),
+          "mark refined factor-zero diode roots");
+    }
+    if (metal_count) {
+      sum_metal_area_kernel<<<
+          launch_blocks(metal_count), kThreads>>>(
+          device_metal, metal_count, device_labels,
+          label_count, root_metal_upper.get(),
+          &device_checkpoint_scalars.get()->status);
+      cuda_require(
+          cudaGetLastError(),
+          "sum refined target-metal area");
+    }
+    DeviceCheckpointScalars host_checkpoint_scalars;
+    cuda_require(
+        cudaMemcpy(
+            &host_checkpoint_scalars,
+            device_checkpoint_scalars.get(),
+            sizeof(host_checkpoint_scalars),
+            cudaMemcpyDeviceToHost),
+        "refined checkpoint validation D2H");
+    Status device_status =
+        map_device_status(host_checkpoint_scalars.status);
+    if (device_status != Status::success) return device_status;
+
+    if (poly_count) {
+      collect_bounds_kernel<<<
+          launch_blocks(poly_count), kThreads>>>(
+          device_poly, poly_count, label_count,
+          device_bounds.get(),
+          &device_gate_scalars.get()->status);
+      cuda_require(
+          cudaGetLastError(),
+          "validate and bound refined POLY rectangles");
+    }
+    if (active_count) {
+      collect_bounds_kernel<<<
+          launch_blocks(active_count), kThreads>>>(
+          device_active, active_count, label_count,
+          device_bounds.get(),
+          &device_gate_scalars.get()->status);
+      cuda_require(
+          cudaGetLastError(),
+          "validate and bound refined ACTIVE rectangles");
+    }
+    DeviceGateScalars host_gate_scalars;
+    cuda_require(
+        cudaMemcpy(
+            &host_gate_scalars, device_gate_scalars.get(),
+            sizeof(host_gate_scalars), cudaMemcpyDeviceToHost),
+        "refinement geometry validation D2H");
+    device_status = map_device_status(host_gate_scalars.status);
+    if (device_status != Status::success) return device_status;
+
+    if (!poly_count || !active_count) {
+      const float milliseconds = events.stop();
+      preliminary.kernel_milliseconds += milliseconds;
+      preliminary.peak_temporary_bytes =
+          std::max(
+              preliminary.peak_temporary_bytes,
+              tracker.accounting().peak_temporary_bytes);
+      preliminary.peak_live_bytes =
+          std::max(
+              preliminary.peak_live_bytes,
+              tracker.accounting().peak_live_bytes);
+      *census = preliminary;
+      return Status::success;
+    }
+
+    DeviceBounds host_bounds;
+    cuda_require(
+        cudaMemcpy(
+            &host_bounds, device_bounds.get(),
+            sizeof(host_bounds), cudaMemcpyDeviceToHost),
+        "refinement scene bounds D2H");
+    device_bounds.reset();
+    const std::int64_t minimum_x =
+        decode_ordered_signed(host_bounds.minimum_x);
+    const std::int64_t minimum_y =
+        decode_ordered_signed(host_bounds.minimum_y);
+    const std::int64_t maximum_x =
+        decode_ordered_signed(host_bounds.maximum_x);
+    const std::int64_t maximum_y =
+        decode_ordered_signed(host_bounds.maximum_y);
+    const std::int64_t base_x = floor_div_host(
+        minimum_x, m_impl->config.grid_cell_size);
+    const std::int64_t base_y = floor_div_host(
+        minimum_y, m_impl->config.grid_cell_size);
+    const std::int64_t last_x = floor_div_host(
+        maximum_x, m_impl->config.grid_cell_size);
+    const std::int64_t last_y = floor_div_host(
+        maximum_y, m_impl->config.grid_cell_size);
+    const __int128 width =
+        static_cast<__int128>(last_x) - base_x + 1;
+    const __int128 height =
+        static_cast<__int128>(last_y) - base_y + 1;
+    const __int128 cells = width * height;
+    if (width <= 0 || height <= 0 ||
+        width > UINT32_MAX || height > UINT32_MAX ||
+        cells <= 0 || cells > INT_MAX ||
+        cells > limits.max_grid_cells) {
+      return Status::capacity_exceeded;
+    }
+    const std::uint64_t grid_cells =
+        static_cast<std::uint64_t>(cells);
+    const Grid grid = {
+        base_x, base_y, m_impl->config.grid_cell_size,
+        static_cast<std::uint32_t>(width),
+        static_cast<std::uint32_t>(height)};
+
+    DeviceBuffer<std::uint32_t> active_counts;
+    DeviceBuffer<std::uint32_t> active_offsets;
+    DeviceBuffer<std::uint32_t> active_cursors;
+    DeviceBuffer<std::uint32_t> active_members;
+    DeviceBuffer<std::uint8_t> scan_scratch;
+    if (!active_counts.allocate(grid_cells, &tracker) ||
+        !active_offsets.allocate(grid_cells, &tracker)) {
+      return Status::capacity_exceeded;
+    }
+    cuda_require(
+        cudaMemset(
+            active_counts.get(), 0, active_counts.bytes()),
+        "clear refinement ACTIVE grid counts");
+    count_active_memberships_grid_kernel<<<
+        launch_blocks(active_count), kThreads>>>(
+        device_active, active_count, label_count, grid,
+        limits.max_active_memberships,
+        device_gate_scalars.get());
+    cuda_require(
+        cudaGetLastError(),
+        "count refinement ACTIVE grid memberships");
+    count_grid_kernel<<<
+        launch_blocks(active_count), kThreads>>>(
+        device_active, active_count, label_count, grid,
+        limits.max_cell_members, active_counts.get(),
+        device_gate_scalars.get());
+    cuda_require(
+        cudaGetLastError(),
+        "construct refinement ACTIVE grid counts");
+    cuda_require(
+        cudaMemcpy(
+            &host_gate_scalars, device_gate_scalars.get(),
+            sizeof(host_gate_scalars), cudaMemcpyDeviceToHost),
+        "refinement ACTIVE grid scalar D2H");
+    device_status = map_device_status(host_gate_scalars.status);
+    if (device_status != Status::success) return device_status;
+
+    std::size_t scan_bytes = 0;
+    cuda_require(
+        cub::DeviceScan::ExclusiveSum(
+            nullptr, scan_bytes, active_counts.get(),
+            active_offsets.get(), static_cast<int>(grid_cells)),
+        "query refinement CUB scan scratch");
+    if (!scan_scratch.allocate(scan_bytes, &tracker)) {
+      return Status::capacity_exceeded;
+    }
+    cuda_require(
+        cub::DeviceScan::ExclusiveSum(
+            scan_scratch.get(), scan_bytes,
+            active_counts.get(), active_offsets.get(),
+            static_cast<int>(grid_cells)),
+        "scan refinement ACTIVE grid offsets");
+    scan_scratch.reset();
+
+    if (!active_cursors.allocate(grid_cells, &tracker) ||
+        !active_members.allocate(
+            host_gate_scalars.active_memberships, &tracker)) {
+      return Status::capacity_exceeded;
+    }
+    cuda_require(
+        cudaMemcpy(
+            active_cursors.get(), active_offsets.get(),
+            active_offsets.bytes(), cudaMemcpyDeviceToDevice),
+        "initialize refinement ACTIVE grid cursors");
+    fill_grid_kernel<<<
+        launch_blocks(active_count), kThreads>>>(
+        device_active, active_count, grid,
+        active_cursors.get(), active_members.get(),
+        &device_gate_scalars.get()->status);
+    cuda_require(
+        cudaGetLastError(),
+        "fill refinement ACTIVE grid");
+    cuda_require(
+        cudaMemcpy(
+            &host_gate_scalars, device_gate_scalars.get(),
+            sizeof(host_gate_scalars), cudaMemcpyDeviceToHost),
+        "refinement ACTIVE fill scalar D2H");
+    device_status = map_device_status(host_gate_scalars.status);
+    if (device_status != Status::success) return device_status;
+    active_cursors.reset();
+
+    count_root_cell_refinement_work_kernel<<<
+        launch_blocks(poly_count), kThreads>>>(
+        device_poly, poly_count, device_labels, label_count,
+        root_gate_present.get(), root_gate_lower.get(),
+        root_metal_upper.get(),
+        root_diode_word_count
+            ? root_diode_exempt_bits.get()
+            : nullptr,
+        grid, active_counts.get(),
+        limits.max_refinement_records,
+        limits.max_query_visits,
+        device_refinement_scalars.get());
+    cuda_require(
+        cudaGetLastError(),
+        "count root-cell refinement work");
+    DeviceRefinementScalars host_refinement_scalars;
+    cuda_require(
+        cudaMemcpy(
+            &host_refinement_scalars,
+            device_refinement_scalars.get(),
+            sizeof(host_refinement_scalars),
+            cudaMemcpyDeviceToHost),
+        "root-cell refinement count D2H");
+    device_status =
+        map_device_status(host_refinement_scalars.status);
+    if (device_status != Status::success) return device_status;
+    const std::uint64_t record_count =
+        host_refinement_scalars.records;
+    if (record_count > INT_MAX ||
+        record_count > limits.max_refinement_records) {
+      return Status::capacity_exceeded;
+    }
+
+    DeviceBuffer<unsigned long long> input_keys;
+    DeviceBuffer<unsigned long long> input_areas;
+    DeviceBuffer<unsigned long long> sorted_keys;
+    DeviceBuffer<unsigned long long> sorted_areas;
+    DeviceBuffer<std::uint8_t> sort_scratch;
+    if (record_count &&
+        (!input_keys.allocate(record_count, &tracker) ||
+         !input_areas.allocate(record_count, &tracker) ||
+         !sorted_keys.allocate(record_count, &tracker) ||
+         !sorted_areas.allocate(record_count, &tracker))) {
+      return Status::capacity_exceeded;
+    }
+
+    if (record_count) {
+      fill_root_cell_refinement_records_kernel<<<
+          launch_blocks(poly_count), kThreads>>>(
+          device_poly, poly_count, device_active,
+          device_labels, label_count, root_gate_present.get(),
+          root_gate_lower.get(), root_metal_upper.get(),
+          root_diode_word_count
+              ? root_diode_exempt_bits.get()
+              : nullptr,
+          grid,
+          active_counts.get(), active_offsets.get(),
+          active_members.get(), record_count, input_keys.get(),
+          input_areas.get(), device_refinement_scalars.get());
+      cuda_require(
+          cudaGetLastError(),
+          "fill root-cell refinement records");
+      cuda_require(
+          cudaMemcpy(
+              &host_refinement_scalars,
+              device_refinement_scalars.get(),
+              sizeof(host_refinement_scalars),
+              cudaMemcpyDeviceToHost),
+          "root-cell refinement fill D2H");
+      device_status =
+          map_device_status(host_refinement_scalars.status);
+      if (device_status != Status::success) return device_status;
+      if (host_refinement_scalars.filled_records !=
+          record_count) {
+        return Status::malformed_input;
+      }
+
+      std::size_t sort_bytes = 0;
+      cuda_require(
+          cub::DeviceRadixSort::SortPairs(
+              nullptr, sort_bytes, input_keys.get(),
+              sorted_keys.get(), input_areas.get(),
+              sorted_areas.get(), static_cast<int>(record_count)),
+          "query root-cell CUB sort scratch");
+      if (!sort_scratch.allocate(sort_bytes, &tracker)) {
+        return Status::capacity_exceeded;
+      }
+      cuda_require(
+          cub::DeviceRadixSort::SortPairs(
+              sort_scratch.get(), sort_bytes, input_keys.get(),
+              sorted_keys.get(), input_areas.get(),
+              sorted_areas.get(), static_cast<int>(record_count)),
+          "sort root-cell refinement records");
+      sort_scratch.reset();
+      input_keys.reset();
+      input_areas.reset();
+
+      reset_uncertain_root_gate_lower_kernel<<<
+          launch_blocks(label_count), kThreads>>>(
+          device_labels, label_count, root_gate_present.get(),
+          root_gate_lower.get(), root_metal_upper.get(),
+          root_diode_word_count
+              ? root_diode_exempt_bits.get()
+              : nullptr);
+      cuda_require(
+          cudaGetLastError(),
+          "reset uncertain root gate lower bounds");
+      accumulate_sorted_root_cell_areas_kernel<<<
+          launch_blocks(record_count), kThreads>>>(
+          sorted_keys.get(), sorted_areas.get(), record_count,
+          label_count, root_gate_lower.get(),
+          device_refinement_scalars.get());
+      cuda_require(
+          cudaGetLastError(),
+          "accumulate disjoint root-cell gate witnesses");
+    }
+
+    cuda_require(
+        cudaMemset(
+            device_checkpoint_scalars.get(), 0,
+            device_checkpoint_scalars.bytes()),
+        "clear final refined checkpoint scalars");
+    evaluate_roots_kernel<<<
+        launch_blocks(label_count), kThreads>>>(
+        device_labels, label_count, root_gate_present.get(),
+        root_gate_lower.get(), root_metal_upper.get(),
+        root_diode_word_count
+            ? root_diode_exempt_bits.get()
+            : nullptr,
+        device_checkpoint_scalars.get());
+    cuda_require(
+        cudaGetLastError(),
+        "evaluate root-cell refined antenna roots");
+    const float milliseconds = events.stop();
+
+    cuda_require(
+        cudaMemcpy(
+            &host_checkpoint_scalars,
+            device_checkpoint_scalars.get(),
+            sizeof(host_checkpoint_scalars),
+            cudaMemcpyDeviceToHost),
+        "root-cell refined checkpoint D2H");
+    cuda_require(
+        cudaMemcpy(
+            &host_refinement_scalars,
+            device_refinement_scalars.get(),
+            sizeof(host_refinement_scalars),
+            cudaMemcpyDeviceToHost),
+        "root-cell refined census D2H");
+    device_status =
+        map_device_status(
+            host_checkpoint_scalars.status |
+            host_refinement_scalars.status);
+    if (device_status != Status::success) return device_status;
+
+    CheckpointCensus result;
+    result.level = level;
+    result.clean_certificate =
+        host_checkpoint_scalars.uncertain_roots == 0;
+    result.labels = label_count;
+    result.metal_tiles = metal_count;
+    result.roots = host_checkpoint_scalars.roots;
+    result.roots_with_metal =
+        host_checkpoint_scalars.roots_with_metal;
+    result.roots_without_gate =
+        host_checkpoint_scalars.roots_without_gate;
+    result.gate_roots_without_metal =
+        host_checkpoint_scalars.gate_roots_without_metal;
+    result.diode_exempt_roots =
+        host_checkpoint_scalars.diode_exempt_roots;
+    result.ratio_certified_roots =
+        host_checkpoint_scalars.ratio_certified_roots;
+    result.uncertain_roots =
+        host_checkpoint_scalars.uncertain_roots;
+    result.preliminary_uncertain_roots =
+        preliminary.uncertain_roots;
+    result.refinement_records =
+        host_refinement_scalars.records;
+    result.refinement_candidate_visits =
+        host_refinement_scalars.candidate_visits;
+    result.refinement_root_cells =
+        host_refinement_scalars.root_cells;
+    result.persistent_bytes = m_impl->persistent_bytes;
+    result.peak_temporary_bytes =
+        std::max(
+            preliminary.peak_temporary_bytes,
+            tracker.accounting().peak_temporary_bytes);
+    result.peak_live_bytes =
+        std::max(
+            preliminary.peak_live_bytes,
+            tracker.accounting().peak_live_bytes);
+    result.kernel_milliseconds =
+        preliminary.kernel_milliseconds + milliseconds;
     *census = result;
     return Status::success;
   } catch (const CudaFailure &) {

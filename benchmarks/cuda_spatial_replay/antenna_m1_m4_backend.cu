@@ -1545,6 +1545,9 @@ cert::Config certificate_config(const Request &request)
   config.limits.max_active_memberships = std::min<std::uint64_t>(
       request.capacity.max_memberships, UINT32_MAX);
   config.limits.max_query_visits = request.capacity.max_rule_work;
+  config.limits.max_refinement_records =
+      std::min<std::uint64_t>(
+          request.capacity.max_memberships, INT_MAX);
   config.limits.max_cell_members =
       static_cast<std::uint32_t>(request.capacity.max_cell_members);
   return config;
@@ -1978,12 +1981,67 @@ void run_transaction(
             "evaluate resident antenna checkpoint");
         memory.observe_component_peak(checkpoint.peak_live_bytes);
         memory.observe();
+        if (!checkpoint.clean_certificate &&
+            checkpoint.uncertain_roots) {
+          /*
+           * The inexpensive certificate intentionally retains only one
+           * gate-intersection witness per owner.  Re-expand POLY and ACTIVE
+           * only for an actually uncertain checkpoint, then strengthen that
+           * lower bound by summing maxima across disjoint spatial cells.
+           * Arbitrary raw overlap within a cell remains max-reduced.
+           */
+          Expansion refined_poly = expander.expand(
+              identity.domains[0], 0, owner_bases[0], false);
+          Expansion refined_active = expander.expand(
+              identity.domains[1], 1, 0, true);
+          require_certificate(
+              certificate.set_external_live_device_bytes(
+                  memory.external_live_bytes(
+                      gate_census.persistent_bytes)),
+              "account external root-cell refinement residency");
+          cert::CheckpointCensus refined_checkpoint;
+          require_certificate(
+              certificate.evaluate_checkpoint_root_cell_refined(
+                  level,
+                  thrust::raw_pointer_cast(
+                      refined_poly.rectangles.data()),
+                  refined_poly.rectangles.size(),
+                  thrust::raw_pointer_cast(
+                      refined_active.rectangles.data()),
+                  refined_active.rectangles.size(),
+                  thrust::raw_pointer_cast(
+                      metal.rectangles.data()),
+                  metal.rectangles.size(), labels.labels,
+                  labels.count, &refined_checkpoint),
+              "refine antenna gate lower bound by root cell");
+          memory.observe_component_peak(
+              refined_checkpoint.peak_live_bytes);
+          memory.observe();
+          checkpoint = refined_checkpoint;
+        }
         if (!checkpoint.clean_certificate ||
             checkpoint.uncertain_roots) {
+          char message[256];
+          std::snprintf(
+              message, sizeof(message),
+              "antenna checkpoint uncertain: stage=%zu "
+              "preliminary=%llu remaining=%llu "
+              "gate_records=%llu root_cells=%llu certified=%llu",
+              index + 1,
+              static_cast<unsigned long long>(
+                  checkpoint.preliminary_uncertain_roots),
+              static_cast<unsigned long long>(
+                  checkpoint.uncertain_roots),
+              static_cast<unsigned long long>(
+                  checkpoint.refinement_records),
+              static_cast<unsigned long long>(
+                  checkpoint.refinement_root_cells),
+              static_cast<unsigned long long>(
+                  checkpoint.ratio_certified_roots));
           throw Decline(
               KLAYOUT_CUDA_SPATIAL_FALLBACK,
               KLAYOUT_CUDA_SPATIAL_FALLBACK_PAIR_WORK_CAPACITY,
-              "conservative antenna checkpoint is not certified clean");
+              message);
         }
         fill_stage_result(
             index, graph, checkpoint,

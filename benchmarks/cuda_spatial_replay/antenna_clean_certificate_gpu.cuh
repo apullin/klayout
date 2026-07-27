@@ -54,6 +54,8 @@ struct Limits
   std::uint64_t max_grid_cells = UINT64_C(100000000);
   std::uint64_t max_active_memberships = UINT32_MAX;
   std::uint64_t max_query_visits = UINT64_C(10000000000);
+  // Root-cell refinement uses an explicit CUB radix-sort item count.
+  std::uint64_t max_refinement_records = INT32_MAX;
   std::uint32_t max_cell_members = UINT32_MAX;
 };
 
@@ -123,12 +125,31 @@ struct CheckpointCensus
   std::uint64_t roots_with_metal = 0;
   std::uint64_t roots_without_gate = 0;
   std::uint64_t gate_roots_without_metal = 0;
+  std::uint64_t diode_exempt_roots = 0;
   std::uint64_t ratio_certified_roots = 0;
   std::uint64_t uncertain_roots = 0;
+  // The following fields are zero for the inexpensive first-pass
+  // certificate.  A root-cell refinement records both its preliminary
+  // uncertainty frontier and the bounded spatial work used to strengthen
+  // the gate-area lower bound.
+  std::uint64_t preliminary_uncertain_roots = 0;
+  std::uint64_t refinement_records = 0;
+  std::uint64_t refinement_candidate_visits = 0;
+  std::uint64_t refinement_root_cells = 0;
   std::uint64_t persistent_bytes = 0;
   std::uint64_t peak_temporary_bytes = 0;
   std::uint64_t peak_live_bytes = 0;
   float kernel_milliseconds = 0.0f;
+};
+
+struct FactorZeroDiodeDeviceView
+{
+  // One uint32 per contiguous CONTACT owner.  A nonzero entry proves that
+  // this CONTACT contains positive DIODE area.  Checkpoints map marked
+  // owners through current labels, exempt roots, and never join roots.
+  const std::uint32_t *contact_present = nullptr;
+  std::uint64_t owner_begin = 0;
+  std::uint64_t count = 0;
 };
 
 struct GateAnnotationDeviceView
@@ -198,7 +219,36 @@ public:
       std::uint64_t metal_count,
       const std::uint32_t *device_labels,
       std::uint64_t label_count,
-      CheckpointCensus *census) const noexcept;
+      CheckpointCensus *census,
+      const FactorZeroDiodeDeviceView *factor_zero_diodes =
+          nullptr) const noexcept;
+
+  /*
+   * Re-evaluates a checkpoint with a stronger but still one-sided GATE-area
+   * proof.  Only roots which fail the inexpensive first pass participate.
+   * For every such root and spatial cell, the implementation retains the
+   * maximum clipped positive POLY/ACTIVE intersection, then checked-sums
+   * those witnesses across disjoint cells.  Arbitrary duplicate or
+   * overlapping raw shapes therefore cannot inflate the lower bound.
+   *
+   * This operation is intended only after evaluate_checkpoint reports
+   * uncertainty.  All input arrays are non-owning device pointers.  Any
+   * malformed geometry, capacity limit, arithmetic overflow, or CUDA error
+   * leaves caller output unchanged and preserves fail-closed fallback.
+   */
+  Status evaluate_checkpoint_root_cell_refined(
+      MetalLevel level,
+      const antenna_connectivity::RectI64 *device_poly,
+      std::uint64_t poly_count,
+      const antenna_connectivity::RectI64 *device_active,
+      std::uint64_t active_count,
+      const antenna_connectivity::RectI64 *device_metal,
+      std::uint64_t metal_count,
+      const std::uint32_t *device_labels,
+      std::uint64_t label_count,
+      CheckpointCensus *census,
+      const FactorZeroDiodeDeviceView *factor_zero_diodes =
+          nullptr) const noexcept;
 
   Status device_gate_view(
       GateAnnotationDeviceView *view) const noexcept;
