@@ -215,8 +215,11 @@ Before production timing is booked:
   the high-memory remote watershed.
 - [x] Capture and hash the exact FreePDK45 independent-x2 production request;
   retain its canonical 18.7-MiB compressed replay artifact.
-- [x] Replace the production gate census's per-visit global atomic with an
-  exact block-reduced admission pass.
+- [x] Replace both production gate-census global counter hot spots—ACTIVE
+  memberships and POLY query visits—with exact block-reduced admission
+  passes.
+- [x] Retune the production certificate grid from 125 to 250 DBU using an
+  exact grid/membership/query/candidate sweep.
 - [x] Filter exact touching pairs before occurrence materialization and
   traverse each occupied cell cooperatively on the GPU.
 - [x] Implement memory-bounded logical metal stages as domain sub-appends,

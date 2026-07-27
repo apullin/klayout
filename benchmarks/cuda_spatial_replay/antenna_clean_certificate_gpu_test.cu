@@ -786,6 +786,80 @@ void test_query_visit_block_reduction_and_exact_cap()
       "block query-visit cap changed persistent annotations");
 }
 
+void test_active_membership_block_reduction_and_exact_cap()
+{
+  constexpr std::uint32_t active_count = 257;
+  const std::uint64_t owner_count =
+      static_cast<std::uint64_t>(active_count) + 1;
+  const std::vector<ac::RectI64> poly = {
+      rectangle(0, 0, 10, 10, 0)};
+  std::vector<ac::RectI64> active;
+  active.reserve(active_count);
+  for (std::uint32_t id = 0; id < active_count; ++id) {
+    active.push_back(rectangle(0, 0, 10, 10, id + 1));
+  }
+  DeviceArray<ac::RectI64> device_poly(poly);
+  DeviceArray<ac::RectI64> device_active(active);
+
+  acc::Config exact_config = base_config();
+  exact_config.limits.max_active_memberships = active_count;
+  acc::Certificate exact_certificate(exact_config);
+  acc::GateCensus exact;
+  require_status(
+      exact_certificate.build_gate_census(
+          device_poly.get(), device_poly.size(),
+          device_active.get(), device_active.size(),
+          owner_count, &exact),
+      acc::Status::success, "block ACTIVE-membership exact cap");
+  require(
+      exact.active_memberships == active_count,
+      "block ACTIVE-membership reduction changed exact counter");
+  require(
+      exact.candidate_visits == active_count &&
+          exact.positive_intersections == active_count &&
+          exact.gate_owners == 1,
+      "block ACTIVE-membership reduction changed grid predicates");
+
+  acc::Config limited_config = base_config();
+  limited_config.limits.max_active_memberships = active_count - 1;
+  acc::Certificate limited_certificate(limited_config);
+  acc::GateCensus baseline;
+  require_status(
+      limited_certificate.build_gate_census(
+          device_poly.get(), device_poly.size(),
+          device_active.get(), 1, owner_count, &baseline),
+      acc::Status::success, "block ACTIVE-membership cap baseline");
+  acc::GateAnnotationDeviceView before;
+  require_status(
+      limited_certificate.device_gate_view(&before),
+      acc::Status::success, "block ACTIVE-membership cap baseline view");
+
+  acc::GateCensus sentinel;
+  sentinel.annotation_owners = UINT64_C(0x12345678);
+  sentinel.active_memberships = UINT64_C(0x87654321);
+  const acc::GateCensus expected = sentinel;
+  require_status(
+      limited_certificate.build_gate_census(
+          device_poly.get(), device_poly.size(),
+          device_active.get(), device_active.size(),
+          owner_count, &sentinel),
+      acc::Status::capacity_exceeded,
+      "block ACTIVE-membership one-below cap");
+  require(
+      std::memcmp(&sentinel, &expected, sizeof(sentinel)) == 0,
+      "block ACTIVE-membership cap changed output");
+  acc::GateAnnotationDeviceView after;
+  require_status(
+      limited_certificate.device_gate_view(&after),
+      acc::Status::success, "block ACTIVE-membership post-cap view");
+  require(
+      after.epoch == before.epoch &&
+          after.gate_present == before.gate_present &&
+          after.max_single_intersection_area ==
+              before.max_single_intersection_area,
+      "block ACTIVE-membership cap changed persistent annotations");
+}
+
 void test_extreme_and_negative_grid_boundaries()
 {
   {
@@ -945,6 +1019,7 @@ int main()
     test_arithmetic_overflow_is_uncertain_failure();
     test_spatial_candidate_scaling();
     test_query_visit_block_reduction_and_exact_cap();
+    test_active_membership_block_reduction_and_exact_cap();
     test_extreme_and_negative_grid_boundaries();
     test_seeded_cpu_differential();
     std::cout << "antenna_clean_certificate_gpu_test: PASS\n";

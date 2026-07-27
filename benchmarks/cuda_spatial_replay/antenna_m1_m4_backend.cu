@@ -62,7 +62,7 @@ static_assert(sizeof(Edge) == 32, "edge ABI padding changed");
 constexpr std::uint32_t kThreads = 256;
 constexpr std::uint32_t kMaximumBlocks = 65535;
 constexpr std::uint32_t kConnectivityBinsPerMicron = 2;
-constexpr std::uint32_t kCertificateBinsPerMicron = 16;
+constexpr std::uint32_t kCertificateBinsPerMicron = 8;
 constexpr std::int64_t kCoordinateLimit = INT64_C(1000000000000);
 constexpr std::uint32_t kPhysicalLayers[12] = {
     9, 1, 4, 3, 10, 11, 12, 13, 14, 15, 16, 17};

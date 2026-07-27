@@ -286,13 +286,94 @@ __global__ void collect_bounds_kernel(
   }
 }
 
+__global__ void count_active_memberships_grid_kernel(
+    const ac::RectI64 *active, std::uint64_t active_count,
+    std::uint64_t owner_count, Grid grid,
+    unsigned long long max_memberships,
+    DeviceGateScalars *scalars)
+{
+  __shared__ unsigned long long thread_memberships[kThreads];
+  __shared__ unsigned int thread_status[kThreads];
+
+  const std::uint64_t first =
+      static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
+      threadIdx.x;
+  const std::uint64_t stride =
+      static_cast<std::uint64_t>(blockDim.x) * gridDim.x;
+  unsigned long long local_memberships = 0;
+  unsigned int local_status = 0;
+  for (std::uint64_t index = first; index < active_count;
+       index += stride) {
+    const ac::RectI64 rectangle = active[index];
+    if (!valid_rectangle(rectangle, owner_count)) {
+      local_status |= kMalformed;
+      continue;
+    }
+    std::int64_t x0 = 0;
+    std::int64_t y0 = 0;
+    std::int64_t x1 = 0;
+    std::int64_t y1 = 0;
+    if (!grid_span(rectangle, grid, &x0, &y0, &x1, &y1)) {
+      local_status |= kMalformed;
+      continue;
+    }
+    const unsigned long long columns =
+        static_cast<unsigned long long>(x1 - x0 + 1);
+    const unsigned long long rows =
+        static_cast<unsigned long long>(y1 - y0 + 1);
+    if (columns && rows > ULLONG_MAX / columns) {
+      local_status |= kOverflow;
+      continue;
+    }
+    const unsigned long long rectangle_memberships = columns * rows;
+    if (local_memberships > max_memberships ||
+        rectangle_memberships >
+            max_memberships - local_memberships) {
+      local_status |= kCapacity;
+      break;
+    }
+    local_memberships += rectangle_memberships;
+  }
+
+  thread_memberships[threadIdx.x] = local_memberships;
+  thread_status[threadIdx.x] = local_status;
+  __syncthreads();
+
+  if (threadIdx.x == 0) {
+    unsigned long long block_memberships = 0;
+    unsigned int block_status = 0;
+    for (std::uint32_t lane = 0; lane < blockDim.x; ++lane) {
+      block_status |= thread_status[lane];
+      const unsigned long long memberships =
+          thread_memberships[lane];
+      if (block_memberships > max_memberships ||
+          memberships >
+              max_memberships - block_memberships) {
+        block_status |= kCapacity;
+      } else {
+        block_memberships += memberships;
+      }
+    }
+    if (!(block_status & kCapacity) && block_memberships &&
+        !atomic_add_limited(
+            &scalars->active_memberships, block_memberships,
+            max_memberships)) {
+      block_status |= kCapacity;
+    }
+    if (block_status) atomicOr(&scalars->status, block_status);
+  }
+}
+
 __global__ void count_grid_kernel(
     const ac::RectI64 *active, std::uint64_t active_count,
     std::uint64_t owner_count, Grid grid,
     std::uint32_t max_cell_members,
-    unsigned long long max_memberships,
     std::uint32_t *counts, DeviceGateScalars *scalars)
 {
+  // The membership admission kernel is ordered before this launch.  Do not
+  // construct a partial cell index when the exact aggregate exceeds its cap.
+  if (scalars->status) return;
+
   const std::uint64_t first =
       static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
       threadIdx.x;
@@ -311,21 +392,6 @@ __global__ void count_grid_kernel(
     std::int64_t y1 = 0;
     if (!grid_span(rectangle, grid, &x0, &y0, &x1, &y1)) {
       atomicOr(&scalars->status, kMalformed);
-      continue;
-    }
-    const unsigned long long columns =
-        static_cast<unsigned long long>(x1 - x0 + 1);
-    const unsigned long long rows =
-        static_cast<unsigned long long>(y1 - y0 + 1);
-    if (columns && rows > ULLONG_MAX / columns) {
-      atomicOr(&scalars->status, kOverflow);
-      continue;
-    }
-    const unsigned long long local = columns * rows;
-    if (!atomic_add_limited(
-            &scalars->active_memberships, local,
-            max_memberships)) {
-      atomicOr(&scalars->status, kCapacity);
       continue;
     }
     for (std::int64_t y = y0; y <= y1; ++y) {
@@ -1114,14 +1180,21 @@ Status Certificate::build_gate_census(
           cudaMemset(
               active_counts.get(), 0, active_counts.bytes()),
           "clear ACTIVE grid counts");
+      count_active_memberships_grid_kernel<<<
+          launch_blocks(active_count), kThreads>>>(
+          device_active, active_count, annotation_owner_count,
+          grid, limits.max_active_memberships,
+          device_scalars.get());
+      cuda_require(
+          cudaGetLastError(),
+          "count ACTIVE grid memberships");
       count_grid_kernel<<<
           launch_blocks(active_count), kThreads>>>(
           device_active, active_count, annotation_owner_count,
           grid, limits.max_cell_members,
-          limits.max_active_memberships,
           active_counts.get(), device_scalars.get());
       cuda_require(
-          cudaGetLastError(), "count ACTIVE grid memberships");
+          cudaGetLastError(), "construct ACTIVE grid counts");
       cuda_require(
           cudaMemcpy(
               &host_scalars, device_scalars.get(),
