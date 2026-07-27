@@ -44,6 +44,9 @@ class BalancedFullGateStaticTest(unittest.TestCase):
         m1_base_mode_explicit: bool = False,
         m1_5_9_mode_explicit: bool = False,
     ) -> tuple[str, ...]:
+        delay_fused_metal = fuse_metal and (
+            m1_base_mode_explicit or m1_5_9_mode_explicit
+        )
         if m1_base_mode_explicit and m1_5_9_mode_explicit:
             owner_prefix = ()
             dynamic_suffix = (
@@ -64,6 +67,8 @@ class BalancedFullGateStaticTest(unittest.TestCase):
         else:
             owner_prefix = self.shell_array("owner_prefix")
             dynamic_suffix = ("m1_via_class", "antenna_feol")
+        if delay_fused_metal:
+            dynamic_suffix += self.shell_array("owner_metal_fused")
         return (
             owner_prefix
             + self.shell_array(
@@ -72,7 +77,9 @@ class BalancedFullGateStaticTest(unittest.TestCase):
                 else "owner_implant_joined"
             )
             + (
-                self.shell_array("owner_metal_fused")
+                ()
+                if delay_fused_metal
+                else self.shell_array("owner_metal_fused")
                 if fuse_metal
                 else self.shell_array(
                     "owner_upper_split"
@@ -191,6 +198,39 @@ class BalancedFullGateStaticTest(unittest.TestCase):
                     m1_base_mode_explicit=base_explicit,
                     m1_5_9_mode_explicit=m1_5_9_explicit,
                 )
+
+    def test_explicit_fused_metal_owner_is_delayed_behind_reserved_m1_wave(
+        self,
+    ) -> None:
+        exact_plan = (
+            "implant_contact",
+            "contact",
+            "m2_rules",
+            "m1_enclosure",
+            "active12",
+            "via1_upper_active12",
+            "grid",
+            "antenna_feol",
+            "m1_width_space",
+            "m1_via_class",
+            "antenna_m1_m4",
+        )
+        self._assert_owner_plan(
+            exact_plan,
+            split_lower=False,
+            split_upper=False,
+            fuse_metal=True,
+            split_implant_contact=True,
+            split_active12=True,
+            m1_base_mode_explicit=True,
+            m1_5_9_mode_explicit=True,
+        )
+        self.assertIn(
+            "if ((delay_fused_metal_owner)); then\n"
+            "  owner_suffix_post+=(antenna_m1_m4)\n"
+            "fi",
+            self.launcher_text,
+        )
 
     def test_fused_metal_owner_replaces_four_split_owners_exactly(
         self,
