@@ -38,6 +38,7 @@
 #include "dbCompoundOperation.h"
 #include "dbCudaActive3.h"
 #include "dbCudaAntennaM1.h"
+#include "dbCudaAntennaM4.h"
 #include "dbCudaAntennaM1Oracle.h"
 #include "dbCudaImplant12.h"
 #include "dbCudaImplant15.h"
@@ -1341,6 +1342,15 @@ static bool cuda_antenna_m1_connectivity_oracle_enabled ()
          std::strcmp (value, "off") != 0;
 }
 
+static bool cuda_antenna_m4_capture_census_enabled ()
+{
+  const char *value =
+    std::getenv ("KLAYOUT_CUDA_ANTENNA_M4_CAPTURE_CENSUS");
+  return value && *value && std::strcmp (value, "0") != 0 &&
+         std::strcmp (value, "false") != 0 &&
+         std::strcmp (value, "off") != 0;
+}
+
 static bool cuda_poly34_host_decline (const char *reason)
 {
   try {
@@ -1513,6 +1523,111 @@ static bool cuda_antenna_m1_capture_census (
         << " capture_and_oracle_ms=" << double (elapsed_ns) * 1.0e-6
         << " reason=" << (reason.empty () ? "unknown" : reason);
     }
+  } catch (...) {
+    //  Census telemetry must never alter the historical CPU antenna path.
+  }
+  return false;
+}
+
+static bool cuda_antenna_m4_capture_census (
+  const db::Region *poly, const db::Region *active,
+  const db::Region *nplus, const db::Region *nwell,
+  const db::Region *contact, const db::Region *metal1,
+  const db::Region *via1, const db::Region *metal2,
+  const db::Region *via2, const db::Region *metal3,
+  const db::Region *via3, const db::Region *metal4)
+{
+  //  Diagnostic only: even a complete census returns false, so it can never
+  //  bypass the historical antenna implementation.
+  if (! cuda_antenna_m4_capture_census_enabled ()) {
+    return false;
+  }
+
+  const std::chrono::steady_clock::time_point begin =
+    std::chrono::steady_clock::now ();
+  std::string reason;
+  try {
+    const db::Region *regions [db::CudaAntennaM4DomainCount] = {
+      poly, active, nplus, nwell, contact, metal1,
+      via1, metal2, via2, metal3, via3, metal4
+    };
+    const db::DeepRegion *deep [db::CudaAntennaM4DomainCount] = {
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    };
+    for (size_t domain = 0;
+         domain < db::CudaAntennaM4DomainCount; ++domain) {
+      if (! regions [domain]) {
+        reason = "one or more raw M1-through-M4 antenna regions are null";
+        break;
+      }
+      deep [domain] =
+        dynamic_cast<const db::DeepRegion *> (
+          regions [domain]->delegate ());
+      if (! deep [domain]) {
+        reason =
+          "one or more raw M1-through-M4 antenna regions are not deep";
+        break;
+      }
+    }
+
+    db::CudaAntennaM4Capture capture;
+    db::CudaAntennaM4CaptureLimits limits;
+    //  Expanded occurrence geometry is only counted, never allocated.
+    limits.max_total_expanded_geometry_bytes =
+      std::numeric_limits<uint64_t>::max ();
+    limits.max_estimated_peak_bytes =
+      std::numeric_limits<uint64_t>::max ();
+    if (reason.empty () &&
+        ! db::cuda_antenna_m4_build_capture (
+            deep [db::CudaAntennaM4Poly]->deep_layer (),
+            deep [db::CudaAntennaM4Active]->deep_layer (),
+            deep [db::CudaAntennaM4Nplus]->deep_layer (),
+            deep [db::CudaAntennaM4Nwell]->deep_layer (),
+            deep [db::CudaAntennaM4Contact]->deep_layer (),
+            deep [db::CudaAntennaM4Metal1]->deep_layer (),
+            deep [db::CudaAntennaM4Via1]->deep_layer (),
+            deep [db::CudaAntennaM4Metal2]->deep_layer (),
+            deep [db::CudaAntennaM4Via2]->deep_layer (),
+            deep [db::CudaAntennaM4Metal3]->deep_layer (),
+            deep [db::CudaAntennaM4Via3]->deep_layer (),
+            deep [db::CudaAntennaM4Metal4]->deep_layer (),
+            limits, capture, &reason)) {
+      //  The exact decline is reported below.
+    } else if (reason.empty ()) {
+      db::CudaAntennaM4Census census;
+      if (! db::cuda_antenna_m4_capture_census (
+            capture, census, &reason)) {
+        //  The exact decline is reported below.
+      } else {
+        const uint64_t elapsed_ns = cuda_m2_elapsed_ns (
+          begin, std::chrono::steady_clock::now ());
+        tl::info
+          << "CUDA antenna M1-M4 capture census:"
+          << " outcome=complete"
+          << " capture_and_census_ms=" << double (elapsed_ns) * 1.0e-6
+          << " " << db::cuda_antenna_m4_census_text (census);
+        return false;
+      }
+    }
+  } catch (const std::exception &ex) {
+    try {
+      reason = ex.what ();
+    } catch (...) {
+      reason = "exception while capturing raw M1-through-M4 antenna domains";
+    }
+  } catch (...) {
+    reason =
+      "unknown exception while capturing raw M1-through-M4 antenna domains";
+  }
+
+  try {
+    const uint64_t elapsed_ns = cuda_m2_elapsed_ns (
+      begin, std::chrono::steady_clock::now ());
+    tl::info
+      << "CUDA antenna M1-M4 capture census:"
+      << " outcome=declined"
+      << " capture_and_census_ms=" << double (elapsed_ns) * 1.0e-6
+      << " reason=" << (reason.empty () ? "unknown" : reason);
   } catch (...) {
     //  Census telemetry must never alter the historical CPU antenna path.
   }
@@ -5206,6 +5321,25 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "every touched root but deliberately does not union roots through diode. "
     "It always returns false and is not an antenna-rule "
     "certificate; the complete historical CPU path remains mandatory.\n"
+  ) +
+  method_ext (
+    "cuda_antenna_m4_capture_census?",
+    &cuda_antenna_m4_capture_census,
+    gsi::arg ("active"), gsi::arg ("nplus"),
+    gsi::arg ("nwell"), gsi::arg ("contact"),
+    gsi::arg ("metal1"), gsi::arg ("via1"),
+    gsi::arg ("metal2"), gsi::arg ("via2"),
+    gsi::arg ("metal3"), gsi::arg ("via3"),
+    gsi::arg ("metal4"),
+    "@brief Captures the raw M1-through-M4 antenna prefix for telemetry\n"
+    "\n"
+    "This internal diagnostic is disabled unless "
+    "KLAYOUT_CUDA_ANTENNA_M4_CAPTURE_CENSUS is set. It atomically captures "
+    "the twelve exact FreePDK45 POLY/ACTIVE/NPLUS/NWELL/CONTACT/M1/VIA1/"
+    "M2/VIA2/M3/VIA3/M4 physical layers with one shared hierarchy, "
+    "validates all digests and capacities, and emits a stable host census. "
+    "It always returns false and is not an antenna-rule certificate; the "
+    "complete historical CPU path remains mandatory.\n"
   ) +
   method_ext (
     "cuda_m2_flat_union", &cuda_m2_flat_union,

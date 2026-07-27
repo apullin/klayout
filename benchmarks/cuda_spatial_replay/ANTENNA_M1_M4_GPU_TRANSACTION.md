@@ -47,6 +47,15 @@ stream, one parent stream, per-domain source-cell geometry ranges, exact
 orthogonal transforms, and independently bound domain/capture digests.
 Naively flattening the input on the host is not admissible.
 
+The production hierarchy census validates that choice.  One compact capture
+completed in 20.765 seconds and occupied 227,270,196 stored bytes, while a
+naive twelve-domain expansion would contain 141,611,088 polygons,
+566,471,360 edges, and 25,490,860,096 geometry bytes.  The shared hierarchy
+contains 273 source cells and 849,265 occurrence contexts.  In particular,
+the M1 graph has about 67.65 million polygon owners and VIA1/M2 adds another
+43.12 million, so the device implementation must stream stage frontiers
+rather than retain every expanded domain at once.
+
 ## Staged connectivity
 
 Closed-set polygon touch or overlap is electrical connectivity.  Every
@@ -153,7 +162,7 @@ Before production timing is booked:
   fail-closed result contract.
 - [x] Add the exact `antenna_m1_m4` CPU owner and balanced-launch scheduling
   mode without changing the default deck.
-- [ ] Complete and test the compact shared-hierarchy twelve-domain capture.
+- [x] Complete and test the compact shared-hierarchy twelve-domain capture.
 - [ ] Complete the reusable staged CUDA connectivity/DSU core and randomized
   CPU differential.
 - [ ] Extend the reference oracle through M4, including stage-local area and

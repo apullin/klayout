@@ -3660,6 +3660,30 @@ CODE
       self.data.respond_to?(:is_deep?) && self.data.is_deep?
     end
 
+    # Internal, default-off host census for the complete raw FreePDK45
+    # M1-through-M4 antenna prefix.  The receiver is POLY and every operand
+    # must remain a polygon layer.  The low-level hook emits diagnostics only;
+    # this wrapper deliberately returns false so it can never certify or
+    # bypass a historical antenna rule.
+    def cuda_antenna_m4_capture_census?(
+        active, nplus, nwell, contact, metal1, via1,
+        metal2, via2, metal3, via3, metal4)
+      @engine._context("cuda_antenna_m4_capture_census?") do
+        operands = [
+          active, nplus, nwell, contact, metal1, via1,
+          metal2, via2, metal3, via3, metal4
+        ]
+        operands.each { |operand| check_is_layer(operand) }
+        requires_region
+        operands.each { |operand| operand.requires_region }
+        self.data.cuda_antenna_m4_capture_census?(
+          active.data, nplus.data, nwell.data, contact.data,
+          metal1.data, via1.data, metal2.data, via2.data,
+          metal3.data, via3.data, metal4.data)
+        false
+      end
+    end
+
     # Internal, fail-closed acceleration hook for a qualified physical
     # FreePDK45 M2/VIA2 pair.  The receiver is pristine deep M2.  C++ checks
     # complete backend capability before hierarchy access, constructs a true
