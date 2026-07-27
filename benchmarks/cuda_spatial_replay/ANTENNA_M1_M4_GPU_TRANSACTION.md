@@ -200,6 +200,8 @@ Before production timing is booked:
 - [x] Complete and test the compact shared-hierarchy twelve-domain capture.
 - [x] Complete the reusable staged CUDA connectivity/DSU core and randomized
   CPU differential.
+- [x] Complete the conservative device-resident gate/metal clean certificate,
+  bounded spatial census, and randomized CPU differential.
 - [ ] Extend the reference oracle through M4, including stage-local area and
   diode annotations.
 - [ ] Add the production ABI, loader, exact result validation, and GSI method.
