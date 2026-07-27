@@ -243,6 +243,28 @@ std::uint64_t elapsed_ns(Clock::time_point begin, Clock::time_point end)
   return value > 0 ? static_cast<std::uint64_t>(value) : 1;
 }
 
+class OptionalCpuPhaseClock
+{
+public:
+  explicit OptionalCpuPhaseClock(bool enabled) : m_enabled(enabled)
+  {
+    if (m_enabled) m_begin = Clock::now();
+  }
+
+  std::uint64_t split()
+  {
+    if (!m_enabled) return 0;
+    const Clock::time_point end = Clock::now();
+    const std::uint64_t duration = elapsed_ns(m_begin, end);
+    m_begin = end;
+    return duration;
+  }
+
+private:
+  bool m_enabled = false;
+  Clock::time_point m_begin{};
+};
+
 std::uint32_t launch_blocks(std::uint64_t count)
 {
   if (!count) return 0;
@@ -389,6 +411,108 @@ struct Identity
   std::uint64_t total_expanded_bytes = 0;
   std::uint64_t estimated_peak_bytes = 0;
 };
+
+struct DomainSetupTiming
+{
+  std::uint64_t header_ns = 0;
+  std::uint64_t templates_ns = 0;
+  std::uint64_t contexts_ns = 0;
+  std::uint64_t accounting_ns = 0;
+  std::uint64_t scene_digest_ns = 0;
+};
+
+struct SetupTiming
+{
+  bool enabled = false;
+  bool populate = false;
+  std::uint64_t total_ns = 0;
+  std::uint64_t telemetry_init_ns = 0;
+  std::uint64_t request_header_ns = 0;
+  std::uint64_t hierarchy_validate_ns = 0;
+  std::uint64_t hierarchy_digest_ns = 0;
+  std::array<std::uint64_t, 12> domain_total_ns{};
+  std::array<DomainSetupTiming, 12> domains{};
+  std::uint64_t aggregate_capacity_ns = 0;
+  std::uint64_t lower_capture_digest_ns = 0;
+  std::uint64_t full_capture_digest_ns = 0;
+  std::uint64_t census_ns = 0;
+};
+
+bool setup_timing_enabled()
+{
+  const char *value =
+      std::getenv("KLAYOUT_CUDA_ANTENNA_SETUP_TIMING");
+  return value && *value &&
+         !(value[0] == '0' && value[1] == '\0');
+}
+
+double nanoseconds_to_milliseconds(std::uint64_t nanoseconds)
+{
+  return static_cast<double>(nanoseconds) / 1000000.0;
+}
+
+void report_setup_timing(const SetupTiming &timing)
+{
+  if (!timing.enabled) return;
+  std::uint64_t domains_ns = 0;
+  for (const std::uint64_t duration : timing.domain_total_ns) {
+    domains_ns += duration;
+  }
+  const std::uint64_t attributed_ns =
+      timing.telemetry_init_ns + timing.request_header_ns +
+      timing.hierarchy_validate_ns + timing.hierarchy_digest_ns +
+      domains_ns + timing.aggregate_capacity_ns +
+      timing.lower_capture_digest_ns +
+      timing.full_capture_digest_ns + timing.census_ns;
+  const std::uint64_t unattributed_ns =
+      timing.total_ns > attributed_ns
+          ? timing.total_ns - attributed_ns
+          : 0;
+  std::fprintf(
+      stderr,
+      "KLAYOUT_CUDA_ANTENNA_SETUP populate=%u total_ms=%.3f "
+      "telemetry_init_ms=%.3f request_header_ms=%.3f "
+      "hierarchy_validate_ms=%.3f hierarchy_digest_ms=%.3f "
+      "domains_ms=%.3f aggregate_capacity_ms=%.3f "
+      "lower_capture_digest_ms=%.3f full_capture_digest_ms=%.3f "
+      "census_ms=%.3f unattributed_ms=%.3f\n",
+      timing.populate ? 1u : 0u,
+      nanoseconds_to_milliseconds(timing.total_ns),
+      nanoseconds_to_milliseconds(timing.telemetry_init_ns),
+      nanoseconds_to_milliseconds(timing.request_header_ns),
+      nanoseconds_to_milliseconds(timing.hierarchy_validate_ns),
+      nanoseconds_to_milliseconds(timing.hierarchy_digest_ns),
+      nanoseconds_to_milliseconds(domains_ns),
+      nanoseconds_to_milliseconds(timing.aggregate_capacity_ns),
+      nanoseconds_to_milliseconds(timing.lower_capture_digest_ns),
+      nanoseconds_to_milliseconds(timing.full_capture_digest_ns),
+      nanoseconds_to_milliseconds(timing.census_ns),
+      nanoseconds_to_milliseconds(unattributed_ns));
+  for (std::size_t role = 0; role < timing.domains.size(); ++role) {
+    const DomainSetupTiming &domain = timing.domains[role];
+    const std::uint64_t internal_ns =
+        domain.header_ns + domain.templates_ns +
+        domain.contexts_ns + domain.accounting_ns +
+        domain.scene_digest_ns;
+    const std::uint64_t finalize_ns =
+        timing.domain_total_ns[role] > internal_ns
+            ? timing.domain_total_ns[role] - internal_ns
+            : 0;
+    std::fprintf(
+        stderr,
+        "KLAYOUT_CUDA_ANTENNA_SETUP_DOMAIN role=%zu total_ms=%.3f "
+        "header_ms=%.3f templates_ms=%.3f contexts_ms=%.3f "
+        "accounting_ms=%.3f scene_digest_ms=%.3f finalize_ms=%.3f\n",
+        role, nanoseconds_to_milliseconds(
+                  timing.domain_total_ns[role]),
+        nanoseconds_to_milliseconds(domain.header_ns),
+        nanoseconds_to_milliseconds(domain.templates_ns),
+        nanoseconds_to_milliseconds(domain.contexts_ns),
+        nanoseconds_to_milliseconds(domain.accounting_ns),
+        nanoseconds_to_milliseconds(domain.scene_digest_ns),
+        nanoseconds_to_milliseconds(finalize_ns));
+  }
+}
 
 bool rectangle_contains(
     const RectangleTemplate &outer,
@@ -809,8 +933,10 @@ void require_request_header(const Request &request)
 
 DomainSummary lower_domain(
     const Request &request, std::size_t role,
-    const std::vector<Context> &contexts)
+    const std::vector<Context> &contexts,
+    DomainSetupTiming *timing)
 {
+  OptionalCpuPhaseClock phases(timing != nullptr);
   const auto &domain = request.domains[role];
   if (domain.struct_size != sizeof(domain) || domain.role != role ||
       domain.physical_layer != kPhysicalLayers[role] ||
@@ -831,6 +957,7 @@ DomainSummary lower_domain(
       domain.edge_record_bytes != sizeof(Edge)) {
     malformed("compact physical-domain header is not qualified");
   }
+  if (timing) timing->header_ns = phases.split();
 
   DomainSummary summary;
   summary.cells.resize(static_cast<std::size_t>(domain.cell_count));
@@ -942,6 +1069,7 @@ DomainSummary lower_domain(
       next_edge != domain.edge_count) {
     malformed("compact geometry arrays are not fully covered");
   }
+  if (timing) timing->templates_ns = phases.split();
 
   summary.context_rectangle_offsets.reserve(contexts.size() + 1);
   summary.context_owner_offsets.reserve(contexts.size() + 1);
@@ -976,12 +1104,15 @@ DomainSummary lower_domain(
       summary.flat_rectangles > request.capacity.max_rectangles) {
     capacity("flattened domain census is empty or over capacity");
   }
+  if (timing) timing->contexts_ns = phases.split();
   summary.stored_bytes = domain_stored_bytes(domain);
   summary.legacy_stored_bytes = legacy_domain_stored_bytes(
       request, domain, summary.nonempty_contexts);
   summary.expanded_bytes = expanded_geometry_bytes(
       summary.flat_polygons, summary.flat_edges);
+  if (timing) timing->accounting_ns = phases.split();
   summary.scene_digest = domain_scene_digest(request, role, summary);
+  if (timing) timing->scene_digest_ns = phases.split();
   return summary;
 }
 
@@ -1131,9 +1262,24 @@ std::uint64_t shared_lower_stored_bytes(const Request &request)
 
 Identity derive_identity(Request &request, bool populate)
 {
+  const Clock::time_point setup_begin = Clock::now();
+  SetupTiming timing;
+  timing.enabled = setup_timing_enabled();
+  timing.populate = populate;
+  if (timing.enabled) {
+    timing.telemetry_init_ns =
+        elapsed_ns(setup_begin, Clock::now());
+  }
+  OptionalCpuPhaseClock phases(timing.enabled);
   require_request_header(request);
+  if (timing.enabled) {
+    timing.request_header_ns = phases.split();
+  }
   const std::vector<Context> contexts =
       validate_hierarchy(request, false);
+  if (timing.enabled) {
+    timing.hierarchy_validate_ns = phases.split();
+  }
   const auto derived_hierarchy_digest = hierarchy_digest(request);
   if (populate) {
     std::memcpy(
@@ -1144,6 +1290,9 @@ Identity derive_identity(Request &request, bool populate)
                  derived_hierarchy_digest.data(),
                  derived_hierarchy_digest.size()) != 0) {
     malformed("shared hierarchy digest is inconsistent");
+  }
+  if (timing.enabled) {
+    timing.hierarchy_digest_ns = phases.split();
   }
 
   Identity identity;
@@ -1156,7 +1305,9 @@ Identity derive_identity(Request &request, bool populate)
     if (!source_layers.insert(domain.source_layer_index).second) {
       malformed("source-layer identity is duplicated");
     }
-    identity.domains[role] = lower_domain(request, role, contexts);
+    identity.domains[role] = lower_domain(
+        request, role, contexts,
+        timing.enabled ? &timing.domains[role] : nullptr);
     const DomainSummary &summary = identity.domains[role];
     if (populate) {
       domain.nonempty_context_count = summary.nonempty_contexts;
@@ -1215,6 +1366,9 @@ Identity derive_identity(Request &request, bool populate)
     identity.total_stored_bytes = add_or_malformed(
         identity.total_stored_bytes, summary.stored_bytes,
         "stored byte census");
+    if (timing.enabled) {
+      timing.domain_total_ns[role] = phases.split();
+    }
   }
   identity.estimated_peak_bytes = add_or_malformed(
       identity.total_stored_bytes, identity.total_expanded_bytes,
@@ -1229,6 +1383,9 @@ Identity derive_identity(Request &request, bool populate)
           request.capacity.max_estimated_peak_bytes) {
     capacity("derived transaction census exceeds capacity");
   }
+  if (timing.enabled) {
+    timing.aggregate_capacity_ns = phases.split();
+  }
 
   identity.lower_capture_digest =
       lower_capture_digest(request, identity);
@@ -1241,6 +1398,9 @@ Identity derive_identity(Request &request, bool populate)
                  identity.lower_capture_digest.data(), 32) != 0) {
     malformed("embedded M1 capture digest is inconsistent");
   }
+  if (timing.enabled) {
+    timing.lower_capture_digest_ns = phases.split();
+  }
   identity.capture_digest = full_capture_digest(request, identity);
   if (populate) {
     std::memcpy(
@@ -1249,6 +1409,9 @@ Identity derive_identity(Request &request, bool populate)
                  request.capture_digest,
                  identity.capture_digest.data(), 32) != 0) {
     malformed("M1-through-M4 capture digest is inconsistent");
+  }
+  if (timing.enabled) {
+    timing.full_capture_digest_ns = phases.split();
   }
 
   auto &census = request.census;
@@ -1289,6 +1452,11 @@ Identity derive_identity(Request &request, bool populate)
           identity.total_expanded_bytes ||
       census.estimated_peak_bytes != identity.estimated_peak_bytes) {
     malformed("aggregate transaction census is inconsistent");
+  }
+  if (timing.enabled) {
+    timing.census_ns = phases.split();
+    timing.total_ns = elapsed_ns(setup_begin, Clock::now());
+    report_setup_timing(timing);
   }
   return identity;
 }
