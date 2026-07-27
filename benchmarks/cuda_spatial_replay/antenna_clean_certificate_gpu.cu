@@ -332,16 +332,15 @@ __device__ bool atomic_add_checked(
     unsigned long long *destination,
     unsigned long long value)
 {
-  unsigned long long observed =
-      atomicCAS(destination, 0ull, 0ull);
-  while (true) {
-    if (observed > ULLONG_MAX - value) return false;
-    const unsigned long long desired = observed + value;
-    const unsigned long long prior =
-        atomicCAS(destination, observed, desired);
-    if (prior == observed) return true;
-    observed = prior;
-  }
+  /*
+   * atomicAdd returns the exact value immediately preceding this serialized
+   * addition.  That is sufficient to detect unsigned wrap without a
+   * retrying CAS loop.  On overflow the scratch sum may wrap, but the caller
+   * records an arithmetic failure and never commits or reports that sum.
+   */
+  const unsigned long long prior =
+      atomicAdd(destination, value);
+  return prior <= ULLONG_MAX - value;
 }
 
 __device__ bool atomic_add_limited(
