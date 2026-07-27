@@ -230,6 +230,10 @@ public:
    * maximum clipped positive POLY/ACTIVE intersection, then checked-sums
    * those witnesses across disjoint cells.  Arbitrary duplicate or
    * overlapping raw shapes therefore cannot inflate the lower bound.
+   * device_poly/device_active must describe the same logical scene and use
+   * the same POLY owner numbering supplied to build_gate_census; this
+   * provenance is a caller-side precondition and cannot be inferred from raw
+   * device pointers.
    *
    * This operation is intended only after evaluate_checkpoint reports
    * uncertainty.  All input arrays are non-owning device pointers.  Any

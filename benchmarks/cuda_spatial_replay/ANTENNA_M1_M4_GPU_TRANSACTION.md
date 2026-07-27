@@ -232,6 +232,19 @@ Before production timing is booked:
 - [x] Stream exact owner connectivity with root-only CAS unions and compact
   same-owner/multi-rectangle exception streams, eliminating the
   rectangle-cardinality tile and owner fan-out arrays.
+- [x] Compose exact factor-zero DIODE witnesses with a disjoint root-cell
+  GATE lower-bound refinement.  On the independent-x2 production replay this
+  closes the M1 frontier from 1,566 uncertain roots to zero; the first exact
+  integrated replay reached M2.
+- [ ] Prune staged exact connectivity work before enumeration: never rescan
+  old-old rectangle pairs, and generate only new/new or new/allowed-neighbor
+  pairs within each cell.  The first M2-reaching replay exposed 103.5 seconds
+  in the VIA1 append and 209.1 seconds in the M2 append from rejecting these
+  impossible pairs after enumeration.
+- [ ] Compact the retained rectangle allocation after the M2 append.  Only
+  22,946,444 M2 rectangles remain, while the reserved 84,223,436-rectangle
+  frontier strands about 2.28 GiB and prevents the M2 certificate from
+  entering under the 9-GiB transaction cap.
 - [ ] Demonstrate an accounted peak within the 10,240-MiB qualification card,
   including caller staging and temporary sort/reduction storage.
 - [ ] Run matched repeated full-launch control/candidate trials and book only

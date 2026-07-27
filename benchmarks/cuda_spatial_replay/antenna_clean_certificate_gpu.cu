@@ -2313,6 +2313,14 @@ Status Certificate::evaluate_checkpoint_root_cell_refined(
           record_count) {
         return Status::malformed_input;
       }
+      /*
+       * Record keys/areas now contain every grid-dependent witness.  Release
+       * the ACTIVE grid before CUB allocates radix-sort scratch so the two
+       * frontiers never overlap.
+       */
+      active_members.reset();
+      active_offsets.reset();
+      active_counts.reset();
 
       std::size_t sort_bytes = 0;
       cuda_require(
