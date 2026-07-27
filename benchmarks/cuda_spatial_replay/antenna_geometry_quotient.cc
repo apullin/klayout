@@ -151,6 +151,7 @@ Status build(
     result.census.input_rectangles = rectangle_count;
     result.census.owners = config.owner_count;
     result.parent_seeds.resize(config.owner_count);
+    result.owner_multiplicities.assign(config.owner_count, 1);
     std::vector<std::uint32_t> owner_rectangles(
         config.owner_count, 0);
     std::vector<std::uint32_t> owner_domains(
@@ -266,7 +267,12 @@ Status build(
         result.class_members.push_back(owner);
         result.parent_seeds[owner - config.owner_begin] =
             representative;
+        result.owner_multiplicities[
+            owner - config.owner_begin] = 0;
       }
+      result.owner_multiplicities[
+          representative - config.owner_begin] =
+          geometry_class.multiplicity;
       if (multiplicity > 1) {
         std::uint64_t star_total = 0;
         if (!add_checked(

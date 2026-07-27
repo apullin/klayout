@@ -101,6 +101,15 @@ struct Result
    * directly to their representative; exception owners point to themselves.
    */
   std::vector<std::uint32_t> parent_seeds;
+  /*
+   * Exact owner-pair weight carried by a spatial edge whose endpoint is this
+   * owner.  A class representative carries the class multiplicity, collapsed
+   * members carry zero (they never enter the spatial stream), and every
+   * exception owner carries one.  This makes a representative-representative
+   * edge weigh n*m and an exception-representative edge weigh m without
+   * materializing the original owner-pair universe.
+   */
+  std::vector<std::uint32_t> owner_multiplicities;
   Census census;
 };
 

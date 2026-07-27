@@ -77,6 +77,10 @@ void test_identical_singleton_class()
           std::vector<std::uint32_t>({10, 10, 12, 10}),
       "identical singleton parent seeds");
   require(
+      result.owner_multiplicities ==
+          std::vector<std::uint32_t>({3, 0, 1, 0}),
+      "identical singleton representative weights");
+  require(
       result.census.weighted_internal_pairs_by_relation[
           ac::relation_slot(0, 0)] == 3,
       "identical singleton relation weight");
@@ -107,6 +111,8 @@ void test_domain_and_diagonal_partition()
   require(
       result.parent_seeds ==
           std::vector<std::uint32_t>({0, 0, 2, 3}) &&
+          result.owner_multiplicities ==
+              std::vector<std::uint32_t>({2, 0, 1, 1}) &&
           result.census.weighted_internal_pairs == 1,
       "domain/diagonal seeds and weight");
 }
@@ -137,7 +143,9 @@ void test_multi_rectangle_exception()
       result.exception_rectangles[0].owner == 20 &&
           result.exception_rectangles[1].owner == 20 &&
           result.parent_seeds ==
-              std::vector<std::uint32_t>({20, 21, 21}),
+              std::vector<std::uint32_t>({20, 21, 21}) &&
+          result.owner_multiplicities ==
+              std::vector<std::uint32_t>({1, 2, 0}),
       "exception preservation");
 }
 
@@ -319,6 +327,8 @@ void test_random_differential()
 
     std::uint64_t expected_weight = 0;
     std::vector<std::uint32_t> expected_parents(owner_count);
+    std::vector<std::uint32_t> expected_multiplicities(
+        owner_count, 1);
     for (std::uint32_t local = 0; local != owner_count; ++local) {
       expected_parents[local] = owner_begin + local;
     }
@@ -329,7 +339,10 @@ void test_random_differential()
       const std::uint32_t representative = members.front();
       for (std::uint32_t owner : members) {
         expected_parents[owner - owner_begin] = representative;
+        expected_multiplicities[owner - owner_begin] = 0;
       }
+      expected_multiplicities[
+          representative - owner_begin] = members.size();
       expected_weight +=
           static_cast<std::uint64_t>(members.size()) *
           (members.size() - 1) / 2;
@@ -343,6 +356,8 @@ void test_random_differential()
     }
     require(
         result.parent_seeds == expected_parents &&
+            result.owner_multiplicities ==
+                expected_multiplicities &&
             result.census.weighted_internal_pairs ==
                 expected_weight &&
             result.census.star_edges ==
