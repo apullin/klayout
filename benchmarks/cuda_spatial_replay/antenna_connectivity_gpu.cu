@@ -3,6 +3,7 @@
  */
 
 #include "antenna_connectivity_gpu.cuh"
+#include "antenna_geometry_quotient_gpu.cuh"
 
 #include <cuda_runtime.h>
 
@@ -14,16 +15,19 @@
 #include <thrust/functional.h>
 #include <thrust/iterator/constant_iterator.h>
 #include <thrust/iterator/discard_iterator.h>
+#include <thrust/iterator/zip_iterator.h>
 #include <thrust/reduce.h>
 #include <thrust/remove.h>
 #include <thrust/scan.h>
 #include <thrust/sequence.h>
 #include <thrust/sort.h>
 #include <thrust/system_error.h>
+#include <thrust/transform_reduce.h>
 #include <thrust/unique.h>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <new>
@@ -35,9 +39,21 @@
 namespace {
 
 namespace ac = klayout_cuda::antenna_connectivity;
+namespace aq = klayout_cuda::antenna_geometry_quotient;
 
 constexpr std::uint32_t kThreads = 256;
 constexpr std::uint32_t kMaximumBlocks = 65535;
+using ConnectivityClock = std::chrono::steady_clock;
+
+std::uint64_t elapsed_ns(
+    ConnectivityClock::time_point begin,
+    ConnectivityClock::time_point end)
+{
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          end - begin)
+          .count());
+}
 
 enum DeviceFlag : std::uint32_t
 {
@@ -119,6 +135,38 @@ struct SaturatingAddU64
   }
 };
 
+struct WeightedMembership
+{
+  __host__ __device__ std::uint64_t operator()(
+      const thrust::tuple<std::uint64_t, std::uint32_t>
+          &entry) const
+  {
+    const std::uint64_t memberships = thrust::get<0>(entry);
+    const std::uint64_t multiplicity = thrust::get<1>(entry);
+    return multiplicity &&
+                   memberships > UINT64_MAX / multiplicity
+               ? UINT64_MAX
+               : memberships * multiplicity;
+  }
+};
+
+struct OwnerPairWeightFunctor
+{
+  const std::uint32_t *owner_multiplicities;
+
+  __host__ __device__ std::uint64_t operator()(
+      std::uint64_t key) const
+  {
+    const std::uint32_t first =
+        static_cast<std::uint32_t>(key >> 32);
+    const std::uint32_t second =
+        static_cast<std::uint32_t>(key);
+    return static_cast<std::uint64_t>(
+               owner_multiplicities[first]) *
+           owner_multiplicities[second];
+  }
+};
+
 bool device_bytes_admitted(
     const ac::Config &config, std::uint64_t requested_bytes)
 {
@@ -195,6 +243,8 @@ ac::Status validate_config(const ac::Config &config)
       !config.limits.max_pair_tests_per_cell ||
       (config.exact_filter_before_materialization &&
        !config.limits.max_total_pair_tests) ||
+      (config.quotient_identical_singletons &&
+       !config.exact_filter_before_materialization) ||
       !config.limits.max_dsu_iterations ||
       !config.limits.max_device_bytes ||
       config.limits.min_device_free_after_bytes >=
@@ -278,25 +328,29 @@ struct IsSet
   }
 };
 
-struct KeepUnreleasedDomain
+struct KeepUnreleasedWeightedRectangle
 {
   std::uint64_t released_domains;
 
+  template <class Tuple>
   __host__ __device__ bool operator()(
-      const ac::RectI64 &rectangle) const
+      const Tuple &entry) const
   {
+    const ac::RectI64 &rectangle = thrust::get<0>(entry);
     return (released_domains &
             (UINT64_C(1) << rectangle.domain)) == 0;
   }
 };
 
-struct IsReleasedDomain
+struct IsReleasedWeightedRectangle
 {
   std::uint64_t released_domains;
 
+  template <class Tuple>
   __host__ __device__ bool operator()(
-      const ac::RectI64 &rectangle) const
+      const Tuple &entry) const
   {
+    const ac::RectI64 &rectangle = thrust::get<0>(entry);
     return (released_domains &
             (UINT64_C(1) << rectangle.domain)) != 0;
   }
@@ -900,6 +954,7 @@ struct ExactStreamCounts
 {
   unsigned long long tile_edges;
   unsigned long long singleton_owner_edges;
+  unsigned long long weighted_exception_owner_edges;
   unsigned long long exception_owner_edges;
 };
 
@@ -990,6 +1045,46 @@ __device__ ExactStreamKind classify_exact_stream_pair(
              : kExactExceptionOwnerEdge;
 }
 
+__device__ unsigned long long owner_pair_weight(
+    std::uint64_t key,
+    const std::uint32_t *owner_multiplicities,
+    std::uint32_t *status)
+{
+  std::uint32_t first = 0;
+  std::uint32_t second = 0;
+  decode_pair(key, &first, &second);
+  const unsigned long long first_weight =
+      owner_multiplicities[first];
+  const unsigned long long second_weight =
+      owner_multiplicities[second];
+  if (!first_weight || !second_weight) {
+    atomicOr(status, std::uint32_t(kPairCountOverflow));
+    return 0;
+  }
+  return first_weight * second_weight;
+}
+
+__device__ void checked_local_add(
+    unsigned long long value, unsigned long long *total,
+    std::uint32_t *status)
+{
+  if (*total > ULLONG_MAX - value) {
+    atomicOr(status, std::uint32_t(kPairCountOverflow));
+  } else {
+    *total += value;
+  }
+}
+
+__device__ void checked_atomic_add(
+    unsigned long long *target, unsigned long long value,
+    std::uint32_t *status)
+{
+  const unsigned long long prior = atomicAdd(target, value);
+  if (prior > ULLONG_MAX - value) {
+    atomicOr(status, std::uint32_t(kPairCountOverflow));
+  }
+}
+
 __global__ void count_exact_streams_parallel_kernel(
     const CellMember *members,
     const std::uint64_t *group_offsets,
@@ -1001,11 +1096,13 @@ __global__ void count_exact_streams_parallel_kernel(
     const ac::RectI64 *rectangles,
     const std::uint64_t *relation_rows,
     const std::uint32_t *owner_rectangles,
+    const std::uint32_t *owner_multiplicities,
     std::uint32_t stage_begin, std::int64_t bin_size,
     std::uint64_t minimum_x, std::uint64_t minimum_y,
     std::uint64_t grid_height, std::uint32_t domain_count,
     std::uint64_t *tile_counts,
     std::uint64_t *singleton_counts,
+    std::uint64_t *exception_weight_counts,
     std::uint64_t *exception_counts, std::uint32_t *status)
 {
   __shared__ ExactStreamCounts partial[kThreads];
@@ -1026,6 +1123,7 @@ __global__ void count_exact_streams_parallel_kernel(
       if (!threadIdx.x) {
         tile_counts[group] = 0;
         singleton_counts[group] = 0;
+        exception_weight_counts[group] = 0;
         exception_counts[group] = 0;
       }
       continue;
@@ -1038,7 +1136,7 @@ __global__ void count_exact_streams_parallel_kernel(
           members, begin, count, previous_rectangle_count);
     }
     __syncthreads();
-    ExactStreamCounts local = {0, 0, 0};
+    ExactStreamCounts local = {0, 0, 0, 0};
     for (std::uint64_t pair = threadIdx.x; pair < tests;
          pair += blockDim.x) {
       std::uint64_t first_offset = 0;
@@ -1059,8 +1157,15 @@ __global__ void count_exact_streams_parallel_kernel(
       if (kind == kExactTileEdge) {
         ++local.tile_edges;
       } else if (kind == kExactSingletonOwnerEdge) {
-        ++local.singleton_owner_edges;
+        checked_local_add(
+            owner_pair_weight(
+                key, owner_multiplicities, status),
+            &local.singleton_owner_edges, status);
       } else if (kind == kExactExceptionOwnerEdge) {
+        checked_local_add(
+            owner_pair_weight(
+                key, owner_multiplicities, status),
+            &local.weighted_exception_owner_edges, status);
         ++local.exception_owner_edges;
       }
     }
@@ -1071,8 +1176,17 @@ __global__ void count_exact_streams_parallel_kernel(
       if (threadIdx.x < stride) {
         partial[threadIdx.x].tile_edges +=
             partial[threadIdx.x + stride].tile_edges;
-        partial[threadIdx.x].singleton_owner_edges +=
-            partial[threadIdx.x + stride].singleton_owner_edges;
+        checked_local_add(
+            partial[threadIdx.x + stride]
+                .singleton_owner_edges,
+            &partial[threadIdx.x].singleton_owner_edges,
+            status);
+        checked_local_add(
+            partial[threadIdx.x + stride]
+                .weighted_exception_owner_edges,
+            &partial[threadIdx.x]
+                 .weighted_exception_owner_edges,
+            status);
         partial[threadIdx.x].exception_owner_edges +=
             partial[threadIdx.x + stride].exception_owner_edges;
       }
@@ -1082,6 +1196,8 @@ __global__ void count_exact_streams_parallel_kernel(
       tile_counts[group] = partial[0].tile_edges;
       singleton_counts[group] =
           partial[0].singleton_owner_edges;
+      exception_weight_counts[group] =
+          partial[0].weighted_exception_owner_edges;
       exception_counts[group] =
           partial[0].exception_owner_edges;
     }
@@ -1157,6 +1273,7 @@ __global__ void fill_exact_streams_parallel_kernel(
     const ac::RectI64 *rectangles,
     const std::uint64_t *relation_rows,
     const std::uint32_t *owner_rectangles,
+    const std::uint32_t *owner_multiplicities,
     std::uint32_t stage_begin, std::int64_t bin_size,
     std::uint64_t minimum_x, std::uint64_t minimum_y,
     std::uint64_t grid_height, std::uint32_t domain_count,
@@ -1236,7 +1353,11 @@ __global__ void fill_exact_streams_parallel_kernel(
             owner_parents, first_owner, second_owner,
             owner_count, status);
         if (kind == kExactSingletonOwnerEdge) {
-          atomicAdd(relation_census + relation, 1ull);
+          checked_atomic_add(
+              relation_census + relation,
+              owner_pair_weight(
+                  key, owner_multiplicities, status),
+              status);
         } else {
           const std::uint64_t output =
               atomicAdd(&exception_cursor, 1ull);
@@ -1276,15 +1397,18 @@ __global__ void fill_exact_streams_parallel_kernel(
         static_cast<std::size_t>(low_domain) *
             ac::kMaximumDomains +
         high_domain;
-    atomicAdd(singleton_relation_census + slot, count);
+    checked_atomic_add(
+        singleton_relation_census + slot, count, status);
   }
 }
 
 __global__ void census_owner_pairs_bounded_kernel(
     const std::uint64_t *pairs, std::uint64_t pair_count,
     const std::uint32_t *owner_domains,
+    const std::uint32_t *owner_multiplicities,
     std::uint32_t domain_count,
-    unsigned long long *global_census)
+    unsigned long long *global_census,
+    std::uint32_t *status)
 {
   extern __shared__ unsigned long long relation_census[];
   const std::uint32_t relation_count =
@@ -1307,10 +1431,12 @@ __global__ void census_owner_pairs_bounded_kernel(
         min(owner_domains[first], owner_domains[second]);
     const std::uint32_t high_domain =
         max(owner_domains[first], owner_domains[second]);
-    atomicAdd(
+    checked_atomic_add(
         relation_census +
             low_domain * domain_count + high_domain,
-        1ull);
+        owner_pair_weight(
+            pairs[pair_id], owner_multiplicities, status),
+        status);
   }
   __syncthreads();
   for (std::uint32_t relation = threadIdx.x;
@@ -1323,7 +1449,8 @@ __global__ void census_owner_pairs_bounded_kernel(
         static_cast<std::size_t>(low_domain) *
             ac::kMaximumDomains +
         high_domain;
-    atomicAdd(global_census + slot, count);
+    checked_atomic_add(
+        global_census + slot, count, status);
   }
 }
 
@@ -1710,6 +1837,25 @@ ac::Status map_device_status(std::uint32_t status)
   return ac::Status::success;
 }
 
+ac::Status map_quotient_status(aq::Status status)
+{
+  switch (status) {
+  case aq::Status::success:
+    return ac::Status::success;
+  case aq::Status::invalid_configuration:
+    return ac::Status::invalid_configuration;
+  case aq::Status::malformed_input:
+    return ac::Status::malformed_input;
+  case aq::Status::capacity_exceeded:
+    return ac::Status::capacity_exceeded;
+  case aq::Status::cuda_error:
+    return ac::Status::cuda_error;
+  case aq::Status::host_error:
+    return ac::Status::host_error;
+  }
+  return ac::Status::host_error;
+}
+
 ac::Status run_min_dsu(
     const thrust::device_vector<std::uint64_t> &edges,
     thrust::device_vector<std::uint32_t> *parents,
@@ -1770,6 +1916,9 @@ struct ExactStreamingResult
   std::uint64_t pair_occurrences = 0;
   std::uint64_t unique_candidates = 0;
   std::uint64_t edge_count = 0;
+  std::uint64_t exact_pair_tests = 0;
+  std::uint64_t exact_count_ns = 0;
+  std::uint64_t exact_fill_ns = 0;
   std::uint32_t iterations = 0;
   thrust::device_vector<unsigned long long> candidate_census;
   thrust::device_vector<unsigned long long> edge_census;
@@ -1784,12 +1933,14 @@ ac::Status run_exact_streaming(
     std::uint64_t minimum_y, std::uint64_t grid_height,
     thrust::device_vector<ac::RectI64> *rectangles,
     thrust::device_vector<std::uint32_t> *owner_domains,
+    thrust::device_vector<std::uint32_t> *owner_multiplicities,
     thrust::device_vector<std::uint32_t> *owner_parents,
     thrust::device_vector<CellMember> *members,
     thrust::device_vector<std::uint64_t> *group_offsets,
     thrust::device_vector<std::uint64_t> *group_counts,
     thrust::device_vector<std::uint64_t> *relation_rows,
     thrust::device_vector<std::uint32_t> *device_status,
+    const aq::Census &quotient_census,
     ExactStreamingResult *result)
 {
   if (!vector_allocation_admitted<std::uint32_t>(
@@ -1877,7 +2028,14 @@ ac::Status run_exact_streaming(
     return ac::Status::capacity_exceeded;
   }
   thrust::device_vector<std::uint64_t>
+      exception_weight_counts(group_count);
+  if (!vector_allocation_admitted<std::uint64_t>(
+          config, group_count)) {
+    return ac::Status::capacity_exceeded;
+  }
+  thrust::device_vector<std::uint64_t>
       exception_counts(group_count);
+  const auto exact_count_begin = ConnectivityClock::now();
   count_exact_streams_parallel_kernel<<<
       launch_group_blocks(group_count), kThreads>>>(
       thrust::raw_pointer_cast(members->data()),
@@ -1889,10 +2047,13 @@ ac::Status run_exact_streaming(
       thrust::raw_pointer_cast(rectangles->data()),
       thrust::raw_pointer_cast(relation_rows->data()),
       thrust::raw_pointer_cast(owner_rectangle_counts.data()),
+      thrust::raw_pointer_cast(owner_multiplicities->data()),
       stage_begin, config.bin_size, minimum_x, minimum_y,
       grid_height, config.domain_count,
       thrust::raw_pointer_cast(tile_counts.data()),
       thrust::raw_pointer_cast(singleton_counts.data()),
+      thrust::raw_pointer_cast(
+          exception_weight_counts.data()),
       thrust::raw_pointer_cast(exception_counts.data()),
       thrust::raw_pointer_cast(device_status->data()));
   cuda_require(
@@ -1905,6 +2066,9 @@ ac::Status run_exact_streaming(
       *device_status,
       "antenna connectivity streaming exact-count status D2H");
   if (flags) return map_device_status(flags);
+  result->exact_count_ns = elapsed_ns(
+      exact_count_begin, ConnectivityClock::now());
+  result->exact_pair_tests = total_pair_tests;
 
   const std::uint64_t tile_total = thrust::reduce(
       thrust::device, tile_counts.begin(), tile_counts.end(),
@@ -1915,21 +2079,33 @@ ac::Status run_exact_streaming(
   const std::uint64_t exception_total = thrust::reduce(
       thrust::device, exception_counts.begin(),
       exception_counts.end(), UINT64_C(0), SaturatingAddU64());
+  const std::uint64_t weighted_exception_total =
+      thrust::reduce(
+          thrust::device, exception_weight_counts.begin(),
+          exception_weight_counts.end(), UINT64_C(0),
+          SaturatingAddU64());
   if (tile_total == UINT64_MAX ||
       singleton_total == UINT64_MAX ||
       exception_total == UINT64_MAX ||
+      weighted_exception_total == UINT64_MAX ||
       singleton_total > UINT64_MAX - tile_total ||
-      exception_total >
-          UINT64_MAX - tile_total - singleton_total) {
+      weighted_exception_total >
+          UINT64_MAX - tile_total - singleton_total ||
+      quotient_census.weighted_internal_pairs >
+          UINT64_MAX - tile_total - singleton_total -
+              weighted_exception_total) {
     return ac::Status::capacity_exceeded;
   }
   result->pair_occurrences =
-      tile_total + singleton_total + exception_total;
+      tile_total + singleton_total +
+      weighted_exception_total +
+      quotient_census.weighted_internal_pairs;
   if (result->pair_occurrences >
       config.limits.max_pair_occurrences) {
     return ac::Status::capacity_exceeded;
   }
   release_device_vector(&singleton_counts);
+  release_device_vector(&exception_weight_counts);
   thrust::exclusive_scan(
       thrust::device, tile_counts.begin(), tile_counts.end(),
       tile_counts.begin(), UINT64_C(0));
@@ -1953,10 +2129,21 @@ ac::Status run_exact_streaming(
           config, ac::kRelationSlots)) {
     return ac::Status::capacity_exceeded;
   }
-  result->candidate_census.assign(ac::kRelationSlots, 0);
+  std::array<unsigned long long, ac::kRelationSlots>
+      initial_candidate_census{};
+  for (std::size_t slot = 0;
+       slot < ac::kRelationSlots; ++slot) {
+    initial_candidate_census[slot] =
+        quotient_census
+            .weighted_internal_pairs_by_relation[slot];
+  }
+  result->candidate_census.assign(
+      initial_candidate_census.begin(),
+      initial_candidate_census.end());
   const std::size_t relation_shared_bytes =
       static_cast<std::size_t>(config.domain_count) *
       config.domain_count * sizeof(unsigned long long);
+  const auto exact_fill_begin = ConnectivityClock::now();
   fill_exact_streams_parallel_kernel<<<
       launch_group_blocks(group_count), kThreads,
       relation_shared_bytes>>>(
@@ -1969,6 +2156,7 @@ ac::Status run_exact_streaming(
       thrust::raw_pointer_cast(rectangles->data()),
       thrust::raw_pointer_cast(relation_rows->data()),
       thrust::raw_pointer_cast(owner_rectangle_counts.data()),
+      thrust::raw_pointer_cast(owner_multiplicities->data()),
       stage_begin, config.bin_size, minimum_x, minimum_y,
       grid_height, config.domain_count,
       thrust::raw_pointer_cast(tile_counts.data()),
@@ -1994,6 +2182,8 @@ ac::Status run_exact_streaming(
       *device_status,
       "antenna connectivity streaming exact-fill status D2H");
   if (flags) return map_device_status(flags);
+  result->exact_fill_ns = elapsed_ns(
+      exact_fill_begin, ConnectivityClock::now());
   release_device_vector(&owner_rectangle_counts);
   release_device_vector(&tile_counts);
   release_device_vector(&exception_counts);
@@ -2020,11 +2210,27 @@ ac::Status run_exact_streaming(
   }
   const std::uint64_t exception_unique =
       exception_owner_keys.size();
-  if (exception_unique > UINT64_MAX - singleton_total) {
+  const std::uint64_t weighted_exception_unique =
+      thrust::transform_reduce(
+          thrust::device, exception_owner_keys.begin(),
+          exception_owner_keys.end(),
+          OwnerPairWeightFunctor{
+              thrust::raw_pointer_cast(
+                  owner_multiplicities->data())},
+          UINT64_C(0), SaturatingAddU64());
+  if (weighted_exception_unique == UINT64_MAX ||
+      singleton_total >
+          UINT64_MAX -
+              quotient_census.weighted_internal_pairs ||
+      weighted_exception_unique >
+          UINT64_MAX -
+              quotient_census.weighted_internal_pairs -
+              singleton_total) {
     return ac::Status::capacity_exceeded;
   }
   result->unique_candidates =
-      singleton_total + exception_unique;
+      quotient_census.weighted_internal_pairs +
+      singleton_total + weighted_exception_unique;
   result->edge_count = result->unique_candidates;
   if (result->unique_candidates >
       config.limits.max_unique_candidates) {
@@ -2037,9 +2243,12 @@ ac::Status run_exact_streaming(
         thrust::raw_pointer_cast(exception_owner_keys.data()),
         exception_unique,
         thrust::raw_pointer_cast(owner_domains->data()),
+        thrust::raw_pointer_cast(
+            owner_multiplicities->data()),
         config.domain_count,
         thrust::raw_pointer_cast(
-            result->candidate_census.data()));
+            result->candidate_census.data()),
+        thrust::raw_pointer_cast(device_status->data()));
     cuda_require(
         cudaGetLastError(),
         "antenna connectivity streaming exception-census launch");
@@ -2047,6 +2256,10 @@ ac::Status run_exact_streaming(
   cuda_require(
       cudaDeviceSynchronize(),
       "antenna connectivity streaming relation-census synchronize");
+  flags = read_device_status(
+      *device_status,
+      "antenna connectivity weighted relation status D2H");
+  if (flags) return map_device_status(flags);
   release_device_vector(&exception_owner_keys);
   if (!vector_allocation_admitted<unsigned long long>(
           config, ac::kRelationSlots)) {
@@ -2111,9 +2324,10 @@ ac::Status run_exact_streaming(
   release_device_vector(&tile_parents);
   release_device_vector(&first_rectangle);
 
-  const std::uint64_t cross_rectangle_edges =
-      singleton_total + exception_total;
-  if (cross_rectangle_edges) {
+  const bool has_owner_edges =
+      singleton_total || exception_total ||
+      quotient_census.star_edges;
+  if (has_owner_edges) {
     if (!config.limits.max_dsu_iterations) {
       return ac::Status::capacity_exceeded;
     }
@@ -2162,10 +2376,15 @@ struct Connectivity::Impl
   Status config_status;
   std::uint64_t owner_count = 0;
   std::uint64_t closed_domains = 0;
+  std::uint64_t logical_retained_rectangles = 0;
   std::uint64_t epoch = 0;
   bool poisoned = false;
   thrust::device_vector<RectI64> rectangles;
+  thrust::device_vector<std::uint32_t>
+      rectangle_multiplicities;
   thrust::device_vector<std::uint32_t> owner_domains;
+  thrust::device_vector<std::uint32_t>
+      owner_multiplicities;
   thrust::device_vector<std::uint32_t> parents;
 };
 
@@ -2235,7 +2454,8 @@ Status Connectivity::compact_retained_rectangles(
         cudaSetDevice(config.device),
         "antenna connectivity compaction cudaSetDevice");
     const std::uint64_t size = m_impl->rectangles.size();
-    if (m_impl->rectangles.capacity() == size) {
+    if (m_impl->rectangles.capacity() == size &&
+        m_impl->rectangle_multiplicities.capacity() == size) {
       if (retained_rectangle_capacity) {
         *retained_rectangle_capacity = size;
       }
@@ -2243,18 +2463,27 @@ Status Connectivity::compact_retained_rectangles(
     }
 
     thrust::device_vector<RectI64> compact;
+    thrust::device_vector<std::uint32_t>
+        compact_multiplicities;
     if (size) {
-      if (!vector_allocation_admitted<RectI64>(config, size)) {
+      if (!vector_allocation_admitted<RectI64>(config, size) ||
+          !vector_allocation_admitted<std::uint32_t>(
+              config, size)) {
         return Status::capacity_exceeded;
       }
       compact.assign(
           m_impl->rectangles.begin(), m_impl->rectangles.end());
+      compact_multiplicities.assign(
+          m_impl->rectangle_multiplicities.begin(),
+          m_impl->rectangle_multiplicities.end());
       cuda_require(
           cudaDeviceSynchronize(),
           "antenna connectivity compaction synchronize");
     }
 
     m_impl->rectangles.swap(compact);
+    m_impl->rectangle_multiplicities.swap(
+        compact_multiplicities);
     if (retained_rectangle_capacity) {
       *retained_rectangle_capacity = m_impl->rectangles.capacity();
     }
@@ -2302,21 +2531,29 @@ Status Connectivity::append_stage_impl(
     }
     const std::uint64_t previous_rectangle_count =
         m_impl->rectangles.size();
+    const std::uint64_t previous_logical_rectangle_count =
+        m_impl->logical_retained_rectangles;
     const std::uint64_t previous_count = m_impl->owner_count;
-    if (new_node_count >
+    if (previous_logical_rectangle_count >
+            config.limits.max_rectangles ||
+        new_node_count >
             config.limits.max_nodes - previous_count ||
         previous_count + new_node_count > UINT32_MAX ||
         rectangle_count >
             config.limits.max_rectangles -
-                previous_rectangle_count ||
+                previous_logical_rectangle_count ||
         previous_rectangle_count + rectangle_count >
             UINT32_MAX) {
       return Status::capacity_exceeded;
     }
     const std::uint64_t total_count =
         previous_count + new_node_count;
-    const std::uint64_t total_rectangle_count =
+    const std::uint64_t logical_total_rectangle_count =
+        previous_logical_rectangle_count + rectangle_count;
+    std::uint64_t total_rectangle_count =
         previous_rectangle_count + rectangle_count;
+    std::uint64_t physical_appended_rectangle_count =
+        rectangle_count;
     const std::uint32_t stage_begin =
         static_cast<std::uint32_t>(previous_count);
 
@@ -2325,7 +2562,11 @@ Status Connectivity::append_stage_impl(
         "antenna connectivity cudaSetDevice");
 
     thrust::device_vector<RectI64> work_rectangles;
+    thrust::device_vector<std::uint32_t>
+        work_rectangle_multiplicities;
     thrust::device_vector<std::uint32_t> work_owner_domains;
+    thrust::device_vector<std::uint32_t>
+        work_owner_multiplicities;
     thrust::device_vector<std::uint32_t> work_parents;
     const bool move_owned_first_stage =
         mode == AppendMode::consuming && owned_input &&
@@ -2340,10 +2581,15 @@ Status Connectivity::append_stage_impl(
       } else {
         work_rectangles.swap(m_impl->rectangles);
       }
+      work_rectangle_multiplicities.swap(
+          m_impl->rectangle_multiplicities);
       work_owner_domains.swap(m_impl->owner_domains);
+      work_owner_multiplicities.swap(
+          m_impl->owner_multiplicities);
       work_parents.swap(m_impl->parents);
       m_impl->poisoned = true;
       m_impl->owner_count = 0;
+      m_impl->logical_retained_rectangles = 0;
       ++m_impl->epoch;
       if (work_rectangles.size() != total_rectangle_count) {
         if (!vector_growth_admitted(
@@ -2354,10 +2600,23 @@ Status Connectivity::append_stage_impl(
         work_rectangles.resize(total_rectangle_count);
       }
       if (!vector_growth_admitted(
+              config, work_rectangle_multiplicities,
+              total_rectangle_count)) {
+        return Status::capacity_exceeded;
+      }
+      work_rectangle_multiplicities.resize(
+          total_rectangle_count, 1);
+      if (!vector_growth_admitted(
               config, work_owner_domains, total_count)) {
         return Status::capacity_exceeded;
       }
       work_owner_domains.resize(total_count, UINT32_MAX);
+      if (!vector_growth_admitted(
+              config, work_owner_multiplicities,
+              total_count)) {
+        return Status::capacity_exceeded;
+      }
+      work_owner_multiplicities.resize(total_count, 1);
       if (!vector_growth_admitted(
               config, work_parents, total_count)) {
         return Status::capacity_exceeded;
@@ -2375,6 +2634,19 @@ Status Connectivity::append_stage_impl(
             m_impl->rectangles.end(), work_rectangles.begin());
       }
       if (!vector_allocation_admitted<std::uint32_t>(
+              config, total_rectangle_count)) {
+        return Status::capacity_exceeded;
+      }
+      work_rectangle_multiplicities.assign(
+          total_rectangle_count, 1);
+      if (previous_rectangle_count) {
+        thrust::copy(
+            thrust::device,
+            m_impl->rectangle_multiplicities.begin(),
+            m_impl->rectangle_multiplicities.end(),
+            work_rectangle_multiplicities.begin());
+      }
+      if (!vector_allocation_admitted<std::uint32_t>(
               config, total_count)) {
         return Status::capacity_exceeded;
       }
@@ -2384,6 +2656,18 @@ Status Connectivity::append_stage_impl(
             thrust::device, m_impl->owner_domains.begin(),
             m_impl->owner_domains.end(),
             work_owner_domains.begin());
+      }
+      if (!vector_allocation_admitted<std::uint32_t>(
+              config, total_count)) {
+        return Status::capacity_exceeded;
+      }
+      work_owner_multiplicities.assign(total_count, 1);
+      if (previous_count) {
+        thrust::copy(
+            thrust::device,
+            m_impl->owner_multiplicities.begin(),
+            m_impl->owner_multiplicities.end(),
+            work_owner_multiplicities.begin());
       }
       if (!vector_allocation_admitted<std::uint32_t>(
               config, total_count)) {
@@ -2414,6 +2698,92 @@ Status Connectivity::append_stage_impl(
         work_parents.begin() + previous_count,
         work_parents.end(), stage_begin);
 
+    aq::Census quotient_census;
+    std::uint64_t quotient_ns = 0;
+    if (config.quotient_identical_singletons) {
+      aq::DeviceConfig quotient_config;
+      quotient_config.quotient.domain_count =
+          config.domain_count;
+      quotient_config.quotient.relation_rows =
+          config.relation_rows;
+      quotient_config.quotient.owner_begin = stage_begin;
+      quotient_config.quotient.owner_count =
+          static_cast<std::uint32_t>(new_node_count);
+      quotient_config.quotient.limits.max_owners =
+          config.limits.max_nodes;
+      quotient_config.quotient.limits.max_input_rectangles =
+          config.limits.max_rectangles;
+      quotient_config.quotient.limits.max_classes =
+          config.limits.max_rectangles;
+      quotient_config.quotient.limits.max_class_members =
+          config.limits.max_nodes;
+      quotient_config.quotient.limits.max_exception_rectangles =
+          config.limits.max_rectangles;
+      quotient_config.quotient.limits.max_work_rectangles =
+          config.limits.max_rectangles;
+      quotient_config.quotient.limits.max_star_edges =
+          config.limits.max_nodes;
+      quotient_config.quotient.limits
+          .max_weighted_internal_pairs =
+          config.limits.max_pair_occurrences;
+      quotient_config.device = config.device;
+      quotient_config.device_limits.max_device_bytes =
+          config.limits.max_device_bytes;
+      quotient_config.device_limits
+          .min_device_free_after_bytes =
+          config.limits.min_device_free_after_bytes;
+      quotient_config.device_limits
+          .sort_scratch_fixed_guard_bytes =
+          config.limits.sort_scratch_fixed_guard_bytes;
+
+      const auto quotient_begin = ConnectivityClock::now();
+      aq::DeviceResult quotient;
+      const aq::Status quotient_status = aq::build_device(
+          quotient_config,
+          thrust::raw_pointer_cast(work_rectangles.data()) +
+              previous_rectangle_count,
+          rectangle_count, &quotient);
+      quotient_ns = elapsed_ns(
+          quotient_begin, ConnectivityClock::now());
+      if (quotient_status != aq::Status::success) {
+        return map_quotient_status(quotient_status);
+      }
+      quotient_census = quotient.census;
+      physical_appended_rectangle_count =
+          quotient.work_rectangles.size();
+      total_rectangle_count =
+          previous_rectangle_count +
+          physical_appended_rectangle_count;
+      work_rectangles.resize(total_rectangle_count);
+      thrust::copy(
+          thrust::device, quotient.work_rectangles.begin(),
+          quotient.work_rectangles.end(),
+          work_rectangles.begin() +
+              previous_rectangle_count);
+      work_rectangle_multiplicities.resize(
+          total_rectangle_count);
+      thrust::copy(
+          thrust::device,
+          quotient.rectangle_multiplicities.begin(),
+          quotient.rectangle_multiplicities.end(),
+          work_rectangle_multiplicities.begin() +
+              previous_rectangle_count);
+      thrust::copy(
+          thrust::device, quotient.owner_domains.begin(),
+          quotient.owner_domains.end(),
+          work_owner_domains.begin() + previous_count);
+      thrust::copy(
+          thrust::device,
+          quotient.owner_multiplicities.begin(),
+          quotient.owner_multiplicities.end(),
+          work_owner_multiplicities.begin() +
+              previous_count);
+      thrust::copy(
+          thrust::device, quotient.parent_seeds.begin(),
+          quotient.parent_seeds.end(),
+          work_parents.begin() + previous_count);
+    }
+
     thrust::device_vector<std::uint64_t> relation_rows(
         config.relation_rows.begin(),
         config.relation_rows.end());
@@ -2428,6 +2798,8 @@ Status Connectivity::append_stage_impl(
     }
     thrust::device_vector<std::uint64_t>
         membership_counts(total_rectangle_count, 0);
+    const auto membership_count_begin =
+        ConnectivityClock::now();
     count_memberships_kernel<<<
         launch_blocks(total_rectangle_count), kThreads>>>(
         thrust::raw_pointer_cast(work_rectangles.data()),
@@ -2460,6 +2832,8 @@ Status Connectivity::append_stage_impl(
         device_status,
         "antenna connectivity membership status D2H");
     if (flags) return map_device_status(flags);
+    const std::uint64_t membership_count_ns = elapsed_ns(
+        membership_count_begin, ConnectivityClock::now());
     std::array<unsigned long long, 4> host_cell_bounds{};
     cuda_require(
         cudaMemcpy(
@@ -2499,6 +2873,22 @@ Status Connectivity::append_stage_impl(
         membership_total > config.limits.max_memberships) {
       return Status::capacity_exceeded;
     }
+    const auto weighted_membership_begin =
+        thrust::make_zip_iterator(thrust::make_tuple(
+            membership_counts.begin(),
+            work_rectangle_multiplicities.begin()));
+    const auto weighted_membership_end =
+        thrust::make_zip_iterator(thrust::make_tuple(
+            membership_counts.end(),
+            work_rectangle_multiplicities.end()));
+    const std::uint64_t logical_membership_total =
+        thrust::transform_reduce(
+            thrust::device, weighted_membership_begin,
+            weighted_membership_end, WeightedMembership(),
+            UINT64_C(0), SaturatingAddU64());
+    if (logical_membership_total == UINT64_MAX) {
+      return Status::capacity_exceeded;
+    }
 
     // Only scan after a saturating aggregate proves that every prefix and the
     // terminal offset fit uint64 and the configured allocation envelope.
@@ -2519,6 +2909,8 @@ Status Connectivity::append_stage_impl(
     }
     thrust::device_vector<CellMember>
         members(membership_total);
+    const auto membership_fill_begin =
+        ConnectivityClock::now();
     fill_memberships_kernel<<<
         launch_blocks(total_rectangle_count), kThreads>>>(
         thrust::raw_pointer_cast(work_rectangles.data()),
@@ -2532,20 +2924,31 @@ Status Connectivity::append_stage_impl(
     cuda_require(
         cudaDeviceSynchronize(),
         "antenna connectivity membership-fill synchronize");
+    const std::uint64_t membership_fill_ns = elapsed_ns(
+        membership_fill_begin, ConnectivityClock::now());
     release_device_vector(&membership_counts);
     release_device_vector(&membership_offsets);
     if (!sort_scratch_admitted<CellMember>(
             config, membership_total)) {
       return Status::capacity_exceeded;
     }
+    const auto membership_sort_begin =
+        ConnectivityClock::now();
     thrust::sort(
         thrust::device, members.begin(), members.end(),
         CellMemberLess());
+    cuda_require(
+        cudaDeviceSynchronize(),
+        "antenna connectivity membership-sort synchronize");
+    const std::uint64_t membership_sort_ns = elapsed_ns(
+        membership_sort_begin, ConnectivityClock::now());
 
     if (!vector_allocation_admitted<std::uint64_t>(
             config, membership_total)) {
       return Status::capacity_exceeded;
     }
+    const auto membership_group_begin =
+        ConnectivityClock::now();
     thrust::device_vector<std::uint64_t>
         group_counts(membership_total);
     const auto group_end = thrust::reduce_by_key(
@@ -2575,10 +2978,18 @@ Status Connectivity::append_stage_impl(
         thrust::device, group_counts.begin(),
         group_counts.end(), group_offsets.begin(),
         UINT64_C(0));
+    cuda_require(
+        cudaDeviceSynchronize(),
+        "antenna connectivity membership-group synchronize");
+    const std::uint64_t membership_group_ns = elapsed_ns(
+        membership_group_begin, ConnectivityClock::now());
 
     std::uint64_t pair_occurrences = 0;
     std::uint64_t unique_candidates = 0;
     std::uint64_t edge_count = 0;
+    std::uint64_t exact_pair_tests = 0;
+    std::uint64_t exact_count_ns = 0;
+    std::uint64_t exact_fill_ns = 0;
     std::uint32_t iterations = 0;
     thrust::device_vector<unsigned long long> candidate_census;
     thrust::device_vector<unsigned long long> edge_census;
@@ -2587,16 +2998,21 @@ Status Connectivity::append_stage_impl(
       ExactStreamingResult exact_result;
       const Status exact_status = run_exact_streaming(
           config, stage_begin, previous_rectangle_count,
-          rectangle_count, total_count, total_rectangle_count,
+          physical_appended_rectangle_count, total_count,
+          total_rectangle_count,
           group_count, host_cell_bounds[0], host_cell_bounds[1],
           grid_height, &work_rectangles, &work_owner_domains,
-          &work_parents, &members, &group_offsets, &group_counts,
-          &relation_rows, &device_status, &exact_result);
+          &work_owner_multiplicities, &work_parents, &members,
+          &group_offsets, &group_counts, &relation_rows,
+          &device_status, quotient_census, &exact_result);
       if (exact_status != Status::success) return exact_status;
       pair_occurrences = exact_result.pair_occurrences;
       unique_candidates = exact_result.unique_candidates;
       edge_count = exact_result.edge_count;
       iterations = exact_result.iterations;
+      exact_pair_tests = exact_result.exact_pair_tests;
+      exact_count_ns = exact_result.exact_count_ns;
+      exact_fill_ns = exact_result.exact_fill_ns;
       candidate_census.swap(exact_result.candidate_census);
       edge_census.swap(exact_result.edge_census);
     } else {
@@ -3122,24 +3538,65 @@ Status Connectivity::append_stage_impl(
       }
     }
     thrust::device_vector<RectI64> retained_rectangles;
+    thrust::device_vector<std::uint32_t>
+        retained_rectangle_multiplicities;
     std::uint64_t retained_rectangle_count = 0;
     if (mode == AppendMode::consuming) {
+      auto work_begin = thrust::make_zip_iterator(
+          thrust::make_tuple(
+              work_rectangles.begin(),
+              work_rectangle_multiplicities.begin()));
+      auto work_end = thrust::make_zip_iterator(
+          thrust::make_tuple(
+              work_rectangles.end(),
+              work_rectangle_multiplicities.end()));
       const auto retained_end = thrust::remove_if(
-          thrust::device, work_rectangles.begin(),
-          work_rectangles.end(),
-          IsReleasedDomain{released_domains});
+          thrust::device, work_begin, work_end,
+          IsReleasedWeightedRectangle{released_domains});
       work_rectangles.resize(static_cast<std::size_t>(
-          retained_end - work_rectangles.begin()));
+          retained_end - work_begin));
+      work_rectangle_multiplicities.resize(
+          work_rectangles.size());
       retained_rectangle_count = work_rectangles.size();
     } else {
       retained_rectangles.resize(total_rectangle_count);
+      retained_rectangle_multiplicities.resize(
+          total_rectangle_count);
+      auto work_begin = thrust::make_zip_iterator(
+          thrust::make_tuple(
+              work_rectangles.begin(),
+              work_rectangle_multiplicities.begin()));
+      auto work_end = thrust::make_zip_iterator(
+          thrust::make_tuple(
+              work_rectangles.end(),
+              work_rectangle_multiplicities.end()));
+      auto retained_begin = thrust::make_zip_iterator(
+          thrust::make_tuple(
+              retained_rectangles.begin(),
+              retained_rectangle_multiplicities.begin()));
       const auto retained_end = thrust::copy_if(
-          thrust::device, work_rectangles.begin(),
-          work_rectangles.end(), retained_rectangles.begin(),
-          KeepUnreleasedDomain{released_domains});
+          thrust::device, work_begin, work_end,
+          retained_begin,
+          KeepUnreleasedWeightedRectangle{released_domains});
       retained_rectangles.resize(static_cast<std::size_t>(
-          retained_end - retained_rectangles.begin()));
+          retained_end - retained_begin));
+      retained_rectangle_multiplicities.resize(
+          retained_rectangles.size());
       retained_rectangle_count = retained_rectangles.size();
+    }
+    const auto &retained_multiplicities =
+        mode == AppendMode::consuming
+            ? work_rectangle_multiplicities
+            : retained_rectangle_multiplicities;
+    const std::uint64_t logical_retained_rectangle_count =
+        thrust::reduce(
+            thrust::device, retained_multiplicities.begin(),
+            retained_multiplicities.end(), UINT64_C(0),
+            SaturatingAddU64());
+    if (logical_retained_rectangle_count == UINT64_MAX ||
+        logical_retained_rectangle_count >
+            logical_total_rectangle_count) {
+      return Status::capacity_exceeded;
     }
 
     StageCensus host_census;
@@ -3147,23 +3604,49 @@ Status Connectivity::append_stage_impl(
     host_census.appended_nodes = new_node_count;
     host_census.total_nodes = total_count;
     host_census.previous_rectangles =
-        previous_rectangle_count;
+        previous_logical_rectangle_count;
     host_census.appended_rectangles = rectangle_count;
-    host_census.total_rectangles = total_rectangle_count;
-    host_census.retained_rectangles = retained_rectangle_count;
+    host_census.total_rectangles =
+        logical_total_rectangle_count;
+    host_census.retained_rectangles =
+        logical_retained_rectangle_count;
     host_census.retained_rectangle_capacity =
         mode == AppendMode::consuming
             ? work_rectangles.capacity()
             : retained_rectangles.capacity();
     host_census.released_rectangles =
-        total_rectangle_count - retained_rectangle_count;
+        logical_total_rectangle_count -
+        logical_retained_rectangle_count;
+    host_census.physical_previous_rectangles =
+        previous_rectangle_count;
+    host_census.physical_appended_rectangles =
+        physical_appended_rectangle_count;
+    host_census.physical_total_rectangles =
+        total_rectangle_count;
+    host_census.physical_retained_rectangles =
+        retained_rectangle_count;
+    host_census.quotient_geometry_classes =
+        quotient_census.geometry_classes;
+    host_census.quotient_collapsed_rectangles =
+        quotient_census.collapsed_rectangles;
+    host_census.quotient_weighted_internal_pairs =
+        quotient_census.weighted_internal_pairs;
     host_census.closed_domain_mask = new_closed_domains;
-    host_census.memberships = membership_total;
+    host_census.memberships = logical_membership_total;
+    host_census.physical_memberships = membership_total;
     host_census.occupied_cells = group_count;
+    host_census.exact_pair_tests = exact_pair_tests;
     host_census.pair_occurrences = pair_occurrences;
     host_census.unique_candidates = unique_candidates;
     host_census.exact_edges = edge_count;
     host_census.dsu_iterations = iterations;
+    host_census.quotient_ns = quotient_ns;
+    host_census.membership_count_ns = membership_count_ns;
+    host_census.membership_fill_ns = membership_fill_ns;
+    host_census.membership_sort_ns = membership_sort_ns;
+    host_census.membership_group_ns = membership_group_ns;
+    host_census.exact_count_ns = exact_count_ns;
+    host_census.exact_fill_ns = exact_fill_ns;
     for (std::size_t index = 0; index < kRelationSlots;
          ++index) {
       host_census.candidates_by_relation[index] =
@@ -3175,12 +3658,20 @@ Status Connectivity::append_stage_impl(
     // The only mutations of committed state and caller-visible outputs.
     if (mode == AppendMode::consuming) {
       m_impl->rectangles.swap(work_rectangles);
+      m_impl->rectangle_multiplicities.swap(
+          work_rectangle_multiplicities);
     } else {
       m_impl->rectangles.swap(retained_rectangles);
+      m_impl->rectangle_multiplicities.swap(
+          retained_rectangle_multiplicities);
     }
     m_impl->owner_domains.swap(work_owner_domains);
+    m_impl->owner_multiplicities.swap(
+        work_owner_multiplicities);
     m_impl->parents.swap(work_parents);
     m_impl->owner_count = total_count;
+    m_impl->logical_retained_rectangles =
+        logical_retained_rectangle_count;
     m_impl->closed_domains = new_closed_domains;
     m_impl->poisoned = false;
     if (mode == AppendMode::transactional) ++m_impl->epoch;

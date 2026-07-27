@@ -1644,6 +1644,7 @@ ac::Config connectivity_config(const Request &request)
   ac::Config config;
   config.domain_count = 12;
   config.exact_filter_before_materialization = true;
+  config.quotient_identical_singletons = true;
   config.bin_size = std::max<std::int64_t>(
       1, (request.dbu_per_micron +
           kConnectivityBinsPerMicron - 1) /
@@ -1936,9 +1937,16 @@ void merge_stage_census(
   const std::uint64_t part_disposition = add_or_malformed(
       part.retained_rectangles, part.released_rectangles,
       "sub-append closure census");
+  const std::uint64_t part_physical_rectangles =
+      add_or_malformed(
+          part.physical_previous_rectangles,
+          part.physical_appended_rectangles,
+          "sub-append physical rectangle census");
   if (part.total_nodes != part_nodes ||
       part.total_rectangles != part_rectangles ||
-      part.total_rectangles != part_disposition) {
+      part.total_rectangles != part_disposition ||
+      part.physical_total_rectangles !=
+          part_physical_rectangles) {
     internal_decline("sub-append returned an inconsistent census");
   }
 
@@ -1948,6 +1956,8 @@ void merge_stage_census(
   }
   if (part.previous_nodes != aggregate->total_nodes ||
       part.previous_rectangles != aggregate->retained_rectangles ||
+      part.physical_previous_rectangles !=
+          aggregate->physical_retained_rectangles ||
       (part.closed_domain_mask & aggregate->closed_domain_mask) !=
           aggregate->closed_domain_mask) {
     internal_decline("sub-append frontier is not continuous");
@@ -1970,13 +1980,47 @@ void merge_stage_census(
   aggregate->released_rectangles = add_or_malformed(
       aggregate->released_rectangles, part.released_rectangles,
       "logical-stage closure census");
+  aggregate->physical_appended_rectangles =
+      add_or_malformed(
+          aggregate->physical_appended_rectangles,
+          part.physical_appended_rectangles,
+          "logical-stage physical rectangle census");
+  aggregate->physical_total_rectangles =
+      add_or_malformed(
+          aggregate->physical_previous_rectangles,
+          aggregate->physical_appended_rectangles,
+          "logical-stage physical rectangle census");
+  aggregate->physical_retained_rectangles =
+      part.physical_retained_rectangles;
+  aggregate->quotient_geometry_classes =
+      add_or_malformed(
+          aggregate->quotient_geometry_classes,
+          part.quotient_geometry_classes,
+          "logical-stage quotient class census");
+  aggregate->quotient_collapsed_rectangles =
+      add_or_malformed(
+          aggregate->quotient_collapsed_rectangles,
+          part.quotient_collapsed_rectangles,
+          "logical-stage quotient collapse census");
+  aggregate->quotient_weighted_internal_pairs =
+      add_or_malformed(
+          aggregate->quotient_weighted_internal_pairs,
+          part.quotient_weighted_internal_pairs,
+          "logical-stage quotient internal-pair census");
   aggregate->closed_domain_mask = part.closed_domain_mask;
   aggregate->memberships = add_or_malformed(
       aggregate->memberships, part.memberships,
       "logical-stage membership census");
+  aggregate->physical_memberships = add_or_malformed(
+      aggregate->physical_memberships,
+      part.physical_memberships,
+      "logical-stage physical membership census");
   aggregate->occupied_cells = add_or_malformed(
       aggregate->occupied_cells, part.occupied_cells,
       "logical-stage occupied-cell census");
+  aggregate->exact_pair_tests = add_or_malformed(
+      aggregate->exact_pair_tests, part.exact_pair_tests,
+      "logical-stage exact pair-test census");
   aggregate->pair_occurrences = add_or_malformed(
       aggregate->pair_occurrences, part.pair_occurrences,
       "logical-stage pair census");
@@ -1986,6 +2030,31 @@ void merge_stage_census(
   aggregate->exact_edges = add_or_malformed(
       aggregate->exact_edges, part.exact_edges,
       "logical-stage edge census");
+  aggregate->quotient_ns = add_or_malformed(
+      aggregate->quotient_ns, part.quotient_ns,
+      "logical-stage quotient timing");
+  aggregate->membership_count_ns = add_or_malformed(
+      aggregate->membership_count_ns,
+      part.membership_count_ns,
+      "logical-stage membership-count timing");
+  aggregate->membership_fill_ns = add_or_malformed(
+      aggregate->membership_fill_ns,
+      part.membership_fill_ns,
+      "logical-stage membership-fill timing");
+  aggregate->membership_sort_ns = add_or_malformed(
+      aggregate->membership_sort_ns,
+      part.membership_sort_ns,
+      "logical-stage membership-sort timing");
+  aggregate->membership_group_ns = add_or_malformed(
+      aggregate->membership_group_ns,
+      part.membership_group_ns,
+      "logical-stage membership-group timing");
+  aggregate->exact_count_ns = add_or_malformed(
+      aggregate->exact_count_ns, part.exact_count_ns,
+      "logical-stage exact-count timing");
+  aggregate->exact_fill_ns = add_or_malformed(
+      aggregate->exact_fill_ns, part.exact_fill_ns,
+      "logical-stage exact-fill timing");
   if (part.dsu_iterations >
       std::numeric_limits<std::uint32_t>::max() -
           aggregate->dsu_iterations) {
@@ -2214,6 +2283,49 @@ void run_transaction(
           Clock::time_point stage_begin) {
         const auto checkpoint_begin = Clock::now();
         require_logical_stage_capacity(graph, request);
+        std::fprintf(
+            stderr,
+            "ANTENNA_CONNECTIVITY_QUOTIENT "
+            "stage=%zu raw_rectangles=%llu "
+            "physical_rectangles=%llu "
+            "raw_memberships=%llu "
+            "physical_memberships=%llu classes=%llu "
+            "collapsed=%llu weighted_internal=%llu "
+            "pair_tests=%llu quotient_ns=%llu "
+            "membership_count_ns=%llu "
+            "membership_fill_ns=%llu "
+            "membership_sort_ns=%llu "
+            "membership_group_ns=%llu "
+            "exact_count_ns=%llu exact_fill_ns=%llu\n",
+            index + 1,
+            static_cast<unsigned long long>(
+                graph.total_rectangles),
+            static_cast<unsigned long long>(
+                graph.physical_total_rectangles),
+            static_cast<unsigned long long>(graph.memberships),
+            static_cast<unsigned long long>(
+                graph.physical_memberships),
+            static_cast<unsigned long long>(
+                graph.quotient_geometry_classes),
+            static_cast<unsigned long long>(
+                graph.quotient_collapsed_rectangles),
+            static_cast<unsigned long long>(
+                graph.quotient_weighted_internal_pairs),
+            static_cast<unsigned long long>(
+                graph.exact_pair_tests),
+            static_cast<unsigned long long>(graph.quotient_ns),
+            static_cast<unsigned long long>(
+                graph.membership_count_ns),
+            static_cast<unsigned long long>(
+                graph.membership_fill_ns),
+            static_cast<unsigned long long>(
+                graph.membership_sort_ns),
+            static_cast<unsigned long long>(
+                graph.membership_group_ns),
+            static_cast<unsigned long long>(
+                graph.exact_count_ns),
+            static_cast<unsigned long long>(
+                graph.exact_fill_ns));
         for (std::uint32_t low = 0; low < 12; ++low) {
           for (std::uint32_t high = low; high < 12; ++high) {
             const std::size_t slot =

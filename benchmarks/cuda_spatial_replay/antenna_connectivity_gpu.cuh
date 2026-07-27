@@ -119,6 +119,14 @@ struct Config
   // stream.
   // The default retains the historical broad-candidate census and behavior.
   bool exact_filter_before_materialization = false;
+  /*
+   * Exact-mode opt-in.  Before spatial memberships are built, identical
+   * fully-transformed singleton rectangles are represented once and their
+   * original owners are joined by canonical-min parent seeds.  Broad mode
+   * rejects this option because its per-bin occurrence census is not a
+   * logical owner-pair census.
+   */
+  bool quotient_identical_singletons = false;
   std::int64_t bin_size = 2000;
   int device = 0;
   Limits limits;
@@ -135,13 +143,33 @@ struct StageCensus
   std::uint64_t retained_rectangles = 0;
   std::uint64_t retained_rectangle_capacity = 0;
   std::uint64_t released_rectangles = 0;
+  // Physical post-quotient workload.  The legacy rectangle fields above keep
+  // their exact raw/logical semantics.
+  std::uint64_t physical_previous_rectangles = 0;
+  std::uint64_t physical_appended_rectangles = 0;
+  std::uint64_t physical_total_rectangles = 0;
+  std::uint64_t physical_retained_rectangles = 0;
+  std::uint64_t quotient_geometry_classes = 0;
+  std::uint64_t quotient_collapsed_rectangles = 0;
+  std::uint64_t quotient_weighted_internal_pairs = 0;
   std::uint64_t closed_domain_mask = 0;
   std::uint64_t memberships = 0;
+  std::uint64_t physical_memberships = 0;
   std::uint64_t occupied_cells = 0;
+  std::uint64_t exact_pair_tests = 0;
   std::uint64_t pair_occurrences = 0;
   std::uint64_t unique_candidates = 0;
   std::uint64_t exact_edges = 0;
   std::uint32_t dsu_iterations = 0;
+
+  // Complete synchronous phase envelopes for production diagnosis.
+  std::uint64_t quotient_ns = 0;
+  std::uint64_t membership_count_ns = 0;
+  std::uint64_t membership_fill_ns = 0;
+  std::uint64_t membership_sort_ns = 0;
+  std::uint64_t membership_group_ns = 0;
+  std::uint64_t exact_count_ns = 0;
+  std::uint64_t exact_fill_ns = 0;
 
   // Only the canonical slot min(domain_a, domain_b) * 64 +
   // max(domain_a, domain_b) is populated.

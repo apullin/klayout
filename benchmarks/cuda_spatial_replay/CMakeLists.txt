@@ -102,6 +102,9 @@ set_target_properties(antenna_connectivity_gpu PROPERTIES
   CUDA_RESOLVE_DEVICE_SYMBOLS OFF
   POSITION_INDEPENDENT_CODE ON
 )
+target_link_libraries(antenna_connectivity_gpu PUBLIC
+  antenna_geometry_quotient_gpu
+)
 
 add_executable(antenna_connectivity_gpu_test
   antenna_connectivity_gpu_test.cu

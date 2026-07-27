@@ -816,6 +816,102 @@ void test_exact_streaming_owner_path()
   }
 }
 
+void test_exact_geometry_quotient()
+{
+  ac::Config config = base_config(2, 10);
+  config.exact_filter_before_materialization = true;
+  config.quotient_identical_singletons = true;
+  allow(&config, 0, 0);
+  allow(&config, 1, 1);
+  allow(&config, 0, 1);
+  const std::vector<ac::RectI64> stage = {
+      {0, 0, 10, 10, 2, 0},
+      {20, 0, 25, 10, 4, 0},
+      {0, 0, 10, 10, 0, 0},
+      {10, 0, 20, 10, 3, 0},
+      {0, 0, 10, 10, 1, 0},
+      {25, 0, 30, 10, 4, 0},
+      {10, 0, 20, 10, 6, 1},
+      {30, 0, 40, 10, 7, 1},
+      {10, 0, 20, 10, 5, 1}};
+  ac::Connectivity gpu(config);
+  Oracle oracle(config);
+  const ac::StageCensus census = run_stage(
+      &gpu, &oracle, stage, 8,
+      "exact singleton geometry quotient");
+  require(
+      census.appended_rectangles == 9 &&
+          census.physical_appended_rectangles == 6 &&
+          census.physical_total_rectangles == 6 &&
+          census.quotient_geometry_classes == 4 &&
+          census.quotient_collapsed_rectangles == 3 &&
+          census.quotient_weighted_internal_pairs == 4,
+      "quotient physical rectangle census mismatch");
+  require(
+      census.physical_memberships < census.memberships &&
+          census.quotient_ns &&
+          census.membership_count_ns &&
+          census.membership_fill_ns &&
+          census.membership_sort_ns &&
+          census.membership_group_ns &&
+          census.exact_count_ns &&
+          census.exact_fill_ns,
+      "quotient physical membership/timing evidence missing");
+
+  const ac::RectI64 malformed_after_commit = {
+      40, 0, 40, 10, 8, 0};
+  require_failure_unchanged(
+      &gpu, &malformed_after_commit, 1,
+      ac::Status::malformed_input,
+      "quotient post-commit transactional failure");
+
+  ac::Connectivity consuming(config);
+  Oracle consuming_oracle(config);
+  const auto consuming_expected =
+      consuming_oracle.append(stage, 8, 0);
+  thrust::device_vector<ac::RectI64> consuming_stage(
+      stage.begin(), stage.end());
+  std::vector<std::uint32_t> consuming_labels;
+  ac::StageCensus consuming_census;
+  require_status(
+      consuming.append_stage_consuming(
+          std::move(consuming_stage), 8, 0,
+          &consuming_labels, &consuming_census),
+      ac::Status::success,
+      "exact singleton geometry quotient consuming");
+  require(
+      consuming_stage.empty(),
+      "quotient consuming input was not consumed");
+  require(
+      consuming_labels == consuming_expected.first,
+      "quotient consuming labels mismatch");
+  require_census_equal(
+      consuming_census, consuming_expected.second,
+      "quotient consuming");
+  require(
+      consuming_census.physical_appended_rectangles == 6 &&
+          consuming_census.quotient_geometry_classes == 4 &&
+          consuming_census.quotient_collapsed_rectangles == 3 &&
+          consuming_census.quotient_weighted_internal_pairs == 4,
+      "quotient consuming physical census mismatch");
+
+  ac::Config bounded = config;
+  bounded.limits.max_pair_occurrences = 3;
+  ac::Connectivity rejected(bounded);
+  require_failure_unchanged(
+      &rejected, stage.data(), stage.size(),
+      ac::Status::capacity_exceeded,
+      "quotient internal-pair capacity rejection", 8);
+
+  ac::Config invalid = config;
+  invalid.exact_filter_before_materialization = false;
+  ac::Connectivity invalid_gpu(invalid);
+  require_status(
+      invalid_gpu.configuration_status(),
+      ac::Status::invalid_configuration,
+      "quotient broad-mode rejection");
+}
+
 void test_concave_owner_rectangulation()
 {
   ac::Config config = base_config(1, 5);
@@ -1425,7 +1521,8 @@ void test_transactional_retained_compaction()
       "compaction did not preserve retained rectangle geometry");
 }
 
-void test_seeded_random_differentials(bool exact_filter)
+void test_seeded_random_differentials(
+    bool exact_filter, bool quotient = false)
 {
   constexpr std::uint32_t kSeeds = 12;
   constexpr std::uint32_t kStages = 4;
@@ -1433,6 +1530,7 @@ void test_seeded_random_differentials(bool exact_filter)
   for (std::uint32_t seed = 0; seed < kSeeds; ++seed) {
     ac::Config config = base_config(6, 7);
     config.exact_filter_before_materialization = exact_filter;
+    config.quotient_identical_singletons = quotient;
     for (std::uint32_t domain = 0; domain < 6; ++domain) {
       allow(&config, domain, domain);
       if (domain + 1 < 6) allow(&config, domain, domain + 1);
@@ -1504,6 +1602,7 @@ int main()
     test_exact_filter_before_materialization();
     test_exact_staged_pair_work_pruning();
     test_exact_streaming_owner_path();
+    test_exact_geometry_quotient();
     test_concave_owner_rectangulation();
     test_staged_antenna_bridge(false);
     test_staged_antenna_bridge(true);
@@ -1515,9 +1614,10 @@ int main()
     test_transactional_retained_compaction();
     test_seeded_random_differentials(false);
     test_seeded_random_differentials(true);
+    test_seeded_random_differentials(true, true);
     std::cout
         << "antenna_connectivity_gpu_test: PASS"
-        << " directed=22 random_seeds=24 stages_per_seed=4"
+        << " directed=24 random_seeds=36 stages_per_seed=4"
         << " cas_seeds=12"
         << std::endl;
     return EXIT_SUCCESS;
