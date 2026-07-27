@@ -31,6 +31,7 @@ enum class Status : std::uint32_t
   invalid_configuration,
   malformed_input,
   capacity_exceeded,
+  cuda_error,
   host_error
 };
 
@@ -101,6 +102,8 @@ struct Result
    * directly to their representative; exception owners point to themselves.
    */
   std::vector<std::uint32_t> parent_seeds;
+  // One validated domain per owner, in the same local-owner order.
+  std::vector<std::uint32_t> owner_domains;
   /*
    * Exact owner-pair weight carried by a spatial edge whose endpoint is this
    * owner.  A class representative carries the class multiplicity, collapsed
