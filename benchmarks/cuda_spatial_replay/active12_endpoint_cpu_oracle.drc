@@ -1,0 +1,10 @@
+source($input, $topcell)
+report("ACTIVE.1/.2 endpoint CPU oracle", $output)
+
+active = input(1, 0)
+active.width(90.nm, euclidian).output(
+  "ACTIVE.1", "ACTIVE.1 : Minimum width of active : 90nm"
+)
+active.space(80.nm, euclidian).output(
+  "ACTIVE.2", "ACTIVE.2 : Minimum spacing of active : 80nm"
+)

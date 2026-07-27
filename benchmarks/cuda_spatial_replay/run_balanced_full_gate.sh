@@ -17,6 +17,7 @@ Usage:
     [--with-active4-well-union|--without-active4-well-union] \
     [--with-contact4-active-union|--without-contact4-active-union] \
     [--with-m2-rules|--without-m2-rules] \
+    [--with-active12|--without-active12] \
     [--with-m1-base-width-space|--without-m1-base-width-space] \
     [--with-m1-5-9|--without-m1-5-9] \
     [--with-m2-width-space|--without-m2-width-space] \
@@ -103,6 +104,12 @@ in the first wave so its host lowering overlaps the other owners.  Its bounded
 device admission waits for a reserved M1 transaction to release sufficient
 GPU memory, then retries the resident transaction with the same exact capture.
 
+--with-active12 and --without-active12 both generate the identical fail-closed
+raw-ACTIVE resident ACTIVE.1/.2 transaction and toggle only its runtime
+environment.  The sole bypass is a complete two-bit empty proof at the fixed
+90-nm width and 80-nm spacing thresholds; every decline runs the literal two
+historical CPU expressions.  This mode requires --split-active12.
+
 --with-m2-width-space and --without-m2-width-space preserve the same deck and
 toggle only the separately qualified METAL2.1/.2 runtime transaction.  The
 default leaves its environment unset for compatibility with historical gates.
@@ -166,6 +173,7 @@ contact4_active_union=-1
 implant12=-1
 implant15=-1
 m2_rules=-1
+active12=-1
 m1_base_width_space=-1
 m1_5_9=-1
 m2_width_space=-1
@@ -319,6 +327,18 @@ while (($#)); do
       m2_rules=0
       shift
       ;;
+    --with-active12)
+      ((active12 == -1)) ||
+        die "choose exactly one ACTIVE.1/.2 runtime mode"
+      active12=1
+      shift
+      ;;
+    --without-active12)
+      ((active12 == -1)) ||
+        die "choose exactly one ACTIVE.1/.2 runtime mode"
+      active12=0
+      shift
+      ;;
     --with-m1-base-width-space)
       ((m1_base_width_space == -1)) ||
         die "choose exactly one M1 base-width/space runtime mode"
@@ -432,6 +452,9 @@ fi
 if ((contact4 == 0 && contact4_active_union == 1)); then
   die "--with-contact4-active-union requires the fail-closed CONTACT.4 fallback"
 fi
+if ((active12 >= 0 && ! split_active12)); then
+  die "an explicit ACTIVE.1/.2 runtime mode requires --split-active12"
+fi
 if ((active3_well_union >= 0 && active4_well_union >= 0)); then
   die "ACTIVE.3 and ACTIVE.4 exact WELL-union runtime modes are alternatives"
 fi
@@ -481,6 +504,34 @@ reference=$(readlink -f -- "${reference}")
 klayout_dir=$(dirname -- "${klayout}")
 backend_dir=$(dirname -- "${backend}")
 runtime_ld_library_path="${backend_dir}:${klayout_dir}"
+
+"${python}" - "${manifest}" "${selected_owner_count}" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest_path = pathlib.Path(sys.argv[1])
+expected_shards = int(sys.argv[2])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+shards = manifest.get("shards")
+categories = manifest.get("categories")
+if not isinstance(shards, list) or len(shards) != expected_shards:
+    raise SystemExit(
+        "balanced full CUDA gate: manifest owner count differs: "
+        f"{len(shards) if isinstance(shards, list) else 'invalid'} "
+        f"!= {expected_shards}"
+    )
+if not isinstance(categories, list) or len(categories) != 157:
+    raise SystemExit(
+        "balanced full CUDA gate: manifest category count differs: "
+        f"{len(categories) if isinstance(categories, list) else 'invalid'} "
+        "!= 157"
+    )
+print(
+    "BALANCED_FULL_MANIFEST_SHAPE "
+    f"shards={len(shards)} categories={len(categories)}"
+)
+PY
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/klayout-balanced-full-cuda-gate.XXXXXX")
 cleanup() {
@@ -550,7 +601,7 @@ if ((antenna_m1_m4 >= 0)); then
   )
 fi
 device_lease_env=()
-if ((antenna_m1_m4 >= 0 || active4_well_union >= 0)); then
+if ((antenna_m1_m4 >= 0 || active4_well_union >= 0 || m2_rules >= 0)); then
   # ACTIVE.4 performs a process-terminal cudaDeviceReset after its exact
   # certificate.  Give it the same cross-process lease as every high-memory
   # M1 owner so reset/reclamation and M1 allocation can never overlap.
@@ -585,6 +636,15 @@ if ((m1_base_width_space >= 0)); then
     "KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE=${m1_base_width_space}"
     "KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE_TELEMETRY=1"
     "KLAYOUT_DEEP_REGION_MULTI_TELEMETRY=1"
+  )
+fi
+active12_generator_args=()
+active12_env=()
+if ((active12 >= 0)); then
+  active12_generator_args=(--active12)
+  active12_env=(
+    "KLAYOUT_CUDA_ACTIVE12=${active12}"
+    "KLAYOUT_CUDA_ACTIVE12_TELEMETRY=1"
   )
 fi
 m2_width_space_env=()
@@ -636,6 +696,7 @@ run_transform "live CUDA deck generation" \
     --input "${source_deck}" --output "${generator_deck}" --m1-contact \
     "${active3_well_union_generator_args[@]}" \
     "${active4_well_union_generator_args[@]}" \
+    "${active12_generator_args[@]}" \
     "${m1_5_9_generator_args[@]}" \
     "${m2_rules_generator_args[@]}" \
     "${implant12_generator_args[@]}" \
@@ -804,6 +865,7 @@ set +e
       KLAYOUT_CUDA_ACTIVE3_TELEMETRY=1 \
       "${active3_well_union_env[@]}" \
       "${active4_well_union_env[@]}" \
+      "${active12_env[@]}" \
       "${m1_base_width_space_env[@]}" \
       KLAYOUT_CUDA_M1_WIDTH_SPACE=1 \
       KLAYOUT_CUDA_M1_WIDTH_SPACE_TELEMETRY=1 \
@@ -966,6 +1028,23 @@ else
     die "raw-M1 base-width/space-off control unexpectedly invoked exact CUDA"
   fi
 fi
+if ((active12 == 1)); then
+  require_telemetry \
+    "CUDA ACTIVE.1/ACTIVE.2 raw-union exact live lowering: outcome=certified-empty" \
+    "raw-ACTIVE ACTIVE.1/.2 certified-empty"
+  require_telemetry \
+    "CUDA ACTIVE.1/ACTIVE.2 transaction: certified-empty" \
+    "ACTIVE.1/.2 deck transaction certified-empty"
+  if grep -R -Eq --include='*.log' -- \
+       'CUDA ACTIVE[.]1/ACTIVE[.]2 .*outcome=(cpu-fallback|fallback|error|uncertain|not-empty)' \
+       "${shard_dir}"; then
+    die "ACTIVE.1/.2 candidate unexpectedly invoked fallback"
+  fi
+elif ((active12 == 0)) &&
+     grep -R -Fq --include='*.log' -- \
+       "CUDA ACTIVE.1/ACTIVE.2 raw-union" "${shard_dir}"; then
+  die "ACTIVE.1/.2-off control unexpectedly invoked exact CUDA"
+fi
 if ((m1_5_9 == 1)); then
   require_telemetry \
     "CUDA M1 exact resident morphology certificate: outcome=certified-empty" \
@@ -1001,6 +1080,17 @@ if ((m2_rules == 1)); then
   require_telemetry \
     "CUDA M2 rules transaction: certified-empty reason=prefix-clean+suffix-certified" \
     "M2 rules certified-empty"
+  require_telemetry \
+    "KLAYOUT_CUDA_DEVICE_LEASE role=m2_union " \
+    "M2 cross-process device lease"
+  if ! grep -R -Eq --include='*.log' -- \
+       'KLAYOUT_CUDA_DEVICE_LEASE role=m2_union device=[0-9]+ wait_ms=[0-9.]+ disposition=acquired' \
+       "${shard_dir}" ||
+     ! grep -R -Eq --include='*.log' -- \
+       'KLAYOUT_CUDA_DEVICE_LEASE role=m2_union hold_ms=[0-9.]+ disposition=released' \
+       "${shard_dir}"; then
+    die "M2 cross-process device lease was not acquired and released"
+  fi
 elif ((m2_rules == 0)) &&
      grep -R -Eq --include='*.log' -- \
        'CUDA M2 (exact union boundary:|live flat operands:|rules transaction:)' \
@@ -1145,4 +1235,4 @@ cat -- "${work}/launcher-summary.txt"
 cat -- "${work}/canonical-report-sha256.txt"
 cat -- "${work}/cuda-telemetry.txt"
 echo \
-  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} active3_well_union=${active3_well_union} active4_well_union=${active4_well_union} contact4_active_union=${contact4_active_union} m1_base_width_space=${m1_base_width_space} m1_5_9=${m1_5_9} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} implant15=${implant15} antenna_m1_m4=${antenna_m1_m4} poly34=${poly34} prune_poly2=${prune_poly2} split_lower_antenna=${split_lower_antenna} split_upper_antenna=${split_upper_antenna} fuse_metal_antenna=${fuse_metal_antenna} split_implant_contact=${split_implant_contact} split_active12=${split_active12}"
+  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} active3_well_union=${active3_well_union} active4_well_union=${active4_well_union} contact4_active_union=${contact4_active_union} active12=${active12} m1_base_width_space=${m1_base_width_space} m1_5_9=${m1_5_9} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} implant15=${implant15} antenna_m1_m4=${antenna_m1_m4} poly34=${poly34} prune_poly2=${prune_poly2} split_lower_antenna=${split_lower_antenna} split_upper_antenna=${split_upper_antenna} fuse_metal_antenna=${fuse_metal_antenna} split_implant_contact=${split_implant_contact} split_active12=${split_active12}"

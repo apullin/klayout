@@ -503,10 +503,15 @@ bool qualified_m1_resident_morphology_request (
       KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY &&
     request.requested_mask ==
       KLAYOUT_CUDA_SPATIAL_M1_BASE_ALL_EMPTY;
+  const bool active12_request =
+    request.opcode ==
+      KLAYOUT_CUDA_SPATIAL_ACTIVE_RAW_MANHATTAN_ACTIVE12_EMPTY &&
+    request.requested_mask ==
+      KLAYOUT_CUDA_SPATIAL_ACTIVE12_ALL_EMPTY;
   return
     request.abi_version == KLAYOUT_CUDA_SPATIAL_ABI_VERSION &&
     request.struct_size == sizeof (request) &&
-    (suffix_request || base_request) &&
+    (suffix_request || base_request || active12_request) &&
     request.option_flags ==
       KLAYOUT_CUDA_SPATIAL_M1_MORPH_QUALIFIED_OPTIONS &&
     request.format_version == 1 && request.dbu_per_micron == 2000 &&
@@ -1614,10 +1619,12 @@ public:
         env_enabled ("KLAYOUT_CUDA_M1_WIDTH_SPACE_TELEMETRY")),
       m_m1_resident_morphology_enabled (
         env_enabled ("KLAYOUT_CUDA_M1_5_9") ||
-        env_enabled ("KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE")),
+        env_enabled ("KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE") ||
+        env_enabled ("KLAYOUT_CUDA_ACTIVE12")),
       m_m1_resident_morphology_telemetry (
         env_enabled ("KLAYOUT_CUDA_M1_5_9_TELEMETRY") ||
-        env_enabled ("KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE_TELEMETRY")),
+        env_enabled ("KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE_TELEMETRY") ||
+        env_enabled ("KLAYOUT_CUDA_ACTIVE12_TELEMETRY")),
       m_m2_width_space_enabled (
         env_enabled ("KLAYOUT_CUDA_M2_WIDTH_SPACE")),
       m_m2_width_space_telemetry (
@@ -4576,7 +4583,9 @@ bool cuda_spatial_validate_m1_resident_morphology_result (
 
     const bool base_width_space =
       request.opcode ==
-        KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY;
+        KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY ||
+      request.opcode ==
+        KLAYOUT_CUDA_SPATIAL_ACTIVE_RAW_MANHATTAN_ACTIVE12_EMPTY;
     uint64_t expected_union_events = 0;
     if (! checked_multiply_u64 (
           result.union_membership_count, UINT64_C (2),

@@ -1248,7 +1248,15 @@ enum klayout_cuda_spatial_m1_resident_morphology_opcode
    * charged phase times cover both passes (and morphology is a named subset
    * of strip-scan time rather than an additive component).
    */
-  KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY = 2
+  KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY = 2,
+  /*
+   * Exact raw-ACTIVE union followed by the fixed FreePDK45 ACTIVE.1/.2
+   * width/space empty certificate.  This profile is bound to KARAW001 and to
+   * distinct strict Euclidian distances: width 180 DBU (90 nm), spacing
+   * 160 DBU (80 nm).  It shares the two-orientation resident strip machinery
+   * with opcode 2, but is a separate proof domain and cannot consume KM1RAW01.
+   */
+  KLAYOUT_CUDA_SPATIAL_ACTIVE_RAW_MANHATTAN_ACTIVE12_EMPTY = 3
 };
 
 enum klayout_cuda_spatial_m1_resident_morphology_rule
@@ -1259,13 +1267,19 @@ enum klayout_cuda_spatial_m1_resident_morphology_rule
   KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_8_EMPTY = 1u << 3,
   KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_9_EMPTY = 1u << 4,
   KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_1_EMPTY = 1u << 5,
-  KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_2_EMPTY = 1u << 6
+  KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_2_EMPTY = 1u << 6,
+  /* Opcode 3 assigns these same transaction-local bits to ACTIVE.1/.2. */
+  KLAYOUT_CUDA_SPATIAL_ACTIVE12_ACTIVE_1_EMPTY = 1u << 5,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE12_ACTIVE_2_EMPTY = 1u << 6
 };
 
 #define KLAYOUT_CUDA_SPATIAL_M1_MORPH_ALL_EMPTY ((1u << 5) - 1u)
 #define KLAYOUT_CUDA_SPATIAL_M1_BASE_ALL_EMPTY \
   (KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_1_EMPTY | \
    KLAYOUT_CUDA_SPATIAL_M1_MORPH_M1_2_EMPTY)
+#define KLAYOUT_CUDA_SPATIAL_ACTIVE12_ALL_EMPTY \
+  (KLAYOUT_CUDA_SPATIAL_ACTIVE12_ACTIVE_1_EMPTY | \
+   KLAYOUT_CUDA_SPATIAL_ACTIVE12_ACTIVE_2_EMPTY)
 
 enum klayout_cuda_spatial_m1_resident_morphology_option_flag
 {

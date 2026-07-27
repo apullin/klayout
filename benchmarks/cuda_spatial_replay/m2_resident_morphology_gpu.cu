@@ -51,15 +51,23 @@ using Clock = std::chrono::steady_clock;
 constexpr std::uint32_t kThreads = 256;
 constexpr std::uint32_t kMorphMaxActiveSlabs = 128;
 constexpr std::int64_t kImplantBaseWidthSpaceDistance = 90;
+constexpr std::int64_t kActiveWidthDistance = 180;
+constexpr std::int64_t kActiveSpacingDistance = 160;
 
 bool valid_base_width_space_profile(
-    morph::BaseWidthSpaceProfile profile, std::int64_t distance)
+    morph::BaseWidthSpaceProfile profile, std::int64_t width_distance,
+    std::int64_t spacing_distance)
 {
   switch (profile) {
   case morph::BaseWidthSpaceProfile::m1_130:
-    return distance == m1ws::kQualifiedSceneCoordinateDistance;
+    return width_distance == m1ws::kQualifiedSceneCoordinateDistance &&
+           spacing_distance == m1ws::kQualifiedSceneCoordinateDistance;
   case morph::BaseWidthSpaceProfile::implant_90:
-    return distance == kImplantBaseWidthSpaceDistance;
+    return width_distance == kImplantBaseWidthSpaceDistance &&
+           spacing_distance == kImplantBaseWidthSpaceDistance;
+  case morph::BaseWidthSpaceProfile::active_180_160:
+    return width_distance == kActiveWidthDistance &&
+           spacing_distance == kActiveSpacingDistance;
   }
   return false;
 }
@@ -439,6 +447,7 @@ enum BaseWidthSpaceStatus : std::uint32_t
   kBaseWidthSpaceEndpointCoordinate = 1u << 3,
   kBaseWidthSpaceEndpointEmit = 1u << 4,
   kBaseWidthSpaceCornerWorkCapacity = 1u << 5,
+  kBaseWidthSpaceEndpointTopology = 1u << 6,
 };
 
 struct BaseWidthSpaceDeviceCounters
@@ -448,6 +457,9 @@ struct BaseWidthSpaceDeviceCounters
   unsigned long long space_violations;
   unsigned long long corner_pair_work;
   unsigned long long corner_candidates;
+  unsigned long long corner_width_candidates;
+  unsigned long long corner_space_candidates;
+  unsigned long long corner_ambiguous_candidates;
 };
 
 void sample_base_width_space_memory(
@@ -486,15 +498,21 @@ __device__ void base_width_space_add(
 }
 
 __global__ void scan_base_width_space_kernel(
-    DeviceBandView source, std::int64_t distance,
+    DeviceBandView source, std::int64_t width_distance,
+    std::int64_t spacing_distance,
     morph::BaseWidthSpaceProfile profile,
     BaseWidthSpaceDeviceCounters *counters, std::uint32_t *status)
 {
   const bool qualified =
       (profile == morph::BaseWidthSpaceProfile::m1_130 &&
-       distance == m1ws::kQualifiedSceneCoordinateDistance) ||
+       width_distance == m1ws::kQualifiedSceneCoordinateDistance &&
+       spacing_distance == m1ws::kQualifiedSceneCoordinateDistance) ||
       (profile == morph::BaseWidthSpaceProfile::implant_90 &&
-       distance == kImplantBaseWidthSpaceDistance);
+       width_distance == kImplantBaseWidthSpaceDistance &&
+       spacing_distance == kImplantBaseWidthSpaceDistance) ||
+      (profile == morph::BaseWidthSpaceProfile::active_180_160 &&
+       width_distance == kActiveWidthDistance &&
+       spacing_distance == kActiveSpacingDistance);
   if (!qualified) {
     if (!blockIdx.x && !threadIdx.x) {
       atomicOr(
@@ -535,7 +553,7 @@ __global__ void scan_base_width_space_kernel(
           m1ws::detail::coordinate_gap(current.bottom, current.top);
       local_width_violations +=
           thickness <
-          static_cast<std::uint64_t>(distance);
+          static_cast<std::uint64_t>(width_distance);
 
       if (local) {
         const StripInterval previous =
@@ -554,7 +572,7 @@ __global__ void scan_base_width_space_kernel(
             m1ws::detail::coordinate_gap(
                 previous.top, current.bottom);
         local_space_violations +=
-            gap < static_cast<std::uint64_t>(distance);
+            gap < static_cast<std::uint64_t>(spacing_distance);
       }
     }
 
@@ -581,18 +599,33 @@ enum BaseBoundaryKind : std::uint32_t
   kBaseBoundaryTop = 1,
 };
 
+enum BaseBoundarySide : std::uint32_t
+{
+  kBaseBoundaryLeft = 0,
+  kBaseBoundaryRight = 1,
+};
+
 struct alignas(16) BaseBoundaryEndpoint
 {
   std::uint64_t cell_key;
   std::int64_t x;
   std::int64_t y;
   std::uint32_t kind;
-  std::uint32_t reserved;
+  std::uint32_t side;
+  std::uint32_t occupied_quadrants;
 };
 
 static_assert(
-    sizeof(BaseBoundaryEndpoint) == 32,
+    sizeof(BaseBoundaryEndpoint) == 48,
     "unexpected base-boundary endpoint padding");
+
+enum BaseBoundaryQuadrant : std::uint32_t
+{
+  kBaseBoundaryLeftBelow = 1u << 0,
+  kBaseBoundaryLeftAbove = 1u << 1,
+  kBaseBoundaryRightBelow = 1u << 2,
+  kBaseBoundaryRightAbove = 1u << 3,
+};
 
 __device__ bool slab_has_base_boundary(
     DeviceBandView source, std::uint32_t slab, std::int64_t coordinate,
@@ -622,6 +655,104 @@ __device__ bool slab_has_base_boundary(
   return (kind == kBaseBoundaryBottom
               ? interval.bottom
               : interval.top) == coordinate;
+}
+
+__device__ bool slab_occupies_base_quadrant(
+    DeviceBandView source, std::uint32_t slab,
+    std::int64_t coordinate, bool above)
+{
+  const std::uint64_t offset = source.slab_offsets[slab];
+  const std::uint32_t count = source.slab_counts[slab];
+  std::uint32_t first = 0;
+  std::uint32_t last = count;
+  while (first < last) {
+    const std::uint32_t middle = first + (last - first) / 2;
+    const StripInterval interval =
+        source.intervals[offset + middle];
+    const bool starts_before_quadrant =
+        above ? interval.bottom <= coordinate
+              : interval.bottom < coordinate;
+    if (starts_before_quadrant) {
+      first = middle + 1;
+    } else {
+      last = middle;
+    }
+  }
+  if (!first) return false;
+  const StripInterval interval =
+      source.intervals[offset + first - 1];
+  return above ? interval.top > coordinate
+               : interval.top >= coordinate;
+}
+
+__device__ std::uint32_t base_boundary_occupied_quadrants(
+    DeviceBandView source, const StripInterval &interval,
+    std::uint32_t bit)
+{
+  const std::uint32_t slab = interval.slab;
+  const std::int64_t coordinate =
+      bit >= 2 ? interval.top : interval.bottom;
+  const std::uint32_t left_slab =
+      bit & 1u ? slab : slab - 1;
+  const std::uint32_t right_slab =
+      bit & 1u ? slab + 1 : slab;
+  std::uint32_t quadrants = 0;
+  if ((bit & 1u || slab) &&
+      slab_occupies_base_quadrant(
+          source, left_slab, coordinate, false)) {
+    quadrants |= kBaseBoundaryLeftBelow;
+  }
+  if ((bit & 1u || slab) &&
+      slab_occupies_base_quadrant(
+          source, left_slab, coordinate, true)) {
+    quadrants |= kBaseBoundaryLeftAbove;
+  }
+  if (right_slab < source.x_slabs &&
+      slab_occupies_base_quadrant(
+          source, right_slab, coordinate, false)) {
+    quadrants |= kBaseBoundaryRightBelow;
+  }
+  if (right_slab < source.x_slabs &&
+      slab_occupies_base_quadrant(
+          source, right_slab, coordinate, true)) {
+    quadrants |= kBaseBoundaryRightAbove;
+  }
+  return quadrants;
+}
+
+__device__ bool base_boundary_quadrant_toward(
+    const BaseBoundaryEndpoint &endpoint,
+    const BaseBoundaryEndpoint &other)
+{
+  const bool right = endpoint.x < other.x;
+  const bool above = endpoint.y < other.y;
+  const std::uint32_t quadrant =
+      right
+          ? (above ? kBaseBoundaryRightAbove
+                   : kBaseBoundaryRightBelow)
+          : (above ? kBaseBoundaryLeftAbove
+                   : kBaseBoundaryLeftBelow);
+  return endpoint.occupied_quadrants & quadrant;
+}
+
+__device__ bool base_boundary_quadrants_valid(
+    std::uint32_t quadrants)
+{
+  const std::uint32_t occupied = __popc(quadrants);
+  return occupied == 1 || occupied == 3 ||
+         (occupied == 2 &&
+          (quadrants ==
+               (kBaseBoundaryLeftBelow |
+                kBaseBoundaryLeftAbove) ||
+           quadrants ==
+               (kBaseBoundaryRightBelow |
+                kBaseBoundaryRightAbove) ||
+           quadrants ==
+               (kBaseBoundaryLeftBelow |
+                kBaseBoundaryRightBelow) ||
+           quadrants ==
+               (kBaseBoundaryLeftAbove |
+                kBaseBoundaryRightAbove)));
 }
 
 __device__ std::uint32_t base_boundary_endpoint_mask(
@@ -698,6 +829,18 @@ __device__ BaseBoundaryEndpoint make_base_boundary_endpoint(
       bit >= 2 ? interval.top : interval.bottom;
   endpoint.kind =
       bit >= 2 ? kBaseBoundaryTop : kBaseBoundaryBottom;
+  endpoint.side =
+      bit & 1u ? kBaseBoundaryRight : kBaseBoundaryLeft;
+  endpoint.occupied_quadrants =
+      base_boundary_occupied_quadrants(
+          source, interval, bit);
+  if (!base_boundary_quadrants_valid(
+          endpoint.occupied_quadrants)) {
+    atomicOr(
+        status,
+        static_cast<std::uint32_t>(
+            kBaseWidthSpaceEndpointTopology));
+  }
 
   const std::uint64_t x_key =
       m1ws::detail::ordered_key(endpoint.x);
@@ -800,7 +943,8 @@ struct BaseBoundaryEndpointLess
       return first.kind < second.kind;
     }
     if (first.x != second.x) return first.x < second.x;
-    return first.y < second.y;
+    if (first.y != second.y) return first.y < second.y;
+    return first.side < second.side;
   }
 };
 
@@ -933,13 +1077,14 @@ __global__ void count_base_boundary_endpoint_pair_work_kernel(
 
 __global__ void scan_base_boundary_endpoint_pairs_kernel(
     const BaseBoundaryEndpoint *endpoints,
-    std::uint64_t endpoint_count, std::int64_t distance,
+    std::uint64_t endpoint_count, std::int64_t width_distance,
+    std::int64_t spacing_distance,
     BaseWidthSpaceDeviceCounters *counters, std::uint32_t *status)
 {
-  const std::uint64_t qualified_distance =
-      static_cast<std::uint64_t>(distance);
-  const std::uint64_t qualified_distance_squared =
-      qualified_distance * qualified_distance;
+  const std::uint64_t qualified_width_distance =
+      static_cast<std::uint64_t>(width_distance);
+  const std::uint64_t qualified_spacing_distance =
+      static_cast<std::uint64_t>(spacing_distance);
   for (std::uint64_t index =
            static_cast<std::uint64_t>(blockIdx.x) * blockDim.x +
            threadIdx.x;
@@ -951,6 +1096,9 @@ __global__ void scan_base_boundary_endpoint_pairs_kernel(
     const std::uint32_t cell_y =
         static_cast<std::uint32_t>(endpoint.cell_key);
     unsigned long long local_candidates = 0;
+    unsigned long long local_width_candidates = 0;
+    unsigned long long local_space_candidates = 0;
+    unsigned long long local_ambiguous_candidates = 0;
     for (int x_delta = -1; x_delta <= 1; ++x_delta) {
       if ((x_delta < 0 && !cell_x) ||
           (x_delta > 0 && cell_x == UINT32_MAX)) {
@@ -995,14 +1143,101 @@ __global__ void scan_base_boundary_endpoint_pairs_kernel(
           const std::uint64_t y_gap =
               m1ws::detail::coordinate_gap(
                   endpoint.y, other.y);
+          // A pair whose projections meet at one endpoint is not owned by a
+          // strip scan: after the orthogonal pass it has x_gap == 0 and a
+          // positive y_gap, and can still be a strict Euclidean spacing hit.
+          // Retain the historical asymmetric ownership rule so only a
+          // positive x gap with zero y gap is deferred to that orthogonal
+          // pass.  Coincident endpoints remain conservative candidates.
+          if (!y_gap && x_gap) {
+            continue;
+          }
+          const bool projection_touch = !x_gap;
+          const bool horizontal_endpoints_face =
+              projection_touch
+                  ? endpoint.side != other.side
+                  : endpoint.x < other.x
+                        ? endpoint.side == kBaseBoundaryRight &&
+                              other.side == kBaseBoundaryLeft
+                        : endpoint.side == kBaseBoundaryLeft &&
+                              other.side == kBaseBoundaryRight;
+          if (!horizontal_endpoints_face) {
+            continue;
+          }
+          bool endpoint_toward_is_occupied = false;
+          bool other_toward_is_occupied = false;
+          bool projection_touch_ambiguous = false;
+          if (projection_touch) {
+            if (!y_gap) {
+              projection_touch_ambiguous = true;
+            } else {
+              const std::uint32_t endpoint_toward_mask =
+                  endpoint.y < other.y
+                      ? kBaseBoundaryLeftAbove |
+                            kBaseBoundaryRightAbove
+                      : kBaseBoundaryLeftBelow |
+                            kBaseBoundaryRightBelow;
+              const std::uint32_t other_toward_mask =
+                  other.y < endpoint.y
+                      ? kBaseBoundaryLeftAbove |
+                            kBaseBoundaryRightAbove
+                      : kBaseBoundaryLeftBelow |
+                            kBaseBoundaryRightBelow;
+              const std::uint32_t endpoint_toward_count =
+                  __popc(endpoint.occupied_quadrants &
+                         endpoint_toward_mask);
+              const std::uint32_t other_toward_count =
+                  __popc(other.occupied_quadrants &
+                         other_toward_mask);
+              endpoint_toward_is_occupied =
+                  endpoint_toward_count == 2;
+              other_toward_is_occupied =
+                  other_toward_count == 2;
+              projection_touch_ambiguous =
+                  endpoint_toward_count == 1 ||
+                  other_toward_count == 1;
+            }
+          } else {
+            endpoint_toward_is_occupied =
+                base_boundary_quadrant_toward(endpoint, other);
+            other_toward_is_occupied =
+                base_boundary_quadrant_toward(other, endpoint);
+          }
+          // The closest finite-endpoint ray is a width relation only when it
+          // enters the canonical union at both ends, and a spacing relation
+          // only when it stays outside at both ends.  Mixed local topology
+          // cannot be attributed exactly without tracing the ray, so use the
+          // larger threshold and force the empty-only proof to decline if it
+          // could matter.
+          const bool mixed_topology =
+              projection_touch_ambiguous ||
+              endpoint_toward_is_occupied !=
+                  other_toward_is_occupied;
+          const std::uint64_t qualified_distance =
+              mixed_topology
+                  ? qualified_width_distance >
+                            qualified_spacing_distance
+                        ? qualified_width_distance
+                        : qualified_spacing_distance
+                  : endpoint_toward_is_occupied
+                        ? qualified_width_distance
+                        : qualified_spacing_distance;
+          const std::uint64_t qualified_distance_squared =
+              qualified_distance * qualified_distance;
           if (x_gap >= qualified_distance ||
-              y_gap >= qualified_distance ||
-              (y_gap == 0 && x_gap != 0)) {
+              y_gap >= qualified_distance) {
             continue;
           }
           if (x_gap * x_gap + y_gap * y_gap <
               qualified_distance_squared) {
             ++local_candidates;
+            if (mixed_topology) {
+              ++local_ambiguous_candidates;
+            } else if (endpoint_toward_is_occupied) {
+              ++local_width_candidates;
+            } else {
+              ++local_space_candidates;
+            }
           }
         }
       }
@@ -1011,6 +1246,21 @@ __global__ void scan_base_boundary_endpoint_pairs_kernel(
       base_width_space_add(
           &counters->corner_candidates,
           local_candidates, status);
+    }
+    if (local_width_candidates) {
+      base_width_space_add(
+          &counters->corner_width_candidates,
+          local_width_candidates, status);
+    }
+    if (local_space_candidates) {
+      base_width_space_add(
+          &counters->corner_space_candidates,
+          local_space_candidates, status);
+    }
+    if (local_ambiguous_candidates) {
+      base_width_space_add(
+          &counters->corner_ambiguous_candidates,
+          local_ambiguous_candidates, status);
     }
   }
 }
@@ -1027,6 +1277,8 @@ std::uint64_t certify_base_boundary_endpoints(
     throw std::runtime_error(
         "zero base-width/space corner capacity");
   }
+  const std::int64_t corner_distance =
+      std::max(context.width_distance, context.spacing_distance);
   auto policy = thrust::cuda::par.on(stream);
   thrust::device_vector<unsigned long long> endpoint_count_device(1);
   thrust::fill(
@@ -1067,7 +1319,7 @@ std::uint64_t certify_base_boundary_endpoints(
   emit_base_boundary_endpoints_kernel<<<
       launch_blocks(source.interval_count), kThreads, 0, stream>>>(
       source, context.origin_x, context.origin_y,
-      context.distance,
+      corner_distance,
       thrust::raw_pointer_cast(endpoints.data()),
       endpoint_count,
       thrust::raw_pointer_cast(emitted_device.data()), status);
@@ -1115,16 +1367,23 @@ std::uint64_t certify_base_boundary_endpoints(
   cuda_require(
       cudaStreamSynchronize(stream),
       "base boundary pair-work preflight synchronize");
-  if (preflight_status ||
+  if ((preflight_status &
+       static_cast<std::uint32_t>(
+           kBaseWidthSpaceCornerWorkCapacity)) ||
       preflight_counters.corner_pair_work >
           context.max_corner_pair_work) {
     throw std::runtime_error(
         "base boundary endpoint pair-work capacity");
   }
+  if (preflight_status) {
+    throw std::runtime_error(
+        "base boundary endpoint topology invariant");
+  }
   scan_base_boundary_endpoint_pairs_kernel<<<
       launch_blocks(endpoint_count), kThreads, 0, stream>>>(
       thrust::raw_pointer_cast(endpoints.data()),
-      endpoint_count, context.distance,
+      endpoint_count, context.width_distance,
+      context.spacing_distance,
       counters, status);
   cuda_require(
       cudaGetLastError(), "scan base boundary endpoint pairs");
@@ -2487,7 +2746,8 @@ void consume_base_width_space_hook(
   auto *context = static_cast<BaseWidthSpaceContext *>(opaque);
   if (!context || context->invoked ||
       !valid_base_width_space_profile(
-          context->profile, context->distance)) {
+          context->profile, context->width_distance,
+          context->spacing_distance)) {
     throw std::runtime_error(
         "resident base-width/space hook state");
   }
@@ -2515,7 +2775,8 @@ void consume_base_width_space_hook(
   thrust::fill(policy, status.begin(), status.end(), 0);
   scan_base_width_space_kernel<<<
       launch_blocks(source.x_slabs), kThreads, 0, stream>>>(
-      source, context->distance, context->profile,
+      source, context->width_distance, context->spacing_distance,
+      context->profile,
       thrust::raw_pointer_cast(counters.data()),
       thrust::raw_pointer_cast(status.data()));
   cuda_require(
@@ -2553,6 +2814,12 @@ void consume_base_width_space_hook(
       host_counters.corner_pair_work;
   context->result.corner_candidates =
       host_counters.corner_candidates;
+  context->result.corner_width_candidates =
+      host_counters.corner_width_candidates;
+  context->result.corner_space_candidates =
+      host_counters.corner_space_candidates;
+  context->result.corner_ambiguous_candidates =
+      host_counters.corner_ambiguous_candidates;
   context->result.device_flags = host_status;
   context->result.elapsed_ms =
       elapsed_ms(begin, Clock::now());
@@ -2567,7 +2834,8 @@ manhattan_union::ResidentStripHook make_base_width_space_hook(
 {
   if (!context || context->invoked ||
       !valid_base_width_space_profile(
-          context->profile, context->distance)) {
+          context->profile, context->width_distance,
+          context->spacing_distance)) {
     throw std::runtime_error(
         "invalid resident base-width/space hook context");
   }

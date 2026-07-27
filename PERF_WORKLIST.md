@@ -3276,6 +3276,64 @@ not just wall time.
         Rejected allocation-cliff evidence remains at
         `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.{iezRHd,AVM7Az,1Mbwu2}`.
 
+      - [x] **Certify ACTIVE.1/.2 directly from the resident raw-ACTIVE
+        union — completed as a qualified roof-removal result:** the additive,
+        default-off transaction classifies every canonical union-boundary
+        endpoint from its exact four-quadrant material mask.  Material/material
+        pairs take the fixed 180-DBU width relation, void/void pairs take the
+        fixed 160-DBU spacing relation, and mixed, invalid, non-manifold, hit,
+        uncertain, capacity, digest, ABI, or device outcomes retain the literal
+        historical CPU batch.  An independent 107-case CPU topology oracle and
+        248-case GPU differential pass, including all eight transforms,
+        threshold-minus/equal/plus, holes, duplicate/overlapping/edge-touching
+        union inputs, point-touch decline, mixed topology, and disconnected
+        projection-touch spacing in every orientation.
+
+        The production deck composes this transaction after the accepted
+        ACTIVE.4 transaction without replacing it.  A first wrapper revision
+        accidentally selected ACTIVE.3 instead of ACTIVE.4; its otherwise
+        exact run is explicitly rejected from performance accounting and
+        retained at
+        `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.BAayVd`.
+        The corrected gate requires both ACTIVE.4 and ACTIVE.1/.2
+        certificates and literal fallbacks, the ACTIVE.4 terminal
+        sync/trim/reset/release sequence, the resident-M2 lease, exactly 11
+        ordered owners, 10 jobs, and exactly 157 singly owned categories.
+
+        Independent review found and blocked a projection-touch false-clean
+        in the first candidate cohort: the endpoint pass discarded equal-axis
+        pairs in both orientations.  The corrected code restores asymmetric
+        orientation ownership, accepts both opposite endpoint-side orderings,
+        classifies the complete toward half-plane, and conservatively treats a
+        half-occupied projection touch at the larger threshold.  All 24
+        orientation/threshold regressions pass.  The pre-fix runs are retained
+        but excluded from final accounting at
+        `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.{u4pI1V,xXJ4bc,DoxMfL}`.
+
+        Three fresh exact corrected launches took **35.063538, 35.131996, and
+        34.997588 s**, averaging **35.064374 s**.  Against the immediately
+        preceding accepted ACTIVE.4 cohort mean of 35.440524 s, this removes
+        **0.376150 real seconds / 1.061% of full-launch wall**.  This is below
+        the normal whole-run acceptance threshold and is booked only as an
+        exact additive infrastructure/roof-removal result.  Child-plus-merge
+        timing is 30.267337 s mean; the children window changed
+        **30.601086 to 30.246704 s**, removing **0.354381 s / 1.158%**.
+        The saved-time value is computed from the unrounded replicate means.
+        The `active12` owner itself changed **30.598131 to 10.929783 s**:
+        **19.668348 real seconds / 64.280% less owner wall**.
+
+        Every run retained canonical report SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`,
+        pinned the transformed deck at
+        `da7a4f2ff3386a784cfbaeea6afc6615d6cd043f2b61770e9f0f7e5ca3827eb7`,
+        and used manifest SHA-256
+        `644b93dff13fa7a99179a851fb7add4dd5985553c0abddaf98a5aafd3671535b`.
+        The new deterministic roof is the explicitly serialized raw
+        `m1_width_space` then `m1_via_class` chain: the first finishes at
+        16.8445--16.9126 s and the second finishes at the 30.1829--30.3074 s child
+        boundary.  Evidence:
+        `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.{rPnhZQ,Wxrjod,wmZLrL}`.
+
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
         second and third reusable compositions, separate canonical

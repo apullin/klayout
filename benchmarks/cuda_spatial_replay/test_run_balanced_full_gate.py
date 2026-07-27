@@ -335,6 +335,7 @@ class BalancedFullGateStaticTest(unittest.TestCase):
             "--with-active4-well-union",
             "--with-contact4-active-union",
             "--with-m2-rules",
+            "--with-active12",
             "--with-m1-base-width-space",
             "--with-m1-5-9",
             "--with-m2-width-space",
@@ -471,7 +472,7 @@ class BalancedFullGateStaticTest(unittest.TestCase):
         )
         lease_condition = re.search(
             r"if \(\(antenna_m1_m4 >= 0 \|\| "
-            r"active4_well_union >= 0\)\); then"
+            r"active4_well_union >= 0 \|\| m2_rules >= 0\)\); then"
             r"(.*?)\nfi",
             self.launcher_text,
             flags=re.DOTALL,
@@ -540,6 +541,133 @@ class BalancedFullGateStaticTest(unittest.TestCase):
             "are alternatives",
             conflicting.stderr,
         )
+
+    def test_active12_control_and_candidate_share_one_split_deck(
+        self,
+    ) -> None:
+        self.assertIn(
+            "active12_generator_args=(--active12)",
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_CUDA_ACTIVE12=${active12}"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_CUDA_ACTIVE12_TELEMETRY=1"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            "CUDA ACTIVE.1/ACTIVE.2 raw-union exact live lowering:"
+            " outcome=certified-empty",
+            self.launcher_text,
+        )
+        self.assertIn(
+            "CUDA ACTIVE.1/ACTIVE.2 transaction: certified-empty",
+            self.launcher_text,
+        )
+
+        for mode in ("--with-active12", "--without-active12"):
+            with self.subTest(mode=mode):
+                missing_split = self.run_preflight(mode)
+                self.assertEqual(missing_split.returncode, 2)
+                self.assertIn(
+                    "requires --split-active12",
+                    missing_split.stderr,
+                )
+
+                accepted = self.run_preflight("--split-active12", mode)
+                self.assertEqual(accepted.returncode, 2)
+                self.assertNotIn(
+                    "requires --split-active12",
+                    accepted.stderr,
+                )
+                self.assertIn("KLayout is not executable", accepted.stderr)
+
+        conflicting = self.run_preflight(
+            "--split-active12",
+            "--with-active12",
+            "--without-active12",
+        )
+        self.assertEqual(conflicting.returncode, 2)
+        self.assertIn(
+            "choose exactly one ACTIVE.1/.2 runtime mode",
+            conflicting.stderr,
+        )
+
+    def test_active4_active12_m2_compose_as_one_exact_full_plan(
+        self,
+    ) -> None:
+        self.assertLess(
+            self.launcher_text.index(
+                '"${active4_well_union_generator_args[@]}"'
+            ),
+            self.launcher_text.index('"${active12_generator_args[@]}"'),
+        )
+        composed = self.run_preflight(
+            "--fuse-metal-antenna",
+            "--with-antenna-m1-m4",
+            "--split-implant-contact",
+            "--split-active12",
+            "--with-active4-well-union",
+            "--with-active12",
+            "--with-m2-rules",
+            "--with-m1-base-width-space",
+            "--with-m1-5-9",
+        )
+        self.assertEqual(composed.returncode, 2)
+        self.assertNotIn(
+            "ACTIVE.3 and ACTIVE.4 exact WELL-union runtime modes "
+            "are alternatives",
+            composed.stderr,
+        )
+        self.assertIn("KLayout is not executable", composed.stderr)
+
+        for marker in (
+            "CUDA ACTIVE.4 exact resident WELL-union subset certificate:"
+            " outcome=certified-empty",
+            "CUDA ACTIVE.4 exact WELL-union transaction: certified-empty",
+            "KLAYOUT_CUDA_DEVICE_LEASE role=active4_well_union ",
+            "disposition=terminal-reset",
+            "CUDA ACTIVE.1/ACTIVE.2 raw-union exact live lowering:"
+            " outcome=certified-empty",
+            "CUDA ACTIVE.1/ACTIVE.2 transaction: certified-empty",
+            "CUDA M2 exact union boundary: outcome=complete",
+            "CUDA M2 rules transaction: certified-empty "
+            "reason=prefix-clean+suffix-certified",
+            "KLAYOUT_CUDA_DEVICE_LEASE role=m2_union ",
+            "M2 cross-process device lease was not acquired and released",
+            "BALANCED_FULL_MANIFEST_SHAPE ",
+            "len(categories) != 157",
+        ):
+            self.assertIn(marker, self.launcher_text)
+
+        exact_plan = self.owner_plan(
+            split_lower=False,
+            split_upper=False,
+            fuse_metal=True,
+            split_implant_contact=True,
+            split_active12=True,
+            m1_base_mode_explicit=True,
+            m1_5_9_mode_explicit=True,
+        )
+        self.assertEqual(
+            exact_plan,
+            (
+                "implant_contact",
+                "contact",
+                "antenna_m1_m4",
+                "m2_rules",
+                "m1_enclosure",
+                "active12",
+                "via1_upper_active12",
+                "grid",
+                "antenna_feol",
+                "m1_width_space",
+                "m1_via_class",
+            ),
+        )
+        self.assertEqual(len(exact_plan), 11)
 
     def test_full_gate_rejects_any_via1_or_m1_contact_fallback(
         self,

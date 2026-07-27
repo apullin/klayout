@@ -413,6 +413,44 @@ end""",
     )
 
 
+def add_active12(text: str) -> str:
+    """Add the fail-closed exact raw-ACTIVE ACTIVE.1/.2 transaction."""
+
+    cpu = """active.width(90.nm, euclidian).output("ACTIVE.1", "ACTIVE.1 : Minimum width of active : 90nm")
+active.space(80.nm, euclidian).output("ACTIVE.2", "ACTIVE.2 : Minimum spacing of active : 80nm")"""
+    return replace_once(
+        text,
+        cpu,
+        """# The optional certificate serializes pristine physical ACTIVE,
+# constructs its exact integer-set union on the selected device, and checks
+# both unchanged strict Euclidian rules. Any unavailable method, exception,
+# capacity miss, hit, or proof-validation failure executes both historical CPU
+# expressions below byte-for-byte.
+active12_request = ENV["KLAYOUT_CUDA_ACTIVE12"].to_s
+active12_requested = !active12_request.empty? &amp;&amp; active12_request != "0" &amp;&amp; active12_request != "false" &amp;&amp; active12_request != "off"
+active12_clean = false
+if active12_requested
+  begin
+    active12_clean = active.data.respond_to?(:cuda_active12_clean?) &amp;&amp; active.data.cuda_active12_clean?
+  rescue StandardError =&gt; active12_error
+    active12_clean = false
+    info("CUDA ACTIVE.1/ACTIVE.2 Ruby fallback: #{active12_error}")
+  end
+  info("CUDA ACTIVE.1/ACTIVE.2 transaction: #{active12_clean ? 'certified-empty' : 'full-cpu-fallback'}")
+end
+active12_empty = polygon_layer if active12_clean
+
+if active12_clean
+  active12_empty.output("ACTIVE.1", "ACTIVE.1 : Minimum width of active : 90nm")
+  active12_empty.output("ACTIVE.2", "ACTIVE.2 : Minimum spacing of active : 80nm")
+else
+  active.width(90.nm, euclidian).output("ACTIVE.1", "ACTIVE.1 : Minimum width of active : 90nm")
+  active.space(80.nm, euclidian).output("ACTIVE.2", "ACTIVE.2 : Minimum spacing of active : 80nm")
+end""",
+        "ACTIVE.1/.2 exact resident transaction",
+    )
+
+
 def add_implant12(text: str) -> str:
     return replace_once(
         text,
@@ -797,6 +835,11 @@ def main() -> int:
         help="also add the fail-closed exact raw-M1 M1.5-.9 transaction",
     )
     parser.add_argument(
+        "--active12",
+        action="store_true",
+        help="also add the fail-closed exact raw-ACTIVE ACTIVE.1/.2 transaction",
+    )
+    parser.add_argument(
         "--poly34",
         action="store_true",
         help="also add the fail-closed POLY.3/.4 transaction",
@@ -849,6 +892,8 @@ def main() -> int:
         output = add_m2_rules(output)
     if args.m1_5_9:
         output = add_m1_5_9(output)
+    if args.active12:
+        output = add_active12(output)
     if args.implant12:
         output = add_implant12(output)
     if args.implant15:

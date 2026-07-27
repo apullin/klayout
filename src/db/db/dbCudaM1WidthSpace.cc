@@ -1938,27 +1938,38 @@ bool cuda_well_union_raw_manhattan_build_scene (
   return false;
 }
 
-static bool cuda_m1_raw_resident_try_empty (
-  const db::DeepLayer &raw_metal1, bool base_width_space)
+static bool cuda_raw_resident_try_empty (
+  const db::DeepLayer &raw_layer, bool base_width_space, bool active12)
 {
   // Keep the new raw M1.1/M1.2 certificate independently switchable from
   // the established M1.5-.9 resident path.  Besides making deployment
   // fail-safe, this permits same-binary A/B timing and report gates.
+  if (active12 && ! base_width_space) {
+    return false;
+  }
   if (base_width_space &&
-      ! env_enabled ("KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE")) {
+      ! env_enabled (
+        active12
+          ? "KLAYOUT_CUDA_ACTIVE12"
+          : "KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE")) {
     return false;
   }
   const bool telemetry =
     env_enabled (
-      base_width_space
-        ? "KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE_TELEMETRY"
-        : "KLAYOUT_CUDA_M1_5_9_TELEMETRY");
+      active12
+        ? "KLAYOUT_CUDA_ACTIVE12_TELEMETRY"
+        : base_width_space
+          ? "KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE_TELEMETRY"
+          : "KLAYOUT_CUDA_M1_5_9_TELEMETRY");
   const auto resident_limit =
-    [base_width_space] (const char *suffix, uint64_t fallback) {
+    [base_width_space, active12] (
+      const char *suffix, uint64_t fallback) {
       std::string name (
-        base_width_space
-          ? "KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE_"
-          : "KLAYOUT_CUDA_M1_5_9_");
+        active12
+          ? "KLAYOUT_CUDA_ACTIVE12_"
+          : base_width_space
+            ? "KLAYOUT_CUDA_M1_BASE_WIDTH_SPACE_"
+            : "KLAYOUT_CUDA_M1_5_9_");
       name += suffix;
       return env_u64 (name.c_str (), fallback);
     };
@@ -2072,18 +2083,27 @@ static bool cuda_m1_raw_resident_try_empty (
           std::numeric_limits<uint32_t>::max () ||
         device > uint64_t (std::numeric_limits<int32_t>::max ())) {
       throw M1WidthSpaceDecline (
-        base_width_space
-          ? "an M1.1/M1.2 raw-union capacity or device is invalid"
-          : "an M1.5-.9 capacity or device is invalid");
+        active12
+          ? "an ACTIVE.1/ACTIVE.2 raw-union capacity or device is invalid"
+          : base_width_space
+            ? "an M1.1/M1.2 raw-union capacity or device is invalid"
+            : "an M1.5-.9 capacity or device is invalid");
     }
 
     CudaRawManhattanScene scene;
     std::string reason;
-    if (! cuda_m1_raw_manhattan_build_scene (
-          raw_metal1, scene_limits, scene, &reason)) {
+    const bool scene_built =
+      active12
+        ? cuda_active_raw_manhattan_build_scene (
+            raw_layer, scene_limits, scene, &reason)
+        : cuda_m1_raw_manhattan_build_scene (
+            raw_layer, scene_limits, scene, &reason);
+    if (! scene_built) {
       throw M1WidthSpaceDecline (
         reason.empty ()
-          ? "unable to serialize the qualified raw physical M1 scene"
+          ? active12
+            ? "unable to serialize the qualified raw physical ACTIVE scene"
+            : "unable to serialize the qualified raw physical M1 scene"
           : reason);
     }
 
@@ -2092,9 +2112,11 @@ static bool cuda_m1_raw_resident_try_empty (
     request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
     request.struct_size = sizeof (request);
     request.opcode =
-      base_width_space
-        ? KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY
-        : KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M15_9_EMPTY;
+      active12
+        ? KLAYOUT_CUDA_SPATIAL_ACTIVE_RAW_MANHATTAN_ACTIVE12_EMPTY
+        : base_width_space
+          ? KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY
+          : KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M15_9_EMPTY;
     request.option_flags =
       KLAYOUT_CUDA_SPATIAL_M1_MORPH_QUALIFIED_OPTIONS;
     request.format_version = scene.format_version;
@@ -2102,9 +2124,11 @@ static bool cuda_m1_raw_resident_try_empty (
     request.root_cell = scene.root_cell;
     request.device = int32_t (device);
     request.requested_mask =
-      base_width_space
-        ? KLAYOUT_CUDA_SPATIAL_M1_BASE_ALL_EMPTY
-        : KLAYOUT_CUDA_SPATIAL_M1_MORPH_ALL_EMPTY;
+      active12
+        ? KLAYOUT_CUDA_SPATIAL_ACTIVE12_ALL_EMPTY
+        : base_width_space
+          ? KLAYOUT_CUDA_SPATIAL_M1_BASE_ALL_EMPTY
+          : KLAYOUT_CUDA_SPATIAL_M1_MORPH_ALL_EMPTY;
     request.contexts = scene.contexts.data ();
     request.context_count = scene.contexts.size ();
     request.context_record_bytes = sizeof (CudaM1WidthSpaceContext);
@@ -2168,9 +2192,11 @@ static bool cuda_m1_raw_resident_try_empty (
       std::chrono::steady_clock::now ();
     if (telemetry) {
       tl::info
-               << (base_width_space
-                     ? "CUDA M1.1/M1.2 raw-union exact live lowering:"
-                     : "CUDA M1.5-.9 exact live lowering:")
+               << (active12
+                     ? "CUDA ACTIVE.1/ACTIVE.2 raw-union exact live lowering:"
+                     : base_width_space
+                       ? "CUDA M1.1/M1.2 raw-union exact live lowering:"
+                       : "CUDA M1.5-.9 exact live lowering:")
                << " outcome="
                << (attempt.disposition ==
                      db::CudaM1ResidentMorphologyAttempt::CertifiedEmpty
@@ -2205,9 +2231,11 @@ static bool cuda_m1_raw_resident_try_empty (
     if (telemetry) {
       try {
         tl::info
-                 << (base_width_space
-                       ? "CUDA M1.1/M1.2 raw-union exact live lowering:"
-                       : "CUDA M1.5-.9 exact live lowering:")
+                 << (active12
+                       ? "CUDA ACTIVE.1/ACTIVE.2 raw-union exact live lowering:"
+                       : base_width_space
+                         ? "CUDA M1.1/M1.2 raw-union exact live lowering:"
+                         : "CUDA M1.5-.9 exact live lowering:")
                  << " outcome=cpu-fallback digest=unavailable"
                  << " message=" << ex.what ();
       } catch (...) {
@@ -2218,9 +2246,11 @@ static bool cuda_m1_raw_resident_try_empty (
     if (telemetry) {
       try {
         tl::info
-                 << (base_width_space
-                       ? "CUDA M1.1/M1.2 raw-union exact live lowering:"
-                       : "CUDA M1.5-.9 exact live lowering:")
+                 << (active12
+                       ? "CUDA ACTIVE.1/ACTIVE.2 raw-union exact live lowering:"
+                       : base_width_space
+                         ? "CUDA M1.1/M1.2 raw-union exact live lowering:"
+                         : "CUDA M1.5-.9 exact live lowering:")
                  << " outcome=cpu-fallback digest=unavailable"
                  << " message=unknown exception";
       } catch (...) {
@@ -2233,13 +2263,18 @@ static bool cuda_m1_raw_resident_try_empty (
 
 bool cuda_m1_5_9_try_empty (const db::DeepLayer &raw_metal1)
 {
-  return cuda_m1_raw_resident_try_empty (raw_metal1, false);
+  return cuda_raw_resident_try_empty (raw_metal1, false, false);
 }
 
 bool cuda_m1_raw_width_space_try_empty (
   const db::DeepLayer &raw_metal1)
 {
-  return cuda_m1_raw_resident_try_empty (raw_metal1, true);
+  return cuda_raw_resident_try_empty (raw_metal1, true, false);
+}
+
+bool cuda_active12_try_empty (const db::DeepLayer &raw_active)
+{
+  return cuda_raw_resident_try_empty (raw_active, true, true);
 }
 
 bool cuda_m1_width_space_try_empty (

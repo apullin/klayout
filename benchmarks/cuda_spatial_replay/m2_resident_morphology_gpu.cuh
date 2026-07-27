@@ -166,6 +166,9 @@ struct BaseWidthSpaceResult
   std::uint64_t corner_endpoint_count = 0;
   std::uint64_t corner_pair_work = 0;
   std::uint64_t corner_candidates = 0;
+  std::uint64_t corner_width_candidates = 0;
+  std::uint64_t corner_space_candidates = 0;
+  std::uint64_t corner_ambiguous_candidates = 0;
   std::uint64_t device_total_bytes = 0;
   std::uint64_t device_free_begin_bytes = 0;
   std::uint64_t device_free_low_bytes = 0;
@@ -179,12 +182,15 @@ enum class BaseWidthSpaceProfile : std::uint32_t
   m1_130 = UINT32_C(0x4d313130),
   // FreePDK45 IMPLANT.3/.4: 45 nm at 0.5 nm/DBU.
   implant_90 = UINT32_C(0x49303930),
+  // FreePDK45 ACTIVE.1/.2: width 90 nm, spacing 80 nm at 0.5 nm/DBU.
+  active_180_160 = UINT32_C(0x41313230),
 };
 
 struct BaseWidthSpaceContext
 {
   BaseWidthSpaceProfile profile = BaseWidthSpaceProfile::m1_130;
-  std::int64_t distance = 0;
+  std::int64_t width_distance = 0;
+  std::int64_t spacing_distance = 0;
   std::int64_t origin_x = 0;
   std::int64_t origin_y = 0;
   std::uint64_t max_corner_endpoints = UINT64_C(64000000);

@@ -488,7 +488,9 @@ struct BaseBoundaryEndpoint
 {
   std::int64_t x;
   std::int64_t y;
-  std::int32_t side;
+  std::int32_t boundary_side;
+  std::int32_t endpoint_side;
+  std::uint32_t occupied_quadrants;
 };
 
 std::uint64_t coordinate_gap(
@@ -503,9 +505,32 @@ std::uint64_t coordinate_gap(
 }
 
 std::uint64_t count_raster_corner_candidates(
+    const Cells &cells,
     const std::vector<DirectedSegmentI64> &boundary,
-    SegmentAxis axis)
+    SegmentAxis axis, std::uint64_t width_distance = 130,
+    std::uint64_t spacing_distance = 130)
 {
+  constexpr std::uint32_t kLeftBelow = 1u << 0;
+  constexpr std::uint32_t kLeftAbove = 1u << 1;
+  constexpr std::uint32_t kRightBelow = 1u << 2;
+  constexpr std::uint32_t kRightAbove = 1u << 3;
+  const auto occupied = [&cells, axis](
+                            std::int64_t x,
+                            std::int64_t y) {
+    return axis == SegmentAxis::horizontal
+               ? cells.count({x, y}) != 0
+               : cells.count({y, x}) != 0;
+  };
+  const auto quadrants = [&occupied](
+                             std::int64_t x,
+                             std::int64_t y) {
+    std::uint32_t result = 0;
+    if (occupied(x - 1, y - 1)) result |= kLeftBelow;
+    if (occupied(x - 1, y)) result |= kLeftAbove;
+    if (occupied(x, y - 1)) result |= kRightBelow;
+    if (occupied(x, y)) result |= kRightAbove;
+    return result;
+  };
   std::vector<BaseBoundaryEndpoint> endpoints;
   for (const DirectedSegmentI64 &segment : boundary) {
     if (segment.axis != axis || segment.lo >= segment.hi ||
@@ -514,40 +539,94 @@ std::uint64_t count_raster_corner_candidates(
     }
     if (axis == SegmentAxis::horizontal) {
       endpoints.push_back(
-          {segment.lo, segment.fixed, segment.side});
+          {segment.lo, segment.fixed, segment.side, -1,
+           quadrants(segment.lo, segment.fixed)});
       endpoints.push_back(
-          {segment.hi, segment.fixed, segment.side});
+          {segment.hi, segment.fixed, segment.side, 1,
+           quadrants(segment.hi, segment.fixed)});
     } else {
       endpoints.push_back(
-          {segment.fixed, segment.lo, segment.side});
+          {segment.lo, segment.fixed, segment.side, -1,
+           quadrants(segment.lo, segment.fixed)});
       endpoints.push_back(
-          {segment.fixed, segment.hi, segment.side});
+          {segment.hi, segment.fixed, segment.side, 1,
+           quadrants(segment.hi, segment.fixed)});
     }
   }
 
-  constexpr std::uint64_t distance = 130;
-  constexpr std::uint64_t distance_squared = distance * distance;
   std::uint64_t candidates = 0;
   for (std::size_t first = 0; first < endpoints.size(); ++first) {
     for (std::size_t second = first + 1;
          second < endpoints.size(); ++second) {
       const BaseBoundaryEndpoint &a = endpoints[first];
       const BaseBoundaryEndpoint &b = endpoints[second];
-      if (a.side == b.side) continue;
+      if (a.boundary_side == b.boundary_side) continue;
       const std::uint64_t x_gap = coordinate_gap(a.x, b.x);
       const std::uint64_t y_gap = coordinate_gap(a.y, b.y);
-      const std::uint64_t perpendicular_gap =
-          axis == SegmentAxis::horizontal ? y_gap : x_gap;
-      const std::uint64_t projection_gap =
-          axis == SegmentAxis::horizontal ? x_gap : y_gap;
-      if (perpendicular_gap >= distance ||
-          projection_gap >= distance ||
-          (perpendicular_gap == 0 && projection_gap != 0)) {
+      const bool projection_touch = !x_gap;
+      const bool endpoints_face =
+          projection_touch
+              ? a.endpoint_side != b.endpoint_side
+              : a.x < b.x
+                    ? a.endpoint_side == 1 && b.endpoint_side == -1
+                    : a.endpoint_side == -1 && b.endpoint_side == 1;
+      if ((!y_gap && x_gap) || !endpoints_face) {
         continue;
       }
-      if (perpendicular_gap * perpendicular_gap +
-              projection_gap * projection_gap <
-          distance_squared) {
+      const auto toward_is_occupied = [](
+                                          const BaseBoundaryEndpoint &from,
+                                          const BaseBoundaryEndpoint &to) {
+        const bool right = from.x < to.x;
+        const bool above = from.y < to.y;
+        const std::uint32_t quadrant =
+            right ? (above ? kRightAbove : kRightBelow)
+                  : (above ? kLeftAbove : kLeftBelow);
+        return bool(from.occupied_quadrants & quadrant);
+      };
+      bool a_inside = false;
+      bool b_inside = false;
+      bool projection_touch_ambiguous = false;
+      if (projection_touch) {
+        if (!y_gap) {
+          projection_touch_ambiguous = true;
+        } else {
+          const std::uint32_t a_mask =
+              a.y < b.y
+                  ? kLeftAbove | kRightAbove
+                  : kLeftBelow | kRightBelow;
+          const std::uint32_t b_mask =
+              b.y < a.y
+                  ? kLeftAbove | kRightAbove
+                  : kLeftBelow | kRightBelow;
+          const auto occupied_count = [](
+              std::uint32_t bits) {
+            std::uint32_t count = 0;
+            while (bits) {
+              bits &= bits - 1;
+              ++count;
+            }
+            return count;
+          };
+          const std::uint32_t a_count =
+              occupied_count(a.occupied_quadrants & a_mask);
+          const std::uint32_t b_count =
+              occupied_count(b.occupied_quadrants & b_mask);
+          a_inside = a_count == 2;
+          b_inside = b_count == 2;
+          projection_touch_ambiguous =
+              a_count == 1 || b_count == 1;
+        }
+      } else {
+        a_inside = toward_is_occupied(a, b);
+        b_inside = toward_is_occupied(b, a);
+      }
+      const std::uint64_t distance =
+          projection_touch_ambiguous || a_inside != b_inside
+              ? std::max(width_distance, spacing_distance)
+              : a_inside ? width_distance : spacing_distance;
+      if (x_gap >= distance || y_gap >= distance) continue;
+      if (x_gap * x_gap + y_gap * y_gap <
+          distance * distance) {
         ++candidates;
       }
     }
@@ -599,7 +678,8 @@ morph::BaseWidthSpaceResult run_base_strip_pass(
         UINT64_C(2000000000),
     morph::BaseWidthSpaceProfile profile =
         morph::BaseWidthSpaceProfile::m1_130,
-    std::int64_t distance = 130)
+    std::int64_t width_distance = 130,
+    std::int64_t spacing_distance = 130)
 {
   std::vector<RectI64> oriented = rectangles;
   if (transpose) {
@@ -612,7 +692,8 @@ morph::BaseWidthSpaceResult run_base_strip_pass(
   }
   morph::BaseWidthSpaceContext context;
   context.profile = profile;
-  context.distance = distance;
+  context.width_distance = width_distance;
+  context.spacing_distance = spacing_distance;
   context.max_corner_pair_work = max_corner_pair_work;
   context.origin_x = oriented.front().left;
   context.origin_y = oriented.front().bottom;
@@ -649,7 +730,7 @@ void require_base_profile_gate(int device)
       run_base_strip_pass(
           threshold_rectangle, false, device,
           UINT64_C(2000000000),
-          morph::BaseWidthSpaceProfile::implant_90, 90);
+          morph::BaseWidthSpaceProfile::implant_90, 90, 90);
   if (implant.width_violations ||
       implant.space_violations ||
       implant.corner_candidates) {
@@ -657,12 +738,69 @@ void require_base_profile_gate(int device)
         "implant_90 threshold-equality profile gate failed");
   }
 
+  const std::vector<RectI64> active_threshold_rectangle = {
+      {0, 0, 200, 180, 0, 0}};
+  const morph::BaseWidthSpaceResult active =
+      run_base_strip_pass(
+          active_threshold_rectangle, false, device,
+          UINT64_C(2000000000),
+          morph::BaseWidthSpaceProfile::active_180_160,
+          180, 160);
+  if (active.width_violations ||
+      active.space_violations ||
+      active.corner_candidates) {
+    throw std::runtime_error(
+        "active_180_160 threshold-equality profile gate failed");
+  }
+
+  const std::vector<RectI64> active_spacing_threshold = {
+      {0, 0, 200, 180, 0, 0},
+      {0, 340, 200, 520, 1, 0}};
+  const morph::BaseWidthSpaceResult active_spacing =
+      run_base_strip_pass(
+          active_spacing_threshold, false, device,
+          UINT64_C(2000000000),
+          morph::BaseWidthSpaceProfile::active_180_160,
+          180, 160);
+  if (active_spacing.width_violations ||
+      active_spacing.space_violations) {
+    throw std::runtime_error(
+        "active_180_160 spacing threshold-equality gate failed");
+  }
+
+  const std::vector<RectI64> active_width_violation = {
+      {0, 0, 200, 179, 0, 0}};
+  if (!run_base_strip_pass(
+           active_width_violation, false, device,
+           UINT64_C(2000000000),
+           morph::BaseWidthSpaceProfile::active_180_160,
+           180, 160)
+           .width_violations) {
+    throw std::runtime_error(
+        "active_180_160 width threshold gate missed a violation");
+  }
+
+  const std::vector<RectI64> active_spacing_violation = {
+      {0, 0, 200, 180, 0, 0},
+      {0, 339, 200, 519, 1, 0}};
+  if (!run_base_strip_pass(
+           active_spacing_violation, false, device,
+           UINT64_C(2000000000),
+           morph::BaseWidthSpaceProfile::active_180_160,
+           180, 160)
+           .space_violations) {
+    throw std::runtime_error(
+        "active_180_160 spacing threshold gate missed a violation");
+  }
+
   const auto require_rejected = [](
       morph::BaseWidthSpaceProfile profile,
-      std::int64_t distance, const char *label) {
+      std::int64_t width_distance,
+      std::int64_t spacing_distance, const char *label) {
     morph::BaseWidthSpaceContext context;
     context.profile = profile;
-    context.distance = distance;
+    context.width_distance = width_distance;
+    context.spacing_distance = spacing_distance;
     try {
       (void)morph::make_base_width_space_hook(&context);
     } catch (const std::runtime_error &) {
@@ -672,14 +810,318 @@ void require_base_profile_gate(int device)
         std::string(label) + " profile mismatch was accepted");
   };
   require_rejected(
-      morph::BaseWidthSpaceProfile::implant_90, 89,
+      morph::BaseWidthSpaceProfile::implant_90, 89, 89,
       "implant_90/distance_89");
   require_rejected(
-      morph::BaseWidthSpaceProfile::implant_90, 130,
+      morph::BaseWidthSpaceProfile::implant_90, 130, 130,
       "implant_90/distance_130");
   require_rejected(
-      morph::BaseWidthSpaceProfile::m1_130, 90,
+      morph::BaseWidthSpaceProfile::m1_130, 90, 90,
       "m1_130/distance_90");
+  require_rejected(
+      morph::BaseWidthSpaceProfile::active_180_160, 180, 180,
+      "active_180_160/spacing_180");
+  require_rejected(
+      morph::BaseWidthSpaceProfile::active_180_160, 160, 160,
+      "active_180_160/width_160");
+  require_rejected(
+      morph::BaseWidthSpaceProfile::active_180_160, 160, 180,
+      "active_180_160/swapped_distances");
+}
+
+struct ActiveEndpointSignals
+{
+  bool strip_width = false;
+  bool strip_space = false;
+  std::uint64_t corner_candidates = 0;
+  std::uint64_t corner_width_candidates = 0;
+  std::uint64_t corner_space_candidates = 0;
+  std::uint64_t corner_ambiguous_candidates = 0;
+};
+
+ActiveEndpointSignals active_endpoint_signals(
+    const std::vector<RectI64> &rectangles, int device)
+{
+  const morph::BaseWidthSpaceResult original =
+      run_base_strip_pass(
+          rectangles, false, device, UINT64_C(2000000000),
+          morph::BaseWidthSpaceProfile::active_180_160,
+          180, 160);
+  const morph::BaseWidthSpaceResult transposed =
+      run_base_strip_pass(
+          rectangles, true, device, UINT64_C(2000000000),
+          morph::BaseWidthSpaceProfile::active_180_160,
+          180, 160);
+  ActiveEndpointSignals result;
+  result.strip_width =
+      original.width_violations ||
+      transposed.width_violations;
+  result.strip_space =
+      original.space_violations ||
+      transposed.space_violations;
+  if (original.corner_candidates >
+      UINT64_MAX - transposed.corner_candidates) {
+    throw std::runtime_error(
+        "ACTIVE endpoint candidate census overflow");
+  }
+  result.corner_candidates =
+      original.corner_candidates +
+      transposed.corner_candidates;
+  result.corner_width_candidates =
+      original.corner_width_candidates +
+      transposed.corner_width_candidates;
+  result.corner_space_candidates =
+      original.corner_space_candidates +
+      transposed.corner_space_candidates;
+  result.corner_ambiguous_candidates =
+      original.corner_ambiguous_candidates +
+      transposed.corner_ambiguous_candidates;
+  if (result.corner_width_candidates >
+          result.corner_candidates ||
+      result.corner_space_candidates >
+          result.corner_candidates -
+              result.corner_width_candidates ||
+      result.corner_ambiguous_candidates !=
+          result.corner_candidates -
+              result.corner_width_candidates -
+              result.corner_space_candidates) {
+    throw std::runtime_error(
+        "ACTIVE endpoint disposition census mismatch");
+  }
+  return result;
+}
+
+std::vector<RectI64> transform_active_fixture(
+    const std::vector<RectI64> &rectangles,
+    bool swap_xy, bool mirror_x, bool mirror_y)
+{
+  std::vector<RectI64> result = rectangles;
+  for (RectI64 &rectangle : result) {
+    if (swap_xy) {
+      const std::int64_t left = rectangle.bottom;
+      const std::int64_t bottom = rectangle.left;
+      const std::int64_t right = rectangle.top;
+      const std::int64_t top = rectangle.right;
+      rectangle.left = left;
+      rectangle.bottom = bottom;
+      rectangle.right = right;
+      rectangle.top = top;
+    }
+    if (mirror_x) {
+      const std::int64_t left = 1000 - rectangle.right;
+      rectangle.right = 1000 - rectangle.left;
+      rectangle.left = left;
+    }
+    if (mirror_y) {
+      const std::int64_t bottom = 1000 - rectangle.top;
+      rectangle.top = 1000 - rectangle.bottom;
+      rectangle.bottom = bottom;
+    }
+  }
+  return result;
+}
+
+std::uint64_t require_active_endpoint_matrix(int device)
+{
+  const auto require_signals = [](
+      const std::string &name, const ActiveEndpointSignals &actual,
+      bool strip_width, bool strip_space,
+      char corner_disposition) {
+    const bool corner_candidate =
+        corner_disposition != 'n';
+    const bool corner_disposition_matches =
+        (corner_disposition == 'n' &&
+         !actual.corner_width_candidates &&
+         !actual.corner_space_candidates &&
+         !actual.corner_ambiguous_candidates) ||
+        (corner_disposition == 'w' &&
+         actual.corner_width_candidates &&
+         !actual.corner_space_candidates &&
+         !actual.corner_ambiguous_candidates) ||
+        (corner_disposition == 's' &&
+         !actual.corner_width_candidates &&
+         actual.corner_space_candidates &&
+         !actual.corner_ambiguous_candidates) ||
+        (corner_disposition == 'a' &&
+         !actual.corner_width_candidates &&
+         !actual.corner_space_candidates &&
+         actual.corner_ambiguous_candidates);
+    if (actual.strip_width != strip_width ||
+        actual.strip_space != strip_space ||
+        bool(actual.corner_candidates) != corner_candidate ||
+        !corner_disposition_matches) {
+      std::ostringstream message;
+      message << name
+              << ": expected strip_width=" << strip_width
+              << " strip_space=" << strip_space
+              << " corner_candidate=" << corner_candidate
+              << " actual strip_width=" << actual.strip_width
+              << " strip_space=" << actual.strip_space
+              << " corner_candidates="
+              << actual.corner_candidates
+              << " corner_width="
+              << actual.corner_width_candidates
+              << " corner_space="
+              << actual.corner_space_candidates
+              << " corner_ambiguous="
+              << actual.corner_ambiguous_candidates;
+      throw std::runtime_error(message.str());
+    }
+  };
+  const std::array<const char *, 8> orientations = {
+      "right_up", "left_up", "right_down", "left_down",
+      "swap_right_up", "swap_left_up",
+      "swap_right_down", "swap_left_down"};
+  std::uint64_t checks = 0;
+  for (std::uint32_t mirror = 0; mirror < orientations.size();
+       ++mirror) {
+    const bool mirror_x = mirror & 1u;
+    const bool mirror_y = mirror & 2u;
+    const bool swap_xy = mirror & 4u;
+    for (int delta = -1; delta <= 1; ++delta) {
+      const std::string limit =
+          delta < 0 ? "minus" : delta ? "plus" : "equal";
+      const std::vector<RectI64> spacing = {
+          {200, 200, 400, 400, 0, 0},
+          {496 + delta, 528, 696 + delta, 728, 1, 0}};
+      require_signals(
+          "space_corner_" + std::string(orientations[mirror]) +
+              "_" + limit,
+          active_endpoint_signals(
+              transform_active_fixture(
+                  spacing, swap_xy, mirror_x, mirror_y),
+              device),
+          false, false, delta < 0 ? 's' : 'n');
+      ++checks;
+
+      const std::int64_t live_gap = 160 + delta;
+      const std::vector<RectI64> width_facing_space = {
+          {200, 400, 400, 700, 0, 0},
+          {400 + live_gap, 100, 600 + live_gap, 410, 1, 0}};
+      require_signals(
+          "convex_width_facing_space_" +
+              std::string(orientations[mirror]) + "_" + limit,
+          active_endpoint_signals(
+              transform_active_fixture(
+                  width_facing_space, swap_xy,
+                  mirror_x, mirror_y),
+              device),
+          false, delta < 0, delta < 0 ? 's' : 'n');
+      ++checks;
+
+      // The disconnected rectangles have projections which meet at exactly
+      // one endpoint.  Neither strip scan owns their distance; the
+      // orthogonally oriented endpoint scan must retain x_gap == 0.
+      const std::int64_t projection_touch_gap = 160 + delta;
+      const std::vector<RectI64> projection_touch_space = {
+          {200, 200, 400, 400, 0, 0},
+          {400 + projection_touch_gap, 400,
+           600 + projection_touch_gap, 600, 1, 0}};
+      require_signals(
+          "projection_touch_space_" +
+              std::string(orientations[mirror]) + "_" + limit,
+          active_endpoint_signals(
+              transform_active_fixture(
+                  projection_touch_space, swap_xy,
+                  mirror_x, mirror_y),
+              device),
+          false, false, delta < 0 ? 's' : 'n');
+      ++checks;
+
+      const std::int64_t left_tip = 446;
+      const std::int64_t right_tip =
+          left_tip + 108 + delta;
+      const std::vector<RectI64> width = {
+          {0, 0, left_tip, 500, 0, 0},
+          {left_tip, 0, right_tip, 1000, 1, 0},
+          {right_tip, 356, 1000, 1000, 2, 0}};
+      require_signals(
+          "width_corner_" + std::string(orientations[mirror]) +
+              "_" + limit,
+          active_endpoint_signals(
+              transform_active_fixture(
+                  width, swap_xy, mirror_x, mirror_y),
+              device),
+          false, false, delta < 0 ? 'w' : 'n');
+      ++checks;
+    }
+  }
+
+  for (int delta = -1; delta <= 1; ++delta) {
+    const std::string limit =
+        delta < 0 ? "minus" : delta ? "plus" : "equal";
+    require_signals(
+        "same_rectangle_width_" + limit,
+        active_endpoint_signals(
+            {{100, 100, 500, 280 + delta, 0, 0}},
+            device),
+        delta < 0, false, 'n');
+    ++checks;
+
+    const std::int64_t wall = 180 + delta;
+    const std::vector<RectI64> hole = {
+        {0, 0, 1000, wall, 0, 0},
+        {0, 1000 - wall, 1000, 1000, 1, 0},
+        {0, wall, wall, 1000 - wall, 2, 0},
+        {1000 - wall, wall, 1000, 1000 - wall, 3, 0}};
+    require_signals(
+        "hole_wall_width_" + limit,
+        active_endpoint_signals(hole, device),
+        delta < 0, false, 'n');
+    ++checks;
+  }
+  require_signals(
+      "duplicate_union",
+      active_endpoint_signals(
+          {{100, 100, 600, 600, 0, 0},
+           {100, 100, 600, 600, 1, 0}},
+          device),
+      false, false, 'n');
+  ++checks;
+  require_signals(
+      "overlap_union",
+      active_endpoint_signals(
+          {{100, 100, 700, 700, 0, 0},
+           {300, 300, 900, 900, 1, 0}},
+          device),
+      false, false, 'n');
+  ++checks;
+  require_signals(
+      "edge_touch_union",
+      active_endpoint_signals(
+          {{100, 100, 500, 700, 0, 0},
+           {500, 100, 900, 700, 1, 0}},
+          device),
+      false, false, 'n');
+  ++checks;
+  require_signals(
+      "mixed_topology",
+      active_endpoint_signals(
+          {{0, 0, 446, 500, 0, 0},
+           {446, 0, 451, 1000, 1, 0},
+           {611, 510, 900, 900, 2, 0}},
+          device),
+      true, false, 'a');
+  ++checks;
+  try {
+    (void)active_endpoint_signals(
+        {{100, 100, 500, 500, 0, 0},
+         {500, 500, 900, 900, 1, 0}},
+        device);
+  } catch (const std::runtime_error &error) {
+    if (std::string(error.what()).find(
+            "base boundary endpoint topology invariant") !=
+        std::string::npos) {
+      ++checks;
+    } else {
+      throw;
+    }
+  }
+  if (checks != 107) {
+    throw std::runtime_error(
+        "ACTIVE endpoint matrix census mismatch");
+  }
+  return checks;
 }
 
 void require_base_pair_work_capacity(int device)
@@ -713,10 +1155,10 @@ void require_base_strip_case(
       raster_boundary(cells);
   expected.horizontal_corner_candidates =
       count_raster_corner_candidates(
-          boundary, SegmentAxis::horizontal);
+          cells, boundary, SegmentAxis::horizontal);
   expected.vertical_corner_candidates =
       count_raster_corner_candidates(
-          boundary, SegmentAxis::vertical);
+          cells, boundary, SegmentAxis::vertical);
   const morph::BaseWidthSpaceResult original =
       run_base_strip_pass(rectangles, false, device);
   const morph::BaseWidthSpaceResult transposed =
@@ -843,12 +1285,16 @@ void run_base_width_space_strip_gate(int device)
   }
   require_base_pair_work_capacity(device);
   require_base_profile_gate(device);
+  const std::uint64_t active_endpoint_checks =
+      require_active_endpoint_matrix(device);
   std::cout << "M1_BASE_WIDTH_SPACE_STRIP_GATE PASS checks="
             << checks << " directed=" << directed.size()
             << " random=32 threshold_dbu=130"
             << " endpoint_certificate=exact-threshold"
             << " capacity_rejections=1"
-            << " profile_gate=implant90\n";
+            << " profile_gate=implant90+active180/160"
+            << " active_endpoint_cases="
+            << active_endpoint_checks << "\n";
 }
 
 void require_long_space_certificate(

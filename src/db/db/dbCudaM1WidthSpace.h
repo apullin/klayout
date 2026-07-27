@@ -478,6 +478,16 @@ DB_PUBLIC bool cuda_m1_raw_width_space_try_empty (
   const db::DeepLayer &raw_metal1);
 
 /**
+ * Try the exact raw-ACTIVE / resident ACTIVE.1/ACTIVE.2 empty certificate.
+ *
+ * The backend constructs the exact Manhattan union once per coordinate
+ * orientation and applies the distinct strict Euclidian thresholds (90-nm
+ * width and 80-nm spacing).  False requires both pristine CPU expressions.
+ */
+DB_PUBLIC bool cuda_active12_try_empty (
+  const db::DeepLayer &raw_active);
+
+/**
  * Try the live atomic M1 width/spacing empty certificate.
  *
  * The build specification is validated again before any backend call.  True

@@ -16,6 +16,7 @@ def source_deck(
     *,
     implant15: bool = False,
     implant12: bool = False,
+    active12: bool = False,
 ) -> str:
     historical_implant_outputs = "\n".join(
         f'implant.output("IMPLANT.{rule}", "implant {rule}")'
@@ -59,6 +60,23 @@ def source_deck(
         f'cont.output("CONTACT.{rule}", "contact {rule}")'
         for rule in range(1, 6)
     )
+    active12_marker = ""
+    active12_outputs = (
+        'active.output("ACTIVE.1", "active 1")\n'
+        'active.output("ACTIVE.2", "active 2")'
+    )
+    if active12:
+        active12_marker = (
+            'active12_request = ENV["KLAYOUT_CUDA_ACTIVE12"].to_s\n'
+        )
+        active12_outputs = (
+            'if active12_clean\n'
+            'empty.output("ACTIVE.1", "active 1")\n'
+            'empty.output("ACTIVE.2", "active 2")\n'
+            'else\n'
+            f'{active12_outputs}\n'
+            'end'
+        )
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <klayout-macro>
 <text>
@@ -74,8 +92,7 @@ need_implant = DRC &amp;&amp; run_implant_contact
 {implant12_marker}{implant15_marker}implant = nplus.or(pplus) if need_implant
 m1_contact_owner = requested &amp;&amp; (run_implant_contact || run_m1_enclosure)
 if run_active12
-active.output("ACTIVE.1", "active 1")
-active.output("ACTIVE.2", "active 2")
+{active12_marker}{active12_outputs}
 end
 if run_implant_contact
 
@@ -206,6 +223,28 @@ class SplitDeckTest(unittest.TestCase):
         self.assertIn('drc_shard == "active12"', result)
         self.assertIn('drc_shard == "implant_contact"', result)
         self.assertIn("run_active12 = run_active12_rules", result)
+
+    def test_active12_transaction_marker_accepts_clean_and_fallback_sites(
+        self,
+    ) -> None:
+        result = split_deck(
+            source_deck(active12=True),
+            split_active12=True,
+        )
+        self.assertEqual(result.count('.output("ACTIVE.1"'), 2)
+        self.assertEqual(result.count('.output("ACTIVE.2"'), 2)
+        self.assertIn("run_active12 = run_active12_rules", result)
+        ET.fromstring(result)
+
+        missing_marker = source_deck(active12=True).replace(
+            'active12_request = ENV["KLAYOUT_CUDA_ACTIVE12"].to_s\n',
+            "",
+        )
+        with self.assertRaisesRegex(
+            TransformError,
+            "ACTIVE.1: expected 1 source sites, found 2",
+        ):
+            split_deck(missing_marker, split_active12=True)
 
     def test_rejects_duplicate_output_sites(self) -> None:
         source = source_deck().replace(

@@ -39,6 +39,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -798,9 +799,14 @@ bool valid_m1_morph_request(const M1MorphRequest &request)
           KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY &&
       request.requested_mask ==
           KLAYOUT_CUDA_SPATIAL_M1_BASE_ALL_EMPTY;
+  const bool active12_request =
+      request.opcode ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE_RAW_MANHATTAN_ACTIVE12_EMPTY &&
+      request.requested_mask ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE12_ALL_EMPTY;
   if (request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
       request.struct_size != sizeof(request) ||
-      (!suffix_request && !base_request) ||
+      (!suffix_request && !base_request && !active12_request) ||
       request.option_flags !=
           KLAYOUT_CUDA_SPATIAL_M1_MORPH_QUALIFIED_OPTIONS ||
       request.format_version != 1 ||
@@ -5160,7 +5166,9 @@ int run_implant15_request(
     m2m::BaseWidthSpaceContext transposed_certificate;
     transposed_certificate.profile =
         m2m::BaseWidthSpaceProfile::implant_90;
-    transposed_certificate.distance =
+    transposed_certificate.width_distance =
+        request->implant3_distance;
+    transposed_certificate.spacing_distance =
         request->implant3_distance;
     transposed_certificate.origin_x = implant_bottom;
     transposed_certificate.origin_y = implant_left;
@@ -5209,7 +5217,8 @@ int run_implant15_request(
     m2m::BaseWidthSpaceContext original_certificate;
     original_certificate.profile =
         m2m::BaseWidthSpaceProfile::implant_90;
-    original_certificate.distance = request->implant3_distance;
+    original_certificate.width_distance = request->implant3_distance;
+    original_certificate.spacing_distance = request->implant3_distance;
     original_certificate.origin_x = implant_left;
     original_certificate.origin_y = implant_bottom;
     original_certificate.max_corner_endpoints =
@@ -5607,6 +5616,9 @@ M1BasePass run_m1_base_width_space_pass(
     const Request &raw, const LoweredScene &lowered,
     const M1MorphRequest &request, bool transpose)
 {
+  const bool active12 =
+      request.opcode ==
+      KLAYOUT_CUDA_SPATIAL_ACTIVE_RAW_MANHATTAN_ACTIVE12_EMPTY;
   const __int128 packed_x_range =
       transpose
           ? static_cast<__int128>(raw.scene_top) -
@@ -5689,9 +5701,20 @@ M1BasePass run_m1_base_width_space_pass(
           window_limits.max_window_slabs,
           union_limits.max_x_slabs));
 
-  pass.certificate.distance =
-      klayout_cuda::m1_width_space::
-          kQualifiedSceneCoordinateDistance;
+  pass.certificate.profile =
+      active12
+          ? m2m::BaseWidthSpaceProfile::active_180_160
+          : m2m::BaseWidthSpaceProfile::m1_130;
+  pass.certificate.width_distance =
+      active12
+          ? INT64_C(180)
+          : klayout_cuda::m1_width_space::
+                kQualifiedSceneCoordinateDistance;
+  pass.certificate.spacing_distance =
+      active12
+          ? INT64_C(160)
+          : klayout_cuda::m1_width_space::
+                kQualifiedSceneCoordinateDistance;
   pass.certificate.origin_x =
       transpose ? raw.scene_bottom : raw.scene_left;
   pass.certificate.origin_y =
@@ -5744,6 +5767,16 @@ void validate_m1_base_pass_complete(
   const m2m::BaseWidthSpaceResult &certificate =
       pass.certificate.result;
   std::uint64_t expected_events = 0;
+  std::uint64_t attributed_corner_candidates = 0;
+  const bool corner_candidate_census_valid =
+      checked_add_u64(
+          certificate.corner_width_candidates,
+          certificate.corner_space_candidates,
+          &attributed_corner_candidates) &&
+      checked_add_u64(
+          attributed_corner_candidates,
+          certificate.corner_ambiguous_candidates,
+          &attributed_corner_candidates);
   if (!pass.certificate.invoked ||
       !output.resident_consumer_completed ||
       output.resident_boundary_consumer_completed ||
@@ -5779,6 +5812,9 @@ void validate_m1_base_pass_complete(
           request.max_union_events ||
       certificate.corner_candidates >
           certificate.corner_pair_work ||
+      !corner_candidate_census_valid ||
+      certificate.corner_candidates !=
+          attributed_corner_candidates ||
       !certificate.device_total_bytes ||
       certificate.device_total_bytes !=
           output.device_total_bytes ||
@@ -5912,17 +5948,43 @@ int run_m1_base_width_space_request(
     result->certified_empty_mask = 0;
     result->disposition =
         KLAYOUT_CUDA_SPATIAL_M1_MORPH_NOT_EMPTY;
-    set_message(
-        result,
-        "exact raw M1 union has a possible base width/space violation");
+    std::ostringstream message;
+    message
+        << (request.opcode ==
+                    KLAYOUT_CUDA_SPATIAL_ACTIVE_RAW_MANHATTAN_ACTIVE12_EMPTY
+                ? "exact raw ACTIVE union"
+                : "exact raw M1 union")
+        << " possible base width/space violation"
+        << " x_width=" << original.certificate.result.width_violations
+        << " x_space=" << original.certificate.result.space_violations
+        << " x_corner=" << original.certificate.result.corner_candidates
+        << " x_corner_width="
+        << original.certificate.result.corner_width_candidates
+        << " x_corner_space="
+        << original.certificate.result.corner_space_candidates
+        << " x_corner_ambiguous="
+        << original.certificate.result.corner_ambiguous_candidates
+        << " y_width=" << transposed.certificate.result.width_violations
+        << " y_space=" << transposed.certificate.result.space_violations
+        << " y_corner=" << transposed.certificate.result.corner_candidates
+        << " y_corner_width="
+        << transposed.certificate.result.corner_width_candidates
+        << " y_corner_space="
+        << transposed.certificate.result.corner_space_candidates
+        << " y_corner_ambiguous="
+        << transposed.certificate.result.corner_ambiguous_candidates;
+    set_message(result, message.str().c_str());
   } else {
     result->certified_empty_mask =
-        KLAYOUT_CUDA_SPATIAL_M1_BASE_ALL_EMPTY;
+        request.requested_mask;
     result->disposition =
         KLAYOUT_CUDA_SPATIAL_M1_MORPH_COMPLETE;
     set_message(
         result,
-        "complete exact raw M1 resident M1.1/M1.2 empty certificate");
+        request.opcode ==
+                KLAYOUT_CUDA_SPATIAL_ACTIVE_RAW_MANHATTAN_ACTIVE12_EMPTY
+            ? "complete exact raw ACTIVE resident ACTIVE.1/ACTIVE.2 empty certificate"
+            : "complete exact raw M1 resident M1.1/M1.2 empty certificate");
   }
   result->total_ns = elapsed_ns(total_begin, Clock::now());
   return result->status;
@@ -5952,14 +6014,19 @@ int run_m1_morph_request(
   try {
     std::lock_guard<std::mutex> lock(pipeline_mutex());
     const auto setup_begin = Clock::now();
+    const bool active12 =
+        request->opcode ==
+        KLAYOUT_CUDA_SPATIAL_ACTIVE_RAW_MANHATTAN_ACTIVE12_EMPTY;
     const Request raw = m1_morph_as_union_request(*request);
     const LoweredScene lowered =
-        validate_and_lower(raw, kM1RawDigestMagic);
+        validate_and_lower(
+            raw, active12 ? kActiveRawDigestMagic : kM1RawDigestMagic);
     result->setup_ns = elapsed_ns(setup_begin, Clock::now());
     klayout_cuda::DevicePhaseLease device_lease(
         request->device, "m1_resident_morphology");
     if (request->opcode ==
-        KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY) {
+            KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY ||
+        active12) {
       return run_m1_base_width_space_request(
           *request, result, raw, lowered, total_begin);
     }
@@ -6201,6 +6268,8 @@ int run_request(const Request *request, Result *result)
         validate_and_lower(*request, kM2RawDigestMagic);
     result->setup_ns = elapsed_ns(setup_begin, Clock::now());
 
+    klayout_cuda::DevicePhaseLease device_lease(
+        request->device, "m2_union");
     ExpandedRectangles expanded =
         expand_rectangles_resident(*request, lowered);
     result->h2d_ns = expanded.h2d_ns;

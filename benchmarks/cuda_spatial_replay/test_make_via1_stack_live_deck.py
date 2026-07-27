@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import inspect
 import re
 import unittest
 
@@ -125,6 +126,9 @@ metal1_gt500.edges.with_length(1.8.um,nil).space(500.nm,euclidian).output("METAL
 metal1_gt900.edges.with_length(2.7.um,nil).space(900.nm,euclidian).output("METAL1.8", "METAL1.8 : Minimum spacing of metal1 wider than 900 nm and longer than 2.7 um : 900nm")
 metal1_gt1500.edges.with_length(4.um,nil).space(1500.nm,euclidian).output("METAL1.9", "METAL1.9 : Minimum spacing of metal1 wider than 1500 nm and longer than 4.0 um : 1500nm")
 [ metal1_gt90, metal1_gt270, metal1_gt500, metal1_gt900, metal1_gt1500 ].each { |l| l.forget }"""
+
+ACTIVE12_CPU = """active.width(90.nm, euclidian).output("ACTIVE.1", "ACTIVE.1 : Minimum width of active : 90nm")
+active.space(80.nm, euclidian).output("ACTIVE.2", "ACTIVE.2 : Minimum spacing of active : 80nm")"""
 
 
 def indent(block: str, spaces: int = 2) -> str:
@@ -619,6 +623,116 @@ class M1ResidentMorphologyTransformTest(unittest.TestCase):
             r"expected one source block, found 2",
         ):
             generator.add_m1_5_9(duplicated)
+
+
+class Active12TransformTest(unittest.TestCase):
+    def test_exact_atomic_rewrite_is_deterministic(self) -> None:
+        source = f"before\n{ACTIVE12_CPU}\nafter\n"
+
+        first = generator.add_active12(source)
+        second = generator.add_active12(source)
+
+        self.assertEqual(first, second)
+        self.assertTrue(first.startswith("before\n"))
+        self.assertTrue(first.endswith("\nafter\n"))
+        self.assertEqual(
+            first.count('ENV["KLAYOUT_CUDA_ACTIVE12"].to_s'),
+            1,
+        )
+        self.assertEqual(
+            first.count("active.data.respond_to?(:cuda_active12_clean?)"),
+            1,
+        )
+        self.assertEqual(first.count("active.data.cuda_active12_clean?"), 1)
+        self.assertEqual(first.count("active12_empty.output"), 2)
+        for cpu_expression in ACTIVE12_CPU.splitlines():
+            self.assertEqual(first.count(cpu_expression), 1)
+
+    def test_clean_path_publishes_only_two_empty_categories(self) -> None:
+        transformed = generator.add_active12(ACTIVE12_CPU)
+        clean = transformed.split(
+            "if active12_clean\n", 1
+        )[1].split("\nelse", 1)[0]
+
+        self.assertNotIn(".width", clean)
+        self.assertNotIn(".space", clean)
+        self.assertEqual(
+            re.findall(
+                r'active12_empty\.output\("(ACTIVE\.[12])"',
+                clean,
+            ),
+            ["ACTIVE.1", "ACTIVE.2"],
+        )
+
+    def test_every_decline_retains_literal_cpu_pair(self) -> None:
+        transformed = generator.add_active12(ACTIVE12_CPU)
+        fallback = transformed.split(
+            "if active12_clean\n", 1
+        )[1].split("\nelse\n", 1)[1].rsplit("\nend", 1)[0]
+
+        self.assertEqual(fallback, indent(ACTIVE12_CPU))
+        self.assertIn("rescue StandardError", transformed)
+        self.assertIn("active12_clean = false", transformed)
+
+    def test_rejects_source_drift_or_duplicates(self) -> None:
+        changed = ACTIVE12_CPU.replace("80.nm", "81.nm")
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"ACTIVE\.1/\.2 exact resident transaction: "
+            r"expected one source block, found 0",
+        ):
+            generator.add_active12(changed)
+
+        duplicated = f"{ACTIVE12_CPU}\n{ACTIVE12_CPU}"
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"ACTIVE\.1/\.2 exact resident transaction: "
+            r"expected one source block, found 2",
+        ):
+            generator.add_active12(duplicated)
+
+    def test_composes_after_active4_without_replacing_prior_win(self) -> None:
+        source = (
+            f"before\n{ACTIVE12_CPU}\n"
+            f"{ACTIVE4_SOURCE_BLOCK}\nafter\n"
+        )
+        active4 = generator.add_active4_well_union(source)
+        composed = generator.add_active12(active4)
+
+        self.assertEqual(
+            composed,
+            generator.add_active12(
+                generator.add_active4_well_union(source)
+            ),
+        )
+        self.assertEqual(
+            composed.count(
+                "# BEGIN KLAYOUT CUDA ACTIVE4 EXACT WELL UNION TRANSACTION"
+            ),
+            1,
+        )
+        self.assertEqual(
+            composed.count('ENV["KLAYOUT_CUDA_ACTIVE12"].to_s'),
+            1,
+        )
+        self.assertEqual(composed.count(ACTIVE3_WELL), 1)
+        self.assertEqual(composed.count(ACTIVE4_RULE), 1)
+        for cpu_expression in ACTIVE12_CPU.splitlines():
+            self.assertEqual(composed.count(cpu_expression), 1)
+        self.assertEqual(composed.count("active4_well_union_empty.output"), 1)
+        self.assertEqual(composed.count("active12_empty.output"), 2)
+
+        main_source = inspect.getsource(generator.main)
+        self.assertLess(
+            main_source.index("if args.active4_well_union:"),
+            main_source.index("if args.active12:"),
+        )
+        self.assertLess(
+            main_source.index(
+                "output = add_active4_well_union(output)"
+            ),
+            main_source.index("output = add_active12(output)"),
+        )
 
 
 class Poly34TransformTest(unittest.TestCase):

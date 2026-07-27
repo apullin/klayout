@@ -152,8 +152,22 @@ def split_deck(
         )
 
     if split_active12:
+        active12_marker = (
+            'active12_request = ENV["KLAYOUT_CUDA_ACTIVE12"].to_s'
+        )
+        active12_count = text.count(active12_marker)
+        if active12_count not in (0, 1):
+            raise TransformError(
+                "ACTIVE.1/.2 transaction: expected zero or one exact "
+                f"marker, found {active12_count}"
+            )
+        active12_outputs = 2 if active12_count else 1
         _require_output_counts(
-            text, {"ACTIVE.1": (1,), "ACTIVE.2": (1,)}
+            text,
+            {
+                "ACTIVE.1": (active12_outputs,),
+                "ACTIVE.2": (active12_outputs,),
+            },
         )
         declaration = (
             'run_via1_upper_active12 = drc_shard == "all" || '

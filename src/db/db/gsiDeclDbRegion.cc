@@ -2133,6 +2133,34 @@ static bool cuda_m1_5_9_clean (const db::Region *metal1)
   }
 }
 
+static bool cuda_active12_clean (const db::Region *active)
+{
+  // Resolve the optional capability before touching the large hierarchy.
+  if (! db::cuda_spatial_m1_resident_morphology_requested ()) {
+    return false;
+  }
+  const db::DeepRegion *deep_active =
+    dynamic_cast<const db::DeepRegion *> (active->delegate ());
+  if (! deep_active || ! active->merged_semantics ()) {
+    return false;
+  }
+
+  const db::DeepLayer &raw_active = deep_active->deep_layer ();
+  if (raw_active.layer () >= raw_active.layout ().layers () ||
+      ! raw_active.layout ().get_properties (
+          raw_active.layer ()).log_equal (
+            db::LayerProperties (1, 0))) {
+    return false;
+  }
+
+  try {
+    return db::cuda_active12_try_empty (raw_active);
+  } catch (...) {
+    // No speculative failure may bypass the historical ACTIVE.1/.2 pair.
+    return false;
+  }
+}
+
 static bool cuda_active3_raw_wells_clean (
   const db::Region *nwell, const db::Region *pwell,
   const db::Region *active)
@@ -5580,6 +5608,16 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "device across the fixed F90/F270 morphology. True means all five "
     "historical rule categories are empty. False requires the unchanged "
     "classify-by-width and spacing expressions.\n"
+  ) +
+  method_ext (
+    "cuda_active12_clean?", &cuda_active12_clean,
+    "@brief Tries the exact raw-ACTIVE resident ACTIVE.1/.2 certificate\n"
+    "\n"
+    "This internal default-off hook serializes pristine FreePDK45 ACTIVE, "
+    "forms its exact integer-set union, and checks the distinct 90-nm width "
+    "and 80-nm spacing universes in both coordinate orientations. True means "
+    "both historical categories are empty. False requires both unchanged CPU "
+    "expressions.\n"
   ) +
   method_ext (
     "cuda_active3_raw_wells_clean?", &cuda_active3_raw_wells_clean,
