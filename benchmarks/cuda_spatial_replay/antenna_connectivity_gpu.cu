@@ -2116,6 +2116,56 @@ Status Connectivity::append_stage_consuming(
       AppendMode::consuming, &rectangles);
 }
 
+Status Connectivity::compact_retained_rectangles(
+    std::uint64_t *retained_rectangle_capacity) noexcept
+{
+  if (!m_impl) return Status::host_error;
+  if (m_impl->poisoned) return Status::poisoned_state;
+  if (m_impl->config_status != Status::success) {
+    return m_impl->config_status;
+  }
+
+  try {
+    const Config &config = m_impl->config;
+    cuda_require(
+        cudaSetDevice(config.device),
+        "antenna connectivity compaction cudaSetDevice");
+    const std::uint64_t size = m_impl->rectangles.size();
+    if (m_impl->rectangles.capacity() == size) {
+      if (retained_rectangle_capacity) {
+        *retained_rectangle_capacity = size;
+      }
+      return Status::success;
+    }
+
+    thrust::device_vector<RectI64> compact;
+    if (size) {
+      if (!vector_allocation_admitted<RectI64>(config, size)) {
+        return Status::capacity_exceeded;
+      }
+      compact.assign(
+          m_impl->rectangles.begin(), m_impl->rectangles.end());
+      cuda_require(
+          cudaDeviceSynchronize(),
+          "antenna connectivity compaction synchronize");
+    }
+
+    m_impl->rectangles.swap(compact);
+    if (retained_rectangle_capacity) {
+      *retained_rectangle_capacity = m_impl->rectangles.capacity();
+    }
+    return Status::success;
+  } catch (const CudaFailure &) {
+    return Status::cuda_error;
+  } catch (const thrust::system_error &) {
+    return Status::cuda_error;
+  } catch (const std::bad_alloc &) {
+    return Status::host_error;
+  } catch (...) {
+    return Status::host_error;
+  }
+}
+
 Status Connectivity::append_stage_impl(
     const RectI64 *rectangles, std::uint64_t rectangle_count,
     std::uint64_t new_node_count,

@@ -2340,6 +2340,11 @@ void run_transaction(
     append_domain(
         &m2, identity.domains[7].flat_polygons,
         (UINT64_C(1) << 8) - 1, &graph, false);
+    require_connectivity(
+        connectivity.compact_retained_rectangles(
+            &graph.retained_rectangle_capacity),
+        "compact post-M2 connectivity frontier");
+    memory.observe();
     checkpoint_stage(
         1, 7, cert::MetalLevel::metal2, graph, stage_begin);
   }

@@ -223,6 +223,19 @@ public:
       std::vector<std::uint32_t> *labels,
       StageCensus *census) noexcept;
 
+  /*
+   * Rebuilds the retained rectangle vector at its exact current size.  This is
+   * intended for a stage boundary after a deliberately over-reserved
+   * consuming frontier has served its purpose.  The replacement allocation
+   * is admitted against the configured device cap before copying.  On every
+   * failure the committed geometry, labels, and caller output are unchanged.
+   *
+   * retained_rectangle_capacity may be null.  A non-null output is assigned
+   * only on success.
+   */
+  Status compact_retained_rectangles(
+      std::uint64_t *retained_rectangle_capacity = nullptr) noexcept;
+
   // Copies the last committed canonical labels.  labels is unchanged on error.
   Status snapshot_labels(
       std::vector<std::uint32_t> *labels) const noexcept;

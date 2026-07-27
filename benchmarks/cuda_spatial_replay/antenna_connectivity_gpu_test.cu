@@ -1255,6 +1255,130 @@ void test_consuming_device_ownership()
       "poisoned resident view");
 }
 
+void test_transactional_retained_compaction()
+{
+  std::size_t initial_free = 0;
+  std::size_t total = 0;
+  require(
+      cudaMemGetInfo(&initial_free, &total) == cudaSuccess,
+      "compaction initial cudaMemGetInfo failed");
+  const std::uint64_t initial_used = total - initial_free;
+
+  ac::Config config = base_config(1, 8);
+  allow(&config, 0, 0);
+  config.limits.min_device_free_after_bytes =
+      UINT64_C(1) * 1024 * 1024;
+  const std::uint64_t test_headroom =
+      UINT64_C(128) * 1024 * 1024;
+  config.limits.max_device_bytes = std::min<std::uint64_t>(
+      total, initial_used + test_headroom);
+  ac::Connectivity gpu(config);
+
+  const std::vector<ac::RectI64> host = {
+      {0, 0, 10, 10, 0, 0},
+      {20, 0, 30, 10, 1, 0}};
+  thrust::device_vector<ac::RectI64> oversized;
+  oversized.reserve(4096);
+  oversized.assign(host.begin(), host.end());
+  ac::StageCensus census;
+  require_status(
+      gpu.append_stage_consuming(
+          std::move(oversized), 2, 0, nullptr, &census),
+      ac::Status::success, "compaction consuming baseline");
+  require(
+      census.retained_rectangle_capacity > census.retained_rectangles,
+      "compaction fixture did not retain excess capacity");
+
+  ac::DeviceLabelView before;
+  require_status(
+      gpu.device_label_view(&before), ac::Status::success,
+      "compaction label view before capacity failure");
+  const std::vector<std::uint32_t> expected_labels =
+      copy_resident_labels(before);
+
+  std::size_t free_before_filler = 0;
+  require(
+      cudaMemGetInfo(&free_before_filler, &total) == cudaSuccess,
+      "compaction filler cudaMemGetInfo failed");
+  const std::uint64_t used_before_filler =
+      total - free_before_filler;
+  const std::uint64_t replacement_bytes =
+      census.retained_rectangles * sizeof(ac::RectI64);
+  const std::uint64_t target_available =
+      config.limits.min_device_free_after_bytes +
+      replacement_bytes - 1;
+  const std::uint64_t under_cap =
+      config.limits.max_device_bytes > used_before_filler
+          ? config.limits.max_device_bytes - used_before_filler
+          : 0;
+  const std::uint64_t filler_bytes =
+      under_cap > target_available
+          ? under_cap - target_available
+          : 0;
+  void *filler = nullptr;
+  if (filler_bytes) {
+    require(
+        cudaMalloc(&filler, filler_bytes) == cudaSuccess,
+        "compaction filler allocation failed");
+  }
+
+  std::uint64_t compacted_capacity = UINT64_C(0x123456789abcdef0);
+  require_status(
+      gpu.compact_retained_rectangles(&compacted_capacity),
+      ac::Status::capacity_exceeded,
+      "compaction capacity rejection");
+  require(
+      compacted_capacity == UINT64_C(0x123456789abcdef0),
+      "failed compaction changed caller output");
+  ac::DeviceLabelView after_failure;
+  require_status(
+      gpu.device_label_view(&after_failure), ac::Status::success,
+      "compaction label view after capacity failure");
+  require(
+      after_failure.labels == before.labels &&
+          after_failure.count == before.count &&
+          after_failure.epoch == before.epoch &&
+          copy_resident_labels(after_failure) == expected_labels,
+      "failed compaction changed committed labels");
+  if (filler) {
+    require(
+        cudaFree(filler) == cudaSuccess,
+        "compaction filler release failed");
+  }
+
+  require_status(
+      gpu.compact_retained_rectangles(&compacted_capacity),
+      ac::Status::success, "compaction exact replacement");
+  require(
+      compacted_capacity == census.retained_rectangles,
+      "successful compaction did not remove excess capacity");
+  ac::DeviceLabelView after_success;
+  require_status(
+      gpu.device_label_view(&after_success), ac::Status::success,
+      "compaction label view after success");
+  require(
+      after_success.labels == before.labels &&
+          after_success.count == before.count &&
+          after_success.epoch == before.epoch &&
+          copy_resident_labels(after_success) == expected_labels,
+      "successful rectangle compaction changed labels");
+
+  thrust::device_vector<ac::RectI64> continuation(
+      1, ac::RectI64{30, 0, 40, 10, 2, 0});
+  require_status(
+      gpu.append_stage_consuming(
+          std::move(continuation), 1, 0, nullptr, &census),
+      ac::Status::success, "append after rectangle compaction");
+  ac::DeviceLabelView continued;
+  require_status(
+      gpu.device_label_view(&continued), ac::Status::success,
+      "label view after compacted append");
+  require(
+      copy_resident_labels(continued) ==
+          std::vector<std::uint32_t>({0, 1, 1}),
+      "compaction did not preserve retained rectangle geometry");
+}
+
 void test_seeded_random_differentials(bool exact_filter)
 {
   constexpr std::uint32_t kSeeds = 12;
@@ -1341,6 +1465,7 @@ int main()
     test_compact_cell_keys();
     test_resident_label_view();
     test_consuming_device_ownership();
+    test_transactional_retained_compaction();
     test_seeded_random_differentials(false);
     test_seeded_random_differentials(true);
     std::cout
