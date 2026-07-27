@@ -159,11 +159,12 @@ def _fused_certificate_prelude() -> str:
             f"    antenna_m1_m4_upper_empty = {upper_empty}",
             "    if antenna_m1_m4_upper_empty",
             '      antenna_m1_m4_reason = "method-unavailable"',
-            "      if poly.respond_to?(:cuda_antenna_m1_m4_raw_clean?)",
+            "      if poly.data.respond_to?(:cuda_antenna_m1_m4_raw_clean?)",
             "        antenna_m1_m4_certified = "
-            "poly.cuda_antenna_m1_m4_raw_clean?("
-            "active, nplus, nwell, cont, metal1, via1, metal2, via2, "
-            "metal3, via3, metal4)",
+            "poly.data.cuda_antenna_m1_m4_raw_clean?("
+            "active.data, nplus.data, nwell.data, cont.data, metal1.data, "
+            "via1.data, metal2.data, via2.data, metal3.data, via3.data, "
+            "metal4.data)",
             "        if antenna_m1_m4_certified",
             "          antenna_m1_m4_empty = polygon_layer",
             "          antenna_m1_m4_clean = true",

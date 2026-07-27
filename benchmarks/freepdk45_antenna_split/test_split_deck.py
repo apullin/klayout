@@ -415,9 +415,10 @@ class SplitDeckTest(unittest.TestCase):
         )
         self.assertEqual(
             result.count(
-                "poly.cuda_antenna_m1_m4_raw_clean?("
-                "active, nplus, nwell, cont, metal1, via1, metal2, via2, "
-                "metal3, via3, metal4)"
+                "poly.data.cuda_antenna_m1_m4_raw_clean?("
+                "active.data, nplus.data, nwell.data, cont.data, "
+                "metal1.data, via1.data, metal2.data, via2.data, "
+                "metal3.data, via3.data, metal4.data)"
             ),
             1,
         )
@@ -430,9 +431,9 @@ class SplitDeckTest(unittest.TestCase):
             result.index(f"metal{layer}.is_empty?") for layer in range(5, 11)
         ]
         capability = result.index(
-            "poly.respond_to?(:cuda_antenna_m1_m4_raw_clean?)"
+            "poly.data.respond_to?(:cuda_antenna_m1_m4_raw_clean?)"
         )
-        call = result.index("poly.cuda_antenna_m1_m4_raw_clean?(")
+        call = result.index("poly.data.cuda_antenna_m1_m4_raw_clean?(")
         first_output = result.index(
             'antenna_m1_m4_empty.output("METAL1_ANTENNA"'
         )
