@@ -872,6 +872,21 @@ Status Certificate::configuration_status() const noexcept
   return m_impl ? m_impl->config_status : Status::host_error;
 }
 
+Status Certificate::set_external_live_device_bytes(
+    std::uint64_t bytes) noexcept
+{
+  if (!m_impl || m_impl->config_status != Status::success) {
+    return m_impl ? m_impl->config_status : Status::host_error;
+  }
+  if (bytes > m_impl->config.limits.max_live_device_bytes ||
+      m_impl->persistent_bytes >
+          m_impl->config.limits.max_live_device_bytes - bytes) {
+    return Status::capacity_exceeded;
+  }
+  m_impl->config.external_live_device_bytes = bytes;
+  return Status::success;
+}
+
 Status Certificate::build_gate_census(
     const antenna_connectivity::RectI64 *device_poly,
     std::uint64_t poly_count,

@@ -307,6 +307,28 @@ acc::Config base_config()
   return config;
 }
 
+void test_external_live_update_is_transactional()
+{
+  acc::Config config = base_config();
+  config.limits.max_live_device_bytes = 1024;
+  config.external_live_device_bytes = 64;
+  acc::Certificate certificate(config);
+  require_status(
+      certificate.configuration_status(), acc::Status::success,
+      "external baseline configuration");
+  require_status(
+      certificate.set_external_live_device_bytes(512),
+      acc::Status::success, "external baseline update");
+  require_status(
+      certificate.set_external_live_device_bytes(2048),
+      acc::Status::capacity_exceeded,
+      "external baseline over-cap update");
+  require_status(
+      certificate.set_external_live_device_bytes(512),
+      acc::Status::success,
+      "external baseline remains usable after rejection");
+}
+
 void require_gate_view(
     acc::Certificate *certificate, const GateOracle &expected,
     const std::string &name)
@@ -842,6 +864,7 @@ int main()
 {
   try {
     require_cuda(cudaSetDevice(0), "select CUDA device");
+    test_external_live_update_is_transactional();
     test_cross_context_tile_splits_and_touches();
     test_one_dbu_boundary_and_duplicate_metal_upper();
     test_merged_roots_use_max_gate_lower();

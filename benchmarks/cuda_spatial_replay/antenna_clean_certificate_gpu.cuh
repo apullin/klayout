@@ -156,6 +156,15 @@ public:
   Status configuration_status() const noexcept;
 
   /*
+   * Refresh device bytes owned by the surrounding resident transaction.
+   * The update is transactional: an over-cap value leaves the prior
+   * baseline unchanged.  Callers refresh it immediately before each bounded
+   * certificate operation.
+   */
+  Status set_external_live_device_bytes(
+      std::uint64_t bytes) noexcept;
+
+  /*
    * Builds an exact complete positive-area POLY-vs-ACTIVE intersection
    * census.  Both rectangle arrays are device pointers.  Every valid
    * intersection sets gate_present for its POLY owner and atomically retains
