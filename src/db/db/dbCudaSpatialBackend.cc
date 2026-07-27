@@ -6769,8 +6769,11 @@ bool cuda_spatial_validate_antenna_m1_m4_result (
           stage.gate_count >
             result.domain_results
               [KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_POLY_ROLE].owner_count ||
+          //  Evaluated and exact diode-exempt roots are disjoint gate
+          //  classes.  Short-circuiting makes the subtraction nonnegative.
           stage.evaluated_count > stage.gate_count ||
-          stage.exempt_count != 0 ||
+          stage.exempt_count >
+            stage.gate_count - stage.evaluated_count ||
           ! frontier_fits ||
           frontier_rectangle_count != new_rectangle_count ||
           stage.retained_rectangle_count !=

@@ -586,7 +586,40 @@ TEST(4_StageAndFrontierEvidenceIsBound)
   }
 }
 
-TEST(5_MalformedCompactRequestFailsClosed)
+TEST(5_DiodeExemptGateClassificationIsBound)
+{
+  std::string error;
+  {
+    ContractFixture fixture;
+    klayout_cuda_spatial_antenna_m1_m4_stage_result_v1 &stage =
+      fixture.result.stages [0];
+    stage.evaluated_count = 0;
+    stage.exempt_count = stage.gate_count;
+    fixture.recompute_stage_digest (0);
+    EXPECT_EQ (fixture.validate (error), true);
+    EXPECT_EQ (error, "");
+  }
+  {
+    ContractFixture fixture;
+    klayout_cuda_spatial_antenna_m1_m4_stage_result_v1 &stage =
+      fixture.result.stages [0];
+    stage.evaluated_count = 0;
+    stage.exempt_count = stage.gate_count + 1;
+    fixture.recompute_stage_digest (0);
+    EXPECT_EQ (fixture.validate (error), false);
+  }
+  {
+    ContractFixture fixture;
+    klayout_cuda_spatial_antenna_m1_m4_stage_result_v1 &stage =
+      fixture.result.stages [0];
+    stage.evaluated_count = stage.gate_count;
+    stage.exempt_count = 1;
+    fixture.recompute_stage_digest (0);
+    EXPECT_EQ (fixture.validate (error), false);
+  }
+}
+
+TEST(6_MalformedCompactRequestFailsClosed)
 {
   std::string error;
   {
