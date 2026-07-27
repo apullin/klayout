@@ -70,6 +70,11 @@ ACTIVE3_RULE = (
     'nwell/pwell to active: 55nm")'
 )
 ACTIVE3_SOURCE_BLOCK = f"{ACTIVE3_WELL}\nintervening\n{ACTIVE3_RULE}"
+ACTIVE4_RULE = (
+    'active.not(well).output("ACTIVE.4", '
+    '"ACTIVE.4 : active must be inside nwell or pwell")'
+)
+ACTIVE4_SOURCE_BLOCK = f"{ACTIVE3_WELL}\nintervening\n{ACTIVE4_RULE}"
 
 M2_CPU12 = """metal2_width, metal2_space = metal2.drc_batch([
   width(euclidian) &lt; 70.nm,
@@ -999,6 +1004,98 @@ class Active3ExactWellUnionTransformTest(unittest.TestCase):
             "!(OFFGRID &amp;&amp; run_grid)",
         ):
             self.assertIn(required, owner)
+
+
+class Active4ExactWellUnionTransformTest(unittest.TestCase):
+    def test_transaction_is_deterministic_exact_and_fail_closed(self) -> None:
+        source = f"before\n{ACTIVE4_SOURCE_BLOCK}\nafter\n"
+        first = generator.add_active4_well_union(source)
+        second = generator.add_active4_well_union(source)
+
+        self.assertEqual(first, second)
+        self.assertTrue(first.startswith("before\n"))
+        self.assertTrue(first.endswith("\nafter\n"))
+        self.assertEqual(
+            first.count(
+                'active4_well_union_request = '
+                'ENV["KLAYOUT_CUDA_ACTIVE4_WELL_UNION"].to_s'
+            ),
+            1,
+        )
+        self.assertIn(
+            "nwell.respond_to?(:cuda_active4_well_union_clean?)", first
+        )
+        self.assertIn(
+            "nwell.cuda_active4_well_union_clean?(pwell, active)", first
+        )
+        self.assertIn(
+            "rescue StandardError =&gt; active4_well_union_error", first
+        )
+        self.assertEqual(first.count(ACTIVE3_WELL), 1)
+        self.assertEqual(first.count(ACTIVE4_RULE), 1)
+        clean_branch = first.split(
+            "\nif active4_well_union_clean\n", 1
+        )[1].split("\nelse", 1)[0]
+        self.assertNotIn("nwell.or(pwell)", clean_branch)
+        self.assertNotIn("active.not(well)", clean_branch)
+        self.assertIn("active4_well_union_empty.output", clean_branch)
+
+    def test_owner_can_share_all_other_well_consumers(self) -> None:
+        transformed = generator.add_active4_well_union(ACTIVE4_SOURCE_BLOCK)
+        owner = next(
+            line
+            for line in transformed.splitlines()
+            if line.startswith("active4_well_union_owner =")
+        )
+        for required in (
+            "active4_well_union_requested",
+            "DRC",
+            "run_active4",
+        ):
+            self.assertIn(required, owner)
+        for excluded in (
+            "!run_well",
+            "!run_active3",
+            "!(OFFGRID &amp;&amp; run_grid)",
+        ):
+            self.assertNotIn(excluded, owner)
+        needs_well = next(
+            line
+            for line in transformed.splitlines()
+            if line.startswith("active4_well_union_needs_well =")
+        )
+        for retained_consumer in (
+            "run_well",
+            "run_active3",
+            "OFFGRID",
+            "run_grid",
+        ):
+            self.assertIn(retained_consumer, needs_well)
+        self.assertIn(
+            "if !active4_well_union_clean || active4_well_union_needs_well",
+            transformed,
+        )
+
+    def test_source_drift_fails_closed_at_generation(self) -> None:
+        changed_union = ACTIVE4_SOURCE_BLOCK.replace(
+            "nwell.or(pwell)", "pwell.or(nwell)"
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"ACTIVE\.4 exact WELL-union transaction: "
+            r"expected one source block, found 0",
+        ):
+            generator.add_active4_well_union(changed_union)
+
+        changed_rule = ACTIVE4_SOURCE_BLOCK.replace(
+            "active.not(well)", "well.not(active)"
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"ACTIVE\.4 exact WELL-union output transaction: "
+            r"expected one source block, found 0",
+        ):
+            generator.add_active4_well_union(changed_rule)
 
 
 class CombinedM2PolyTransformTest(unittest.TestCase):

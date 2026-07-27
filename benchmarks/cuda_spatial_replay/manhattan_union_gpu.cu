@@ -1990,6 +1990,8 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
   UnionOutput output;
   output.rectangle_count = rectangles.size();
   output.input_prepare_ms = input_prepare_ms;
+  const char *pipeline_stage = "preflight";
+  std::uint64_t pipeline_stage_count = 0;
   auto pipeline = [&]() {
     if (!std::isfinite(input_prepare_ms) || input_prepare_ms < 0.0) {
       output.fallback = true;
@@ -2034,6 +2036,8 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
 
     cuda_require(cudaSetDevice(device), "windowed cudaSetDevice");
     sample_device_memory(&output);
+    pipeline_stage = "status";
+    pipeline_stage_count = 1;
     thrust::device_vector<std::uint32_t> status(1, 0);
     thrust::device_vector<RectI64> device_rectangles =
         std::move(rectangles);
@@ -2051,6 +2055,8 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
       output.message = "endpoint count overflow";
       return;
     }
+    pipeline_stage = "x-endpoints";
+    pipeline_stage_count = endpoint_count;
     thrust::device_vector<std::int64_t> xs(endpoint_count);
     const std::uint32_t rectangle_blocks =
         launch_blocks(output.rectangle_count);
@@ -2079,8 +2085,12 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
       return;
     }
 
+    pipeline_stage = "slab-membership-histogram";
+    pipeline_stage_count = x_count;
     thrust::device_vector<unsigned long long> slab_memberships(
         x_count, 0);
+    pipeline_stage = "rectangle-slab-spans";
+    pipeline_stage_count = output.rectangle_count;
     thrust::device_vector<PackedSlabSpan> rectangle_slab_spans(
         output.rectangle_count);
     histogram_slab_memberships_kernel<<<rectangle_blocks, kThreads>>>(
@@ -2183,10 +2193,16 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
         std::min(
             window_limits.max_strip_intervals,
             output.memberships);
+    pipeline_stage = "stitched-strip-reserve";
+    pipeline_stage_count = strip_interval_capacity;
     thrust::device_vector<StripInterval> intervals(
         strip_interval_capacity);
+    pipeline_stage = "slab-interval-counts";
+    pipeline_stage_count = output.x_slabs;
     thrust::device_vector<std::uint32_t> slab_interval_counts(
         output.x_slabs, 0);
+    pipeline_stage = "slab-interval-offsets";
+    pipeline_stage_count = output.x_slabs;
     thrust::device_vector<std::uint64_t> slab_interval_offsets(
         output.x_slabs);
     sample_device_memory(&output);
@@ -2197,8 +2213,12 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
      * event, delta, reduction and coverage vectors below are bounded by
      * max_window_events instead of the whole-input event census.
      */
+    pipeline_stage = "window-membership-counts";
+    pipeline_stage_count = output.rectangle_count;
     thrust::device_vector<std::uint32_t> window_membership_counts(
         output.rectangle_count);
+    pipeline_stage = "window-membership-offsets";
+    pipeline_stage_count = output.rectangle_count;
     thrust::device_vector<std::uint64_t> window_membership_offsets(
         output.rectangle_count);
     std::uint64_t transition_total = 0;
@@ -2258,8 +2278,12 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
         output.message = "window event capacity";
         return;
       }
+      pipeline_stage = "window-event-keys";
+      pipeline_stage_count = window_event_count;
       thrust::device_vector<PackedEventKey> event_keys(
           window_event_count);
+      pipeline_stage = "window-event-deltas";
+      pipeline_stage_count = window_event_count;
       thrust::device_vector<std::int32_t> event_deltas(
           window_event_count);
       fill_window_events_kernel<<<rectangle_blocks, kThreads>>>(
@@ -2273,14 +2297,22 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
           thrust::raw_pointer_cast(event_deltas.data()),
           thrust::raw_pointer_cast(status.data()));
       cuda_require(cudaGetLastError(), "fill window slab events");
+      pipeline_stage = "window-event-sort";
+      pipeline_stage_count = window_event_count;
       thrust::sort_by_key(
           thrust::device, event_keys.begin(), event_keys.end(),
           event_deltas.begin());
 
+      pipeline_stage = "window-unique-event-keys";
+      pipeline_stage_count = window_event_count;
       thrust::device_vector<PackedEventKey> unique_event_keys(
           window_event_count);
+      pipeline_stage = "window-unique-event-deltas";
+      pipeline_stage_count = window_event_count;
       thrust::device_vector<std::int32_t> unique_event_deltas(
           window_event_count);
+      pipeline_stage = "window-event-reduce";
+      pipeline_stage_count = window_event_count;
       auto reduced_events = thrust::reduce_by_key(
           thrust::device, event_keys.begin(), event_keys.end(),
           event_deltas.begin(), unique_event_keys.begin(),
@@ -2311,6 +2343,8 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
         return;
       }
 
+      pipeline_stage = "window-coverage";
+      pipeline_stage_count = unique_event_count;
       thrust::device_vector<std::int32_t> coverage(
           unique_event_count);
       const auto slab_ids = thrust::make_transform_iterator(
@@ -2321,6 +2355,8 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
           thrust::equal_to<std::uint32_t>{},
           thrust::plus<std::int32_t>{});
 
+      pipeline_stage = "window-transitions";
+      pipeline_stage_count = unique_event_count;
       thrust::device_vector<PackedTransition> transitions(
           unique_event_count);
       extract_packed_transitions_kernel<<<
@@ -2487,6 +2523,8 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
     release_device_vector(&window_membership_counts);
     release_device_vector(&window_membership_offsets);
     sample_device_memory(&output);
+    pipeline_stage = "compact-strip-intervals";
+    pipeline_stage_count = interval_total;
     thrust::device_vector<StripInterval> compact_intervals(
         interval_total);
     if (interval_total) {
@@ -2522,9 +2560,10 @@ UnionOutput gpu_union_resident_windowed_strips_impl(
     pipeline();
   } catch (const std::exception &error) {
     output.fallback = true;
-    output.message =
-        std::string("CUDA windowed pipeline exception: ") +
-        error.what();
+    output.message = std::string("CUDA windowed pipeline exception at ") +
+                     pipeline_stage + " count=" +
+                     std::to_string(pipeline_stage_count) + ": " +
+                     error.what();
     output.segments.clear();
     (void)cudaGetLastError();
   } catch (...) {

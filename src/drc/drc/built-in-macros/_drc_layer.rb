@@ -3813,6 +3813,20 @@ CODE
       end
     end
 
+    # Internal, fail-closed exact-set hook that forms the physical
+    # NWELL/PWELL union on the selected device and proves that pristine ACTIVE
+    # is a subset.  False requires the literal active.not(well) CPU expression.
+    def cuda_active4_well_union_clean?(pwell, active)
+      @engine._context("cuda_active4_well_union_clean?") do
+        check_is_layer(pwell)
+        check_is_layer(active)
+        requires_region
+        pwell.requires_region
+        active.requires_region
+        self.data.cuda_active4_well_union_clean?(pwell.data, active.data)
+      end
+    end
+
     # Internal, fail-closed acceleration hook for the qualified FreePDK45
     # IMPLANT.1/IMPLANT.2 transaction.  The receiver is the exact merged
     # IMPLANT primary; GATE and CONTACT retain their raw region state.

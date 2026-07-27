@@ -14,6 +14,7 @@ import unittest
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 LAUNCHER = HERE / "run_balanced_full_gate.sh"
+BACKEND = HERE / "m2_union_backend.cu"
 sys.path.insert(0, str(ROOT / "benchmarks" / "freepdk45_antenna_split"))
 
 from split_deck import antenna_shards  # noqa: E402
@@ -23,6 +24,7 @@ class BalancedFullGateStaticTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.launcher_text = LAUNCHER.read_text(encoding="utf-8")
+        cls.backend_text = BACKEND.read_text(encoding="utf-8")
 
     def shell_array(self, name: str) -> tuple[str, ...]:
         match = re.search(
@@ -330,6 +332,7 @@ class BalancedFullGateStaticTest(unittest.TestCase):
             "--split-implant-contact",
             "--split-active12",
             "--with-active3-well-union",
+            "--with-active4-well-union",
             "--with-contact4-active-union",
             "--with-m2-rules",
             "--with-m1-base-width-space",
@@ -445,6 +448,97 @@ class BalancedFullGateStaticTest(unittest.TestCase):
             "CUDA ACTIVE.3 exact resident WELL-union certificate:"
             " outcome=certified-empty",
             self.launcher_text,
+        )
+
+    def test_active4_well_union_control_and_candidate_share_one_deck(
+        self,
+    ) -> None:
+        self.assertIn(
+            'active4_well_union_generator_args=(--active4-well-union)',
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_CUDA_ACTIVE4_WELL_UNION=${active4_well_union}"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_CUDA_ACTIVE4_WELL_UNION_TELEMETRY=1"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_CUDA_ACTIVE4_WELL_UNION_TERMINAL_RESET=1"',
+            self.launcher_text,
+        )
+        lease_condition = re.search(
+            r"if \(\(antenna_m1_m4 >= 0 \|\| "
+            r"active4_well_union >= 0\)\); then"
+            r"(.*?)\nfi",
+            self.launcher_text,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(
+            lease_condition,
+            "ACTIVE.4 must share the cross-process GPU lease with M1",
+        )
+        for required in (
+            '"KLAYOUT_CUDA_DEVICE_LEASE=1"',
+            '"KLAYOUT_CUDA_DEVICE_LEASE_WAIT_MS=20000"',
+            '"KLAYOUT_CUDA_DEVICE_LEASE_TELEMETRY=1"',
+        ):
+            self.assertIn(required, lease_condition.group(1))
+        self.assertIn(
+            '"${device_lease_env[@]}"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            "CUDA ACTIVE.4 exact resident WELL-union subset certificate:"
+            " outcome=certified-empty",
+            self.launcher_text,
+        )
+        self.assertIn(
+            "fallback_flags=0 device_flags=0",
+            self.launcher_text,
+        )
+        self.assertIn(
+            "KLAYOUT_CUDA_ACTIVE4_DEVICE_RECLAIM ",
+            self.launcher_text,
+        )
+        self.assertIn(
+            "KLAYOUT_CUDA_DEVICE_LEASE role=active4_well_union ",
+            self.launcher_text,
+        )
+        self.assertIn(
+            "ACTIVE.4 cross-process device lease was not acquired "
+            "and released",
+            self.launcher_text,
+        )
+        self.assertIn(
+            "disposition=terminal-reset",
+            self.launcher_text,
+        )
+
+        env_parser = re.search(
+            r"bool environment_enabled\(const char \*name\)"
+            r"\s*\{(.*?)\n\}",
+            self.backend_text,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(env_parser)
+        for disabled_value in ('"0"', '"false"', '"off"'):
+            self.assertIn(
+                f"std::strcmp(value, {disabled_value}) != 0",
+                env_parser.group(1),
+            )
+
+        conflicting = self.run_preflight(
+            "--with-active3-well-union",
+            "--with-active4-well-union",
+        )
+        self.assertEqual(conflicting.returncode, 2)
+        self.assertIn(
+            "ACTIVE.3 and ACTIVE.4 exact WELL-union runtime modes "
+            "are alternatives",
+            conflicting.stderr,
         )
 
     def test_full_gate_rejects_any_via1_or_m1_contact_fallback(

@@ -60,6 +60,10 @@ DB_PUBLIC bool cuda_active3_well_union_try_empty (
   const db::DeepLayer &raw_nwell, const db::DeepLayer &raw_pwell,
   const db::DeepLayer &raw_active);
 
+DB_PUBLIC bool cuda_active4_well_union_try_empty (
+  const db::DeepLayer &raw_nwell, const db::DeepLayer &raw_pwell,
+  const db::DeepLayer &raw_active);
+
 /**
  * Try the narrowly qualified live CONTACT.4 empty certificate.
  *

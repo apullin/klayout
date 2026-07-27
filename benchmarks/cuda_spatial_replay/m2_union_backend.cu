@@ -12,6 +12,7 @@
 
 #include "dbCudaActive3Digest.h"
 #include "dbCudaSpatialApi.h"
+#include "active4_subset_resident.cuh"
 #include "contact4_union_resident.cuh"
 #include "cuda_device_phase_lease.h"
 #include "m1_width_space_exact_predicate.h"
@@ -52,6 +53,7 @@ namespace md = klayout_cuda::m2_manhattan_decompose;
 namespace m2m = klayout_cuda::m2_resident_morphology;
 namespace c4 = klayout_cuda::contact4_union_resident;
 namespace a3 = klayout_cuda::active3;
+namespace a4 = klayout_cuda::active4_subset_resident;
 
 using Context =
     klayout_cuda_spatial_m1_width_space_context_v1;
@@ -156,6 +158,14 @@ constexpr std::uint64_t kM1MaxStitchedStripIntervals =
     UINT64_C(128000000);
 constexpr std::uint64_t kM1BaseMaxStitchedStripIntervals =
     UINT64_C(160000000);
+// The generic 64M-event window is a nondeterministic allocation cliff for
+// the 160M-interval M1.1/M1.2 reserve on 10 GiB devices: the same exact
+// FreePDK45 scene has both completed and failed with more sampled free memory.
+// Bound only this terminal M1 base-width/space producer to 16M events.  Slab
+// windows are independent and stitch into the same exact global strip view,
+// so this changes peak scratch storage rather than geometry or predicates.
+constexpr std::uint64_t kM1BaseMaxWindowEvents =
+    UINT64_C(16000000);
 constexpr char kM2RawDigestMagic[8] =
     {'K', 'M', '2', 'R', 'A', 'W', '0', '1'};
 constexpr char kM1RawDigestMagic[8] =
@@ -443,6 +453,71 @@ void cuda_require(cudaError_t error, const char *operation)
   if (error != cudaSuccess) {
     throw std::runtime_error(
         std::string(operation) + ": " + cudaGetErrorString(error));
+  }
+}
+
+bool environment_enabled(const char *name)
+{
+  const char *value = std::getenv(name);
+  return value && *value && std::strcmp(value, "0") != 0 &&
+         std::strcmp(value, "false") != 0 &&
+         std::strcmp(value, "off") != 0;
+}
+
+void reclaim_active4_default_pool(int device)
+{
+  const bool terminal_reset = environment_enabled(
+      "KLAYOUT_CUDA_ACTIVE4_WELL_UNION_TERMINAL_RESET");
+  cuda_require(
+      cudaSetDevice(device),
+      "ACTIVE4 reclaim cudaSetDevice");
+  cuda_require(
+      cudaDeviceSynchronize(),
+      "ACTIVE4 reclaim pre-trim synchronize");
+  std::size_t free_before = 0;
+  std::size_t total_before = 0;
+  cuda_require(
+      cudaMemGetInfo(&free_before, &total_before),
+      "ACTIVE4 reclaim pre-trim cudaMemGetInfo");
+  cudaMemPool_t pool = nullptr;
+  cuda_require(
+      cudaDeviceGetDefaultMemPool(&pool, device),
+      "ACTIVE4 reclaim default memory pool");
+  cuda_require(
+      cudaMemPoolTrimTo(pool, 0),
+      "ACTIVE4 reclaim default memory-pool trim");
+  cuda_require(
+      cudaDeviceSynchronize(),
+      "ACTIVE4 reclaim post-trim synchronize");
+  std::size_t free_after = 0;
+  std::size_t total_after = 0;
+  cuda_require(
+      cudaMemGetInfo(&free_after, &total_after),
+      "ACTIVE4 reclaim post-trim cudaMemGetInfo");
+  if (total_after != total_before) {
+    throw std::runtime_error(
+        "ACTIVE4 reclaim device-memory identity changed");
+  }
+  if (terminal_reset) {
+    // The qualified balanced deck calls ACTIVE.4 as the final CUDA operation
+    // in its antenna_feol process.  Destroying that process-local primary
+    // context here returns its otherwise process-lifetime residency before
+    // the high-water M1 owner acquires the cross-process lease.  A later CUDA
+    // call remains legal: the runtime would create a fresh primary context.
+    cuda_require(
+        cudaDeviceReset(),
+        "ACTIVE4 terminal-owner cudaDeviceReset");
+  }
+  if (environment_enabled(
+          "KLAYOUT_CUDA_ACTIVE4_WELL_UNION_TELEMETRY")) {
+    std::fprintf(
+        stderr,
+        "KLAYOUT_CUDA_ACTIVE4_DEVICE_RECLAIM "
+        "free_before_bytes=%zu free_after_bytes=%zu "
+        "released_bytes=%zu disposition=%s\n",
+        free_before, free_after,
+        free_after > free_before ? free_after - free_before : 0,
+        terminal_reset ? "terminal-reset" : "trimmed");
   }
 }
 
@@ -1147,12 +1222,19 @@ bool valid_contact4_request(const Contact4Request &request)
 bool valid_active3_well_request(
     const Active3WellRequest &request)
 {
+  const bool active3 =
+      request.opcode ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_EMPTY &&
+      request.option_flags ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_QUALIFIED_OPTIONS;
+  const bool active4 =
+      request.opcode ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE4_WELL_UNION_SUBSET_EMPTY &&
+      request.option_flags ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE4_WELL_UNION_QUALIFIED_OPTIONS;
   if (request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
       request.struct_size != sizeof(request) ||
-      request.opcode !=
-          KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_EMPTY ||
-      request.option_flags !=
-          KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_QUALIFIED_OPTIONS ||
+      (!active3 && !active4) ||
       request.format_version != 1 ||
       request.dbu_per_micron != 2000 || request.device < 0 ||
       request.reserved0 || request.distance != 110 ||
@@ -3648,6 +3730,117 @@ struct Active3WellCallbackContext
   c4::DeviceResidentContext resident;
 };
 
+struct Active4SubsetCallbackContext
+{
+  const Request *active = nullptr;
+  const LoweredScene *active_lowered = nullptr;
+  const Active3WellRequest *outer = nullptr;
+  bool invoked = false;
+  std::uint32_t expansion_status = 0;
+  std::uint64_t active_h2d_ns = 0;
+  std::uint64_t active_expand_ns = 0;
+  std::uint64_t active_rectangle_count = 0;
+  std::uint64_t device_total_bytes = 0;
+  std::uint64_t callback_free_begin_bytes = 0;
+  std::uint64_t callback_free_low_bytes = 0;
+  a4::Result subset;
+};
+
+void consume_active4_well_union_strips(
+    cudaStream_t stream, const std::int64_t *xs,
+    std::uint32_t x_slabs, const mu::StripInterval *intervals,
+    std::uint64_t interval_count, const std::uint64_t *slab_offsets,
+    const std::uint32_t *slab_counts, void *opaque)
+{
+  Active4SubsetCallbackContext *context =
+      static_cast<Active4SubsetCallbackContext *>(opaque);
+  if (!context || context->invoked || !context->active ||
+      !context->active_lowered || !context->outer) {
+    throw std::runtime_error(
+        "ACTIVE4 WELL-union strip callback contract");
+  }
+  context->invoked = true;
+  if (stream != nullptr) {
+    throw std::runtime_error(
+        "ACTIVE4 WELL-union callback requires the default stream");
+  }
+
+  std::size_t callback_free_begin = 0;
+  std::size_t device_total = 0;
+  cuda_require(
+      cudaMemGetInfo(&callback_free_begin, &device_total),
+      "ACTIVE4 WELL-union callback-entry cudaMemGetInfo");
+  context->device_total_bytes = device_total;
+  context->callback_free_begin_bytes = callback_free_begin;
+  context->callback_free_low_bytes = callback_free_begin;
+
+  ExpandedRectangles expanded =
+      expand_rectangles_resident(
+          *context->active, *context->active_lowered);
+  context->expansion_status = expanded.status;
+  context->active_h2d_ns = expanded.h2d_ns;
+  context->active_expand_ns = expanded.expand_ns;
+  context->active_rectangle_count = expanded.rectangles.size();
+  std::size_t post_expand_free = 0;
+  std::size_t post_expand_total = 0;
+  cuda_require(
+      cudaMemGetInfo(&post_expand_free, &post_expand_total),
+      "ACTIVE4 post-expansion cudaMemGetInfo");
+  if (post_expand_total != context->device_total_bytes) {
+    throw std::runtime_error(
+        "raw ACTIVE rectangle memory telemetry identity mismatch");
+  }
+  context->callback_free_low_bytes = std::min(
+      context->callback_free_low_bytes,
+      static_cast<std::uint64_t>(post_expand_free));
+  if (expanded.status) {
+    throw std::runtime_error(
+        "raw ACTIVE rectangle expansion failed its exact gate");
+  }
+
+  a4::Limits limits;
+  limits.max_rectangles = context->outer->max_active_edges;
+  limits.max_x_slabs = context->outer->max_x_slabs;
+  limits.max_intervals =
+      context->outer->max_union_memberships;
+  limits.max_slab_visits =
+      context->outer->max_active_memberships;
+  limits.max_search_steps =
+      context->outer->max_member_visits;
+  limits.max_slabs_per_rectangle =
+      context->outer->max_cells_per_active_edge;
+  context->subset = a4::certify_subset(
+      stream,
+      a4::DeviceStripView{
+          xs, x_slabs, intervals, interval_count,
+          slab_offsets, slab_counts},
+      a4::DeviceRectangleView{
+          expanded.rectangles.empty()
+              ? nullptr
+              : thrust::raw_pointer_cast(expanded.rectangles.data()),
+          expanded.rectangles.size()},
+      limits, context->outer->device);
+  if (context->subset.device_total_bytes != context->device_total_bytes ||
+      !context->subset.device_free_begin_bytes ||
+      !context->subset.device_free_low_bytes) {
+    throw std::runtime_error(
+        "ACTIVE4 WELL-union subset memory telemetry mismatch");
+  }
+  context->callback_free_low_bytes = std::min(
+      context->callback_free_low_bytes,
+      context->subset.device_free_low_bytes);
+}
+
+mu::ResidentStripHook make_active4_well_union_hook(
+    Active4SubsetCallbackContext *context)
+{
+  mu::ResidentStripHook hook;
+  hook.consume = &consume_active4_well_union_strips;
+  hook.context = context;
+  hook.stop_before_boundary = true;
+  return hook;
+}
+
 void consume_active3_well_union_boundary(
     cudaStream_t stream,
     const mu::DirectedSegmentI64 *horizontal,
@@ -4094,6 +4287,59 @@ void copy_active3_well_pipeline_result(
       milliseconds_to_ns(output.d2h_ms + active.d2h_ms);
 }
 
+void copy_active4_well_pipeline_result(
+    const mu::GpuUnionOutput &output,
+    const Active4SubsetCallbackContext &callback,
+    Active3WellResult *result)
+{
+  const a4::Result &subset = callback.subset;
+  result->rectangle_count = output.rectangle_count;
+  result->x_slab_count = output.x_slabs;
+  result->union_membership_count = output.memberships;
+  result->event_count = output.event_count;
+  result->strip_interval_count = output.strip_intervals;
+  result->raw_segment_count = output.raw_segments;
+  result->boundary_segment_count = 0;
+  result->active_expanded_edge_count =
+      callback.active_rectangle_count;
+  result->grid_cell_count = 0;
+  result->active_membership_count = subset.slab_visits;
+  result->active_cell_visit_count = 0;
+  result->member_visit_count = subset.interval_search_steps;
+  result->candidate_pair_count = subset.slab_visits;
+  result->raw_hit_count = subset.witnesses;
+  result->uncertain_count = subset.uncertain;
+  result->device_flags = subset.device_flags;
+  result->device_total_bytes = std::max(
+      output.device_total_bytes, subset.device_total_bytes);
+  result->union_free_begin_bytes =
+      output.device_free_begin_bytes;
+  result->union_free_low_bytes = output.device_free_low_bytes;
+  result->callback_free_begin_bytes =
+      callback.callback_free_begin_bytes;
+  result->callback_free_low_bytes =
+      callback.callback_free_low_bytes;
+  result->post_scan_free_bytes =
+      subset.device_free_low_bytes;
+  result->callback_incremental_peak_bytes =
+      result->callback_free_begin_bytes -
+      result->callback_free_low_bytes;
+  result->x_membership_ns =
+      milliseconds_to_ns(output.x_membership_ms);
+  result->strip_scan_ns =
+      milliseconds_to_ns(output.strip_scan_ms);
+  result->boundary_ns = 0;
+  result->active_h2d_ns = callback.active_h2d_ns;
+  result->active_expand_ns = callback.active_expand_ns;
+  result->active_preflight_ns =
+      milliseconds_to_ns(subset.validation_ms);
+  result->grid_count_ns = 0;
+  result->grid_build_ns = 0;
+  result->query_ns = milliseconds_to_ns(subset.query_ms);
+  result->d2h_ns =
+      milliseconds_to_ns(output.d2h_ms + subset.d2h_ms);
+}
+
 int run_contact4_active_union_request(
     const Contact4Request *request, Contact4Result *result)
 {
@@ -4289,21 +4535,37 @@ int run_active3_well_union_request(
   try {
     std::lock_guard<std::mutex> lock(pipeline_mutex());
     const auto setup_begin = Clock::now();
+    const bool active4_subset =
+        request->opcode ==
+        KLAYOUT_CUDA_SPATIAL_ACTIVE4_WELL_UNION_SUBSET_EMPTY;
     const Request wells =
         active3_scene_as_union_request(
             request->wells, *request);
     Request active =
         active3_scene_as_union_request(
             request->active, *request);
-    // ACTIVE is digest/topology validated but is expanded directly as
-    // directed edges in the resident callback, not decomposed into union
-    // rectangles.
-    active.max_rectangles = active.flat_edge_count;
+    // ACTIVE.3 expands directed edges in the resident boundary callback.
+    // ACTIVE.4 instead validates an exact source-cell rectangulation and
+    // expands those rectangles only after the WELL strip sweep has released
+    // its event high water.
+    active.max_rectangles =
+        active4_subset ? request->max_active_edges
+                       : active.flat_edge_count;
     validate_shared_active3_hierarchy(wells, active);
     const LoweredScene wells_lowered =
         validate_and_lower(wells, kWellUnionRawDigestMagic);
-    validate_without_lowering(active, kActiveRawDigestMagic);
+    std::unique_ptr<LoweredScene> active_lowered;
+    if (active4_subset) {
+      active_lowered.reset(new LoweredScene(
+          validate_and_lower(active, kActiveRawDigestMagic)));
+    } else {
+      validate_without_lowering(active, kActiveRawDigestMagic);
+    }
     result->setup_ns = elapsed_ns(setup_begin, Clock::now());
+    klayout_cuda::DevicePhaseLease device_lease(
+        request->device,
+        active4_subset ? "active4_well_union"
+                       : "active3_well_union");
 
     ExpandedRectangles expanded_wells =
         expand_rectangles_resident(wells, wells_lowered);
@@ -4331,6 +4593,96 @@ int run_active3_well_union_request(
     limits.max_segments = request->max_boundary_segments;
     limits.max_slabs_per_rectangle =
         request->max_slabs_per_rectangle;
+
+    if (active4_subset) {
+      Active4SubsetCallbackContext callback;
+      callback.active = &active;
+      callback.active_lowered = active_lowered.get();
+      callback.outer = request;
+      const mu::ResidentStripHook hook =
+          make_active4_well_union_hook(&callback);
+      const double input_prepare_ms =
+          static_cast<double>(
+              result->wells_h2d_ns + result->wells_expand_ns) /
+          1000000.0;
+      const mu::GpuUnionOutput output = mu::gpu_union_resident(
+          std::move(expanded_wells.rectangles),
+          wells.scene_bottom, wells.scene_top, limits,
+          request->device, input_prepare_ms, &hook, nullptr);
+      copy_active4_well_pipeline_result(output, callback, result);
+      reclaim_active4_default_pool(request->device);
+
+      if (output.fallback) {
+        result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+        result->fallback_flags =
+            callback.expansion_status & kExpandTransformOverflow
+                ? static_cast<std::uint32_t>(
+                      KLAYOUT_CUDA_SPATIAL_FALLBACK_COORDINATE_OVERFLOW)
+                : fallback_flags_for_union(output);
+        set_message(result, output.message.c_str());
+        result->total_ns = elapsed_ns(total_begin, Clock::now());
+        return KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      }
+
+      const a4::Result &subset = callback.subset;
+      if (!callback.invoked ||
+          !output.resident_consumer_completed ||
+          output.resident_boundary_consumer_completed ||
+          !output.segments.empty() || output.raw_segments ||
+          output.boundary_ms != 0.0 || output.d2h_ms != 0.0 ||
+          subset.rectangles != callback.active_rectangle_count ||
+          subset.rectangles_visited != callback.active_rectangle_count ||
+          subset.rectangles_completed != callback.active_rectangle_count ||
+          !subset.all_work_completed ||
+          callback.active_rectangle_count <
+              request->active.flat_polygon_count ||
+          callback.active_rectangle_count >
+              request->max_active_edges ||
+          subset.slab_visits >
+              request->max_active_memberships ||
+          subset.witnesses >
+              callback.active_rectangle_count) {
+        throw std::runtime_error(
+            "ACTIVE4 WELL-union completion invariant failed");
+      }
+      if (subset.uncertain || subset.device_flags) {
+        result->status = KLAYOUT_CUDA_SPATIAL_FALLBACK;
+        result->fallback_flags =
+            subset.device_flags &
+                    (a4::kVisitCapacity | a4::kSearchCapacity |
+                     a4::kTruncatedWork)
+                ? KLAYOUT_CUDA_SPATIAL_FALLBACK_MEMBERSHIP_CAPACITY
+                : KLAYOUT_CUDA_SPATIAL_FALLBACK_INTERNAL_INVARIANT;
+        result->disposition =
+            KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_UNCERTAIN;
+        set_message(
+            result,
+            "exact ACTIVE rectangle subset proof declined");
+        result->total_ns = elapsed_ns(total_begin, Clock::now());
+        return KLAYOUT_CUDA_SPATIAL_FALLBACK;
+      }
+      result->fallback_flags =
+          KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE;
+      result->status = KLAYOUT_CUDA_SPATIAL_OK;
+      if (subset.witnesses) {
+        result->disposition =
+            KLAYOUT_CUDA_SPATIAL_ACTIVE4_WELL_UNION_NOT_SUBSET;
+        set_message(
+            result,
+            "exact ACTIVE rectangles are not a subset of WELL");
+      } else if (subset.certified_subset) {
+        result->disposition =
+            KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_COMPLETE;
+        set_message(
+            result,
+            "complete resident exact ACTIVE-subset-of-WELL certificate");
+      } else {
+        throw std::runtime_error(
+            "ACTIVE4 WELL-union returned no exact disposition");
+      }
+      result->total_ns = elapsed_ns(total_begin, Clock::now());
+      return KLAYOUT_CUDA_SPATIAL_OK;
+    }
 
     Active3WellCallbackContext callback;
     callback.active = &active;
@@ -5323,7 +5675,9 @@ M1BasePass run_m1_base_width_space_pass(
 
   mu::GpuUnionStripWindowLimits window_limits;
   window_limits.max_window_events = std::min(
-      window_limits.max_window_events, union_limits.max_events);
+      {window_limits.max_window_events,
+       kM1BaseMaxWindowEvents,
+       union_limits.max_events});
   window_limits.max_strip_intervals = std::min(
       {kM1BaseMaxStitchedStripIntervals,
        union_limits.max_memberships,

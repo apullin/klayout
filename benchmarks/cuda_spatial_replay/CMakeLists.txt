@@ -206,6 +206,38 @@ target_link_libraries(contact4_union_resident_replay PRIVATE
   manhattan_union_gpu_core
 )
 
+add_library(active4_subset_resident_gpu STATIC
+  active4_subset_resident.cu
+)
+target_compile_options(active4_subset_resident_gpu PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(active4_subset_resident_gpu PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+  POSITION_INDEPENDENT_CODE ON
+)
+target_link_libraries(active4_subset_resident_gpu PUBLIC
+  manhattan_union_gpu_core
+)
+
+add_executable(active4_subset_resident_smoke
+  active4_subset_resident_smoke.cu
+)
+target_compile_options(active4_subset_resident_smoke PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(active4_subset_resident_smoke PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+)
+target_link_libraries(active4_subset_resident_smoke PRIVATE
+  active4_subset_resident_gpu
+  manhattan_union_gpu_core
+)
+
 add_executable(m2_via2_certificate
   m2_via2_certificate.cu
 )
@@ -242,6 +274,7 @@ set_target_properties(klayout_cuda_spatial_backend PROPERTIES
   CUDA_VISIBILITY_PRESET hidden
 )
 target_link_libraries(klayout_cuda_spatial_backend PRIVATE
+  active4_subset_resident_gpu
   antenna_clean_certificate_gpu
   antenna_connectivity_gpu
   antenna_factor_zero_diode_gpu

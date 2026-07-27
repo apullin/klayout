@@ -217,6 +217,27 @@ struct ContractFixture
       echo.scene_digest, scene.scene_digest,
       sizeof (echo.scene_digest));
   }
+
+  void select_active4 ()
+  {
+    request.opcode =
+      KLAYOUT_CUDA_SPATIAL_ACTIVE4_WELL_UNION_SUBSET_EMPTY;
+    request.option_flags =
+      KLAYOUT_CUDA_SPATIAL_ACTIVE4_WELL_UNION_QUALIFIED_OPTIONS;
+    result.opcode = request.opcode;
+    result.option_flags = request.option_flags;
+    result.raw_segment_count = 0;
+    result.boundary_segment_count = 0;
+    result.active_expanded_edge_count = 1;
+    result.grid_cell_count = 0;
+    result.active_membership_count = 2;
+    result.active_cell_visit_count = 0;
+    result.member_visit_count = 8;
+    result.candidate_pair_count = 2;
+    result.boundary_ns = 0;
+    result.grid_count_ns = 0;
+    result.grid_build_ns = 0;
+  }
 };
 
 static_assert (
@@ -351,4 +372,100 @@ TEST(4_OnlyConsistentDispositionIsAccepted)
       raw_hit.request, raw_hit.result,
       KLAYOUT_CUDA_SPATIAL_OK, &error),
     true);
+}
+
+TEST(5_Active4SubsetCompleteAndWitnessContracts)
+{
+  std::string error;
+  ContractFixture complete;
+  complete.select_active4 ();
+  EXPECT_EQ (
+    db::cuda_spatial_validate_active3_well_union_result (
+      complete.request, complete.result,
+      KLAYOUT_CUDA_SPATIAL_OK, &error),
+    true);
+  EXPECT_EQ (error, "");
+
+  ContractFixture witness;
+  witness.select_active4 ();
+  witness.result.disposition =
+    KLAYOUT_CUDA_SPATIAL_ACTIVE4_WELL_UNION_NOT_SUBSET;
+  witness.result.raw_hit_count = 1;
+  EXPECT_EQ (
+    db::cuda_spatial_validate_active3_well_union_result (
+      witness.request, witness.result,
+      KLAYOUT_CUDA_SPATIAL_OK, &error),
+    true);
+  EXPECT_EQ (error, "");
+
+  ContractFixture inconsistent;
+  inconsistent.select_active4 ();
+  inconsistent.result.raw_hit_count = 1;
+  EXPECT_EQ (
+    db::cuda_spatial_validate_active3_well_union_result (
+      inconsistent.request, inconsistent.result,
+      KLAYOUT_CUDA_SPATIAL_OK, &error),
+    false);
+  EXPECT_EQ (
+    error,
+    "CUDA ACTIVE.3 WELL-union backend returned an inconsistent disposition");
+}
+
+TEST(6_Active4SubsetFailsClosedAcrossProfileAndCounterDrift)
+{
+  std::string error;
+  ContractFixture stale_profile;
+  stale_profile.select_active4 ();
+  stale_profile.request.option_flags =
+    KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_QUALIFIED_OPTIONS;
+  stale_profile.result.option_flags = stale_profile.request.option_flags;
+  EXPECT_EQ (
+    db::cuda_spatial_validate_active3_well_union_result (
+      stale_profile.request, stale_profile.result,
+      KLAYOUT_CUDA_SPATIAL_OK, &error),
+    false);
+  EXPECT_EQ (
+    error, "host supplied an unqualified ACTIVE.3 WELL-union request");
+
+  ContractFixture materialized_boundary;
+  materialized_boundary.select_active4 ();
+  materialized_boundary.result.raw_segment_count = 1;
+  materialized_boundary.result.boundary_segment_count = 1;
+  EXPECT_EQ (
+    db::cuda_spatial_validate_active3_well_union_result (
+      materialized_boundary.request, materialized_boundary.result,
+      KLAYOUT_CUDA_SPATIAL_OK, &error),
+    false);
+  EXPECT_EQ (
+    error,
+    "CUDA ACTIVE.4 WELL-union backend returned impossible "
+    "rectangle-subset counters");
+
+  ContractFixture partial_completion;
+  partial_completion.select_active4 ();
+  partial_completion.result.candidate_pair_count =
+    partial_completion.result.active_membership_count - 1;
+  EXPECT_EQ (
+    db::cuda_spatial_validate_active3_well_union_result (
+      partial_completion.request, partial_completion.result,
+      KLAYOUT_CUDA_SPATIAL_OK, &error),
+    false);
+  EXPECT_EQ (
+    error,
+    "CUDA ACTIVE.4 WELL-union backend returned impossible "
+    "rectangle-subset counters");
+
+  ContractFixture search_capacity;
+  search_capacity.select_active4 ();
+  search_capacity.result.member_visit_count =
+    search_capacity.request.max_member_visits + 1;
+  EXPECT_EQ (
+    db::cuda_spatial_validate_active3_well_union_result (
+      search_capacity.request, search_capacity.result,
+      KLAYOUT_CUDA_SPATIAL_OK, &error),
+    false);
+  EXPECT_EQ (
+    error,
+    "CUDA ACTIVE.4 WELL-union backend returned impossible "
+    "rectangle-subset counters");
 }

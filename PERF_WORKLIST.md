@@ -3232,6 +3232,50 @@ not just wall time.
         and
         `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.{IfJwuM,OJyi6q,qB9NQp}`.
 
+      - [x] **Certify ACTIVE.4 as an exact resident ACTIVE-subset-of-WELL
+        transaction:** the backend now expands raw NWELL/PWELL into one
+        canonical device-resident strip union and proves every rectangle in
+        the qualified raw ACTIVE rectangulation covered across every spanned
+        x slab.  The certificate requires complete checked rectangle, slab,
+        and interval-search accounting with zero hits, uncertainty, fallback,
+        and device flags.  Hits, holes, partial coverage, unsupported
+        hierarchy/geometry, malformed ABI/results, capacity exhaustion, CUDA
+        errors, and any incomplete work retain the untouched
+        `active.not(well)` CPU expression.  Co-owned WELL rules continue to
+        consume the literal union.
+
+        The focused production scene changed **33.303 to 6.150 s: 27.153 real
+        seconds / 81.53% less focused wall time** with identical reports.  The
+        balanced owner now uses a terminal-only checked sync/trim/reset before
+        releasing the shared device lease; a same-PID hold observed device
+        use fall from 5,821 MiB to 1 MiB and remain there.  The normal feature
+        does not assume exclusive context ownership.
+
+        Full integration exposed a separate raw-M1 allocation cliff.  The
+        exact same 41,098,970-rectangle, 86,001-slab,
+        767,933,902-membership scene had previously succeeded with a 64M-event
+        window and later failed at both 64M and 32M; stage attribution named
+        the 32M failure as the 31,992,394-entry unique-event-delta allocation.
+        M1.1/M1.2 now uses deterministic 16M-event windows while preserving
+        the generic 64M producer, identical canonical strip stitching, exact
+        predicates, and CPU fallback.  Windowed-union tests passed 3 directed,
+        24 randomized, and 8 capacity cases; the M1 exact-predicate suite
+        passed 200,120 checks.
+
+        Three corrected-wrapper exact screens measured **35.458, 35.488, and
+        35.376 s** internal full-launch wall (35.441 s mean, 0.111 s range).
+        Against the preceding accepted 39.841-second mean, this is **4.400 real
+        seconds / 11.05% less full-launch wall** (`N=3` successive accepted
+        records, not paired A/B).  Child-plus-merge averaged 30.623 s;
+        `antenna_feol` averaged 24.298 s; raw M1.1/M1.2 live time averaged
+        11.180 s; and independent ACTIVE.1/.2 became the 30.598-second mean
+        roof.  Every run retained canonical SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`
+        with pinned runtime inputs unchanged.  Evidence:
+        `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.{w05N2o,YeCBGk,dQgcvI}`.
+        Rejected allocation-cliff evidence remains at
+        `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.{iezRHd,AVM7Az,1Mbwu2}`.
+
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
         second and third reusable compositions, separate canonical

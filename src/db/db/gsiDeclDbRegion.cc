@@ -2223,6 +2223,50 @@ static bool cuda_active3_well_union_clean (
   }
 }
 
+static bool cuda_active4_well_union_clean (
+  const db::Region *nwell, const db::Region *pwell,
+  const db::Region *active)
+{
+  if (! db::cuda_spatial_active3_well_union_requested ()) {
+    return false;
+  }
+  const db::DeepRegion *deep_nwell =
+    dynamic_cast<const db::DeepRegion *> (nwell->delegate ());
+  const db::DeepRegion *deep_pwell =
+    dynamic_cast<const db::DeepRegion *> (pwell->delegate ());
+  const db::DeepRegion *deep_active =
+    dynamic_cast<const db::DeepRegion *> (active->delegate ());
+  if (! deep_nwell || ! deep_pwell || ! deep_active ||
+      ! nwell->merged_semantics () || ! pwell->merged_semantics () ||
+      ! active->merged_semantics ()) {
+    return false;
+  }
+
+  const db::DeepLayer &raw_nwell = deep_nwell->deep_layer ();
+  const db::DeepLayer &raw_pwell = deep_pwell->deep_layer ();
+  const db::DeepLayer &raw_active = deep_active->deep_layer ();
+  if (raw_nwell.layer () >= raw_nwell.layout ().layers () ||
+      raw_pwell.layer () >= raw_pwell.layout ().layers () ||
+      raw_active.layer () >= raw_active.layout ().layers () ||
+      ! raw_nwell.layout ().get_properties (raw_nwell.layer ()).log_equal (
+          db::LayerProperties (3, 0)) ||
+      ! raw_pwell.layout ().get_properties (raw_pwell.layer ()).log_equal (
+          db::LayerProperties (2, 0)) ||
+      ! raw_active.layout ().get_properties (raw_active.layer ()).log_equal (
+          db::LayerProperties (1, 0))) {
+    return false;
+  }
+
+  try {
+    return db::cuda_active4_well_union_try_empty (
+      raw_nwell, raw_pwell, raw_active);
+  } catch (...) {
+    // This speculative exact subset certificate may never bypass the literal
+    // active.not(well) CPU fallback on an exception.
+    return false;
+  }
+}
+
 static bool cuda_implant12_clean (
   const db::Region *implant, const db::Region *gate,
   const db::Region *contact)
@@ -5557,6 +5601,16 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "selected device, and checks its resident boundary against complete raw "
     "ACTIVE. True is the sole zero-hit certificate; false requires the "
     "unchanged WELL union and historical ACTIVE.3 expression.\n"
+  ) +
+  method_ext (
+    "cuda_active4_well_union_clean?", &cuda_active4_well_union_clean,
+    gsi::arg ("pwell"), gsi::arg ("active"),
+    "@brief Tries exact resident ACTIVE subset of raw WELL union\n"
+    "\n"
+    "This internal default-off hook forms exact physical NWELL-or-PWELL "
+    "strips and proves a complete, exact raw-ACTIVE rectangulation is covered "
+    "in every crossed positive-width slab. True means active.not(well) is "
+    "empty. False requires the unchanged CPU expression.\n"
   ) +
   method_ext (
     "cuda_implant12_clean?", &cuda_implant12_clean,

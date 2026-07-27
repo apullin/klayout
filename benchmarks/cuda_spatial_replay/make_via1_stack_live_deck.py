@@ -707,6 +707,57 @@ end""",
     )
 
 
+def add_active4_well_union(text: str) -> str:
+    text = replace_once(
+        text,
+        """well = nwell.or(pwell) if need_well""",
+        """# BEGIN KLAYOUT CUDA ACTIVE4 EXACT WELL UNION TRANSACTION
+# This transaction bypasses active.not(well) only after a complete exact
+# resident proof that physical ACTIVE is a subset of NWELL-or-PWELL.  It also
+# bypasses WELL construction when ACTIVE.4 is its sole consumer.  Co-owned WELL,
+# ACTIVE.3, or grid rules retain the literal union while still using the exact
+# certificate for ACTIVE.4.  Every missing method, exception, bounded decline,
+# witness, truncation, overflow, or uncertainty executes the literal source
+# union and active.not(well).
+active4_well_union_request = ENV["KLAYOUT_CUDA_ACTIVE4_WELL_UNION"].to_s
+active4_well_union_requested = !active4_well_union_request.empty? &amp;&amp; active4_well_union_request != "0" &amp;&amp; active4_well_union_request != "false" &amp;&amp; active4_well_union_request != "off"
+active4_well_union_owner = active4_well_union_requested &amp;&amp; DRC &amp;&amp; run_active4
+active4_well_union_needs_well = (DRC &amp;&amp; (run_well || run_active3)) || (OFFGRID &amp;&amp; run_grid)
+active4_well_union_clean = false
+active4_well_union_reason = "not-owner"
+if active4_well_union_owner
+  active4_well_union_reason = "method-unavailable"
+  begin
+    if nwell.respond_to?(:cuda_active4_well_union_clean?)
+      active4_well_union_clean = nwell.cuda_active4_well_union_clean?(pwell, active)
+      active4_well_union_reason = active4_well_union_clean ? "certified-empty" : "certificate-declined"
+    end
+  rescue StandardError =&gt; active4_well_union_error
+    active4_well_union_clean = false
+    active4_well_union_reason = "exception:#{active4_well_union_error.class}"
+  end
+end
+active4_well_union_empty = polygon_layer if active4_well_union_clean
+info("CUDA ACTIVE.4 exact WELL-union transaction: #{active4_well_union_clean ? 'certified-empty' : 'full-cpu-fallback'} reason=#{active4_well_union_reason}") if active4_well_union_owner
+
+if !active4_well_union_clean || active4_well_union_needs_well
+  well = nwell.or(pwell) if need_well
+end
+# END KLAYOUT CUDA ACTIVE4 EXACT WELL UNION TRANSACTION""",
+        "ACTIVE.4 exact WELL-union transaction",
+    )
+    return replace_once(
+        text,
+        """active.not(well).output("ACTIVE.4", "ACTIVE.4 : active must be inside nwell or pwell")""",
+        """if active4_well_union_clean
+  active4_well_union_empty.output("ACTIVE.4", "ACTIVE.4 : active must be inside nwell or pwell")
+else
+  active.not(well).output("ACTIVE.4", "ACTIVE.4 : active must be inside nwell or pwell")
+end""",
+        "ACTIVE.4 exact WELL-union output transaction",
+    )
+
+
 def inject_poly34_ruby_exception(text: str) -> str:
     return replace_once(
         text,
@@ -761,6 +812,11 @@ def main() -> int:
         help="also try exact resident WELL union followed by ACTIVE.3",
     )
     parser.add_argument(
+        "--active4-well-union",
+        action="store_true",
+        help="also try exact resident ACTIVE subset of the WELL union",
+    )
+    parser.add_argument(
         "--inject-poly34-ruby-exception",
         action="store_true",
         help="gate-only: replace the qualified POLY.3/.4 hook with an exception",
@@ -768,9 +824,17 @@ def main() -> int:
     args = parser.parse_args()
     if args.inject_poly34_ruby_exception and not args.poly34:
         parser.error("--inject-poly34-ruby-exception requires --poly34")
-    if args.active3_raw_wells and args.active3_well_union:
+    well_transactions = sum(
+        (
+            args.active3_raw_wells,
+            args.active3_well_union,
+            args.active4_well_union,
+        )
+    )
+    if well_transactions > 1:
         parser.error(
-            "--active3-raw-wells and --active3-well-union are alternatives"
+            "--active3-raw-wells, --active3-well-union, and "
+            "--active4-well-union are alternatives"
         )
 
     source = args.input.read_text(encoding="utf-8")
@@ -779,6 +843,8 @@ def main() -> int:
         output = add_active3_raw_wells(output)
     if args.active3_well_union:
         output = add_active3_well_union(output)
+    if args.active4_well_union:
+        output = add_active4_well_union(output)
     if args.m2_rules:
         output = add_m2_rules(output)
     if args.m1_5_9:

@@ -144,7 +144,7 @@ CudaContact4ActiveUnionAttempt::CudaContact4ActiveUnionAttempt ()
 }
 
 CudaActive3WellUnionAttempt::CudaActive3WellUnionAttempt ()
-  : disposition (Disabled), fallback_flags (0), device_flags (0),
+  : disposition (Disabled), opcode (0), fallback_flags (0), device_flags (0),
     well_context_count (0), active_context_count (0),
     flat_well_polygon_count (0), flat_well_edge_count (0),
     flat_active_polygon_count (0), flat_active_edge_count (0),
@@ -916,13 +916,20 @@ bool qualified_implant15_request (
 bool qualified_active3_well_union_request (
   const klayout_cuda_spatial_active3_well_union_request_v1 &request)
 {
-  return
-    request.abi_version == KLAYOUT_CUDA_SPATIAL_ABI_VERSION &&
-    request.struct_size == sizeof (request) &&
+  const bool active3 =
     request.opcode ==
       KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_EMPTY &&
     request.option_flags ==
-      KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_QUALIFIED_OPTIONS &&
+      KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_QUALIFIED_OPTIONS;
+  const bool active4 =
+    request.opcode ==
+      KLAYOUT_CUDA_SPATIAL_ACTIVE4_WELL_UNION_SUBSET_EMPTY &&
+    request.option_flags ==
+      KLAYOUT_CUDA_SPATIAL_ACTIVE4_WELL_UNION_QUALIFIED_OPTIONS;
+  return
+    request.abi_version == KLAYOUT_CUDA_SPATIAL_ABI_VERSION &&
+    request.struct_size == sizeof (request) &&
+    (active3 || active4) &&
     request.format_version == 1 && request.dbu_per_micron == 2000 &&
     request.device >= 0 && request.reserved0 == 0 &&
     request.distance == 110 && request.grid_cell_size == 2000 &&
@@ -1575,9 +1582,11 @@ public:
       m_active3_raw_wells_telemetry (
         env_enabled ("KLAYOUT_CUDA_ACTIVE3_RAW_WELLS_TELEMETRY")),
       m_active3_well_union_enabled (
-        env_enabled ("KLAYOUT_CUDA_ACTIVE3_WELL_UNION")),
+        env_enabled ("KLAYOUT_CUDA_ACTIVE3_WELL_UNION") ||
+        env_enabled ("KLAYOUT_CUDA_ACTIVE4_WELL_UNION")),
       m_active3_well_union_telemetry (
-        env_enabled ("KLAYOUT_CUDA_ACTIVE3_WELL_UNION_TELEMETRY")),
+        env_enabled ("KLAYOUT_CUDA_ACTIVE3_WELL_UNION_TELEMETRY") ||
+        env_enabled ("KLAYOUT_CUDA_ACTIVE4_WELL_UNION_TELEMETRY")),
       m_contact4_enabled (env_enabled ("KLAYOUT_CUDA_CONTACT4")),
       m_contact4_telemetry (
         env_enabled ("KLAYOUT_CUDA_CONTACT4_TELEMETRY")),
@@ -2495,7 +2504,11 @@ void log_active3_well_union_attempt (
     break;
   }
 
-  tl::info << "CUDA ACTIVE.3 exact resident WELL-union certificate:"
+  tl::info
+           << (attempt.opcode ==
+                 KLAYOUT_CUDA_SPATIAL_ACTIVE4_WELL_UNION_SUBSET_EMPTY
+                 ? "CUDA ACTIVE.4 exact resident WELL-union subset certificate:"
+                 : "CUDA ACTIVE.3 exact resident WELL-union certificate:")
            << " outcome=" << outcome
            << " well_contexts=" << attempt.well_context_count
            << " active_contexts=" << attempt.active_context_count
@@ -3605,24 +3618,9 @@ bool cuda_spatial_validate_active3_well_union_result (
     }
 
     uint64_t expected_event_count = 0;
-    uint64_t maximum_active_memberships = 0;
-    uint64_t maximum_active_cell_visits = 0;
-    uint64_t maximum_member_visits = 0;
     if (! checked_multiply_u64 (
           result.union_membership_count, UINT64_C (2),
           expected_event_count) ||
-        ! checked_multiply_u64 (
-          result.active_expanded_edge_count,
-          request.max_cells_per_active_edge,
-          maximum_active_memberships) ||
-        ! checked_multiply_u64 (
-          result.boundary_segment_count,
-          request.max_cells_per_well_edge,
-          maximum_active_cell_visits) ||
-        ! checked_multiply_u64 (
-          result.active_cell_visit_count,
-          result.active_expanded_edge_count,
-          maximum_member_visits) ||
         result.rectangle_count < request.wells.flat_polygon_count ||
         result.rectangle_count > request.max_rectangles ||
         ! result.x_slab_count ||
@@ -3632,34 +3630,82 @@ bool cuda_spatial_validate_active3_well_union_result (
         result.event_count != expected_event_count ||
         result.event_count > request.max_events ||
         ! result.strip_interval_count ||
-        result.strip_interval_count > result.union_membership_count ||
-        ! result.boundary_segment_count ||
-        result.boundary_segment_count > request.max_boundary_segments ||
-        result.raw_segment_count < result.boundary_segment_count ||
-        result.raw_segment_count > request.max_raw_segments ||
-        result.active_expanded_edge_count !=
-          request.active.flat_edge_count ||
-        result.active_expanded_edge_count > request.max_active_edges ||
-        ! result.grid_cell_count ||
-        result.grid_cell_count > request.max_grid_cells ||
-        result.active_membership_count <
-          result.active_expanded_edge_count ||
-        result.active_membership_count >
-          request.max_active_memberships ||
-        result.active_membership_count > maximum_active_memberships ||
-        result.active_cell_visit_count >
-          request.max_active_cell_visits ||
-        result.active_cell_visit_count > maximum_active_cell_visits ||
-        result.member_visit_count > request.max_member_visits ||
-        result.member_visit_count > maximum_member_visits ||
-        result.candidate_pair_count > result.member_visit_count ||
-        result.candidate_pair_count > request.max_pair_work ||
-        result.raw_hit_count > result.candidate_pair_count ||
-        result.uncertain_count > result.candidate_pair_count ||
-        result.raw_hit_count >
-          result.candidate_pair_count - result.uncertain_count) {
+        result.strip_interval_count > result.union_membership_count) {
       return fail (
         "CUDA ACTIVE.3 WELL-union backend returned impossible proof counters");
+    }
+
+    if (request.opcode ==
+          KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_EMPTY) {
+      uint64_t maximum_active_memberships = 0;
+      uint64_t maximum_active_cell_visits = 0;
+      uint64_t maximum_member_visits = 0;
+      if (! checked_multiply_u64 (
+            result.active_expanded_edge_count,
+            request.max_cells_per_active_edge,
+            maximum_active_memberships) ||
+          ! checked_multiply_u64 (
+            result.boundary_segment_count,
+            request.max_cells_per_well_edge,
+            maximum_active_cell_visits) ||
+          ! checked_multiply_u64 (
+            result.active_cell_visit_count,
+            result.active_expanded_edge_count,
+            maximum_member_visits) ||
+          ! result.boundary_segment_count ||
+          result.boundary_segment_count > request.max_boundary_segments ||
+          result.raw_segment_count < result.boundary_segment_count ||
+          result.raw_segment_count > request.max_raw_segments ||
+          result.active_expanded_edge_count !=
+            request.active.flat_edge_count ||
+          result.active_expanded_edge_count > request.max_active_edges ||
+          ! result.grid_cell_count ||
+          result.grid_cell_count > request.max_grid_cells ||
+          result.active_membership_count <
+            result.active_expanded_edge_count ||
+          result.active_membership_count >
+            request.max_active_memberships ||
+          result.active_membership_count > maximum_active_memberships ||
+          result.active_cell_visit_count >
+            request.max_active_cell_visits ||
+          result.active_cell_visit_count > maximum_active_cell_visits ||
+          result.member_visit_count > request.max_member_visits ||
+          result.member_visit_count > maximum_member_visits ||
+          result.candidate_pair_count > result.member_visit_count ||
+          result.candidate_pair_count > request.max_pair_work ||
+          result.raw_hit_count > result.candidate_pair_count ||
+          result.uncertain_count > result.candidate_pair_count ||
+          result.raw_hit_count >
+            result.candidate_pair_count - result.uncertain_count) {
+        return fail (
+          "CUDA ACTIVE.3 WELL-union backend returned impossible proof counters");
+      }
+    } else {
+      if (result.raw_segment_count != 0 ||
+          result.boundary_segment_count != 0 ||
+          result.active_expanded_edge_count <
+            request.active.flat_polygon_count ||
+          result.active_expanded_edge_count >
+            request.active.flat_edge_count ||
+          result.active_expanded_edge_count > request.max_active_edges ||
+          result.grid_cell_count != 0 ||
+          result.active_membership_count >
+            request.max_active_memberships ||
+          result.active_cell_visit_count != 0 ||
+          result.member_visit_count > request.max_member_visits ||
+          result.candidate_pair_count !=
+            result.active_membership_count ||
+          result.candidate_pair_count > request.max_pair_work ||
+          result.raw_hit_count >
+            result.active_expanded_edge_count ||
+          result.uncertain_count >
+            result.active_expanded_edge_count ||
+          result.raw_hit_count >
+            result.active_expanded_edge_count - result.uncertain_count) {
+        return fail (
+          "CUDA ACTIVE.4 WELL-union backend returned impossible "
+          "rectangle-subset counters");
+      }
     }
 
     if (! result.device_total_bytes ||
@@ -4087,6 +4133,7 @@ cuda_spatial_try_active3_well_union_empty (
   const klayout_cuda_spatial_active3_well_union_request_v1 &request)
 {
   CudaActive3WellUnionAttempt attempt;
+  attempt.opcode = request.opcode;
   CudaSpatialModule &module = cuda_spatial_module ();
   if (! module.active3_well_union_enabled ()) {
     return attempt;

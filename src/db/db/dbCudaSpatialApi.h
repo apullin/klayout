@@ -2224,7 +2224,15 @@ klayout_cuda_spatial_run_contact4_active_union_empty_v1 (
 
 enum klayout_cuda_spatial_active3_well_union_opcode
 {
-  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_EMPTY = 1
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_EMPTY = 1,
+  /*
+   * Exact ACTIVE.4 subset certificate.  The backend forms the same canonical
+   * WELL union, exactly rectangulates and expands complete raw ACTIVE in the
+   * common root frame, and proves every positive-area ACTIVE rectangle is
+   * covered by every crossed WELL x slab.  A stale backend rejects this
+   * opcode and the caller retains active.not(well).
+   */
+  KLAYOUT_CUDA_SPATIAL_ACTIVE4_WELL_UNION_SUBSET_EMPTY = 2
 };
 
 enum klayout_cuda_spatial_active3_well_union_role
@@ -2258,16 +2266,21 @@ enum klayout_cuda_spatial_active3_well_union_option_flag
   KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_SHIELDED = 1u << 18,
   KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_NO_FILTERS_OR_NEGATIVE = 1u << 19,
   KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_INCLUDE_TOUCHING = 1u << 20,
-  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_DEFAULT_STREAM = 1u << 21
+  KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_DEFAULT_STREAM = 1u << 21,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE4_WELL_UNION_EXACT_RECTANGLE_SUBSET =
+    1u << 22
 };
 
 #define KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_QUALIFIED_OPTIONS \
   ((1u << 22) - 1u)
+#define KLAYOUT_CUDA_SPATIAL_ACTIVE4_WELL_UNION_QUALIFIED_OPTIONS \
+  ((1u << 23) - 1u)
 
 enum klayout_cuda_spatial_active3_well_union_disposition
 {
   KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_COMPLETE = 0,
   KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_RAW_HITS = 1,
+  KLAYOUT_CUDA_SPATIAL_ACTIVE4_WELL_UNION_NOT_SUBSET = 1,
   KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_UNCERTAIN = 2
 };
 

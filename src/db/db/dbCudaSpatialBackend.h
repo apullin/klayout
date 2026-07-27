@@ -139,6 +139,7 @@ struct DB_PUBLIC CudaActive3WellUnionAttempt
   CudaActive3WellUnionAttempt ();
 
   Disposition disposition;
+  uint32_t opcode;
   uint32_t fallback_flags;
   uint32_t device_flags;
   uint64_t well_context_count;
@@ -704,11 +705,12 @@ DB_PUBLIC bool cuda_spatial_validate_contact4_active_union_result (
   int backend_status, std::string *error = 0);
 
 /**
- * Invoke the exact resident raw-(NWELL union PWELL) / ACTIVE.3 certificate.
+ * Invoke an exact resident raw-(NWELL union PWELL) transaction.
  *
- * Only CertifiedEmpty is consumable.  The combined WELL scene is unioned
- * exactly and its resident boundary is checked against complete raw ACTIVE;
- * all other outcomes retain the historical CPU path.
+ * ACTIVE.3 checks the canonical WELL boundary against complete raw ACTIVE.
+ * ACTIVE.4 checks an exact ACTIVE rectangulation against canonical WELL
+ * strips.  Only CertifiedEmpty is consumable; all other outcomes retain the
+ * corresponding historical CPU path.
  */
 DB_PUBLIC CudaActive3WellUnionAttempt
 cuda_spatial_try_active3_well_union_empty (

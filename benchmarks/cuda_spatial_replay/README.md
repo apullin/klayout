@@ -472,6 +472,37 @@ time**. Individual control walls were 141.67 and 142.69 s; candidates were
 report retained canonical SHA-256
 `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
 
+### Live ACTIVE.4 WELL-union certificate
+
+`KLAYOUT_CUDA_ACTIVE4_WELL_UNION=1` enables a clean-only certificate for the
+qualified FreePDK45 `active.not(nwell.or(pwell))` expression. The host captures
+raw NWELL, PWELL, and ACTIVE from one hierarchy and authenticates their shared
+layout, root, transforms, DBU, source layers, and immutable scene digests. The
+backend expands NWELL and PWELL on device, constructs their exact canonical
+x-slab union, then proves that every rectangle in the exact qualified ACTIVE
+rectangulation is covered across every slab it spans. The proof accounts for
+all rectangles, slab visits, and interval searches with checked 64-bit
+counters; partial coverage, holes, cap exhaustion, incomplete work, malformed
+input, CUDA errors, and nonzero device flags all decline the transaction.
+
+Only a complete zero-hit certificate suppresses `active.not(well)`. A hit or
+any unsupported condition executes the untouched literal CPU expression, so
+the GPU never synthesizes diagnostic markers. Co-owned WELL rules retain the
+literal union; the certificate removes only the expensive ACTIVE.4
+difference. Telemetry is enabled with
+`KLAYOUT_CUDA_ACTIVE4_WELL_UNION_TELEMETRY=1`.
+
+The focused gate covers clean, outside, partial-overlap, hole, hierarchy,
+forced-cap, and missing-backend lanes. Its production-scene CPU control versus
+CUDA candidate changed **33.303 to 6.150 s: 27.153 real seconds / 81.53% less
+focused wall time**, with identical reports. The balanced production harness
+may additionally set
+`KLAYOUT_CUDA_ACTIVE4_WELL_UNION_TERMINAL_RESET=1`; this is restricted to the
+terminal, sole-CUDA-owner ACTIVE.4 shard. It synchronizes, checks and trims the
+default pool, then performs a checked device reset before releasing the shared
+device lease. The normal feature remains opt-in and fail-closed without
+assuming terminal ownership.
+
 ### Balanced full-launch gate
 
 `run_balanced_full_gate.sh` packages the qualified configuration-level gate.
@@ -537,6 +568,25 @@ The runner records every supplied and generated artifact hash, launcher
 provenance, external wall time, per-owner timings, and CUDA telemetry under
 its temporary work directory. Without `--keep-work`, that directory is
 removed after the gate.
+
+The current `--with-active4-well-union` jobs-10 configuration also selects the
+exact raw-M1 base-width/space certificate. Its generic strip producer still
+supports 64-million-event windows, but the 10 GiB-qualified M1.1/M1.2 owner
+uses deterministic 16-million-event windows. Window boundaries do not change
+the canonical global strip view or predicates; they only bound temporary
+sort/reduction storage. The larger 64M and 32M plans are retained as rejected
+allocation-cliff observations, while three 16M full gates completed exact with
+the same 134,495,138 stitched intervals.
+
+Those three internal full-launch walls were **35.458, 35.488, and 35.376 s**
+(35.441 s mean, 0.111 s range). Against the preceding accepted 39.841-second
+mean, that is **4.400 real seconds / 11.05% less full-launch wall time**.
+Child-plus-merge wall averaged 30.623 s, the `antenna_feol` owner averaged
+24.298 s, and the independent ACTIVE.1/.2 owner became the 30.598-second
+mean roof. Every required transaction certified, all runtime artifacts were
+unchanged across execution, and all merged reports retained canonical
+SHA-256
+`01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
 
 ### Production host control-build result
 

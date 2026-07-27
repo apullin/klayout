@@ -1,0 +1,55 @@
+# Focused live host gate for the exact resident ACTIVE subset-of-WELL
+# certificate used to bypass an empty ACTIVE.4 expression.
+
+raise("missing -rd input=PATH") unless $input
+raise("missing -rd topcell=NAME") unless $topcell
+raise("missing -rd output=PATH") unless $output
+
+mode = ($mode || "cpu").to_s
+raise("unsupported mode #{mode}") unless %w[cpu cuda].include?(mode)
+
+source($input, $topcell)
+report("ACTIVE.4 exact resident WELL-union CUDA gate", $output)
+deep
+
+active = polygons(1, 0)
+pwell = polygons(2, 0)
+nwell = polygons(3, 0)
+
+clean = false
+available = nwell.respond_to?(:cuda_active4_well_union_clean?)
+if mode == "cuda"
+  begin
+    clean = nwell.cuda_active4_well_union_clean?(pwell, active)
+    available = true
+  rescue StandardError => active4_error
+    puts(
+      "ACTIVE4_WELL_UNION_LIVE_DECK hook-error" \
+      " class=#{active4_error.class} message=#{active4_error.message}"
+    )
+    clean = false
+  end
+end
+
+if clean
+  result = polygon_layer
+else
+  well = nwell.or(pwell)
+  result = active.not(well)
+end
+
+result.output(
+  "ACTIVE.4",
+  "ACTIVE.4 : ACTIVE must be inside the NWELL/PWELL union"
+)
+puts(
+  "ACTIVE4_WELL_UNION_LIVE_DECK ok" \
+  " mode=#{mode} top=#{$topcell}" \
+  " available=#{available ? 1 : 0}" \
+  " certified=#{clean ? 1 : 0} empty=#{result.is_empty? ? 1 : 0}"
+)
+
+# Test-only hold point: an external monitor can prove that the terminal-owner
+# reset released the CUDA context while this KLayout process is still alive.
+post_active4_sleep_seconds = ($post_active4_sleep_seconds || 0).to_f
+sleep(post_active4_sleep_seconds) if post_active4_sleep_seconds > 0

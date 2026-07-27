@@ -89,6 +89,12 @@ const uint64_t active3_well_union_max_member_visits =
   UINT64_C (1200000000);
 const uint64_t active3_well_union_max_pair_work =
   UINT64_C (1200000000);
+// ACTIVE.4 uses this ABI field as an exact interval-search-step ceiling.
+// The qualified x2 SRAM completes 2,069,888,091 checked steps without any
+// geometry-sized allocation, so retain a bounded ~1.9x margin.  A dedicated
+// environment override keeps this independent from ACTIVE.3's grid search.
+const uint64_t active4_well_union_max_search_steps =
+  UINT64_C (4000000000);
 // The qualified x2 FreePDK45 SRAM contains physical WELL rectangles spanning
 // more than 8192 exact union slabs.  Keep this independent from CONTACT.4:
 // the cap remains bounded/fail-closed, while 16384 is the measured minimum
@@ -1386,12 +1392,13 @@ static bool cuda_contact4_try_empty_impl (
   return false;
 }
 
-bool cuda_active3_well_union_try_empty (
+static bool cuda_well_union_try_empty_impl (
   const db::DeepLayer &raw_nwell, const db::DeepLayer &raw_pwell,
-  const db::DeepLayer &raw_active)
+  const db::DeepLayer &raw_active, uint32_t opcode,
+  uint32_t option_flags, const char *telemetry_env,
+  const char *telemetry_prefix)
 {
-  const bool telemetry =
-    env_enabled ("KLAYOUT_CUDA_ACTIVE3_WELL_UNION_TELEMETRY");
+  const bool telemetry = env_enabled (telemetry_env);
   const std::chrono::steady_clock::time_point begin =
     std::chrono::steady_clock::now ();
   try {
@@ -1455,9 +1462,15 @@ bool cuda_active3_well_union_try_empty (
     const uint64_t max_active_cell_visits = env_u64 (
       "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_ACTIVE_CELL_VISITS",
       active3_well_union_max_active_cell_visits);
+    const bool active4_subset =
+      opcode == KLAYOUT_CUDA_SPATIAL_ACTIVE4_WELL_UNION_SUBSET_EMPTY;
     const uint64_t max_member_visits = env_u64 (
-      "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_MEMBER_VISITS",
-      active3_well_union_max_member_visits);
+      active4_subset
+        ? "KLAYOUT_CUDA_ACTIVE4_WELL_UNION_MAX_SEARCH_STEPS"
+        : "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_MEMBER_VISITS",
+      active4_subset
+        ? active4_well_union_max_search_steps
+        : active3_well_union_max_member_visits);
     const uint64_t max_pair_work = env_u64 (
       "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_MAX_PAIR_WORK",
       active3_well_union_max_pair_work);
@@ -1522,10 +1535,8 @@ bool cuda_active3_well_union_try_empty (
     std::memset (&request, 0, sizeof (request));
     request.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
     request.struct_size = sizeof (request);
-    request.opcode =
-      KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_EMPTY;
-    request.option_flags =
-      KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_QUALIFIED_OPTIONS;
+    request.opcode = opcode;
+    request.option_flags = option_flags;
     request.format_version = well_scene.format_version;
     request.dbu_per_micron = well_scene.dbu_per_micron;
     request.device = int32_t (device);
@@ -1572,7 +1583,7 @@ bool cuda_active3_well_union_try_empty (
     const std::chrono::steady_clock::time_point done =
       std::chrono::steady_clock::now ();
     if (telemetry) {
-      tl::info << "CUDA ACTIVE.3 exact WELL-union live lowering:"
+      tl::info << telemetry_prefix
                << " well_contexts=" << request.wells.context_count
                << " active_contexts=" << request.active.context_count
                << " well_stored_polygons="
@@ -1601,7 +1612,7 @@ bool cuda_active3_well_union_try_empty (
   } catch (const std::exception &ex) {
     if (telemetry) {
       try {
-        tl::info << "CUDA ACTIVE.3 exact WELL-union live lowering:"
+        tl::info << telemetry_prefix
                  << " outcome=cpu-fallback message=" << ex.what ();
       } catch (...) {
         // Telemetry must never turn a speculative decline into an error.
@@ -1610,7 +1621,7 @@ bool cuda_active3_well_union_try_empty (
   } catch (...) {
     if (telemetry) {
       try {
-        tl::info << "CUDA ACTIVE.3 exact WELL-union live lowering:"
+        tl::info << telemetry_prefix
                  << " outcome=cpu-fallback message=unknown exception";
       } catch (...) {
         // Telemetry must never turn a speculative decline into an error.
@@ -1618,6 +1629,33 @@ bool cuda_active3_well_union_try_empty (
     }
   }
   return false;
+}
+
+bool cuda_active3_well_union_try_empty (
+  const db::DeepLayer &raw_nwell, const db::DeepLayer &raw_pwell,
+  const db::DeepLayer &raw_active)
+{
+  return cuda_well_union_try_empty_impl (
+    raw_nwell, raw_pwell, raw_active,
+    KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_EMPTY,
+    KLAYOUT_CUDA_SPATIAL_ACTIVE3_WELL_UNION_QUALIFIED_OPTIONS,
+    "KLAYOUT_CUDA_ACTIVE3_WELL_UNION_TELEMETRY",
+    "CUDA ACTIVE.3 exact WELL-union live lowering:");
+}
+
+bool cuda_active4_well_union_try_empty (
+  const db::DeepLayer &raw_nwell, const db::DeepLayer &raw_pwell,
+  const db::DeepLayer &raw_active)
+{
+  if (! env_enabled ("KLAYOUT_CUDA_ACTIVE4_WELL_UNION")) {
+    return false;
+  }
+  return cuda_well_union_try_empty_impl (
+    raw_nwell, raw_pwell, raw_active,
+    KLAYOUT_CUDA_SPATIAL_ACTIVE4_WELL_UNION_SUBSET_EMPTY,
+    KLAYOUT_CUDA_SPATIAL_ACTIVE4_WELL_UNION_QUALIFIED_OPTIONS,
+    "KLAYOUT_CUDA_ACTIVE4_WELL_UNION_TELEMETRY",
+    "CUDA ACTIVE.4 exact WELL-union live lowering:");
 }
 
 bool cuda_contact4_try_empty (
