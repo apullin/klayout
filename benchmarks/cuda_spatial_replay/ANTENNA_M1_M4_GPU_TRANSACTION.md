@@ -263,7 +263,11 @@ Before production timing is booked:
   device seam and production predictor are banked on
   `fork/antenna-geometry-quotient`; complete phase telemetry showed that
   VIA1 plus M2 connectivity append is only 1.487 seconds, below 0.5% of the
-  320.96-second run, so active integration is deferred.
+  320.96-second run, so active integration was initially deferred.  The
+  later exact live integration, randomized oracle, fail-closed ownership,
+  memcheck, and racecheck gates are retained on
+  `fork/antenna-geometry-quotient-live`; see the measured default decision
+  below.
 - [x] Replace the comparison sort of 145–173 million 16-byte `CellMember`
   records with a stable radix sort of 64-bit cell keys and 32-bit rectangle
   nodes.  Membership fill is initially ordered by rectangle node, so sort
@@ -318,10 +322,36 @@ Before production timing is booked:
   selecting the next kernel.  Fine telemetry now accounts for the complete
   258-ms M2 refinement, only 2.5% of the 10.32-second process wall; defer
   further kernel work unless a low-risk fusion appears.
-- [ ] Re-evaluate the banked exact geometry quotient now that certificate
-  contention is gone.  M1 plus M2 stages now total 3.86 seconds (37.4% of
-  process wall), so the previously sub-threshold connectivity reductions can
-  again clear the 5% whole-run gate.
+- [x] Re-evaluate the banked exact geometry quotient now that certificate
+  contention is gone.  Three pinned FreePDK45 independent-x2 capture replays
+  on merged commit `d8272da` were exact and clean with no fallback, but
+  measured 8.75, 8.71, and 8.66 seconds (8.707-second mean) versus the
+  matched 8.303-second baseline: 0.404 second or 4.86% more process time.
+  Backend time regressed from 6,711.590 to 7,124.418 ms (6.15% more), while
+  setup was unchanged at 1,897.249 ms.  Stage 1 regressed 50.27% to
+  2,774.490 ms; stages 2 and 3 improved 22.85% to 1,551.507 ms and 27.02% to
+  180.698 ms; stage 4 regressed 5.30% to 94.042 ms.  The physical reductions
+  are real and deterministic: the four checkpoints reduced raw rectangles
+  from 67,659,760 to 37,739,368 (44.2%), 84,223,436 to 23,777,222 (71.8%),
+  22,974,874 to 5,950,450 (74.1%), and 33,338 to 24,674 (26.0%).
+  Memberships fell 37.7%, 68.3%, 58.0%, and 36.9%, respectively.  The
+  comparison-sort quotient construction itself cost 1.124, 0.657, 0.0039,
+  and 0.0038 seconds at those checkpoints; the first two costs outweighed
+  the downstream savings.  Peak sampled device memory rose from 7,769 to
+  8,601 MiB.  Therefore the exact implementation remains banked and
+  comparison-sort quotienting is rejected/deferred as the production
+  default, not deleted.
+- [ ] Replace the geometry quotient's comparison-sort construction with a
+  CUB radix/hash candidate path while preserving an exact collision
+  fallback.  Radix-sort a compact deterministic hash plus owner index, then
+  compare the complete `(domain, left, bottom, right, top)` key inside every
+  equal-hash run; distinct exact keys in a collided run must be partitioned
+  by an exact local path before emitting canonical-min parents,
+  multiplicities, and weighted census.  Include sort scratch and the
+  10-GiB transaction cap in admission.  Removing 0.404 second from the
+  measured 1.789-second quotient-construction total merely crosses the
+  baseline; removing at least 0.819 second clears the 5% whole-run gate, so
+  roughly a 2x builder improvement is the next qualification target.
 - [x] Reduce the 3.89-second request identity/setup path.  Opt-in
   `KLAYOUT_CUDA_ANTENNA_SETUP_TIMING` now partitions request validation,
   hierarchy validation/digest, all twelve domain lowerings, both capture
