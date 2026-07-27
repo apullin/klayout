@@ -17,6 +17,23 @@ target_compile_options(m2_manhattan_decompose_test PRIVATE
   -O3 -Wall -Wextra -Werror
 )
 
+add_library(antenna_geometry_quotient STATIC
+  antenna_geometry_quotient.cc
+)
+target_compile_options(antenna_geometry_quotient PRIVATE
+  -O3 -Wall -Wextra -Werror
+)
+
+add_executable(antenna_geometry_quotient_test
+  antenna_geometry_quotient_test.cc
+)
+target_compile_options(antenna_geometry_quotient_test PRIVATE
+  -O3 -Wall -Wextra -Werror
+)
+target_link_libraries(antenna_geometry_quotient_test PRIVATE
+  antenna_geometry_quotient
+)
+
 add_executable(cuda_spatial_replay spatial_replay.cu)
 target_compile_options(cuda_spatial_replay PRIVATE
   $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
