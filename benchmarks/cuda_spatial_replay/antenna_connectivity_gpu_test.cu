@@ -636,6 +636,70 @@ void test_exact_filter_before_materialization()
       "exact-filter overlapping owner tiles");
 }
 
+void test_exact_canonical_bucket_pair_work()
+{
+  /*
+   * The two exact edges below coexist in 12 broad grid cells: three for the
+   * boundary-touching pair and nine for the area-overlapping pair.  Their
+   * start-bit buckets admit only the two canonical cells.
+   */
+  ac::Config config = base_config(2, 10);
+  config.exact_filter_before_materialization = true;
+  allow(&config, 0, 0);
+  allow(&config, 1, 1);
+  allow(&config, 0, 1);
+  config.limits.max_pair_tests_per_cell = 1;
+  config.limits.max_total_pair_tests = 2;
+  const std::vector<ac::RectI64> stage = {
+      {0, 0, 40, 40, 0, 0},
+      {40, 10, 80, 30, 1, 1},
+      {10, 10, 35, 35, 2, 1}};
+  ac::Connectivity gpu(config);
+  Oracle oracle(config);
+  const ac::StageCensus census = run_stage(
+      &gpu, &oracle, stage, 3,
+      "exact canonical bucket pair-work");
+  require(
+      census.pair_occurrences == 2 &&
+          census.unique_candidates == 2 &&
+          census.exact_edges == 2,
+      "canonical buckets changed the exact two-edge census");
+
+  ac::Config rejected = config;
+  rejected.limits.max_total_pair_tests = 1;
+  ac::Connectivity rejected_gpu(rejected);
+  require_failure_unchanged(
+      &rejected_gpu, stage.data(), stage.size(),
+      ac::Status::capacity_exceeded,
+      "exact canonical bucket aggregate capacity", 3);
+
+  /*
+   * Staged old/new pruning composes with canonical buckets.  These identical
+   * rectangles share 25 inclusive grid memberships, but their one old/new
+   * edge is enumerated only in the common lower-left start cell.
+   */
+  ac::Config staged_config = base_config(1, 10);
+  staged_config.exact_filter_before_materialization = true;
+  allow(&staged_config, 0, 0);
+  staged_config.limits.max_pair_tests_per_cell = 1;
+  staged_config.limits.max_total_pair_tests = 1;
+  const ac::RectI64 old = {0, 0, 40, 40, 0, 0};
+  const ac::RectI64 appended = {0, 0, 40, 40, 1, 0};
+  ac::Connectivity staged_gpu(staged_config);
+  Oracle staged_oracle(staged_config);
+  run_stage(
+      &staged_gpu, &staged_oracle, {old}, 1,
+      "exact canonical bucket staged baseline");
+  const ac::StageCensus staged = run_stage(
+      &staged_gpu, &staged_oracle, {appended}, 1,
+      "exact canonical bucket staged old-new");
+  require(
+      staged.pair_occurrences == 1 &&
+          staged.unique_candidates == 1 &&
+          staged.exact_edges == 1,
+      "canonical buckets changed the staged old-new edge");
+}
+
 void test_exact_staged_pair_work_pruning()
 {
   /*
@@ -1501,6 +1565,7 @@ int main()
     test_touching_and_relation_census();
     test_multibin_deduplication();
     test_exact_canonical_cell_emission();
+    test_exact_canonical_bucket_pair_work();
     test_exact_filter_before_materialization();
     test_exact_staged_pair_work_pruning();
     test_exact_streaming_owner_path();

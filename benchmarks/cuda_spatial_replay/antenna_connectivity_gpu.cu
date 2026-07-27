@@ -235,7 +235,7 @@ struct CellMember
 {
   std::uint64_t cell;
   std::uint32_t node;
-  std::uint32_t reserved;
+  std::uint32_t start_flags;
 };
 
 static_assert(sizeof(ac::RectI64) == 40, "RectI64 size changed");
@@ -247,6 +247,9 @@ struct CellMemberLess
       const CellMember &first, const CellMember &second) const
   {
     if (first.cell != second.cell) return first.cell < second.cell;
+    if (first.start_flags != second.start_flags) {
+      return first.start_flags < second.start_flags;
+    }
     return first.node < second.node;
   }
 };
@@ -528,8 +531,10 @@ __global__ void fill_memberships_kernel(
         const std::uint64_t cell =
             (ordered_i64(x) - minimum_x) * grid_height +
             (ordered_i64(y) - minimum_y);
+        const std::uint32_t start_flags =
+            (x == x0 ? 1u : 0u) | (y == y0 ? 2u : 0u);
         members[cursor++] = {
-            cell, static_cast<std::uint32_t>(id), 0};
+            cell, static_cast<std::uint32_t>(id), start_flags};
         if (x == x1) break;
       }
       if (y == y1) break;
@@ -583,22 +588,40 @@ __device__ bool decode_triangular_pair(
   return true;
 }
 
-__device__ std::uint64_t first_new_member_offset(
-    const CellMember *members, std::uint64_t group_begin,
-    std::uint64_t group_count,
-    std::uint64_t previous_rectangle_count)
+struct CanonicalBucketLayout
 {
-  /*
-   * CellMemberLess orders equal-cell memberships by rectangle node.  Every
-   * append adds all new rectangles after the retained prefix, so each cell
-   * has one exact old/new split even when the appended owners span multiple
-   * domains.
-   */
+  std::uint64_t begin[4];
+  std::uint64_t count[4];
+  std::uint64_t old_count[4];
+};
+
+__device__ std::uint64_t first_bucket_offset(
+    const CellMember *members, std::uint64_t group_begin,
+    std::uint64_t group_count, std::uint32_t bucket)
+{
   std::uint64_t low = 0;
   std::uint64_t high = group_count;
   while (low < high) {
     const std::uint64_t middle = low + (high - low) / 2;
-    if (members[group_begin + middle].node <
+    if (members[group_begin + middle].start_flags < bucket) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+}
+
+__device__ std::uint64_t first_new_bucket_offset(
+    const CellMember *members, std::uint64_t group_begin,
+    std::uint64_t bucket_begin, std::uint64_t bucket_count,
+    std::uint64_t previous_rectangle_count)
+{
+  std::uint64_t low = 0;
+  std::uint64_t high = bucket_count;
+  while (low < high) {
+    const std::uint64_t middle = low + (high - low) / 2;
+    if (members[group_begin + bucket_begin + middle].node <
         previous_rectangle_count) {
       low = middle + 1;
     } else {
@@ -608,11 +631,53 @@ __device__ std::uint64_t first_new_member_offset(
   return low;
 }
 
+__device__ CanonicalBucketLayout canonical_bucket_layout(
+    const CellMember *members, std::uint64_t group_begin,
+    std::uint64_t group_count,
+    std::uint64_t previous_rectangle_count)
+{
+  CanonicalBucketLayout layout = {};
+  std::uint64_t boundaries[5];
+  boundaries[0] = 0;
+  for (std::uint32_t bucket = 1; bucket < 4; ++bucket) {
+    boundaries[bucket] = first_bucket_offset(
+        members, group_begin, group_count, bucket);
+  }
+  boundaries[4] = group_count;
+  for (std::uint32_t bucket = 0; bucket < 4; ++bucket) {
+    layout.begin[bucket] = boundaries[bucket];
+    layout.count[bucket] =
+        boundaries[bucket + 1] - boundaries[bucket];
+    layout.old_count[bucket] = first_new_bucket_offset(
+        members, group_begin, layout.begin[bucket],
+        layout.count[bucket], previous_rectangle_count);
+  }
+  return layout;
+}
+
+__device__ std::uint64_t saturating_product(
+    std::uint64_t first, std::uint64_t second)
+{
+  return second && first > UINT64_MAX / second
+             ? UINT64_MAX
+             : first * second;
+}
+
+__device__ std::uint64_t saturating_sum(
+    std::uint64_t first, std::uint64_t second)
+{
+  return first > UINT64_MAX - second
+             ? UINT64_MAX
+             : first + second;
+}
+
 __device__ std::uint64_t staged_pair_count(
     std::uint64_t old_count, std::uint64_t group_count)
 {
   const std::uint64_t new_count = group_count - old_count;
-  return old_count * new_count + full_pair_count(new_count);
+  return saturating_sum(
+      saturating_product(old_count, new_count),
+      full_pair_count(new_count));
 }
 
 __device__ bool decode_staged_pair(
@@ -638,6 +703,143 @@ __device__ bool decode_staged_pair(
   *first += old_count;
   *second += old_count;
   return true;
+}
+
+__device__ void canonical_bucket_pair(
+    std::uint32_t pair, std::uint32_t *first,
+    std::uint32_t *second)
+{
+  // The five unordered bucket pairs whose bitwise OR contains both starts.
+  if (pair == 0) {
+    *first = 0;
+    *second = 3;
+  } else if (pair == 1) {
+    *first = 1;
+    *second = 2;
+  } else if (pair == 2) {
+    *first = 1;
+    *second = 3;
+  } else if (pair == 3) {
+    *first = 2;
+    *second = 3;
+  } else {
+    *first = 3;
+    *second = 3;
+  }
+}
+
+__device__ std::uint64_t staged_cross_bucket_pair_count(
+    const CanonicalBucketLayout &layout,
+    std::uint32_t first_bucket, std::uint32_t second_bucket)
+{
+  const std::uint64_t all = saturating_product(
+      layout.count[first_bucket], layout.count[second_bucket]);
+  if (all == UINT64_MAX) return all;
+  const std::uint64_t old_old = saturating_product(
+      layout.old_count[first_bucket],
+      layout.old_count[second_bucket]);
+  return old_old > all ? UINT64_MAX : all - old_old;
+}
+
+__device__ std::uint64_t canonical_staged_pair_count(
+    const CanonicalBucketLayout &layout)
+{
+  std::uint64_t total = 0;
+  for (std::uint32_t pair = 0; pair < 5; ++pair) {
+    std::uint32_t first_bucket = 0;
+    std::uint32_t second_bucket = 0;
+    canonical_bucket_pair(
+        pair, &first_bucket, &second_bucket);
+    const std::uint64_t count =
+        first_bucket == second_bucket
+            ? staged_pair_count(
+                  layout.old_count[first_bucket],
+                  layout.count[first_bucket])
+            : staged_cross_bucket_pair_count(
+                  layout, first_bucket, second_bucket);
+    total = saturating_sum(total, count);
+  }
+  return total;
+}
+
+__device__ bool decode_staged_cross_bucket_pair(
+    const CanonicalBucketLayout &layout,
+    std::uint32_t first_bucket, std::uint32_t second_bucket,
+    std::uint64_t pair, std::uint64_t *first,
+    std::uint64_t *second)
+{
+  const std::uint64_t first_old =
+      layout.old_count[first_bucket];
+  const std::uint64_t second_old =
+      layout.old_count[second_bucket];
+  const std::uint64_t first_new =
+      layout.count[first_bucket] - first_old;
+  const std::uint64_t second_new =
+      layout.count[second_bucket] - second_old;
+
+  const std::uint64_t old_new =
+      saturating_product(first_old, second_new);
+  if (pair < old_new) {
+    if (!second_new) return false;
+    *first = pair / second_new;
+    *second = second_old + pair % second_new;
+  } else {
+    pair -= old_new;
+    const std::uint64_t new_old =
+        saturating_product(first_new, second_old);
+    if (pair < new_old) {
+      if (!second_old) return false;
+      *first = first_old + pair / second_old;
+      *second = pair % second_old;
+    } else {
+      pair -= new_old;
+      const std::uint64_t new_new =
+          saturating_product(first_new, second_new);
+      if (pair >= new_new || !second_new) return false;
+      *first = first_old + pair / second_new;
+      *second = second_old + pair % second_new;
+    }
+  }
+  *first += layout.begin[first_bucket];
+  *second += layout.begin[second_bucket];
+  return true;
+}
+
+__device__ bool decode_canonical_staged_pair(
+    const CanonicalBucketLayout &layout, std::uint64_t pair,
+    std::uint64_t *first, std::uint64_t *second)
+{
+  for (std::uint32_t bucket_pair = 0; bucket_pair < 5;
+       ++bucket_pair) {
+    std::uint32_t first_bucket = 0;
+    std::uint32_t second_bucket = 0;
+    canonical_bucket_pair(
+        bucket_pair, &first_bucket, &second_bucket);
+    const std::uint64_t count =
+        first_bucket == second_bucket
+            ? staged_pair_count(
+                  layout.old_count[first_bucket],
+                  layout.count[first_bucket])
+            : staged_cross_bucket_pair_count(
+                  layout, first_bucket, second_bucket);
+    if (pair >= count) {
+      pair -= count;
+      continue;
+    }
+    if (first_bucket == second_bucket) {
+      if (!decode_staged_pair(
+              layout.old_count[first_bucket],
+              layout.count[first_bucket], pair, first, second)) {
+        return false;
+      }
+      *first += layout.begin[first_bucket];
+      *second += layout.begin[first_bucket];
+      return true;
+    }
+    return decode_staged_cross_bucket_pair(
+        layout, first_bucket, second_bucket, pair, first, second);
+  }
+  return false;
 }
 
 __device__ std::int64_t decode_ordered_i64(
@@ -753,11 +955,12 @@ __global__ void count_staged_pair_tests_kernel(
       pair_test_counts[group] = 0;
       continue;
     }
-    const std::uint64_t old_count = first_new_member_offset(
-        members, group_offsets[group], count,
-        previous_rectangle_count);
+    const CanonicalBucketLayout layout =
+        canonical_bucket_layout(
+            members, group_offsets[group], count,
+            previous_rectangle_count);
     const std::uint64_t tests =
-        staged_pair_count(old_count, count);
+        canonical_staged_pair_count(layout);
     if (tests > max_pair_tests_per_cell) {
       atomicOr(status, std::uint32_t(kCellCapacity));
       pair_test_counts[group] = 0;
@@ -1011,7 +1214,7 @@ __global__ void count_exact_streams_parallel_kernel(
   __shared__ ExactStreamCounts partial[kThreads];
   __shared__ std::int64_t cell_left;
   __shared__ std::int64_t cell_bottom;
-  __shared__ std::uint64_t old_count;
+  __shared__ CanonicalBucketLayout bucket_layout;
   for (std::uint64_t group = blockIdx.x; group < group_count;
        group += gridDim.x) {
     const std::uint64_t begin = group_offsets[group];
@@ -1034,7 +1237,7 @@ __global__ void count_exact_streams_parallel_kernel(
       cell_origin(
           members[begin].cell, minimum_x, minimum_y,
           grid_height, bin_size, &cell_left, &cell_bottom);
-      old_count = first_new_member_offset(
+      bucket_layout = canonical_bucket_layout(
           members, begin, count, previous_rectangle_count);
     }
     __syncthreads();
@@ -1043,8 +1246,8 @@ __global__ void count_exact_streams_parallel_kernel(
          pair += blockDim.x) {
       std::uint64_t first_offset = 0;
       std::uint64_t second_offset = 0;
-      if (!decode_staged_pair(
-              old_count, count, pair, &first_offset,
+      if (!decode_canonical_staged_pair(
+              bucket_layout, pair, &first_offset,
               &second_offset)) {
         atomicOr(status, std::uint32_t(kPairCountOverflow));
         continue;
@@ -1173,7 +1376,7 @@ __global__ void fill_exact_streams_parallel_kernel(
   __shared__ unsigned long long exception_cursor;
   __shared__ std::int64_t cell_left;
   __shared__ std::int64_t cell_bottom;
-  __shared__ std::uint64_t old_count;
+  __shared__ CanonicalBucketLayout bucket_layout;
   const std::uint32_t relation_count =
       domain_count * domain_count;
   for (std::uint32_t relation = threadIdx.x;
@@ -1199,7 +1402,7 @@ __global__ void fill_exact_streams_parallel_kernel(
       cell_origin(
           members[begin].cell, minimum_x, minimum_y,
           grid_height, bin_size, &cell_left, &cell_bottom);
-      old_count = first_new_member_offset(
+      bucket_layout = canonical_bucket_layout(
           members, begin, count, previous_rectangle_count);
     }
     __syncthreads();
@@ -1207,8 +1410,8 @@ __global__ void fill_exact_streams_parallel_kernel(
          pair += blockDim.x) {
       std::uint64_t first_offset = 0;
       std::uint64_t second_offset = 0;
-      if (!decode_staged_pair(
-              old_count, count, pair, &first_offset,
+      if (!decode_canonical_staged_pair(
+              bucket_layout, pair, &first_offset,
               &second_offset)) {
         atomicOr(status, std::uint32_t(kPairCountOverflow));
         continue;

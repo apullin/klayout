@@ -263,7 +263,11 @@ Before production timing is booked:
 - [ ] Enumerate only canonical-start membership buckets.  A count-only
   production projection removes 682.7 million M2 pair tests (21.1%) by
   requiring a pair's cell to contain its maximum left and bottom coordinate;
-  this remains unmeasured wall-time opportunity.
+  the corresponding M1 projection is 14.8%, and the aggregate projection is
+  999.1 million tests (18.6%).  The focused GPU prototype reduces a
+  boundary/overlap fixture from 12 to two tests (83.3%) and a staged
+  multi-bin old/new fixture from 25 to one (96.0%), with exact CPU-oracle
+  census and labels unchanged.  Production wall time remains unmeasured.
 - [x] Demonstrate an accounted peak within the 10,240-MiB qualification card,
   including caller staging and temporary sort/reduction storage.
 - [ ] Run matched repeated full-launch control/candidate trials and book only
