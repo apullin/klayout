@@ -24,10 +24,7 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
 #include <limits>
 #include <new>
 #include <stdexcept>
@@ -54,8 +51,7 @@ enum DeviceFlag : std::uint32_t
   kMissingOwner = 1u << 7,
   kOverlappingOwnerTiles = 1u << 8,
   kDisconnectedOwnerTiles = 1u << 9,
-  kClosedDomainInput = 1u << 10,
-  kUnexpectedStreamKind = 1u << 11
+  kClosedDomainInput = 1u << 10
 };
 
 class CudaFailure : public std::runtime_error
@@ -73,25 +69,6 @@ void cuda_require(cudaError_t status, const char *operation)
     throw CudaFailure(
         std::string(operation) + ": " + cudaGetErrorString(status));
   }
-}
-
-using ConnectivityClock = std::chrono::steady_clock;
-
-bool connectivity_timing_enabled()
-{
-  const char *value =
-      std::getenv("KLAYOUT_CUDA_CONNECTIVITY_TIMING");
-  return value && *value &&
-         !(value[0] == '0' && value[1] == '\0');
-}
-
-double elapsed_milliseconds(
-    ConnectivityClock::time_point begin,
-    ConnectivityClock::time_point end)
-{
-  return std::chrono::duration<double, std::milli>(
-             end - begin)
-      .count();
 }
 
 std::uint32_t launch_blocks(std::uint64_t count)
@@ -926,11 +903,6 @@ struct ExactStreamCounts
   unsigned long long exception_owner_edges;
 };
 
-__device__ void union_roots_atomic_cas(
-    std::uint32_t *parents, std::uint32_t first,
-    std::uint32_t second, std::uint64_t node_count,
-    std::uint32_t *status);
-
 __global__ void count_owner_rectangles_kernel(
     const ac::RectI64 *rectangles, std::uint64_t rectangle_count,
     std::uint32_t owner_count, std::uint32_t *owner_rectangles,
@@ -1032,24 +1004,14 @@ __global__ void count_exact_streams_parallel_kernel(
     std::uint32_t stage_begin, std::int64_t bin_size,
     std::uint64_t minimum_x, std::uint64_t minimum_y,
     std::uint64_t grid_height, std::uint32_t domain_count,
-    std::uint32_t *owner_parents, std::uint64_t owner_count,
-    unsigned long long *singleton_relation_census,
     std::uint64_t *tile_counts,
     std::uint64_t *singleton_counts,
     std::uint64_t *exception_counts, std::uint32_t *status)
 {
-  extern __shared__ unsigned long long relation_census[];
   __shared__ ExactStreamCounts partial[kThreads];
   __shared__ std::int64_t cell_left;
   __shared__ std::int64_t cell_bottom;
   __shared__ std::uint64_t old_count;
-  const std::uint32_t relation_count =
-      domain_count * domain_count;
-  for (std::uint32_t relation = threadIdx.x;
-       relation < relation_count; relation += blockDim.x) {
-    relation_census[relation] = 0;
-  }
-  __syncthreads();
   for (std::uint64_t group = blockIdx.x; group < group_count;
        group += gridDim.x) {
     const std::uint64_t begin = group_offsets[group];
@@ -1097,13 +1059,6 @@ __global__ void count_exact_streams_parallel_kernel(
       if (kind == kExactTileEdge) {
         ++local.tile_edges;
       } else if (kind == kExactSingletonOwnerEdge) {
-        std::uint32_t first_owner = 0;
-        std::uint32_t second_owner = 0;
-        decode_pair(key, &first_owner, &second_owner);
-        union_roots_atomic_cas(
-            owner_parents, first_owner, second_owner,
-            owner_count, status);
-        atomicAdd(relation_census + relation, 1ull);
         ++local.singleton_owner_edges;
       } else if (kind == kExactExceptionOwnerEdge) {
         ++local.exception_owner_edges;
@@ -1131,19 +1086,6 @@ __global__ void count_exact_streams_parallel_kernel(
           partial[0].exception_owner_edges;
     }
     __syncthreads();
-  }
-
-  for (std::uint32_t relation = threadIdx.x;
-       relation < relation_count; relation += blockDim.x) {
-    const unsigned long long count = relation_census[relation];
-    if (!count) continue;
-    const std::uint32_t low_domain = relation / domain_count;
-    const std::uint32_t high_domain = relation % domain_count;
-    const std::size_t slot =
-        static_cast<std::size_t>(low_domain) *
-            ac::kMaximumDomains +
-        high_domain;
-    atomicAdd(singleton_relation_census + slot, count);
   }
 }
 
@@ -1204,121 +1146,12 @@ __device__ void union_roots_atomic_cas(
   atomicOr(status, std::uint32_t(kPairCountOverflow));
 }
 
-__global__ void count_multi_owner_members_kernel(
-    const CellMember *members,
-    const std::uint64_t *group_offsets,
-    const std::uint64_t *group_counts,
-    std::uint64_t group_count,
-    const ac::RectI64 *rectangles,
-    const std::uint32_t *owner_rectangle_counts,
-    std::uint64_t owner_count,
-    std::uint64_t *multi_counts,
-    std::uint32_t *status)
-{
-  __shared__ unsigned long long partial[kThreads];
-  for (std::uint64_t group = blockIdx.x; group < group_count;
-       group += gridDim.x) {
-    const std::uint64_t begin = group_offsets[group];
-    const std::uint64_t count = group_counts[group];
-    unsigned long long local = 0;
-    for (std::uint64_t offset = threadIdx.x; offset < count;
-         offset += blockDim.x) {
-      const std::uint32_t rectangle =
-          members[begin + offset].node;
-      const std::uint32_t owner = rectangles[rectangle].owner;
-      if (owner >= owner_count) {
-        atomicOr(status, std::uint32_t(kMalformedRectangle));
-      } else if (owner_rectangle_counts[owner] > 1) {
-        ++local;
-      }
-    }
-    partial[threadIdx.x] = local;
-    __syncthreads();
-    for (std::uint32_t stride = blockDim.x / 2; stride;
-         stride /= 2) {
-      if (threadIdx.x < stride) {
-        partial[threadIdx.x] +=
-            partial[threadIdx.x + stride];
-      }
-      __syncthreads();
-    }
-    if (!threadIdx.x) multi_counts[group] = partial[0];
-    __syncthreads();
-  }
-}
-
-__global__ void fill_multi_owner_member_offsets_kernel(
-    const CellMember *members,
-    const std::uint64_t *group_offsets,
-    const std::uint64_t *group_counts,
-    std::uint64_t group_count,
-    const ac::RectI64 *rectangles,
-    const std::uint32_t *owner_rectangle_counts,
-    std::uint64_t owner_count,
-    const std::uint64_t *multi_offsets,
-    std::uint64_t multi_total,
-    std::uint32_t *multi_member_offsets,
-    std::uint32_t *status)
-{
-  for (std::uint64_t group = blockIdx.x; group < group_count;
-       group += gridDim.x) {
-    const std::uint64_t begin = group_offsets[group];
-    const std::uint64_t count = group_counts[group];
-    if (!threadIdx.x) {
-      std::uint64_t cursor = multi_offsets[group];
-      const std::uint64_t end =
-          group + 1 < group_count
-              ? multi_offsets[group + 1]
-              : multi_total;
-      for (std::uint64_t offset = 0; offset < count; ++offset) {
-        const std::uint32_t rectangle =
-            members[begin + offset].node;
-        const std::uint32_t owner = rectangles[rectangle].owner;
-        if (owner >= owner_count) {
-          atomicOr(status, std::uint32_t(kMalformedRectangle));
-        } else if (owner_rectangle_counts[owner] > 1) {
-          if (cursor < end) {
-            multi_member_offsets[cursor++] =
-                static_cast<std::uint32_t>(offset);
-          } else {
-            atomicOr(
-                status, std::uint32_t(kPairCountOverflow));
-          }
-        }
-      }
-      if (cursor != end) {
-        atomicOr(status, std::uint32_t(kPairCountOverflow));
-      }
-    }
-    __syncthreads();
-  }
-}
-
-__device__ std::uint64_t first_new_multi_member(
-    const std::uint32_t *multi_member_offsets,
-    std::uint64_t multi_begin, std::uint64_t multi_count,
-    std::uint64_t old_count)
-{
-  std::uint64_t low = 0;
-  std::uint64_t high = multi_count;
-  while (low < high) {
-    const std::uint64_t middle = low + (high - low) / 2;
-    if (multi_member_offsets[multi_begin + middle] < old_count) {
-      low = middle + 1;
-    } else {
-      high = middle;
-    }
-  }
-  return low;
-}
-
 __global__ void fill_exact_streams_parallel_kernel(
     const CellMember *members,
     const std::uint64_t *group_offsets,
     const std::uint64_t *group_counts,
-    const std::uint64_t *multi_offsets,
-    std::uint64_t multi_total,
-    const std::uint32_t *multi_member_offsets,
+    const std::uint64_t *pair_test_offsets,
+    std::uint64_t total_pair_tests,
     std::uint64_t group_count,
     std::uint64_t previous_rectangle_count,
     const ac::RectI64 *rectangles,
@@ -1332,21 +1165,34 @@ __global__ void fill_exact_streams_parallel_kernel(
     std::uint64_t tile_total, std::uint64_t exception_total,
     std::uint64_t *tile_edges, std::uint64_t *exception_keys,
     std::uint32_t *owner_parents, std::uint64_t owner_count,
+    unsigned long long *singleton_relation_census,
     std::uint32_t *status)
 {
+  extern __shared__ unsigned long long relation_census[];
   __shared__ unsigned long long tile_cursor;
   __shared__ unsigned long long exception_cursor;
   __shared__ std::int64_t cell_left;
   __shared__ std::int64_t cell_bottom;
   __shared__ std::uint64_t old_count;
-  __shared__ std::uint64_t multi_begin;
-  __shared__ std::uint64_t multi_count;
-  __shared__ std::uint64_t old_multi_count;
+  const std::uint32_t relation_count =
+      domain_count * domain_count;
+  for (std::uint32_t relation = threadIdx.x;
+       relation < relation_count; relation += blockDim.x) {
+    relation_census[relation] = 0;
+  }
+  __syncthreads();
 
   for (std::uint64_t group = blockIdx.x; group < group_count;
        group += gridDim.x) {
     const std::uint64_t begin = group_offsets[group];
     const std::uint64_t count = group_counts[group];
+    const std::uint64_t test_begin = pair_test_offsets[group];
+    const std::uint64_t test_end =
+        group + 1 < group_count
+            ? pair_test_offsets[group + 1]
+            : total_pair_tests;
+    const std::uint64_t tests = test_end - test_begin;
+    if (!tests) continue;
     if (!threadIdx.x) {
       tile_cursor = tile_offsets[group];
       exception_cursor = exception_offsets[group];
@@ -1355,72 +1201,17 @@ __global__ void fill_exact_streams_parallel_kernel(
           grid_height, bin_size, &cell_left, &cell_bottom);
       old_count = first_new_member_offset(
           members, begin, count, previous_rectangle_count);
-      multi_begin = multi_offsets[group];
-      const std::uint64_t multi_end =
-          group + 1 < group_count
-              ? multi_offsets[group + 1]
-              : multi_total;
-      multi_count = multi_end - multi_begin;
-      old_multi_count = first_new_multi_member(
-          multi_member_offsets, multi_begin, multi_count,
-          old_count);
     }
     __syncthreads();
-    const std::uint64_t new_count = count - old_count;
-    const std::uint64_t new_multi_count =
-        multi_count - old_multi_count;
-    const std::uint64_t old_multi_new_tests =
-        old_multi_count * new_count;
-    const std::uint64_t new_multi_old_tests =
-        new_multi_count * old_count;
-    const std::uint64_t new_multi_new_tests =
-        new_multi_count * new_count;
-    const std::uint64_t tests =
-        old_multi_new_tests + new_multi_old_tests +
-        new_multi_new_tests;
     for (std::uint64_t pair = threadIdx.x; pair < tests;
          pair += blockDim.x) {
       std::uint64_t first_offset = 0;
       std::uint64_t second_offset = 0;
-      if (pair < old_multi_new_tests) {
-        first_offset = multi_member_offsets[
-            multi_begin + pair / new_count];
-        second_offset =
-            old_count + pair % new_count;
-      } else if (
-          pair < old_multi_new_tests +
-                     new_multi_old_tests) {
-        const std::uint64_t local =
-            pair - old_multi_new_tests;
-        first_offset = local % old_count;
-        second_offset = multi_member_offsets[
-            multi_begin + old_multi_count +
-            local / old_count];
-        const std::uint32_t first_rectangle =
-            members[begin + first_offset].node;
-        const std::uint32_t first_owner =
-            rectangles[first_rectangle].owner;
-        if (owner_rectangles[first_owner] > 1) {
-          continue;
-        }
-      } else {
-        const std::uint64_t local =
-            pair - old_multi_new_tests -
-            new_multi_old_tests;
-        first_offset = multi_member_offsets[
-            multi_begin + old_multi_count +
-            local / new_count];
-        second_offset =
-            old_count + local % new_count;
-        if (first_offset == second_offset) continue;
-        const std::uint32_t second_rectangle =
-            members[begin + second_offset].node;
-        const std::uint32_t second_owner =
-            rectangles[second_rectangle].owner;
-        if (owner_rectangles[second_owner] > 1 &&
-            first_offset > second_offset) {
-          continue;
-        }
+      if (!decode_staged_pair(
+              old_count, count, pair, &first_offset,
+              &second_offset)) {
+        atomicOr(status, std::uint32_t(kPairCountOverflow));
+        continue;
       }
       std::uint64_t key = 0;
       std::uint32_t relation = 0;
@@ -1436,22 +1227,25 @@ __global__ void fill_exact_streams_parallel_kernel(
         } else {
           atomicOr(status, std::uint32_t(kPairCountOverflow));
         }
-      } else if (kind == kExactExceptionOwnerEdge) {
+      } else if (kind == kExactSingletonOwnerEdge ||
+                 kind == kExactExceptionOwnerEdge) {
         std::uint32_t first_owner = 0;
         std::uint32_t second_owner = 0;
         decode_pair(key, &first_owner, &second_owner);
         union_roots_atomic_cas(
             owner_parents, first_owner, second_owner,
             owner_count, status);
-        const std::uint64_t output =
-            atomicAdd(&exception_cursor, 1ull);
-        if (output < exception_total) {
-          exception_keys[output] = key;
+        if (kind == kExactSingletonOwnerEdge) {
+          atomicAdd(relation_census + relation, 1ull);
         } else {
-          atomicOr(status, std::uint32_t(kPairCountOverflow));
+          const std::uint64_t output =
+              atomicAdd(&exception_cursor, 1ull);
+          if (output < exception_total) {
+            exception_keys[output] = key;
+          } else {
+            atomicOr(status, std::uint32_t(kPairCountOverflow));
+          }
         }
-      } else if (kind == kExactSingletonOwnerEdge) {
-        atomicOr(status, std::uint32_t(kUnexpectedStreamKind));
       }
     }
     __syncthreads();
@@ -1470,6 +1264,19 @@ __global__ void fill_exact_streams_parallel_kernel(
       }
     }
     __syncthreads();
+  }
+
+  for (std::uint32_t relation = threadIdx.x;
+       relation < relation_count; relation += blockDim.x) {
+    const unsigned long long count = relation_census[relation];
+    if (!count) continue;
+    const std::uint32_t low_domain = relation / domain_count;
+    const std::uint32_t high_domain = relation % domain_count;
+    const std::size_t slot =
+        static_cast<std::size_t>(low_domain) *
+            ac::kMaximumDomains +
+        high_domain;
+    atomicAdd(singleton_relation_census + slot, count);
   }
 }
 
@@ -1893,7 +1700,7 @@ ac::Status map_device_status(std::uint32_t status)
                 kInvalidParent | kOwnerDomainMismatch |
                 kMissingOwner | kOverlappingOwnerTiles |
                 kDisconnectedOwnerTiles |
-                kClosedDomainInput | kUnexpectedStreamKind)) {
+                kClosedDomainInput)) {
     return ac::Status::malformed_input;
   }
   if (status &
@@ -2054,15 +1861,6 @@ ac::Status run_exact_streaming(
       UINT64_C(0));
   release_device_vector(&pair_test_counts);
 
-  if (!vector_allocation_admitted<unsigned long long>(
-          config, ac::kRelationSlots)) {
-    return ac::Status::capacity_exceeded;
-  }
-  result->candidate_census.assign(ac::kRelationSlots, 0);
-  const std::size_t relation_shared_bytes =
-      static_cast<std::size_t>(config.domain_count) *
-      config.domain_count * sizeof(unsigned long long);
-
   if (!vector_allocation_admitted<std::uint64_t>(
           config, group_count)) {
     return ac::Status::capacity_exceeded;
@@ -2080,11 +1878,8 @@ ac::Status run_exact_streaming(
   }
   thrust::device_vector<std::uint64_t>
       exception_counts(group_count);
-  const ConnectivityClock::time_point exact_count_begin =
-      ConnectivityClock::now();
   count_exact_streams_parallel_kernel<<<
-      launch_group_blocks(group_count), kThreads,
-      relation_shared_bytes>>>(
+      launch_group_blocks(group_count), kThreads>>>(
       thrust::raw_pointer_cast(members->data()),
       thrust::raw_pointer_cast(group_offsets->data()),
       thrust::raw_pointer_cast(group_counts->data()),
@@ -2096,10 +1891,6 @@ ac::Status run_exact_streaming(
       thrust::raw_pointer_cast(owner_rectangle_counts.data()),
       stage_begin, config.bin_size, minimum_x, minimum_y,
       grid_height, config.domain_count,
-      thrust::raw_pointer_cast(owner_parents->data()),
-      total_count,
-      thrust::raw_pointer_cast(
-          result->candidate_census.data()),
       thrust::raw_pointer_cast(tile_counts.data()),
       thrust::raw_pointer_cast(singleton_counts.data()),
       thrust::raw_pointer_cast(exception_counts.data()),
@@ -2110,8 +1901,6 @@ ac::Status run_exact_streaming(
   cuda_require(
       cudaDeviceSynchronize(),
       "antenna connectivity streaming exact-count synchronize");
-  const ConnectivityClock::time_point exact_count_end =
-      ConnectivityClock::now();
   flags = read_device_status(
       *device_status,
       "antenna connectivity streaming exact-count status D2H");
@@ -2141,7 +1930,6 @@ ac::Status run_exact_streaming(
     return ac::Status::capacity_exceeded;
   }
   release_device_vector(&singleton_counts);
-  release_device_vector(&pair_test_offsets);
   thrust::exclusive_scan(
       thrust::device, tile_counts.begin(), tile_counts.end(),
       tile_counts.begin(), UINT64_C(0));
@@ -2161,92 +1949,22 @@ ac::Status run_exact_streaming(
   }
   thrust::device_vector<std::uint64_t>
       exception_owner_keys(exception_total);
-
-  if (!vector_allocation_admitted<std::uint64_t>(
-          config, group_count)) {
+  if (!vector_allocation_admitted<unsigned long long>(
+          config, ac::kRelationSlots)) {
     return ac::Status::capacity_exceeded;
   }
-  thrust::device_vector<std::uint64_t>
-      multi_offsets(group_count);
-  const ConnectivityClock::time_point multi_index_begin =
-      ConnectivityClock::now();
-  count_multi_owner_members_kernel<<<
-      launch_group_blocks(group_count), kThreads>>>(
-      thrust::raw_pointer_cast(members->data()),
-      thrust::raw_pointer_cast(group_offsets->data()),
-      thrust::raw_pointer_cast(group_counts->data()),
-      group_count,
-      thrust::raw_pointer_cast(rectangles->data()),
-      thrust::raw_pointer_cast(owner_rectangle_counts.data()),
-      total_count,
-      thrust::raw_pointer_cast(multi_offsets.data()),
-      thrust::raw_pointer_cast(device_status->data()));
-  cuda_require(
-      cudaGetLastError(),
-      "antenna connectivity streaming multi-member-count launch");
-  cuda_require(
-      cudaDeviceSynchronize(),
-      "antenna connectivity streaming multi-member-count synchronize");
-  flags = read_device_status(
-      *device_status,
-      "antenna connectivity streaming multi-member-count status D2H");
-  if (flags) return map_device_status(flags);
-  const std::uint64_t multi_total = thrust::reduce(
-      thrust::device, multi_offsets.begin(), multi_offsets.end(),
-      UINT64_C(0), SaturatingAddU64());
-  if (multi_total == UINT64_MAX ||
-      !vector_allocation_admitted<std::uint32_t>(
-          config, multi_total)) {
-    return ac::Status::capacity_exceeded;
-  }
-  thrust::exclusive_scan(
-      thrust::device, multi_offsets.begin(), multi_offsets.end(),
-      multi_offsets.begin(), UINT64_C(0));
-  thrust::device_vector<std::uint32_t>
-      multi_member_offsets(multi_total);
-  fill_multi_owner_member_offsets_kernel<<<
-      launch_group_blocks(group_count), kThreads>>>(
-      thrust::raw_pointer_cast(members->data()),
-      thrust::raw_pointer_cast(group_offsets->data()),
-      thrust::raw_pointer_cast(group_counts->data()),
-      group_count,
-      thrust::raw_pointer_cast(rectangles->data()),
-      thrust::raw_pointer_cast(owner_rectangle_counts.data()),
-      total_count,
-      thrust::raw_pointer_cast(multi_offsets.data()),
-      multi_total,
-      multi_member_offsets.empty()
-          ? nullptr
-          : thrust::raw_pointer_cast(
-                multi_member_offsets.data()),
-      thrust::raw_pointer_cast(device_status->data()));
-  cuda_require(
-      cudaGetLastError(),
-      "antenna connectivity streaming multi-member-fill launch");
-  cuda_require(
-      cudaDeviceSynchronize(),
-      "antenna connectivity streaming multi-member-fill synchronize");
-  const ConnectivityClock::time_point multi_index_end =
-      ConnectivityClock::now();
-  flags = read_device_status(
-      *device_status,
-      "antenna connectivity streaming multi-member-fill status D2H");
-  if (flags) return map_device_status(flags);
-
-  const ConnectivityClock::time_point exact_fill_begin =
-      ConnectivityClock::now();
+  result->candidate_census.assign(ac::kRelationSlots, 0);
+  const std::size_t relation_shared_bytes =
+      static_cast<std::size_t>(config.domain_count) *
+      config.domain_count * sizeof(unsigned long long);
   fill_exact_streams_parallel_kernel<<<
-      launch_group_blocks(group_count), kThreads>>>(
+      launch_group_blocks(group_count), kThreads,
+      relation_shared_bytes>>>(
       thrust::raw_pointer_cast(members->data()),
       thrust::raw_pointer_cast(group_offsets->data()),
       thrust::raw_pointer_cast(group_counts->data()),
-      thrust::raw_pointer_cast(multi_offsets.data()),
-      multi_total,
-      multi_member_offsets.empty()
-          ? nullptr
-          : thrust::raw_pointer_cast(
-                multi_member_offsets.data()),
-      group_count,
+      thrust::raw_pointer_cast(pair_test_offsets.data()),
+      total_pair_tests, group_count,
       previous_rectangle_count,
       thrust::raw_pointer_cast(rectangles->data()),
       thrust::raw_pointer_cast(relation_rows->data()),
@@ -2264,6 +1982,7 @@ ac::Status run_exact_streaming(
           : thrust::raw_pointer_cast(exception_owner_keys.data()),
       thrust::raw_pointer_cast(owner_parents->data()),
       total_count,
+      thrust::raw_pointer_cast(result->candidate_census.data()),
       thrust::raw_pointer_cast(device_status->data()));
   cuda_require(
       cudaGetLastError(),
@@ -2271,37 +1990,14 @@ ac::Status run_exact_streaming(
   cuda_require(
       cudaDeviceSynchronize(),
       "antenna connectivity streaming exact-fill synchronize");
-  const ConnectivityClock::time_point exact_fill_end =
-      ConnectivityClock::now();
   flags = read_device_status(
       *device_status,
       "antenna connectivity streaming exact-fill status D2H");
   if (flags) return map_device_status(flags);
-  if (connectivity_timing_enabled()) {
-    std::fprintf(
-        stderr,
-        "KLAYOUT_CUDA_CONNECTIVITY_TIMING stage_begin=%u "
-        "pair_tests=%llu singleton_edges=%llu "
-        "exception_edges=%llu multi_members=%llu "
-        "exact_count_union_ms=%.3f multi_index_ms=%.3f "
-        "exact_fill_union_ms=%.3f\n",
-        stage_begin,
-        static_cast<unsigned long long>(total_pair_tests),
-        static_cast<unsigned long long>(singleton_total),
-        static_cast<unsigned long long>(exception_total),
-        static_cast<unsigned long long>(multi_total),
-        elapsed_milliseconds(
-            exact_count_begin, exact_count_end),
-        elapsed_milliseconds(
-            multi_index_begin, multi_index_end),
-        elapsed_milliseconds(
-            exact_fill_begin, exact_fill_end));
-  }
   release_device_vector(&owner_rectangle_counts);
-  release_device_vector(&multi_member_offsets);
-  release_device_vector(&multi_offsets);
   release_device_vector(&tile_counts);
   release_device_vector(&exception_counts);
+  release_device_vector(&pair_test_offsets);
   release_device_vector(members);
   release_device_vector(group_offsets);
   release_device_vector(group_counts);
