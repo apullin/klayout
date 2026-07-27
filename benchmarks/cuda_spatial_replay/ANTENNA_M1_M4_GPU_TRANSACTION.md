@@ -226,6 +226,9 @@ Before production timing is booked:
   removing the duplicated assembled geometry frontier.
 - [x] Compact exact connectivity memberships from 24 to 16 bytes with a
   lossless signed-64-bit cell key and block-reduced bounds.
+- [x] Emit exact rectangle pairs only from their canonical shared cell,
+  removing multi-cell duplicates and the exact-path rectangle-key
+  sort/unique pass.
 - [ ] Demonstrate an accounted peak within the 10,240-MiB qualification card,
   including caller staging and temporary sort/reduction storage.
 - [ ] Run matched repeated full-launch control/candidate trials and book only

@@ -583,12 +583,48 @@ __device__ bool decode_triangular_pair(
   return true;
 }
 
+__device__ std::int64_t decode_ordered_i64(
+    std::uint64_t value)
+{
+  return static_cast<std::int64_t>(
+      value ^ UINT64_C(0x8000000000000000));
+}
+
+__device__ std::int64_t saturating_cell_origin(
+    std::int64_t cell, std::int64_t bin_size)
+{
+  /*
+   * floor(INT64_MIN / bin_size) * bin_size can lie by at most
+   * bin_size - 1 below INT64_MIN.  No positive quotient obtained from an
+   * int64 coordinate can overflow.  Saturating the sole negative edge cell
+   * preserves the canonical lower-bound comparison for every representable
+   * rectangle coordinate.
+   */
+  if (cell < INT64_MIN / bin_size) return INT64_MIN;
+  return cell * bin_size;
+}
+
+__device__ void cell_origin(
+    std::uint64_t cell, std::uint64_t minimum_x,
+    std::uint64_t minimum_y, std::uint64_t grid_height,
+    std::int64_t bin_size, std::int64_t *left,
+    std::int64_t *bottom)
+{
+  const std::uint64_t x_offset = cell / grid_height;
+  const std::uint64_t y_offset = cell % grid_height;
+  *left = saturating_cell_origin(
+      decode_ordered_i64(minimum_x + x_offset), bin_size);
+  *bottom = saturating_cell_origin(
+      decode_ordered_i64(minimum_y + y_offset), bin_size);
+}
+
 __device__ bool exact_pair_key(
     const CellMember *members, std::uint64_t group_begin,
     std::uint64_t group_count, std::uint64_t local_pair,
     const ac::RectI64 *rectangles,
     const std::uint64_t *relation_rows,
-    std::uint32_t stage_begin, std::uint64_t *key,
+    std::uint32_t stage_begin, std::int64_t cell_left,
+    std::int64_t cell_bottom, std::uint64_t *key,
     std::uint32_t *status)
 {
   std::uint64_t first_offset = 0;
@@ -613,6 +649,18 @@ __device__ bool exact_pair_key(
       !allowed_relation(
           first_rectangle.domain, second_rectangle.domain,
           relation_rows)) {
+    return false;
+  }
+  /*
+   * Both rectangles contain the current cell.  It is their unique canonical
+   * shared cell precisely when at least one rectangle begins in its x span
+   * and at least one begins in its y span.  This is equivalent to
+   * (max(lower_x), max(lower_y)) without a per-pair floor division.
+   */
+  if (max(first_rectangle.left, second_rectangle.left) <
+          cell_left ||
+      max(first_rectangle.bottom, second_rectangle.bottom) <
+          cell_bottom) {
     return false;
   }
   if (first_rectangle.owner == second_rectangle.owner &&
@@ -664,10 +712,14 @@ __global__ void count_exact_pair_occurrences_parallel_kernel(
     std::uint64_t group_count,
     const ac::RectI64 *rectangles,
     const std::uint64_t *relation_rows,
-    std::uint32_t stage_begin,
+    std::uint32_t stage_begin, std::int64_t bin_size,
+    std::uint64_t minimum_x, std::uint64_t minimum_y,
+    std::uint64_t grid_height,
     std::uint64_t *pair_counts, std::uint32_t *status)
 {
   __shared__ unsigned long long partial[kThreads];
+  __shared__ std::int64_t cell_left;
+  __shared__ std::int64_t cell_bottom;
   for (std::uint64_t group = blockIdx.x; group < group_count;
        group += gridDim.x) {
     const std::uint64_t begin = group_offsets[group];
@@ -682,13 +734,20 @@ __global__ void count_exact_pair_occurrences_parallel_kernel(
       if (!threadIdx.x) pair_counts[group] = 0;
       continue;
     }
+    if (!threadIdx.x) {
+      cell_origin(
+          members[begin].cell, minimum_x, minimum_y,
+          grid_height, bin_size, &cell_left, &cell_bottom);
+    }
+    __syncthreads();
     unsigned long long local = 0;
     for (std::uint64_t pair = threadIdx.x; pair < tests;
          pair += blockDim.x) {
       std::uint64_t key = 0;
       if (exact_pair_key(
               members, begin, count, pair, rectangles,
-              relation_rows, stage_begin, &key, status)) {
+              relation_rows, stage_begin, cell_left, cell_bottom,
+              &key, status)) {
         ++local;
       }
     }
@@ -716,12 +775,16 @@ __global__ void fill_exact_pair_occurrences_parallel_kernel(
     std::uint64_t group_count,
     const ac::RectI64 *rectangles,
     const std::uint64_t *relation_rows,
-    std::uint32_t stage_begin,
+    std::uint32_t stage_begin, std::int64_t bin_size,
+    std::uint64_t minimum_x, std::uint64_t minimum_y,
+    std::uint64_t grid_height,
     const std::uint64_t *pair_offsets,
     const std::uint64_t *pair_counts,
     std::uint64_t *pairs, std::uint32_t *status)
 {
   __shared__ unsigned long long cursor;
+  __shared__ std::int64_t cell_left;
+  __shared__ std::int64_t cell_bottom;
   for (std::uint64_t group = blockIdx.x; group < group_count;
        group += gridDim.x) {
     const std::uint64_t begin = group_offsets[group];
@@ -733,14 +796,20 @@ __global__ void fill_exact_pair_occurrences_parallel_kernel(
             : total_pair_tests;
     const std::uint64_t tests = test_end - test_begin;
     if (!tests) continue;
-    if (!threadIdx.x) cursor = pair_offsets[group];
+    if (!threadIdx.x) {
+      cursor = pair_offsets[group];
+      cell_origin(
+          members[begin].cell, minimum_x, minimum_y,
+          grid_height, bin_size, &cell_left, &cell_bottom);
+    }
     __syncthreads();
     for (std::uint64_t pair = threadIdx.x; pair < tests;
          pair += blockDim.x) {
       std::uint64_t key = 0;
       if (exact_pair_key(
               members, begin, count, pair, rectangles,
-              relation_rows, stage_begin, &key, status)) {
+              relation_rows, stage_begin, cell_left, cell_bottom,
+              &key, status)) {
         const unsigned long long output =
             atomicAdd(&cursor, 1ull);
         pairs[output] = key;
@@ -1636,7 +1705,8 @@ Status Connectivity::append_stage_impl(
           total_pair_tests, group_count,
           thrust::raw_pointer_cast(work_rectangles.data()),
           thrust::raw_pointer_cast(relation_rows.data()),
-          stage_begin,
+          stage_begin, config.bin_size, host_cell_bounds[0],
+          host_cell_bounds[1], grid_height,
           thrust::raw_pointer_cast(pair_counts.data()),
           thrust::raw_pointer_cast(device_status.data()));
       cuda_require(
@@ -1713,7 +1783,8 @@ Status Connectivity::append_stage_impl(
             total_pair_tests, group_count,
             thrust::raw_pointer_cast(work_rectangles.data()),
             thrust::raw_pointer_cast(relation_rows.data()),
-            stage_begin,
+            stage_begin, config.bin_size, host_cell_bounds[0],
+            host_cell_bounds[1], grid_height,
             thrust::raw_pointer_cast(pair_offsets.data()),
             thrust::raw_pointer_cast(pair_counts.data()),
             thrust::raw_pointer_cast(candidate_pairs.data()),
@@ -1755,7 +1826,8 @@ Status Connectivity::append_stage_impl(
     release_device_vector(&group_counts);
     release_device_vector(&pair_offsets);
     release_device_vector(&relation_rows);
-    if (pair_occurrences) {
+    if (pair_occurrences &&
+        !config.exact_filter_before_materialization) {
       if (!sort_scratch_admitted<std::uint64_t>(
               config, pair_occurrences)) {
         return Status::capacity_exceeded;
@@ -1770,7 +1842,16 @@ Status Connectivity::append_stage_impl(
           static_cast<std::size_t>(
               unique_end - candidate_pairs.begin()));
     }
-    if (candidate_pairs.capacity() > candidate_pairs.size()) {
+    /*
+     * Exact mode emits an unordered rectangle pair only in the unique cell
+     * (max(lower_x), max(lower_y)).  Each rectangle has one membership per
+     * cell and each group enumerates an unordered member pair once, so the
+     * exact stream is already unique by rectangle-pair key.  Broad mode
+     * deliberately retains per-cell occurrence semantics and still requires
+     * sort/unique above.
+     */
+    if (!config.exact_filter_before_materialization &&
+        candidate_pairs.capacity() > candidate_pairs.size()) {
       if (!vector_allocation_admitted<std::uint64_t>(
               config, candidate_pairs.size())) {
         return Status::capacity_exceeded;

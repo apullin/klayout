@@ -232,8 +232,10 @@ struct Oracle
                 overlap_y1 - overlap_y0 + 1);
         const bool exact_touch =
             touches(first_rectangle, second_rectangle);
-        if (!config.exact_filter_before_materialization ||
+        if (config.exact_filter_before_materialization &&
             exact_touch) {
+          ++census.pair_occurrences;
+        } else if (!config.exact_filter_before_materialization) {
           census.pair_occurrences += occurrences;
         }
         if (same_owner) continue;
@@ -459,6 +461,77 @@ void test_multibin_deduplication()
   require(census.unique_candidates == 1 &&
               census.exact_edges == 1,
           "multi-bin pair was not deduplicated exactly once");
+}
+
+void test_exact_canonical_cell_emission()
+{
+  ac::Config config = base_config(2, 10);
+  config.exact_filter_before_materialization = true;
+  allow(&config, 0, 0);
+  allow(&config, 1, 1);
+  allow(&config, 0, 1);
+  const std::vector<ac::RectI64> stage = {
+      {0, 0, 40, 40, 0, 0},
+      {40, 10, 80, 30, 1, 1},  // boundary touch in three cells
+      {10, 10, 35, 35, 2, 1}}; // area overlap in nine cells
+
+  ac::Connectivity gpu(config);
+  Oracle oracle(config);
+  const ac::StageCensus census = run_stage(
+      &gpu, &oracle, stage, 3,
+      "exact canonical boundary/overlap");
+  require(
+      census.pair_occurrences == 2 &&
+          census.unique_candidates == 2 &&
+          census.exact_edges == 2,
+      "exact mode did not emit each multi-bin rectangle pair once");
+
+  ac::Config bounded = config;
+  bounded.limits.max_pair_occurrences = 2;
+  ac::Connectivity bounded_gpu(bounded);
+  Oracle bounded_oracle(bounded);
+  run_stage(
+      &bounded_gpu, &bounded_oracle, stage, 3,
+      "exact canonical occurrence capacity");
+
+  bounded.limits.max_pair_occurrences = 1;
+  ac::Connectivity rejected_gpu(bounded);
+  require_failure_unchanged(
+      &rejected_gpu, stage.data(), stage.size(),
+      ac::Status::capacity_exceeded,
+      "exact canonical occurrence capacity rejection", 3);
+
+  ac::Config minimum_config = base_config(2, 3);
+  minimum_config.exact_filter_before_materialization = true;
+  allow(&minimum_config, 0, 1);
+  const std::int64_t minimum =
+      std::numeric_limits<std::int64_t>::min();
+  const std::vector<ac::RectI64> minimum_stage = {
+      {minimum, minimum, minimum + 2, minimum + 2, 0, 0},
+      {minimum + 1, minimum + 1, minimum + 3,
+       minimum + 3, 1, 1}};
+  ac::Connectivity minimum_gpu(minimum_config);
+  Oracle minimum_oracle(minimum_config);
+  const ac::StageCensus minimum_census = run_stage(
+      &minimum_gpu, &minimum_oracle, minimum_stage, 2,
+      "exact canonical INT64_MIN saturation");
+  require(
+      minimum_census.pair_occurrences == 1 &&
+          minimum_census.unique_candidates == 1 &&
+          minimum_census.exact_edges == 1,
+      "exact canonical INT64_MIN cell was not emitted once");
+
+  ac::Config overlap_config = base_config(1, 10);
+  overlap_config.exact_filter_before_materialization = true;
+  allow(&overlap_config, 0, 0);
+  ac::Connectivity overlap_gpu(overlap_config);
+  const std::array<ac::RectI64, 2> overlapping_tiles = {{
+      {0, 0, 40, 40, 0, 0},
+      {10, 10, 30, 30, 0, 0}}};
+  require_failure_unchanged(
+      &overlap_gpu, overlapping_tiles.data(),
+      overlapping_tiles.size(), ac::Status::malformed_input,
+      "exact canonical multi-bin owner overlap");
 }
 
 void test_exact_filter_before_materialization()
@@ -1123,6 +1196,7 @@ int main()
         "no CUDA device available");
     test_touching_and_relation_census();
     test_multibin_deduplication();
+    test_exact_canonical_cell_emission();
     test_exact_filter_before_materialization();
     test_concave_owner_rectangulation();
     test_staged_antenna_bridge(false);
@@ -1136,7 +1210,7 @@ int main()
     test_seeded_random_differentials(true);
     std::cout
         << "antenna_connectivity_gpu_test: PASS"
-        << " directed=14 random_seeds=24 stages_per_seed=4"
+        << " directed=15 random_seeds=24 stages_per_seed=4"
         << std::endl;
     return EXIT_SUCCESS;
   } catch (const std::exception &error) {

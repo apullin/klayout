@@ -76,7 +76,8 @@ struct Limits
   std::uint64_t max_nodes = UINT32_MAX;
   std::uint64_t max_rectangles = UINT32_MAX;
   std::uint64_t max_memberships = UINT64_C(400000000);
-  // Pair occurrences are counted before multi-bin duplicate removal.
+  // Broad-mode pair occurrences are counted before multi-bin duplicate
+  // removal.  Exact-filter mode counts canonical unique rectangle pairs.
   std::uint64_t max_pair_occurrences = UINT64_C(1000000000);
   std::uint64_t max_unique_candidates = UINT64_C(500000000);
   std::uint32_t max_cell_members = 1000000;
