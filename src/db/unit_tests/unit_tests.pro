@@ -12,6 +12,7 @@ SOURCES = \
   dbCudaActive3WellUnionContractTests.cc \
   dbCudaAntennaM1Tests.cc \
   dbCudaAntennaM4Tests.cc \
+  dbCudaAntennaM4TransactionContractTests.cc \
   dbCudaContact4ActiveUnionContractTests.cc \
   dbCudaImplant15ContractTests.cc \
   dbCudaImplant12Tests.cc \

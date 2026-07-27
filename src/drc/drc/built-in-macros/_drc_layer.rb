@@ -3684,6 +3684,27 @@ CODE
       end
     end
 
+    # Internal, fail-closed production hook for the conservative raw
+    # FreePDK45 ANTENNA.M1-through-M4 certificate.  The receiver is POLY.
+    # False retains every literal antenna expression.
+    def cuda_antenna_m1_m4_raw_clean?(
+        active, nplus, nwell, contact, metal1, via1,
+        metal2, via2, metal3, via3, metal4)
+      @engine._context("cuda_antenna_m1_m4_raw_clean?") do
+        operands = [
+          active, nplus, nwell, contact, metal1, via1,
+          metal2, via2, metal3, via3, metal4
+        ]
+        operands.each { |operand| check_is_layer(operand) }
+        requires_region
+        operands.each { |operand| operand.requires_region }
+        self.data.cuda_antenna_m1_m4_raw_clean?(
+          active.data, nplus.data, nwell.data, contact.data,
+          metal1.data, via1.data, metal2.data, via2.data,
+          metal3.data, via3.data, metal4.data)
+      end
+    end
+
     # Internal, fail-closed acceleration hook for a qualified physical
     # FreePDK45 M2/VIA2 pair.  The receiver is pristine deep M2.  C++ checks
     # complete backend capability before hierarchy access, constructs a true

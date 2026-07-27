@@ -2662,6 +2662,399 @@ klayout_cuda_spatial_run_implant15_raw_empty_v1 (
   const struct klayout_cuda_spatial_implant15_request_v1 *request,
   struct klayout_cuda_spatial_implant15_result_v1 *result);
 
+/*
+ * Optional exact FreePDK45 ANTENNA.M1-through-M4 empty certificate.
+ *
+ * The caller supplies twelve raw physical domains but owns hierarchy only
+ * once.  Domain descriptors contain source-cell-local geometry ranges and
+ * refer to the request's one shared source-cell/context/parent stream.  No
+ * flattened occurrence geometry or repeated context array crosses this ABI.
+ *
+ * The backend executes four ordered, resident metal stages with the fixed
+ * 300:1 antenna ratio.  COMPLETE is consumable only when every input identity,
+ * count, capacity and digest is echoed exactly, all four requested stages are
+ * certified clean, and every hit, uncertainty, device and fallback flag is
+ * zero.  Every other outcome requires the complete literal CPU antenna path.
+ */
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_DOMAIN_COUNT 12u
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_ALL_DOMAINS 0x0fffu
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT 4u
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_ALL_STAGES 0x0fu
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_RATIO_NUMERATOR 300u
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_RATIO_DENOMINATOR 1u
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_DIGEST_DOMAIN_BYTES 8u
+
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_POLY_DIGEST_DOMAIN "KPOLY001"
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_ACTIVE_DIGEST_DOMAIN "KARAW001"
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_NPLUS_DIGEST_DOMAIN "KNPLS001"
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_NWELL_DIGEST_DOMAIN "KNWEL001"
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_CONTACT_DIGEST_DOMAIN "KCRAW001"
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_M1_DIGEST_DOMAIN "KM1RAW01"
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_VIA1_DIGEST_DOMAIN "KV1RAW01"
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_M2_DIGEST_DOMAIN "KM2RAW01"
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_VIA2_DIGEST_DOMAIN "KV2RAW01"
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_M3_DIGEST_DOMAIN "KM3RAW01"
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_VIA3_DIGEST_DOMAIN "KV3RAW01"
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_M4_DIGEST_DOMAIN "KM4RAW01"
+
+enum klayout_cuda_spatial_antenna_m1_m4_opcode
+{
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_RAW_SHARED_EMPTY = 1
+};
+
+enum klayout_cuda_spatial_antenna_m1_m4_stage
+{
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_M1 = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_M2 = 1u << 1,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_M3 = 1u << 2,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_M4 = 1u << 3
+};
+
+enum klayout_cuda_spatial_antenna_m1_m4_role
+{
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_POLY_ROLE = 0,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_ACTIVE_ROLE = 1,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_NPLUS_ROLE = 2,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_NWELL_ROLE = 3,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_CONTACT_ROLE = 4,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_M1_ROLE = 5,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_VIA1_ROLE = 6,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_M2_ROLE = 7,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_VIA2_ROLE = 8,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_M3_ROLE = 9,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_VIA3_ROLE = 10,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_M4_ROLE = 11
+};
+
+enum klayout_cuda_spatial_antenna_m1_m4_option_flag
+{
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_SHARED_HIERARCHY = 1u << 0,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_RAW_PHYSICAL_DOMAINS = 1u << 1,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_NO_BREAKOUT = 1u << 2,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_ORTHOGONAL_UNIT_TRANSFORMS = 1u << 3,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_NO_PROPERTIES = 1u << 4,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_CLOCKWISE_MANHATTAN_CONTOURS = 1u << 5,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_EXACT_INTEGER_CONNECTIVITY = 1u << 6,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_ORDERED_RESIDENT_STAGES = 1u << 7,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_FIXED_RATIO_300_TO_1 = 1u << 8,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_DEFAULT_STREAM = 1u << 9,
+  /*
+   * Initial production proof is intentionally one-sided and clean-only:
+   * raw target-metal area is an upper bound; the maximum single exact
+   * positive-area POLY/ACTIVE intersection is the gate-area lower bound.
+   * Integer cross multiplication checks 300:1 without rounding, and diode
+   * exemptions are ignored.  These restrictions can create false fallback
+   * but cannot create a false clean certificate.
+   */
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_RAW_METAL_AREA_UPPER_BOUND = 1u << 10,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_MAX_SINGLE_GATE_LOWER_BOUND = 1u << 11,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_POSITIVE_AREA_POLY_ACTIVE_GATE = 1u << 12,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_INTEGER_RATIO_CROSS_MULTIPLY = 1u << 13,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_DIODE_EXEMPTIONS_IGNORED = 1u << 14
+};
+
+#define KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_QUALIFIED_OPTIONS \
+  ((1u << 15) - 1u)
+
+enum klayout_cuda_spatial_antenna_m1_m4_disposition
+{
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_COMPLETE = 0,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_RAW_HITS = 1,
+  KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_UNCERTAIN = 2
+};
+
+struct klayout_cuda_spatial_antenna_m1_m4_cell_v1
+{
+  uint64_t polygon_begin;
+  uint64_t edge_begin;
+  uint32_t polygon_count;
+  uint32_t edge_count;
+};
+
+struct klayout_cuda_spatial_antenna_m1_m4_hierarchy_v1
+{
+  uint32_t struct_size;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  uint32_t root_cell;
+  uint64_t source_root_cell_index;
+  const uint64_t *source_cell_indices;
+  uint64_t source_cell_count;
+  uint32_t source_cell_index_record_bytes;
+  uint32_t reserved0;
+  const void *contexts;
+  uint64_t context_count;
+  uint32_t context_record_bytes;
+  uint32_t reserved1;
+  const uint32_t *context_parent_ids;
+  uint64_t context_parent_count;
+  uint32_t context_parent_record_bytes;
+  uint32_t reserved2;
+  uint8_t hierarchy_digest[32];
+  uint64_t reserved3[4];
+};
+
+struct klayout_cuda_spatial_antenna_m1_m4_hierarchy_echo_v1
+{
+  uint32_t struct_size;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  uint32_t root_cell;
+  uint64_t source_root_cell_index;
+  uint64_t source_cell_count;
+  uint32_t source_cell_index_record_bytes;
+  uint32_t reserved0;
+  uint64_t context_count;
+  uint32_t context_record_bytes;
+  uint32_t reserved1;
+  uint64_t context_parent_count;
+  uint32_t context_parent_record_bytes;
+  uint32_t reserved2;
+  uint8_t hierarchy_digest[32];
+  uint64_t reserved3[4];
+};
+
+struct klayout_cuda_spatial_antenna_m1_m4_domain_v1
+{
+  uint32_t struct_size;
+  uint32_t role;
+  uint32_t physical_layer;
+  uint32_t datatype;
+  uint32_t source_layer_index;
+  uint32_t reserved0;
+  const void *cells;
+  uint64_t cell_count;
+  uint32_t cell_record_bytes;
+  uint32_t reserved1;
+  const void *polygons;
+  uint64_t polygon_count;
+  uint32_t polygon_record_bytes;
+  uint32_t reserved2;
+  const void *edges;
+  uint64_t edge_count;
+  uint32_t edge_record_bytes;
+  uint32_t reserved3;
+  uint64_t nonempty_context_count;
+  uint64_t flat_polygon_count;
+  uint64_t flat_edge_count;
+  uint64_t stored_bytes;
+  uint64_t expanded_geometry_bytes;
+  int64_t scene_left;
+  int64_t scene_bottom;
+  int64_t scene_right;
+  int64_t scene_top;
+  uint8_t digest_domain[8];
+  uint8_t scene_digest[32];
+  uint64_t reserved4[4];
+};
+
+struct klayout_cuda_spatial_antenna_m1_m4_domain_echo_v1
+{
+  uint32_t struct_size;
+  uint32_t role;
+  uint32_t physical_layer;
+  uint32_t datatype;
+  uint32_t source_layer_index;
+  uint32_t reserved0;
+  uint64_t cell_count;
+  uint32_t cell_record_bytes;
+  uint32_t reserved1;
+  uint64_t polygon_count;
+  uint32_t polygon_record_bytes;
+  uint32_t reserved2;
+  uint64_t edge_count;
+  uint32_t edge_record_bytes;
+  uint32_t reserved3;
+  uint64_t nonempty_context_count;
+  uint64_t flat_polygon_count;
+  uint64_t flat_edge_count;
+  uint64_t stored_bytes;
+  uint64_t expanded_geometry_bytes;
+  int64_t scene_left;
+  int64_t scene_bottom;
+  int64_t scene_right;
+  int64_t scene_top;
+  uint8_t digest_domain[8];
+  uint8_t scene_digest[32];
+  uint64_t reserved4[4];
+};
+
+struct klayout_cuda_spatial_antenna_m1_m4_census_v1
+{
+  uint32_t struct_size;
+  uint32_t format_version;
+  uint64_t shared_cell_count;
+  uint64_t shared_context_count;
+  uint64_t context_parent_record_count;
+  uint64_t stored_cell_record_count;
+  uint64_t stored_polygon_count;
+  uint64_t stored_edge_count;
+  uint64_t expanded_polygon_count;
+  uint64_t expanded_edge_count;
+  uint64_t total_stored_bytes;
+  uint64_t total_expanded_geometry_bytes;
+  uint64_t estimated_peak_bytes;
+  uint64_t reserved[4];
+};
+
+struct klayout_cuda_spatial_antenna_m1_m4_capacity_v1
+{
+  uint32_t struct_size;
+  uint32_t reserved0;
+  uint64_t max_cells;
+  uint64_t max_contexts;
+  uint64_t max_stored_polygons;
+  uint64_t max_stored_edges;
+  uint64_t max_flat_polygons;
+  uint64_t max_flat_edges;
+  uint64_t max_total_stored_bytes;
+  uint64_t max_total_expanded_geometry_bytes;
+  uint64_t max_estimated_peak_bytes;
+  uint64_t max_nodes;
+  uint64_t max_rectangles;
+  uint64_t max_memberships;
+  uint64_t max_pair_occurrences;
+  uint64_t max_unique_candidates;
+  uint64_t max_cell_members;
+  uint64_t max_dsu_iterations;
+  uint64_t max_rule_work;
+  uint64_t max_device_bytes;
+  uint64_t reserved1[4];
+};
+
+struct klayout_cuda_spatial_antenna_m1_m4_request_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  uint32_t requested_mask;
+  uint32_t stage_count;
+  uint32_t ratio_numerator;
+  uint32_t ratio_denominator;
+  uint32_t domain_count;
+  int32_t device;
+  struct klayout_cuda_spatial_antenna_m1_m4_hierarchy_v1 hierarchy;
+  struct klayout_cuda_spatial_antenna_m1_m4_domain_v1
+    domains[KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_DOMAIN_COUNT];
+  struct klayout_cuda_spatial_antenna_m1_m4_census_v1 census;
+  struct klayout_cuda_spatial_antenna_m1_m4_capacity_v1 capacity;
+  uint8_t lower_capture_digest[32];
+  uint8_t capture_digest[32];
+  uint64_t reserved[4];
+};
+
+struct klayout_cuda_spatial_antenna_m1_m4_stage_result_v1
+{
+  uint32_t struct_size;
+  uint32_t stage;
+  uint64_t component_count;
+  uint64_t membership_count;
+  uint64_t occupied_cell_count;
+  uint64_t pair_occurrence_count;
+  /* Deduplicated geometric owner pairs considered for connectivity. */
+  uint64_t unique_owner_candidate_count;
+  uint64_t edge_count;
+  /* Gate-bearing canonical components, independent of geometric pair count. */
+  uint64_t gate_count;
+  /* Gate components that reached the conservative integer ratio reduction. */
+  uint64_t evaluated_count;
+  uint64_t exempt_count;
+  /*
+   * Disjoint live-frontier subsets at this stage.  Their sum is exactly the
+   * previous metal frontier plus the newly enabled VIA/metal rectangulation
+   * (POLY/CONTACT/M1 at M1).  M1-M3 retain exactly the current metal domain;
+   * M4 retains zero because the transaction closes there.  Released is the
+   * remainder after that checkpoint is settled.
+   */
+  uint64_t retained_rectangle_count;
+  uint64_t released_rectangle_count;
+  uint64_t dsu_iteration_count;
+  uint64_t hit_count;
+  uint64_t uncertainty_count;
+  uint64_t work_count;
+  uint64_t stage_ns;
+  /*
+   * Host-recomputable digest over the request/capture identity, all twelve
+   * per-domain rectangle-evidence records, stage ID, every counter above, the
+   * transaction outcome flags and accounted peak device bytes.  Canonical
+   * labels are not returned by this ABI and are therefore not claimed here.
+   */
+  uint8_t stage_digest[32];
+  uint64_t reserved[4];
+};
+
+struct klayout_cuda_spatial_antenna_m1_m4_domain_result_v1
+{
+  uint32_t struct_size;
+  uint32_t role;
+  uint64_t owner_count;
+  uint64_t rectangle_count;
+  uint64_t owner_range_count;
+  /*
+   * Host-recomputable digest over the capture/domain identity and the three
+   * counters above.  It is evidence-integrity metadata, not an independently
+   * reconstructed host rectangulation.
+   */
+  uint8_t rectangle_digest[32];
+  uint64_t reserved[4];
+};
+
+struct klayout_cuda_spatial_antenna_m1_m4_result_v1
+{
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t status;
+  uint32_t fallback_flags;
+  uint32_t disposition;
+  uint32_t opcode;
+  uint32_t option_flags;
+  uint32_t format_version;
+  uint32_t dbu_per_micron;
+  uint32_t requested_mask;
+  uint32_t certified_empty_mask;
+  uint32_t clean_mask;
+  uint32_t stage_count;
+  uint32_t ratio_numerator;
+  uint32_t ratio_denominator;
+  uint32_t domain_count;
+  int32_t device;
+  uint32_t device_flags;
+  uint32_t closed_domain_mask;
+  uint32_t released_stage_mask;
+  /* Peak bytes conservatively accounted against the explicit device cap. */
+  uint64_t accounted_peak_device_bytes;
+  struct klayout_cuda_spatial_antenna_m1_m4_hierarchy_echo_v1 hierarchy;
+  struct klayout_cuda_spatial_antenna_m1_m4_domain_echo_v1
+    domains[KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_DOMAIN_COUNT];
+  struct klayout_cuda_spatial_antenna_m1_m4_census_v1 census;
+  struct klayout_cuda_spatial_antenna_m1_m4_capacity_v1 capacity;
+  uint8_t lower_capture_digest[32];
+  uint8_t capture_digest[32];
+  struct klayout_cuda_spatial_antenna_m1_m4_domain_result_v1
+    domain_results[KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_DOMAIN_COUNT];
+  struct klayout_cuda_spatial_antenna_m1_m4_stage_result_v1
+    stages[KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT];
+  uint64_t setup_ns;
+  uint64_t h2d_ns;
+  uint64_t d2h_ns;
+  uint64_t total_ns;
+  uint64_t reserved[4];
+  char message[192];
+};
+
+typedef int
+(*klayout_cuda_spatial_run_antenna_m1_m4_empty_v1_func) (
+  const struct klayout_cuda_spatial_antenna_m1_m4_request_v1 *,
+  struct klayout_cuda_spatial_antenna_m1_m4_result_v1 *);
+
+KLAYOUT_CUDA_SPATIAL_EXPORT int
+klayout_cuda_spatial_run_antenna_m1_m4_empty_v1 (
+  const struct klayout_cuda_spatial_antenna_m1_m4_request_v1 *request,
+  struct klayout_cuda_spatial_antenna_m1_m4_result_v1 *result);
+
 #ifdef __cplusplus
 }
 #endif

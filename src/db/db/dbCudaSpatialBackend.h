@@ -541,6 +541,49 @@ struct DB_PUBLIC CudaImplant15Attempt
   std::string message;
 };
 
+struct DB_PUBLIC CudaAntennaM1M4Attempt
+{
+  enum Disposition
+  {
+    Disabled,
+    CertifiedEmpty,
+    BackendFallback,
+    BackendError,
+    InvalidResult
+  };
+
+  CudaAntennaM1M4Attempt ();
+
+  Disposition disposition;
+  uint32_t certified_empty_mask;
+  uint32_t clean_mask;
+  uint32_t fallback_flags;
+  uint32_t device_flags;
+  uint64_t shared_cell_count;
+  uint64_t shared_context_count;
+  uint64_t stored_polygon_count;
+  uint64_t stored_edge_count;
+  uint64_t expanded_polygon_count;
+  uint64_t expanded_edge_count;
+  uint64_t accounted_peak_device_bytes;
+  uint64_t stage_component_count
+    [KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT];
+  uint64_t stage_candidate_count
+    [KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT];
+  uint64_t stage_edge_count
+    [KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT];
+  uint64_t stage_gate_count
+    [KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT];
+  uint64_t stage_evaluated_count
+    [KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT];
+  uint64_t stage_work_count
+    [KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT];
+  uint64_t stage_ns
+    [KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT];
+  uint64_t total_ns;
+  std::string message;
+};
+
 /**
  * Try the optional CUDA bipartite broad phase.
  *
@@ -834,6 +877,30 @@ DB_PUBLIC bool cuda_spatial_validate_implant15_result (
 
 /** Return true only when KLAYOUT_CUDA_IMPLANT15 and its symbol are ready. */
 DB_PUBLIC bool cuda_spatial_implant15_requested ();
+
+/**
+ * Invoke the optional exact raw ANTENNA.M1-through-M4 transaction.
+ *
+ * Only a fully echoed, four-stage COMPLETE zero-result certificate is
+ * consumable.  Every other result retains the complete literal CPU deck.
+ */
+DB_PUBLIC CudaAntennaM1M4Attempt
+cuda_spatial_try_antenna_m1_m4_empty (
+  const klayout_cuda_spatial_antenna_m1_m4_request_v1 &request);
+
+/**
+ * Validate the sole consumable M1-through-M4 antenna result.
+ *
+ * Unlike diagnostic transactions, RAW_HITS and UNCERTAIN are deliberately
+ * rejected here.  The public host wrapper returns true only for COMPLETE.
+ */
+DB_PUBLIC bool cuda_spatial_validate_antenna_m1_m4_result (
+  const klayout_cuda_spatial_antenna_m1_m4_request_v1 &request,
+  const klayout_cuda_spatial_antenna_m1_m4_result_v1 &result,
+  int backend_status, std::string *error = 0);
+
+/** Return true only when the antenna opt-in and optional symbol are ready. */
+DB_PUBLIC bool cuda_spatial_antenna_m1_m4_requested ();
 
 } // namespace db
 

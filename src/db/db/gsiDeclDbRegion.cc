@@ -39,6 +39,7 @@
 #include "dbCudaActive3.h"
 #include "dbCudaAntennaM1.h"
 #include "dbCudaAntennaM4.h"
+#include "dbCudaAntennaM4Transaction.h"
 #include "dbCudaAntennaM1Oracle.h"
 #include "dbCudaImplant12.h"
 #include "dbCudaImplant15.h"
@@ -1632,6 +1633,72 @@ static bool cuda_antenna_m4_capture_census (
     //  Census telemetry must never alter the historical CPU antenna path.
   }
   return false;
+}
+
+static bool cuda_antenna_m1_m4_raw_clean (
+  const db::Region *poly, const db::Region *active,
+  const db::Region *nplus, const db::Region *nwell,
+  const db::Region *contact, const db::Region *metal1,
+  const db::Region *via1, const db::Region *metal2,
+  const db::Region *via2, const db::Region *metal3,
+  const db::Region *via3, const db::Region *metal4)
+{
+  try {
+    //  Capability discovery must precede even delegate casts.  A disabled or
+    //  symbol-incomplete backend therefore leaves the literal antenna deck
+    //  as the first consumer of every pristine hierarchy.
+    if (! db::cuda_spatial_antenna_m1_m4_requested ()) {
+      return false;
+    }
+
+    const db::Region *regions [db::CudaAntennaM4DomainCount] = {
+      poly, active, nplus, nwell, contact, metal1,
+      via1, metal2, via2, metal3, via3, metal4
+    };
+    const uint32_t physical_layers [db::CudaAntennaM4DomainCount] = {
+      9, 1, 4, 3, 10, 11, 12, 13, 14, 15, 16, 17
+    };
+    const db::DeepRegion *deep [db::CudaAntennaM4DomainCount] = {
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    };
+    for (size_t domain = 0;
+         domain < db::CudaAntennaM4DomainCount; ++domain) {
+      if (! regions [domain] ||
+          ! regions [domain]->merged_semantics () ||
+          regions [domain]->is_merged ()) {
+        return false;
+      }
+      deep [domain] =
+        dynamic_cast<const db::DeepRegion *> (
+          regions [domain]->delegate ());
+      if (! deep [domain]) {
+        return false;
+      }
+      const db::DeepLayer &layer = deep [domain]->deep_layer ();
+      if (layer.layer () >= layer.layout ().layers () ||
+          ! layer.layout ().get_properties (layer.layer ()).log_equal (
+              db::LayerProperties (physical_layers [domain], 0))) {
+        return false;
+      }
+    }
+
+    return db::cuda_antenna_m1_m4_try_raw_empty (
+      deep [db::CudaAntennaM4Poly]->deep_layer (),
+      deep [db::CudaAntennaM4Active]->deep_layer (),
+      deep [db::CudaAntennaM4Nplus]->deep_layer (),
+      deep [db::CudaAntennaM4Nwell]->deep_layer (),
+      deep [db::CudaAntennaM4Contact]->deep_layer (),
+      deep [db::CudaAntennaM4Metal1]->deep_layer (),
+      deep [db::CudaAntennaM4Via1]->deep_layer (),
+      deep [db::CudaAntennaM4Metal2]->deep_layer (),
+      deep [db::CudaAntennaM4Via2]->deep_layer (),
+      deep [db::CudaAntennaM4Metal3]->deep_layer (),
+      deep [db::CudaAntennaM4Via3]->deep_layer (),
+      deep [db::CudaAntennaM4Metal4]->deep_layer ());
+  } catch (...) {
+    //  No speculative failure can bypass any literal antenna expression.
+    return false;
+  }
 }
 
 static void cuda_m2_flat_union_telemetry (
@@ -5340,6 +5407,27 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "validates all digests and capacities, and emits a stable host census. "
     "It always returns false and is not an antenna-rule certificate; the "
     "complete historical CPU path remains mandatory.\n"
+  ) +
+  method_ext (
+    "cuda_antenna_m1_m4_raw_clean?",
+    &cuda_antenna_m1_m4_raw_clean,
+    gsi::arg ("active"), gsi::arg ("nplus"),
+    gsi::arg ("nwell"), gsi::arg ("contact"),
+    gsi::arg ("metal1"), gsi::arg ("via1"),
+    gsi::arg ("metal2"), gsi::arg ("via2"),
+    gsi::arg ("metal3"), gsi::arg ("via3"),
+    gsi::arg ("metal4"),
+    "@brief Tries the conservative raw ANTENNA.M1-through-M4 certificate\n"
+    "\n"
+    "This internal default-off hook accepts the twelve pristine FreePDK45 "
+    "physical layers with one shared compact hierarchy. It executes four "
+    "ordered resident stages at the exact integer 300:1 ratio. The initial "
+    "clean-only proof uses raw target-metal area as an upper bound, the "
+    "maximum single positive-area POLY/ACTIVE gate intersection as a lower "
+    "bound, and ignores diode exemptions. True is accepted only after every "
+    "identity, count, capacity, digest and stage mask is echoed exactly with "
+    "zero hits or uncertainty. False requires the complete literal antenna "
+    "deck.\n"
   ) +
   method_ext (
     "cuda_m2_flat_union", &cuda_m2_flat_union,

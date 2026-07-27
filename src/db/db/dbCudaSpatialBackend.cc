@@ -11,6 +11,7 @@
 */
 
 #include "dbCudaSpatialBackend.h"
+#include "dbCudaAntennaM4Evidence.h"
 #include "dbCudaImplant12Digest.h"
 #include "dbCudaVia1StackDigest.h"
 #include "tlLog.h"
@@ -279,6 +280,46 @@ CudaImplant15Attempt::CudaImplant15Attempt ()
     implant4_ns (0), implant5_ns (0), total_ns (0)
 {
   //  nothing yet
+}
+
+CudaAntennaM1M4Attempt::CudaAntennaM1M4Attempt ()
+  : disposition (Disabled), certified_empty_mask (0), clean_mask (0),
+    fallback_flags (0), device_flags (0), shared_cell_count (0),
+    shared_context_count (0), stored_polygon_count (0),
+    stored_edge_count (0), expanded_polygon_count (0),
+    expanded_edge_count (0), accounted_peak_device_bytes (0),
+    total_ns (0)
+{
+  std::fill (
+    stage_component_count,
+    stage_component_count +
+      KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT,
+    UINT64_C (0));
+  std::fill (
+    stage_candidate_count,
+    stage_candidate_count + KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT,
+    UINT64_C (0));
+  std::fill (
+    stage_edge_count,
+    stage_edge_count + KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT,
+    UINT64_C (0));
+  std::fill (
+    stage_gate_count,
+    stage_gate_count + KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT,
+    UINT64_C (0));
+  std::fill (
+    stage_evaluated_count,
+    stage_evaluated_count +
+      KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT,
+    UINT64_C (0));
+  std::fill (
+    stage_work_count,
+    stage_work_count + KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT,
+    UINT64_C (0));
+  std::fill (
+    stage_ns,
+    stage_ns + KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT,
+    UINT64_C (0));
 }
 
 namespace
@@ -1157,6 +1198,371 @@ bool env_enabled (const char *name)
          std::strcmp (value, "false") != 0 && std::strcmp (value, "off") != 0;
 }
 
+const uint32_t antenna_m1_m4_physical_layers
+  [KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_DOMAIN_COUNT] = {
+    9, 1, 4, 3, 10, 11, 12, 13, 14, 15, 16, 17
+  };
+
+const char *antenna_m1_m4_digest_domains
+  [KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_DOMAIN_COUNT] = {
+    KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_POLY_DIGEST_DOMAIN,
+    KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_ACTIVE_DIGEST_DOMAIN,
+    KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_NPLUS_DIGEST_DOMAIN,
+    KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_NWELL_DIGEST_DOMAIN,
+    KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_CONTACT_DIGEST_DOMAIN,
+    KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_M1_DIGEST_DOMAIN,
+    KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_VIA1_DIGEST_DOMAIN,
+    KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_M2_DIGEST_DOMAIN,
+    KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_VIA2_DIGEST_DOMAIN,
+    KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_M3_DIGEST_DOMAIN,
+    KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_VIA3_DIGEST_DOMAIN,
+    KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_M4_DIGEST_DOMAIN
+  };
+
+bool antenna_m1_m4_capacity_qualified (
+  const klayout_cuda_spatial_antenna_m1_m4_capacity_v1 &capacity)
+{
+  return
+    capacity.struct_size == sizeof (capacity) &&
+    capacity.reserved0 == 0 &&
+    capacity.reserved1 [0] == 0 && capacity.reserved1 [1] == 0 &&
+    capacity.reserved1 [2] == 0 && capacity.reserved1 [3] == 0 &&
+    capacity.max_cells && capacity.max_contexts &&
+    capacity.max_stored_polygons && capacity.max_stored_edges &&
+    capacity.max_flat_polygons && capacity.max_flat_edges &&
+    capacity.max_total_stored_bytes &&
+    capacity.max_total_expanded_geometry_bytes &&
+    capacity.max_estimated_peak_bytes &&
+    capacity.max_nodes && capacity.max_rectangles &&
+    capacity.max_memberships && capacity.max_pair_occurrences &&
+    capacity.max_unique_candidates && capacity.max_cell_members &&
+    capacity.max_dsu_iterations && capacity.max_rule_work &&
+    capacity.max_device_bytes &&
+    capacity.max_cells <= std::numeric_limits<uint32_t>::max () &&
+    capacity.max_contexts <= std::numeric_limits<uint32_t>::max () &&
+    capacity.max_nodes <= std::numeric_limits<uint32_t>::max () &&
+    capacity.max_rectangles <= std::numeric_limits<uint32_t>::max () &&
+    capacity.max_cell_members <= std::numeric_limits<uint32_t>::max () &&
+    capacity.max_dsu_iterations <= std::numeric_limits<uint32_t>::max ();
+}
+
+bool antenna_m1_m4_hierarchy_qualified (
+  const klayout_cuda_spatial_antenna_m1_m4_hierarchy_v1 &hierarchy,
+  const klayout_cuda_spatial_antenna_m1_m4_capacity_v1 &capacity)
+{
+  return
+    hierarchy.struct_size == sizeof (hierarchy) &&
+    hierarchy.format_version == 2 &&
+    hierarchy.dbu_per_micron == 2000 &&
+    hierarchy.reserved0 == 0 && hierarchy.reserved1 == 0 &&
+    hierarchy.reserved2 == 0 &&
+    hierarchy.reserved3 [0] == 0 && hierarchy.reserved3 [1] == 0 &&
+    hierarchy.reserved3 [2] == 0 && hierarchy.reserved3 [3] == 0 &&
+    hierarchy.source_cell_indices && hierarchy.source_cell_count &&
+    hierarchy.source_cell_count <= capacity.max_cells &&
+    hierarchy.source_cell_count <= std::numeric_limits<uint32_t>::max () &&
+    hierarchy.root_cell < hierarchy.source_cell_count &&
+    hierarchy.source_cell_index_record_bytes == sizeof (uint64_t) &&
+    hierarchy.contexts && hierarchy.context_count &&
+    hierarchy.context_count <= capacity.max_contexts &&
+    hierarchy.context_count <= std::numeric_limits<uint32_t>::max () &&
+    hierarchy.context_record_bytes ==
+      sizeof (klayout_cuda_spatial_m1_width_space_context_v1) &&
+    hierarchy.context_parent_ids &&
+    hierarchy.context_parent_count == hierarchy.context_count &&
+    hierarchy.context_parent_record_bytes == sizeof (uint32_t) &&
+    array_bytes_fit (
+      hierarchy.source_cell_count,
+      hierarchy.source_cell_index_record_bytes) &&
+    array_bytes_fit (
+      hierarchy.context_count, hierarchy.context_record_bytes) &&
+    array_bytes_fit (
+      hierarchy.context_parent_count,
+      hierarchy.context_parent_record_bytes);
+}
+
+bool antenna_m1_m4_domain_qualified (
+  const klayout_cuda_spatial_antenna_m1_m4_domain_v1 &domain,
+  size_t index,
+  const klayout_cuda_spatial_antenna_m1_m4_hierarchy_v1 &hierarchy,
+  const klayout_cuda_spatial_antenna_m1_m4_capacity_v1 &capacity)
+{
+  uint64_t minimum_source_edges = 0;
+  uint64_t minimum_flat_edges = 0;
+  return
+    index < KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_DOMAIN_COUNT &&
+    checked_multiply_u64 (
+      domain.polygon_count, UINT64_C (4), minimum_source_edges) &&
+    checked_multiply_u64 (
+      domain.flat_polygon_count, UINT64_C (4), minimum_flat_edges) &&
+    domain.struct_size == sizeof (domain) &&
+    domain.role == index &&
+    domain.physical_layer == antenna_m1_m4_physical_layers [index] &&
+    domain.datatype == 0 &&
+    domain.reserved0 == 0 && domain.reserved1 == 0 &&
+    domain.reserved2 == 0 && domain.reserved3 == 0 &&
+    domain.reserved4 [0] == 0 && domain.reserved4 [1] == 0 &&
+    domain.reserved4 [2] == 0 && domain.reserved4 [3] == 0 &&
+    std::memcmp (
+      domain.digest_domain, antenna_m1_m4_digest_domains [index],
+      KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_DIGEST_DOMAIN_BYTES) == 0 &&
+    domain.cells && domain.cell_count == hierarchy.source_cell_count &&
+    domain.cell_count <= capacity.max_cells &&
+    domain.cell_record_bytes ==
+      sizeof (klayout_cuda_spatial_antenna_m1_m4_cell_v1) &&
+    domain.polygons && domain.polygon_count &&
+    domain.polygon_count <= capacity.max_stored_polygons &&
+    domain.polygon_count <= std::numeric_limits<uint32_t>::max () &&
+    domain.polygon_record_bytes ==
+      sizeof (klayout_cuda_spatial_m1_width_space_polygon_v1) &&
+    domain.edges && domain.edge_count >= minimum_source_edges &&
+    domain.edge_count <= capacity.max_stored_edges &&
+    domain.edge_count <= std::numeric_limits<uint32_t>::max () &&
+    domain.edge_record_bytes ==
+      sizeof (klayout_cuda_spatial_m1_width_space_edge_v1) &&
+    domain.nonempty_context_count &&
+    domain.nonempty_context_count <= hierarchy.context_count &&
+    domain.flat_polygon_count >= domain.polygon_count &&
+    domain.flat_polygon_count <= capacity.max_flat_polygons &&
+    domain.flat_polygon_count <= std::numeric_limits<uint32_t>::max () &&
+    domain.flat_edge_count >= minimum_flat_edges &&
+    domain.flat_edge_count <= capacity.max_flat_edges &&
+    domain.flat_edge_count <= std::numeric_limits<uint32_t>::max () &&
+    domain.stored_bytes && domain.expanded_geometry_bytes &&
+    domain.scene_left < domain.scene_right &&
+    domain.scene_bottom < domain.scene_top &&
+    array_bytes_fit (domain.cell_count, domain.cell_record_bytes) &&
+    array_bytes_fit (domain.polygon_count, domain.polygon_record_bytes) &&
+    array_bytes_fit (domain.edge_count, domain.edge_record_bytes);
+}
+
+bool qualified_antenna_m1_m4_request (
+  const klayout_cuda_spatial_antenna_m1_m4_request_v1 &request)
+{
+  if (request.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      request.struct_size != sizeof (request) ||
+      request.opcode !=
+        KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_RAW_SHARED_EMPTY ||
+      request.option_flags !=
+        KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_QUALIFIED_OPTIONS ||
+      request.format_version != 1 || request.dbu_per_micron != 2000 ||
+      request.requested_mask !=
+        KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_ALL_STAGES ||
+      request.stage_count !=
+        KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT ||
+      request.ratio_numerator !=
+        KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_RATIO_NUMERATOR ||
+      request.ratio_denominator !=
+        KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_RATIO_DENOMINATOR ||
+      request.domain_count !=
+        KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_DOMAIN_COUNT ||
+      request.device < 0 ||
+      request.reserved [0] != 0 || request.reserved [1] != 0 ||
+      request.reserved [2] != 0 || request.reserved [3] != 0 ||
+      ! antenna_m1_m4_capacity_qualified (request.capacity) ||
+      ! antenna_m1_m4_hierarchy_qualified (
+          request.hierarchy, request.capacity) ||
+      request.hierarchy.dbu_per_micron != request.dbu_per_micron ||
+      request.census.struct_size != sizeof (request.census) ||
+      request.census.format_version != request.format_version ||
+      request.census.reserved [0] != 0 ||
+      request.census.reserved [1] != 0 ||
+      request.census.reserved [2] != 0 ||
+      request.census.reserved [3] != 0 ||
+      request.census.shared_cell_count !=
+        request.hierarchy.source_cell_count ||
+      request.census.shared_context_count !=
+        request.hierarchy.context_count ||
+      request.census.context_parent_record_count !=
+        request.hierarchy.context_parent_count) {
+    return false;
+  }
+
+  uint64_t stored_cells = 0;
+  uint64_t stored_polygons = 0;
+  uint64_t stored_edges = 0;
+  uint64_t flat_polygons = 0;
+  uint64_t flat_edges = 0;
+  uint64_t domain_stored_bytes = 0;
+  uint64_t expanded_bytes = 0;
+  for (size_t index = 0;
+       index < KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_DOMAIN_COUNT;
+       ++index) {
+    const klayout_cuda_spatial_antenna_m1_m4_domain_v1 &domain =
+      request.domains [index];
+    if (! antenna_m1_m4_domain_qualified (
+          domain, index, request.hierarchy, request.capacity) ||
+        (index &&
+         domain.source_layer_index ==
+           request.domains [index - 1].source_layer_index) ||
+        ! checked_add_u64 (
+          stored_cells, domain.cell_count, stored_cells) ||
+        ! checked_add_u64 (
+          stored_polygons, domain.polygon_count, stored_polygons) ||
+        ! checked_add_u64 (
+          stored_edges, domain.edge_count, stored_edges) ||
+        ! checked_add_u64 (
+          flat_polygons, domain.flat_polygon_count, flat_polygons) ||
+        ! checked_add_u64 (
+          flat_edges, domain.flat_edge_count, flat_edges) ||
+        ! checked_add_u64 (
+          domain_stored_bytes, domain.stored_bytes,
+          domain_stored_bytes) ||
+        ! checked_add_u64 (
+          expanded_bytes, domain.expanded_geometry_bytes,
+          expanded_bytes)) {
+      return false;
+    }
+    for (size_t prior = 0; prior < index; ++prior) {
+      if (domain.source_layer_index ==
+            request.domains [prior].source_layer_index) {
+        return false;
+      }
+    }
+  }
+
+  uint64_t estimated_peak = 0;
+  return
+    checked_add_u64 (
+      request.census.total_stored_bytes,
+      request.census.total_expanded_geometry_bytes, estimated_peak) &&
+    request.census.stored_cell_record_count == stored_cells &&
+    request.census.stored_polygon_count == stored_polygons &&
+    request.census.stored_edge_count == stored_edges &&
+    request.census.expanded_polygon_count == flat_polygons &&
+    request.census.expanded_edge_count == flat_edges &&
+    request.census.expanded_polygon_count <= request.capacity.max_nodes &&
+    request.census.total_stored_bytes >= domain_stored_bytes &&
+    request.census.total_expanded_geometry_bytes == expanded_bytes &&
+    request.census.estimated_peak_bytes == estimated_peak &&
+    request.census.total_stored_bytes <=
+      request.capacity.max_total_stored_bytes &&
+    request.census.total_expanded_geometry_bytes <=
+      request.capacity.max_total_expanded_geometry_bytes &&
+    request.census.estimated_peak_bytes <=
+      request.capacity.max_estimated_peak_bytes;
+}
+
+bool antenna_m1_m4_hierarchy_echo_matches (
+  const klayout_cuda_spatial_antenna_m1_m4_hierarchy_v1 &request,
+  const klayout_cuda_spatial_antenna_m1_m4_hierarchy_echo_v1 &echo)
+{
+  return
+    echo.struct_size == sizeof (echo) &&
+    echo.format_version == request.format_version &&
+    echo.dbu_per_micron == request.dbu_per_micron &&
+    echo.root_cell == request.root_cell &&
+    echo.source_root_cell_index == request.source_root_cell_index &&
+    echo.source_cell_count == request.source_cell_count &&
+    echo.source_cell_index_record_bytes ==
+      request.source_cell_index_record_bytes &&
+    echo.reserved0 == 0 &&
+    echo.context_count == request.context_count &&
+    echo.context_record_bytes == request.context_record_bytes &&
+    echo.reserved1 == 0 &&
+    echo.context_parent_count == request.context_parent_count &&
+    echo.context_parent_record_bytes ==
+      request.context_parent_record_bytes &&
+    echo.reserved2 == 0 &&
+    echo.reserved3 [0] == 0 && echo.reserved3 [1] == 0 &&
+    echo.reserved3 [2] == 0 && echo.reserved3 [3] == 0 &&
+    std::memcmp (
+      echo.hierarchy_digest, request.hierarchy_digest,
+      sizeof (echo.hierarchy_digest)) == 0;
+}
+
+bool antenna_m1_m4_domain_echo_matches (
+  const klayout_cuda_spatial_antenna_m1_m4_domain_v1 &request,
+  const klayout_cuda_spatial_antenna_m1_m4_domain_echo_v1 &echo)
+{
+  return
+    echo.struct_size == sizeof (echo) &&
+    echo.role == request.role &&
+    echo.physical_layer == request.physical_layer &&
+    echo.datatype == request.datatype &&
+    echo.source_layer_index == request.source_layer_index &&
+    echo.reserved0 == 0 &&
+    echo.cell_count == request.cell_count &&
+    echo.cell_record_bytes == request.cell_record_bytes &&
+    echo.reserved1 == 0 &&
+    echo.polygon_count == request.polygon_count &&
+    echo.polygon_record_bytes == request.polygon_record_bytes &&
+    echo.reserved2 == 0 &&
+    echo.edge_count == request.edge_count &&
+    echo.edge_record_bytes == request.edge_record_bytes &&
+    echo.reserved3 == 0 &&
+    echo.nonempty_context_count == request.nonempty_context_count &&
+    echo.flat_polygon_count == request.flat_polygon_count &&
+    echo.flat_edge_count == request.flat_edge_count &&
+    echo.stored_bytes == request.stored_bytes &&
+    echo.expanded_geometry_bytes == request.expanded_geometry_bytes &&
+    echo.scene_left == request.scene_left &&
+    echo.scene_bottom == request.scene_bottom &&
+    echo.scene_right == request.scene_right &&
+    echo.scene_top == request.scene_top &&
+    echo.reserved4 [0] == 0 && echo.reserved4 [1] == 0 &&
+    echo.reserved4 [2] == 0 && echo.reserved4 [3] == 0 &&
+    std::memcmp (
+      echo.digest_domain, request.digest_domain,
+      sizeof (echo.digest_domain)) == 0 &&
+    std::memcmp (
+      echo.scene_digest, request.scene_digest,
+      sizeof (echo.scene_digest)) == 0;
+}
+
+bool antenna_m1_m4_census_echo_matches (
+  const klayout_cuda_spatial_antenna_m1_m4_census_v1 &request,
+  const klayout_cuda_spatial_antenna_m1_m4_census_v1 &echo)
+{
+  return
+    echo.struct_size == sizeof (echo) &&
+    echo.format_version == request.format_version &&
+    echo.shared_cell_count == request.shared_cell_count &&
+    echo.shared_context_count == request.shared_context_count &&
+    echo.context_parent_record_count ==
+      request.context_parent_record_count &&
+    echo.stored_cell_record_count == request.stored_cell_record_count &&
+    echo.stored_polygon_count == request.stored_polygon_count &&
+    echo.stored_edge_count == request.stored_edge_count &&
+    echo.expanded_polygon_count == request.expanded_polygon_count &&
+    echo.expanded_edge_count == request.expanded_edge_count &&
+    echo.total_stored_bytes == request.total_stored_bytes &&
+    echo.total_expanded_geometry_bytes ==
+      request.total_expanded_geometry_bytes &&
+    echo.estimated_peak_bytes == request.estimated_peak_bytes &&
+    echo.reserved [0] == 0 && echo.reserved [1] == 0 &&
+    echo.reserved [2] == 0 && echo.reserved [3] == 0;
+}
+
+bool antenna_m1_m4_capacity_echo_matches (
+  const klayout_cuda_spatial_antenna_m1_m4_capacity_v1 &request,
+  const klayout_cuda_spatial_antenna_m1_m4_capacity_v1 &echo)
+{
+  return
+    echo.struct_size == sizeof (echo) && echo.reserved0 == 0 &&
+    echo.max_cells == request.max_cells &&
+    echo.max_contexts == request.max_contexts &&
+    echo.max_stored_polygons == request.max_stored_polygons &&
+    echo.max_stored_edges == request.max_stored_edges &&
+    echo.max_flat_polygons == request.max_flat_polygons &&
+    echo.max_flat_edges == request.max_flat_edges &&
+    echo.max_total_stored_bytes == request.max_total_stored_bytes &&
+    echo.max_total_expanded_geometry_bytes ==
+      request.max_total_expanded_geometry_bytes &&
+    echo.max_estimated_peak_bytes == request.max_estimated_peak_bytes &&
+    echo.max_nodes == request.max_nodes &&
+    echo.max_rectangles == request.max_rectangles &&
+    echo.max_memberships == request.max_memberships &&
+    echo.max_pair_occurrences == request.max_pair_occurrences &&
+    echo.max_unique_candidates == request.max_unique_candidates &&
+    echo.max_cell_members == request.max_cell_members &&
+    echo.max_dsu_iterations == request.max_dsu_iterations &&
+    echo.max_rule_work == request.max_rule_work &&
+    echo.max_device_bytes == request.max_device_bytes &&
+    echo.reserved1 [0] == 0 && echo.reserved1 [1] == 0 &&
+    echo.reserved1 [2] == 0 && echo.reserved1 [3] == 0;
+}
+
 class CudaSpatialModule
 {
 public:
@@ -1189,6 +1595,10 @@ public:
       m_implant15_enabled (env_enabled ("KLAYOUT_CUDA_IMPLANT15")),
       m_implant15_telemetry (
         env_enabled ("KLAYOUT_CUDA_IMPLANT15_TELEMETRY")),
+      m_antenna_m1_m4_enabled (
+        env_enabled ("KLAYOUT_CUDA_ANTENNA_M1_M4")),
+      m_antenna_m1_m4_telemetry (
+        env_enabled ("KLAYOUT_CUDA_ANTENNA_M1_M4_TELEMETRY")),
       m_m1_width_space_enabled (
         env_enabled ("KLAYOUT_CUDA_M1_WIDTH_SPACE")),
       m_m1_width_space_telemetry (
@@ -1220,6 +1630,7 @@ public:
       m_run_contact4_active_union (0),
       m_run_active3_well_union (0),
       m_run_implant12 (0), m_run_implant15 (0),
+      m_run_antenna_m1_m4 (0),
       m_run_m1_width_space (0),
       m_run_m1_resident_morphology (0),
       m_run_m2_width_space (0), m_run_m2_union (0),
@@ -1289,6 +1700,12 @@ public:
           GetProcAddress (
             reinterpret_cast<HMODULE> (m_handle),
             "klayout_cuda_spatial_run_implant15_raw_empty_v1"));
+      m_run_antenna_m1_m4 =
+        reinterpret_cast<
+          klayout_cuda_spatial_run_antenna_m1_m4_empty_v1_func> (
+          GetProcAddress (
+            reinterpret_cast<HMODULE> (m_handle),
+            "klayout_cuda_spatial_run_antenna_m1_m4_empty_v1"));
       m_run_m1_width_space =
         reinterpret_cast<klayout_cuda_spatial_run_m1_width_space_empty_v1_func> (
           GetProcAddress (
@@ -1374,6 +1791,12 @@ public:
           dlsym (
             m_handle,
             "klayout_cuda_spatial_run_implant15_raw_empty_v1"));
+      m_run_antenna_m1_m4 =
+        reinterpret_cast<
+          klayout_cuda_spatial_run_antenna_m1_m4_empty_v1_func> (
+          dlsym (
+            m_handle,
+            "klayout_cuda_spatial_run_antenna_m1_m4_empty_v1"));
       m_run_m1_width_space =
         reinterpret_cast<klayout_cuda_spatial_run_m1_width_space_empty_v1_func> (
           dlsym (
@@ -1430,6 +1853,7 @@ public:
       m_run_active3_well_union = 0;
       m_run_implant12 = 0;
       m_run_implant15 = 0;
+      m_run_antenna_m1_m4 = 0;
       m_run_m1_width_space = 0;
       m_run_m1_resident_morphology = 0;
       m_run_m2_width_space = 0;
@@ -1547,6 +1971,21 @@ public:
   bool implant15_telemetry () const
   {
     return m_implant15_telemetry;
+  }
+
+  bool antenna_m1_m4_ready () const
+  {
+    return m_antenna_m1_m4_enabled && m_run_antenna_m1_m4;
+  }
+
+  bool antenna_m1_m4_enabled () const
+  {
+    return m_antenna_m1_m4_enabled;
+  }
+
+  bool antenna_m1_m4_telemetry () const
+  {
+    return m_antenna_m1_m4_telemetry;
   }
 
   bool via1_stack_ready () const
@@ -1744,6 +2183,12 @@ public:
     return m_run_implant15;
   }
 
+  klayout_cuda_spatial_run_antenna_m1_m4_empty_v1_func
+  run_antenna_m1_m4 () const
+  {
+    return m_run_antenna_m1_m4;
+  }
+
   klayout_cuda_spatial_run_m1_width_space_empty_v1_func
   run_m1_width_space () const
   {
@@ -1808,6 +2253,8 @@ private:
   bool m_implant12_telemetry;
   bool m_implant15_enabled;
   bool m_implant15_telemetry;
+  bool m_antenna_m1_m4_enabled;
+  bool m_antenna_m1_m4_telemetry;
   bool m_m1_width_space_enabled;
   bool m_m1_width_space_telemetry;
   bool m_m1_resident_morphology_enabled;
@@ -1834,6 +2281,8 @@ private:
     m_run_active3_well_union;
   klayout_cuda_spatial_run_implant12_empty_v1_func m_run_implant12;
   klayout_cuda_spatial_run_implant15_raw_empty_v1_func m_run_implant15;
+  klayout_cuda_spatial_run_antenna_m1_m4_empty_v1_func
+    m_run_antenna_m1_m4;
   klayout_cuda_spatial_run_m1_width_space_empty_v1_func m_run_m1_width_space;
   klayout_cuda_spatial_run_m1_resident_morphology_empty_v1_func
     m_run_m1_resident_morphology;
@@ -2430,6 +2879,58 @@ void log_implant15_attempt (const CudaImplant15Attempt &attempt)
            << " device_flags=" << attempt.device_flags
            << (attempt.message.empty () ? "" : " message=")
            << attempt.message;
+}
+
+void log_antenna_m1_m4_attempt (
+  const CudaAntennaM1M4Attempt &attempt)
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  if (! module.antenna_m1_m4_telemetry ()) {
+    return;
+  }
+
+  const char *outcome = "unknown";
+  switch (attempt.disposition) {
+  case CudaAntennaM1M4Attempt::CertifiedEmpty:
+    outcome = "certified-empty";
+    break;
+  case CudaAntennaM1M4Attempt::BackendFallback:
+    outcome = "fallback";
+    break;
+  case CudaAntennaM1M4Attempt::BackendError:
+    outcome = "error";
+    break;
+  case CudaAntennaM1M4Attempt::InvalidResult:
+    outcome = "invalid-result";
+    break;
+  case CudaAntennaM1M4Attempt::Disabled:
+    outcome = "disabled";
+    break;
+  }
+
+  tl::info
+    << "CUDA ANTENNA.M1-M4 raw resident certificate:"
+    << " outcome=" << outcome
+    << " cells=" << attempt.shared_cell_count
+    << " contexts=" << attempt.shared_context_count
+    << " stored_polygons=" << attempt.stored_polygon_count
+    << " stored_edges=" << attempt.stored_edge_count
+    << " expanded_polygons=" << attempt.expanded_polygon_count
+    << " expanded_edges=" << attempt.expanded_edge_count
+    << " device_peak_mib="
+    << (double (attempt.accounted_peak_device_bytes) /
+        (1024.0 * 1024.0))
+    << " certified_mask=" << attempt.certified_empty_mask
+    << " clean_mask=" << attempt.clean_mask
+    << " m1_candidates=" << attempt.stage_candidate_count [0]
+    << " m2_candidates=" << attempt.stage_candidate_count [1]
+    << " m3_candidates=" << attempt.stage_candidate_count [2]
+    << " m4_candidates=" << attempt.stage_candidate_count [3]
+    << " total_ms=" << (double (attempt.total_ns) / 1.0e6)
+    << " fallback_flags=" << attempt.fallback_flags
+    << " device_flags=" << attempt.device_flags
+    << (attempt.message.empty () ? "" : " message=")
+    << attempt.message;
 }
 
 klayout_cuda_spatial_config_v1 make_config ()
@@ -6036,6 +6537,401 @@ bool cuda_spatial_implant15_requested ()
 {
   CudaSpatialModule &module = cuda_spatial_module ();
   return module.enabled () && module.implant15_ready ();
+}
+
+bool cuda_spatial_validate_antenna_m1_m4_result (
+  const klayout_cuda_spatial_antenna_m1_m4_request_v1 &request,
+  const klayout_cuda_spatial_antenna_m1_m4_result_v1 &result,
+  int backend_status, std::string *error)
+{
+  const auto fail = [error] (const char *message) {
+    if (error) {
+      try {
+        *error = message;
+      } catch (...) {
+        //  Diagnostics cannot alter a fail-closed result.
+      }
+    }
+    return false;
+  };
+
+  try {
+    if (! qualified_antenna_m1_m4_request (request)) {
+      return fail (
+        "host supplied an unqualified ANTENNA.M1-M4 request");
+    }
+    if (result.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+        result.struct_size != sizeof (result) ||
+        result.reserved [0] != 0 || result.reserved [1] != 0 ||
+        result.reserved [2] != 0 || result.reserved [3] != 0) {
+      return fail (
+        "CUDA ANTENNA.M1-M4 backend returned an incompatible result");
+    }
+    if (backend_status != int (result.status)) {
+      return fail (
+        "CUDA ANTENNA.M1-M4 backend returned inconsistent statuses");
+    }
+    if (backend_status != KLAYOUT_CUDA_SPATIAL_OK) {
+      return fail (
+        "CUDA ANTENNA.M1-M4 backend did not return a proof");
+    }
+
+    bool echo_matches =
+      result.opcode == request.opcode &&
+      result.option_flags == request.option_flags &&
+      result.format_version == request.format_version &&
+      result.dbu_per_micron == request.dbu_per_micron &&
+      result.requested_mask == request.requested_mask &&
+      result.stage_count == request.stage_count &&
+      result.ratio_numerator == request.ratio_numerator &&
+      result.ratio_denominator == request.ratio_denominator &&
+      result.domain_count == request.domain_count &&
+      result.device == request.device &&
+      antenna_m1_m4_hierarchy_echo_matches (
+        request.hierarchy, result.hierarchy) &&
+      antenna_m1_m4_census_echo_matches (
+        request.census, result.census) &&
+      antenna_m1_m4_capacity_echo_matches (
+        request.capacity, result.capacity) &&
+      std::memcmp (
+        result.lower_capture_digest, request.lower_capture_digest,
+        sizeof (result.lower_capture_digest)) == 0 &&
+      std::memcmp (
+        result.capture_digest, request.capture_digest,
+        sizeof (result.capture_digest)) == 0;
+    for (size_t index = 0;
+         echo_matches &&
+         index < KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_DOMAIN_COUNT;
+         ++index) {
+      echo_matches = antenna_m1_m4_domain_echo_matches (
+        request.domains [index], result.domains [index]);
+    }
+    if (! echo_matches) {
+      return fail (
+        "CUDA ANTENNA.M1-M4 backend returned a mismatched proof echo");
+    }
+
+    uint64_t rectangle_count = 0;
+    for (size_t index = 0;
+         index < KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_DOMAIN_COUNT;
+         ++index) {
+      const klayout_cuda_spatial_antenna_m1_m4_domain_result_v1 &domain =
+        result.domain_results [index];
+      cuda_antenna_m1_m4_evidence::Digest expected_digest;
+      if (domain.struct_size != sizeof (domain) ||
+          domain.role != index ||
+          domain.owner_count !=
+            request.domains [index].flat_polygon_count ||
+          domain.rectangle_count < domain.owner_count ||
+          domain.owner_range_count != domain.owner_count ||
+          ! cuda_antenna_m1_m4_evidence::domain_digest (
+              request, index, domain, expected_digest) ||
+          std::memcmp (
+            domain.rectangle_digest, expected_digest.data (),
+            expected_digest.size ()) != 0 ||
+          domain.reserved [0] != 0 || domain.reserved [1] != 0 ||
+          domain.reserved [2] != 0 || domain.reserved [3] != 0 ||
+          ! checked_add_u64 (
+            rectangle_count, domain.rectangle_count,
+            rectangle_count)) {
+        return fail (
+          "CUDA ANTENNA.M1-M4 backend returned an invalid domain census");
+      }
+    }
+    if (rectangle_count > request.capacity.max_rectangles) {
+      return fail (
+        "CUDA ANTENNA.M1-M4 backend exceeded rectangle capacity");
+    }
+
+    if (result.disposition !=
+          KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_COMPLETE ||
+        result.certified_empty_mask != request.requested_mask ||
+        result.clean_mask != request.requested_mask ||
+        result.fallback_flags != KLAYOUT_CUDA_SPATIAL_FALLBACK_NONE ||
+        result.device_flags != 0 ||
+        ! result.accounted_peak_device_bytes ||
+        result.accounted_peak_device_bytes >
+          request.capacity.max_device_bytes ||
+        result.closed_domain_mask !=
+          KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_ALL_DOMAINS ||
+        result.released_stage_mask != request.requested_mask) {
+      return fail (
+        "CUDA ANTENNA.M1-M4 backend did not return the complete "
+        "clean-only certificate");
+    }
+
+    if (! result.total_ns ||
+        result.setup_ns > result.total_ns ||
+        result.h2d_ns > result.total_ns ||
+        result.d2h_ns > result.total_ns) {
+      return fail (
+        "CUDA ANTENNA.M1-M4 backend returned impossible timing telemetry");
+    }
+
+    uint64_t cumulative_owner_count = 0;
+    uint64_t new_rectangle_count = 0;
+    const size_t initial_graph_domains [3] = {
+      KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_POLY_ROLE,
+      KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_CONTACT_ROLE,
+      KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_M1_ROLE
+    };
+    for (size_t domain = 0; domain < 3; ++domain) {
+      const klayout_cuda_spatial_antenna_m1_m4_domain_result_v1 &record =
+        result.domain_results [initial_graph_domains [domain]];
+      if (! checked_add_u64 (
+            cumulative_owner_count, record.owner_count,
+            cumulative_owner_count) ||
+          ! checked_add_u64 (
+            new_rectangle_count, record.rectangle_count,
+            new_rectangle_count)) {
+        return fail (
+          "CUDA ANTENNA.M1-M4 backend overflowed the M1 graph census");
+      }
+    }
+
+    for (size_t index = 0;
+         index < KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT;
+         ++index) {
+      const klayout_cuda_spatial_antenna_m1_m4_stage_result_v1 &stage =
+        result.stages [index];
+      const uint32_t expected_stage = uint32_t (1u << index);
+      const size_t current_metal_role =
+        KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_M1_ROLE + index * 2;
+      const uint64_t expected_retained_rectangle_count =
+        index + 1 == KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT
+          ? UINT64_C (0)
+          : result.domain_results [current_metal_role].rectangle_count;
+      if (index) {
+        const size_t via_role =
+          KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_VIA1_ROLE +
+          (index - 1) * 2;
+        const size_t metal_role = via_role + 1;
+        const size_t previous_metal_role = metal_role - 2;
+        if (! checked_add_u64 (
+              cumulative_owner_count,
+              result.domain_results [via_role].owner_count,
+              cumulative_owner_count) ||
+            ! checked_add_u64 (
+              cumulative_owner_count,
+              result.domain_results [metal_role].owner_count,
+              cumulative_owner_count) ||
+            ! checked_add_u64 (
+              result.domain_results [previous_metal_role].rectangle_count,
+              result.domain_results [via_role].rectangle_count,
+              new_rectangle_count) ||
+            ! checked_add_u64 (
+              new_rectangle_count,
+              result.domain_results [metal_role].rectangle_count,
+              new_rectangle_count)) {
+          return fail (
+            "CUDA ANTENNA.M1-M4 backend overflowed a staged graph census");
+        }
+      }
+      bool digest_unique = true;
+      for (size_t prior = 0; prior < index; ++prior) {
+        digest_unique =
+          digest_unique &&
+          std::memcmp (
+            stage.stage_digest, result.stages [prior].stage_digest,
+            sizeof (stage.stage_digest)) != 0;
+      }
+      uint64_t frontier_rectangle_count = 0;
+      const bool frontier_fits = checked_add_u64 (
+        stage.retained_rectangle_count,
+        stage.released_rectangle_count, frontier_rectangle_count);
+      cuda_antenna_m1_m4_evidence::Digest expected_digest;
+      if (stage.struct_size != sizeof (stage) ||
+          stage.stage != expected_stage ||
+          ! cuda_antenna_m1_m4_evidence::stage_digest (
+              request, result, index, expected_digest) ||
+          std::memcmp (
+            stage.stage_digest, expected_digest.data (),
+            expected_digest.size ()) != 0 ||
+          ! digest_unique ||
+          ! stage.component_count ||
+          stage.component_count > cumulative_owner_count ||
+          stage.component_count > request.capacity.max_nodes ||
+          ! stage.membership_count ||
+          stage.membership_count > request.capacity.max_memberships ||
+          stage.membership_count < frontier_rectangle_count ||
+          ! stage.occupied_cell_count ||
+          stage.occupied_cell_count > stage.membership_count ||
+          stage.pair_occurrence_count >
+            request.capacity.max_pair_occurrences ||
+          stage.unique_owner_candidate_count >
+            stage.pair_occurrence_count ||
+          stage.unique_owner_candidate_count >
+            request.capacity.max_unique_candidates ||
+          stage.edge_count >
+            stage.unique_owner_candidate_count ||
+          stage.edge_count > request.capacity.max_rule_work ||
+          stage.gate_count > stage.component_count ||
+          stage.gate_count >
+            result.domain_results
+              [KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_POLY_ROLE].owner_count ||
+          stage.evaluated_count > stage.gate_count ||
+          stage.exempt_count != 0 ||
+          ! frontier_fits ||
+          frontier_rectangle_count != new_rectangle_count ||
+          stage.retained_rectangle_count !=
+            expected_retained_rectangle_count ||
+          stage.dsu_iteration_count >
+            request.capacity.max_dsu_iterations ||
+          stage.hit_count != 0 || stage.uncertainty_count != 0 ||
+          stage.work_count > request.capacity.max_rule_work ||
+          stage.stage_ns > result.total_ns ||
+          stage.reserved [0] != 0 || stage.reserved [1] != 0 ||
+          stage.reserved [2] != 0 || stage.reserved [3] != 0) {
+        return fail (
+          "CUDA ANTENNA.M1-M4 backend returned impossible stage counters");
+      }
+      new_rectangle_count = 0;
+    }
+
+    if (error) {
+      error->clear ();
+    }
+    return true;
+  } catch (...) {
+    return fail (
+      "exception while validating the CUDA ANTENNA.M1-M4 proof");
+  }
+}
+
+CudaAntennaM1M4Attempt cuda_spatial_try_antenna_m1_m4_empty (
+  const klayout_cuda_spatial_antenna_m1_m4_request_v1 &request)
+{
+  CudaAntennaM1M4Attempt attempt;
+  CudaSpatialModule &module = cuda_spatial_module ();
+  if (! module.antenna_m1_m4_enabled ()) {
+    return attempt;
+  }
+  if (! module.enabled ()) {
+    attempt.disposition = CudaAntennaM1M4Attempt::BackendError;
+    attempt.message = module.error ().empty ()
+      ? "CUDA spatial backend is unavailable"
+      : module.error ();
+    log_antenna_m1_m4_attempt (attempt);
+    return attempt;
+  }
+  if (! module.antenna_m1_m4_ready ()) {
+    attempt.disposition = CudaAntennaM1M4Attempt::BackendFallback;
+    attempt.fallback_flags =
+      KLAYOUT_CUDA_SPATIAL_FALLBACK_UNSUPPORTED_REQUEST;
+    attempt.message =
+      "CUDA spatial backend has no ANTENNA.M1-M4 entry point";
+    log_antenna_m1_m4_attempt (attempt);
+    return attempt;
+  }
+  if (! qualified_antenna_m1_m4_request (request)) {
+    attempt.disposition = CudaAntennaM1M4Attempt::InvalidResult;
+    attempt.message =
+      "host supplied an unqualified ANTENNA.M1-M4 request";
+    log_antenna_m1_m4_attempt (attempt);
+    return attempt;
+  }
+
+  klayout_cuda_spatial_antenna_m1_m4_result_v1 result;
+  std::memset (&result, 0, sizeof (result));
+  result.abi_version = KLAYOUT_CUDA_SPATIAL_ABI_VERSION;
+  result.struct_size = sizeof (result);
+  result.status = KLAYOUT_CUDA_SPATIAL_BAD_ARGUMENT;
+  result.disposition = KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_UNCERTAIN;
+
+  int status = KLAYOUT_CUDA_SPATIAL_ERROR;
+  try {
+    status = module.run_antenna_m1_m4 () (&request, &result);
+  } catch (const std::exception &ex) {
+    attempt.disposition = CudaAntennaM1M4Attempt::BackendError;
+    attempt.message = ex.what ();
+    log_antenna_m1_m4_attempt (attempt);
+    return attempt;
+  } catch (...) {
+    attempt.disposition = CudaAntennaM1M4Attempt::BackendError;
+    attempt.message =
+      "unknown exception while calling ANTENNA.M1-M4 backend";
+    log_antenna_m1_m4_attempt (attempt);
+    return attempt;
+  }
+
+  attempt.certified_empty_mask = result.certified_empty_mask;
+  attempt.clean_mask = result.clean_mask;
+  attempt.fallback_flags = result.fallback_flags;
+  attempt.device_flags = result.device_flags;
+  attempt.shared_cell_count = result.census.shared_cell_count;
+  attempt.shared_context_count = result.census.shared_context_count;
+  attempt.stored_polygon_count = result.census.stored_polygon_count;
+  attempt.stored_edge_count = result.census.stored_edge_count;
+  attempt.expanded_polygon_count = result.census.expanded_polygon_count;
+  attempt.expanded_edge_count = result.census.expanded_edge_count;
+  attempt.accounted_peak_device_bytes =
+    result.accounted_peak_device_bytes;
+  for (size_t index = 0;
+       index < KLAYOUT_CUDA_SPATIAL_ANTENNA_M1_M4_STAGE_COUNT;
+       ++index) {
+    attempt.stage_component_count [index] =
+      result.stages [index].component_count;
+    attempt.stage_candidate_count [index] =
+      result.stages [index].unique_owner_candidate_count;
+    attempt.stage_edge_count [index] = result.stages [index].edge_count;
+    attempt.stage_gate_count [index] = result.stages [index].gate_count;
+    attempt.stage_evaluated_count [index] =
+      result.stages [index].evaluated_count;
+    attempt.stage_work_count [index] = result.stages [index].work_count;
+    attempt.stage_ns [index] = result.stages [index].stage_ns;
+  }
+  attempt.total_ns = result.total_ns;
+  attempt.message.assign (
+    result.message,
+    std::find (
+      result.message, result.message + sizeof (result.message), '\0'));
+
+  if (result.abi_version != KLAYOUT_CUDA_SPATIAL_ABI_VERSION ||
+      result.struct_size != sizeof (result) ||
+      result.reserved [0] != 0 || result.reserved [1] != 0 ||
+      result.reserved [2] != 0 || result.reserved [3] != 0) {
+    attempt.disposition = CudaAntennaM1M4Attempt::InvalidResult;
+    attempt.message =
+      "CUDA ANTENNA.M1-M4 backend returned an incompatible result";
+    log_antenna_m1_m4_attempt (attempt);
+    return attempt;
+  }
+  if (status != int (result.status)) {
+    attempt.disposition = CudaAntennaM1M4Attempt::InvalidResult;
+    attempt.message =
+      "CUDA ANTENNA.M1-M4 backend returned inconsistent statuses";
+    log_antenna_m1_m4_attempt (attempt);
+    return attempt;
+  }
+  if (status == KLAYOUT_CUDA_SPATIAL_FALLBACK) {
+    attempt.disposition = CudaAntennaM1M4Attempt::BackendFallback;
+    log_antenna_m1_m4_attempt (attempt);
+    return attempt;
+  }
+  if (status != KLAYOUT_CUDA_SPATIAL_OK) {
+    attempt.disposition = CudaAntennaM1M4Attempt::BackendError;
+    log_antenna_m1_m4_attempt (attempt);
+    return attempt;
+  }
+
+  std::string validation_error;
+  if (! cuda_spatial_validate_antenna_m1_m4_result (
+        request, result, status, &validation_error)) {
+    attempt.disposition = CudaAntennaM1M4Attempt::InvalidResult;
+    attempt.message = validation_error;
+    log_antenna_m1_m4_attempt (attempt);
+    return attempt;
+  }
+
+  attempt.disposition = CudaAntennaM1M4Attempt::CertifiedEmpty;
+  log_antenna_m1_m4_attempt (attempt);
+  return attempt;
+}
+
+bool cuda_spatial_antenna_m1_m4_requested ()
+{
+  CudaSpatialModule &module = cuda_spatial_module ();
+  return module.enabled () && module.antenna_m1_m4_ready ();
 }
 
 } // namespace db

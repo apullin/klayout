@@ -189,6 +189,7 @@ SOURCES = \
   dbCudaActive3.cc \
   dbCudaAntennaM1.cc \
   dbCudaAntennaM4.cc \
+  dbCudaAntennaM4Transaction.cc \
   dbCudaAntennaM1Oracle.cc \
   dbCudaImplant12.cc \
   dbCudaImplant15.cc \
@@ -383,6 +384,8 @@ HEADERS = \
   dbCudaActive3Digest.h \
   dbCudaAntennaM1.h \
   dbCudaAntennaM4.h \
+  dbCudaAntennaM4Evidence.h \
+  dbCudaAntennaM4Transaction.h \
   dbCudaAntennaM1Oracle.h \
   dbCudaImplant12.h \
   dbCudaImplant12Digest.h \
