@@ -265,6 +265,12 @@ Before production timing is booked:
   nodes.  Membership fill is initially ordered by rectangle node, so sort
   stability preserves the exact old/new split required by staged pruning;
   qualify both wall time and the 10-GiB temporary-memory frontier.
+- [ ] Reuse hierarchy-local conductor forests.  Precompute the exact
+  same-context connectivity forest once for each of the 273 source cells,
+  instantiate those forest edges across 849,265 occurrence contexts, and
+  leave cross-context touching pairs to the global grid.  Prove transform,
+  array, and boundary-touch equivalence before measuring the removed spatial
+  work.
 - [ ] Enumerate only canonical-start membership buckets.  A count-only
   production projection removes 682.7 million M2 pair tests (21.1%) by
   requiring a pair's cell to contain its maximum left and bottom coordinate;
