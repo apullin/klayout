@@ -70,6 +70,12 @@ struct DeviceResult
  */
 Status build_device(
     const DeviceConfig &config,
+    const ac::RectI64 *device_rectangles,
+    std::uint64_t rectangle_count,
+    DeviceResult *output) noexcept;
+
+Status build_device(
+    const DeviceConfig &config,
     const thrust::device_vector<ac::RectI64> &rectangles,
     DeviceResult *output) noexcept;
 

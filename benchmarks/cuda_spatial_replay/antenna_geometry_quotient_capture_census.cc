@@ -13,6 +13,7 @@
 #include "m2_manhattan_decompose.h"
 
 #include <algorithm>
+#include <climits>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -57,6 +58,154 @@ std::uint64_t membership_count(
   const std::int64_t y1 = floor_div(rectangle.top, bin_size);
   return static_cast<std::uint64_t>(x1 - x0 + 1) *
          static_cast<std::uint64_t>(y1 - y0 + 1);
+}
+
+std::uint64_t ordered_i32(std::int64_t value)
+{
+  if (value < INT32_MIN || value > INT32_MAX) {
+    throw std::runtime_error(
+        "membership cell coordinate exceeds exact packed range");
+  }
+  return static_cast<std::uint32_t>(
+      static_cast<std::int32_t>(value)) ^
+      UINT32_C(0x80000000);
+}
+
+std::vector<std::uint64_t> sorted_membership_keys(
+    const aq::Result &quotient, std::int64_t bin_size,
+    std::uint64_t expected_memberships)
+{
+  if (expected_memberships >
+      std::numeric_limits<std::size_t>::max()) {
+    throw std::runtime_error(
+        "membership-key vector exceeds host size");
+  }
+  std::vector<std::uint64_t> keys;
+  keys.reserve(
+      static_cast<std::size_t>(expected_memberships));
+  const auto append_rectangle =
+      [&](const ac::RectI64 &rectangle) {
+        const std::int64_t x0 =
+            floor_div(rectangle.left, bin_size);
+        const std::int64_t x1 =
+            floor_div(rectangle.right, bin_size);
+        const std::int64_t y0 =
+            floor_div(rectangle.bottom, bin_size);
+        const std::int64_t y1 =
+            floor_div(rectangle.top, bin_size);
+        for (std::int64_t x = x0;; ++x) {
+          for (std::int64_t y = y0;; ++y) {
+            keys.push_back(
+                (ordered_i32(x) << 32) | ordered_i32(y));
+            if (y == y1) break;
+          }
+          if (x == x1) break;
+        }
+      };
+  for (const ac::RectI64 &rectangle :
+       quotient.representative_rectangles) {
+    append_rectangle(rectangle);
+  }
+  for (const ac::RectI64 &rectangle :
+       quotient.exception_rectangles) {
+    append_rectangle(rectangle);
+  }
+  if (keys.size() != expected_memberships) {
+    throw std::runtime_error(
+        "materialized membership keys disagree with census");
+  }
+  std::sort(keys.begin(), keys.end());
+  return keys;
+}
+
+struct PairTestCensus
+{
+  std::uint64_t selected_pair_tests = 0;
+  std::uint64_t occupied_cells = 0;
+  std::uint64_t max_old_members = 0;
+  std::uint64_t max_new_members = 0;
+  std::uint64_t max_total_members = 0;
+};
+
+bool checked_add(
+    std::uint64_t first, std::uint64_t second,
+    std::uint64_t *result)
+{
+  if (first > UINT64_MAX - second) return false;
+  *result = first + second;
+  return true;
+}
+
+bool checked_multiply(
+    std::uint64_t first, std::uint64_t second,
+    std::uint64_t *result)
+{
+  if (first && second > UINT64_MAX / first) return false;
+  *result = first * second;
+  return true;
+}
+
+PairTestCensus staged_pair_test_census(
+    const std::vector<std::uint64_t> &old_keys,
+    const std::vector<std::uint64_t> &new_keys)
+{
+  PairTestCensus census;
+  std::size_t old_index = 0;
+  std::size_t new_index = 0;
+  while (old_index < old_keys.size() ||
+         new_index < new_keys.size()) {
+    const std::uint64_t key =
+        new_index == new_keys.size() ||
+                (old_index < old_keys.size() &&
+                 old_keys[old_index] < new_keys[new_index])
+            ? old_keys[old_index]
+            : new_keys[new_index];
+    const std::size_t old_begin = old_index;
+    const std::size_t new_begin = new_index;
+    while (old_index < old_keys.size() &&
+           old_keys[old_index] == key) {
+      ++old_index;
+    }
+    while (new_index < new_keys.size() &&
+           new_keys[new_index] == key) {
+      ++new_index;
+    }
+    const std::uint64_t old_count =
+        old_index - old_begin;
+    const std::uint64_t new_count =
+        new_index - new_begin;
+    if (!new_count) continue;
+    ++census.occupied_cells;
+    census.max_old_members =
+        std::max(census.max_old_members, old_count);
+    census.max_new_members =
+        std::max(census.max_new_members, new_count);
+    census.max_total_members =
+        std::max(
+            census.max_total_members,
+            old_count + new_count);
+    std::uint64_t cross = 0;
+    if (!checked_multiply(old_count, new_count, &cross)) {
+      throw std::runtime_error(
+          "staged cross-pair census overflow");
+    }
+    std::uint64_t internal = 0;
+    if (aq::checked_internal_weight(
+            new_count, &internal) != aq::Status::success) {
+      throw std::runtime_error(
+          "staged internal-pair census overflow");
+    }
+    std::uint64_t cell_total = 0;
+    std::uint64_t total = 0;
+    if (!checked_add(cross, internal, &cell_total) ||
+        !checked_add(
+            census.selected_pair_tests, cell_total, &total)) {
+      throw std::runtime_error(
+          "staged pair-test census overflow");
+    }
+    census.selected_pair_tests = total;
+  }
+  return census;
 }
 
 ac::RectI64 transform(
@@ -251,18 +400,22 @@ void require_production_x2(
 int main(int argc, char **argv)
 {
   try {
-    if (argc < 2 || argc > 4) {
+    if (argc < 2 || argc > 5) {
       std::cerr
           << "usage: " << argv[0]
-          << " CAPTURE.kam4 [BIN_SIZE] [--expect-production-x2]\n";
+          << " CAPTURE.kam4 [BIN_SIZE]"
+          << " [--expect-production-x2] [--pair-tests]\n";
       return 2;
     }
     std::int64_t bin_size = 1000;
     bool expect_production = false;
+    bool pair_tests = false;
     for (int argument = 2; argument < argc; ++argument) {
       const std::string value = argv[argument];
       if (value == "--expect-production-x2") {
         expect_production = true;
+      } else if (value == "--pair-tests") {
+        pair_tests = true;
       } else {
         char *end = nullptr;
         const long long parsed =
@@ -280,6 +433,8 @@ int main(int argc, char **argv)
       throw std::runtime_error("capture load failed: " + error);
     }
     const std::uint32_t roles[] = {5, 6, 7};
+    std::vector<std::uint64_t> previous_membership_keys;
+    std::uint32_t previous_role = UINT32_MAX;
     for (std::uint32_t role : roles) {
       std::uint64_t owner_count = 0;
       std::vector<ac::RectI64> rectangles =
@@ -358,6 +513,37 @@ int main(int argc, char **argv)
                   input_memberships - quotient_memberships) /
               input_memberships)
           << "\n";
+      if (pair_tests) {
+        std::vector<std::uint64_t> membership_keys =
+            sorted_membership_keys(
+                quotient, bin_size, quotient_memberships);
+        if (!previous_membership_keys.empty()) {
+          const PairTestCensus pair_census =
+              staged_pair_test_census(
+                  previous_membership_keys, membership_keys);
+          std::cout
+              << "QUOTIENT_PAIR_TESTS"
+              << " prior_role=" << previous_role
+              << " append_role=" << role
+              << " old_physical_memberships="
+              << previous_membership_keys.size()
+              << " new_physical_memberships="
+              << membership_keys.size()
+              << " selected_pair_tests="
+              << pair_census.selected_pair_tests
+              << " occupied_new_cells="
+              << pair_census.occupied_cells
+              << " max_old_members="
+              << pair_census.max_old_members
+              << " max_new_members="
+              << pair_census.max_new_members
+              << " max_total_members="
+              << pair_census.max_total_members
+              << "\n";
+        }
+        previous_membership_keys.swap(membership_keys);
+        previous_role = role;
+      }
     }
     std::cout
         << "antenna_geometry_quotient_capture_census: PASS"

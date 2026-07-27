@@ -15,6 +15,7 @@
 #include <thrust/execution_policy.h>
 #include <thrust/functional.h>
 #include <thrust/iterator/counting_iterator.h>
+#include <thrust/device_ptr.h>
 #include <thrust/reduce.h>
 #include <thrust/scan.h>
 #include <thrust/sequence.h>
@@ -445,15 +446,17 @@ namespace antenna_geometry_quotient {
 
 Status build_device(
     const DeviceConfig &config,
-    const thrust::device_vector<ac::RectI64> &rectangles,
+    const ac::RectI64 *device_rectangles,
+    std::uint64_t rectangle_count,
     DeviceResult *output) noexcept
 {
   if (!output) return Status::malformed_input;
   if (!valid_config(config)) {
     return Status::invalid_configuration;
   }
-  const std::uint64_t rectangle_count = rectangles.size();
-  if (!rectangle_count) return Status::malformed_input;
+  if (!device_rectangles || !rectangle_count) {
+    return Status::malformed_input;
+  }
   if (rectangle_count >
           config.quotient.limits.max_input_rectangles ||
       rectangle_count > UINT32_MAX) {
@@ -467,6 +470,10 @@ Status build_device(
     DeviceResult result;
     result.census.input_rectangles = rectangle_count;
     result.census.owners = config.quotient.owner_count;
+    const thrust::device_ptr<const ac::RectI64> rectangle_begin =
+        thrust::device_pointer_cast(device_rectangles);
+    const thrust::device_ptr<const ac::RectI64> rectangle_end =
+        rectangle_begin + rectangle_count;
 
     if (!vector_admitted<std::uint32_t>(
             config, config.quotient.owner_count)) {
@@ -484,7 +491,7 @@ Status build_device(
 
     validate_and_count_kernel<<<
         launch_blocks(rectangle_count), kThreads>>>(
-        thrust::raw_pointer_cast(rectangles.data()),
+        device_rectangles,
         rectangle_count, config.quotient.owner_begin,
         config.quotient.owner_count,
         config.quotient.domain_count,
@@ -530,7 +537,7 @@ Status build_device(
             static_cast<std::uint32_t>(rectangle_count)),
         singleton_indices.begin(),
         IsSingletonIndex{
-            thrust::raw_pointer_cast(rectangles.data()),
+            device_rectangles,
             thrust::raw_pointer_cast(
                 owner_rectangle_counts.data()),
             config.quotient.owner_begin});
@@ -559,7 +566,7 @@ Status build_device(
           thrust::device, singleton_indices.begin(),
           singleton_indices.end(),
           GeometryIndexLess{
-              thrust::raw_pointer_cast(rectangles.data())});
+              device_rectangles});
     }
 
     thrust::device_vector<std::uint32_t>
@@ -590,7 +597,7 @@ Status build_device(
           static_cast<std::size_t>(singleton_count));
       mark_class_heads_kernel<<<
           launch_blocks(singleton_count), kThreads>>>(
-          thrust::raw_pointer_cast(rectangles.data()),
+          device_rectangles,
           thrust::raw_pointer_cast(singleton_indices.data()),
           singleton_count, self_connected_domains,
           thrust::raw_pointer_cast(class_heads.data()));
@@ -651,7 +658,7 @@ Status build_device(
     if (singleton_count) {
       write_class_heads_kernel<<<
           launch_blocks(singleton_count), kThreads>>>(
-          thrust::raw_pointer_cast(rectangles.data()),
+          device_rectangles,
           thrust::raw_pointer_cast(singleton_indices.data()),
           thrust::raw_pointer_cast(class_heads.data()),
           thrust::raw_pointer_cast(class_ids.data()),
@@ -664,7 +671,7 @@ Status build_device(
           "geometry quotient class materialization launch");
     }
     const auto exception_end = thrust::copy_if(
-        thrust::device, rectangles.begin(), rectangles.end(),
+        thrust::device, rectangle_begin, rectangle_end,
         result.work_rectangles.begin() + class_count,
         IsExceptionRectangle{
             thrust::raw_pointer_cast(
@@ -692,7 +699,7 @@ Status build_device(
     if (singleton_count) {
       seed_class_members_kernel<<<
           launch_blocks(singleton_count), kThreads>>>(
-          thrust::raw_pointer_cast(rectangles.data()),
+          device_rectangles,
           thrust::raw_pointer_cast(singleton_indices.data()),
           thrust::raw_pointer_cast(class_ids.data()),
           thrust::raw_pointer_cast(class_begins.data()),
@@ -791,6 +798,19 @@ Status build_device(
   } catch (...) {
     return Status::host_error;
   }
+}
+
+Status build_device(
+    const DeviceConfig &config,
+    const thrust::device_vector<ac::RectI64> &rectangles,
+    DeviceResult *output) noexcept
+{
+  return build_device(
+      config,
+      rectangles.empty()
+          ? nullptr
+          : thrust::raw_pointer_cast(rectangles.data()),
+      rectangles.size(), output);
 }
 
 }  // namespace antenna_geometry_quotient
