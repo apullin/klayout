@@ -3334,6 +3334,36 @@ not just wall time.
         boundary.  Evidence:
         `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.{rPnhZQ,Wxrjod,wmZLrL}`.
 
+      - [x] **Coalesce the two serialized raw-M1 owners without sharing their
+        lowering — proved exact and rejected on production timing:** a
+        fail-closed deck transform moved only the intact METAL1.5-.9 block
+        into `m1_width_space`; METAL1.1/.2 stayed there, METAL1.4 stayed with
+        `via1_upper_active12`, all 157 category paths/descriptions/order were
+        unchanged, and the exact plan dropped only the `m1_via_class`
+        process.  Every candidate report retained canonical SHA-256
+        `01129a266f1ac2ef14e07def69fc26cc51dafe6beebe237e57c4dc68146a06d3`.
+        Owner-specific telemetry proved both CUDA transactions ran once in
+        the same process, in historical order, with two acquired/released
+        device-lease pairs.
+
+        The corrected ACTIVE.1/.2 baseline took 35.063538, 35.131996, and
+        34.997588 s (35.064374 s mean).  Coalesced candidates took 36.016253,
+        35.873653, and 35.821384 s (35.903763 s mean): **0.839389 real
+        seconds / 2.394% slower full-launch wall**.  Children regressed
+        30.246704 to 31.053788 s (**2.668% slower**), and the old serialized
+        M1 chain completion versus the combined owner regressed 30.246695 to
+        30.864479 s (**2.042% slower**).  Do not land process coalescing by
+        itself; it retains both independent approximately 4.74-second raw-M1
+        hierarchy/geometry lowerings and saves no useful setup.
+
+        The next valid bite is deeper fusion: authenticate/lower raw M1 once,
+        keep that digest-bound scene resident, and invoke the already-proven
+        M1.1/.2 and M1.5-.9 backend rule plans against it while preserving
+        independent fail-closed results and literal CPU fallbacks.  The
+        rejected experiment has no product-code commit.  Exact evidence:
+        `.scratchpad/cuda-runs/m1-coalesced-rejected-v1.result.json` and
+        `.scratchpad/cuda-runs/klayout-balanced-full-cuda-gate.{AMP0K8,5n4Jv6,q7W6Tt}`.
+
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
         second and third reusable compositions, separate canonical
