@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -122,6 +123,32 @@ void cuda_require(cudaError_t status, const char *operation)
     internal_decline(
         std::string(operation) + ": " + cudaGetErrorString(status));
   }
+}
+
+bool backend_phase_timing_enabled()
+{
+  const char *value =
+      std::getenv("KLAYOUT_CUDA_ANTENNA_PHASE_TIMING");
+  return value && *value &&
+         !(value[0] == '0' && value[1] == '\0');
+}
+
+void report_backend_phase(
+    std::size_t stage, const char *phase,
+    Clock::time_point begin)
+{
+  if (!backend_phase_timing_enabled()) return;
+  cuda_require(
+      cudaDeviceSynchronize(),
+      "antenna backend phase timing synchronize");
+  const double milliseconds =
+      std::chrono::duration<double, std::milli>(
+          Clock::now() - begin)
+          .count();
+  std::fprintf(
+      stderr,
+      "KLAYOUT_CUDA_ANTENNA_PHASE stage=%zu phase=%s ms=%.3f\n",
+      stage + 1, phase, milliseconds);
 }
 
 class DeviceMemoryAccount
@@ -2185,6 +2212,7 @@ void run_transaction(
       [&](std::size_t index, std::uint32_t metal_role,
           cert::MetalLevel level, const ac::StageCensus &graph,
           Clock::time_point stage_begin) {
+        const auto checkpoint_begin = Clock::now();
         require_logical_stage_capacity(graph, request);
         for (std::uint32_t low = 0; low < 12; ++low) {
           for (std::uint32_t high = low; high < 12; ++high) {
@@ -2214,13 +2242,21 @@ void run_transaction(
          * The retained graph copy and this certificate view are the only
          * expanded copies alive at the checkpoint.
          */
+        const auto metal_expand_begin = Clock::now();
         Expansion metal = expander.expand(
             identity.domains[metal_role], metal_role,
             owner_bases[metal_role], false);
+        report_backend_phase(
+            index, "checkpoint_expand_metal",
+            metal_expand_begin);
+        const auto label_view_begin = Clock::now();
         ac::DeviceLabelView labels;
         require_connectivity(
             connectivity.device_label_view(&labels),
             "obtain resident connectivity labels");
+        report_backend_phase(
+            index, "checkpoint_label_view",
+            label_view_begin);
         cert::CheckpointCensus checkpoint;
         cert::FactorZeroDiodeDeviceView diode_view;
         const cert::FactorZeroDiodeDeviceView *diode_view_ptr =
@@ -2239,6 +2275,7 @@ void run_transaction(
                 memory.external_live_bytes(
                     gate_census.persistent_bytes)),
             "account external checkpoint residency");
+        const auto evaluate_begin = Clock::now();
         require_certificate(
             certificate.evaluate_checkpoint(
                 level,
@@ -2246,6 +2283,9 @@ void run_transaction(
                 metal.rectangles.size(), labels.labels, labels.count,
                 &checkpoint, diode_view_ptr),
             "evaluate resident antenna checkpoint");
+        report_backend_phase(
+            index, "checkpoint_evaluate",
+            evaluate_begin);
         memory.observe_component_peak(checkpoint.peak_live_bytes);
         memory.observe();
         if (!checkpoint.clean_certificate &&
@@ -2257,6 +2297,7 @@ void run_transaction(
            * lower bound by summing maxima across disjoint spatial cells.
            * Arbitrary raw overlap within a cell remains max-reduced.
            */
+          const auto refine_begin = Clock::now();
           Expansion refined_poly = expander.expand(
               identity.domains[0], 0, owner_bases[0], false);
           Expansion refined_active = expander.expand(
@@ -2282,6 +2323,9 @@ void run_transaction(
                   labels.count, &refined_checkpoint,
                   diode_view_ptr),
               "refine antenna gate lower bound by root cell");
+          report_backend_phase(
+              index, "checkpoint_refine",
+              refine_begin);
           memory.observe_component_peak(
               refined_checkpoint.peak_live_bytes);
           memory.observe();
@@ -2314,6 +2358,9 @@ void run_transaction(
         fill_stage_result(
             index, graph, checkpoint,
             elapsed_ns(stage_begin, Clock::now()), request, result);
+        report_backend_phase(
+            index, "checkpoint_total",
+            checkpoint_begin);
       };
 
   {
@@ -2352,20 +2399,35 @@ void run_transaction(
   {
     const auto stage_begin = Clock::now();
     ac::StageCensus graph;
+    const auto via1_expand_begin = Clock::now();
     Expansion via1 = expander.expand(
         identity.domains[6], 6, owner_bases[6], false);
+    report_backend_phase(
+        1, "expand_via1", via1_expand_begin);
+    const auto via1_append_begin = Clock::now();
     append_domain(
         &via1, identity.domains[6].flat_polygons,
         (UINT64_C(1) << 7) - 1, &graph, true);
+    report_backend_phase(
+        1, "append_via1", via1_append_begin);
+    const auto m2_expand_begin = Clock::now();
     Expansion m2 = expander.expand(
         identity.domains[7], 7, owner_bases[7], false);
+    report_backend_phase(
+        1, "expand_m2", m2_expand_begin);
+    const auto m2_append_begin = Clock::now();
     append_domain(
         &m2, identity.domains[7].flat_polygons,
         (UINT64_C(1) << 8) - 1, &graph, false);
+    report_backend_phase(
+        1, "append_m2", m2_append_begin);
+    const auto compact_begin = Clock::now();
     require_connectivity(
         connectivity.compact_retained_rectangles(
             &graph.retained_rectangle_capacity),
         "compact post-M2 connectivity frontier");
+    report_backend_phase(
+        1, "compact_retained", compact_begin);
     memory.observe();
     checkpoint_stage(
         1, 7, cert::MetalLevel::metal2, graph, stage_begin);
