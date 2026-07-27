@@ -2019,6 +2019,61 @@ static bool cuda_m2_flat_union (
   return false;
 }
 
+static bool raw_union_grid_clean (
+  const db::Region *primary, const db::Region *secondary, db::Coord grid)
+{
+  const std::chrono::steady_clock::time_point begin =
+    std::chrono::steady_clock::now ();
+  bool certified = false;
+  std::string reason ("unknown");
+
+  try {
+    if (! primary || ! secondary) {
+      reason = "missing-region";
+    } else if (grid <= 0) {
+      reason = "nonpositive-grid";
+    } else {
+      const db::DeepRegion *deep_primary =
+        dynamic_cast<const db::DeepRegion *> (primary->delegate ());
+      const db::DeepRegion *deep_secondary =
+        dynamic_cast<const db::DeepRegion *> (secondary->delegate ());
+      if (! deep_primary || ! deep_secondary) {
+        reason = "non-deep-region";
+      } else if (! primary->merged_semantics () ||
+                 ! secondary->merged_semantics ()) {
+        reason = "raw-semantics";
+      } else if (deep_primary->merged_polygons_available () ||
+                 deep_secondary->merged_polygons_available ()) {
+        reason = "merged-input";
+      } else {
+        certified =
+          deep_primary->raw_union_grid_clean (*deep_secondary, grid);
+        reason = certified
+          ? "raw-rectilinear-lattice-proof"
+          : "raw-geometry-or-hierarchy-declined";
+      }
+    }
+  } catch (const std::exception &error) {
+    certified = false;
+    reason = std::string ("exception:") + error.what ();
+  } catch (...) {
+    certified = false;
+    reason = "unknown-exception";
+  }
+
+  const double total_ms =
+    std::chrono::duration<double, std::milli> (
+      std::chrono::steady_clock::now () - begin
+    ).count ();
+  tl::info
+    << "KLAYOUT_RAW_UNION_GRID_CERT"
+    << " outcome=" << (certified ? "certified-empty" : "declined")
+    << " grid=" << grid
+    << " total_ms=" << total_ms
+    << " reason=" << reason;
+  return certified;
+}
+
 static bool cuda_via1_stack_clean (
   const db::Region *via1, const db::Region *metal1,
   const db::Region *metal2)
@@ -5370,6 +5425,17 @@ Class<db::Region> decl_Region (decl_dbShapeCollection, "db", "Region",
     "@brief Returns true if the region is a deep (hierarchical) one\n"
     "\n"
     "This method has been added in version 0.26."
+  ) +
+  method_ext (
+    "raw_union_grid_clean?", &raw_union_grid_clean,
+    gsi::arg ("other"), gsi::arg ("grid"),
+    "@brief Tries a fail-closed raw two-region union grid certificate\n"
+    "\n"
+    "This internal acceleration hook returns true only when both operands are "
+    "pristine merged-semantics deep regions and their complete raw hierarchies "
+    "contain grid-aligned Manhattan polygons under lattice-preserving "
+    "instances. True proves that their merged union cannot contain an off-grid "
+    "vertex. False requires the literal union and grid check.\n"
   ) +
   method_ext (
     "cuda_antenna_m1_capture_census?",

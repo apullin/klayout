@@ -20,6 +20,41 @@ OWNER_CHOICES = ("independent", GRID_OWNER)
 OWNED_CATEGORIES = ("CONTACT.6",)
 RETAINED_CATEGORIES = ("METAL1.1", "METAL1.2")
 
+WELL_NEED_LINE = (
+    "need_well = (DRC &amp;&amp; "
+    "(run_well || run_active3 || run_active4)) || "
+    "(OFFGRID &amp;&amp; run_grid)\n"
+)
+GRID_ASSIGNMENT_LINE = "grid = 2.5.nm\n"
+WELL_UNION_LITERAL = "well = nwell.or(pwell) if need_well"
+
+GRID_WELL_CERTIFICATE = """\
+# BEGIN KLAYOUT RAW WELL GRID CERTIFICATE
+# In the grid-only owner, a two-input raw proof may establish that merging
+# NWELL and PWELL cannot create an off-grid vertex.  Every decline, missing
+# method, or exception retains the literal WELL union and GRID check below.
+grid_well_raw_grid = 2.5.nm
+grid_well_raw_clean = false
+grid_well_raw_reason = "not-owner"
+grid_well_raw_owner = OFFGRID &amp;&amp; run_grid &amp;&amp; !run_well &amp;&amp; !run_active3 &amp;&amp; !run_active4
+if grid_well_raw_owner
+  grid_well_raw_reason = "method-unavailable"
+  begin
+    if nwell.respond_to?(:raw_union_grid_clean?)
+      grid_well_raw_clean = nwell.raw_union_grid_clean?(pwell, grid_well_raw_grid)
+      grid_well_raw_reason = grid_well_raw_clean ? "certified-empty" : "certificate-declined"
+    end
+  rescue StandardError =&gt; grid_well_raw_error
+    grid_well_raw_clean = false
+    grid_well_raw_reason = "exception:#{grid_well_raw_error.class}"
+  end
+end
+info("RAW WELL grid transaction: #{grid_well_raw_clean ? 'certified-empty' : 'full-cpu-fallback'} reason=#{grid_well_raw_reason}") if grid_well_raw_owner
+need_well = ((DRC &amp;&amp; (run_well || run_active3 || run_active4)) || (OFFGRID &amp;&amp; run_grid)) &amp;&amp; !grid_well_raw_clean
+well = polygon_layer if grid_well_raw_clean
+# END KLAYOUT RAW WELL GRID CERTIFICATE
+"""
+
 
 class TransformError(ValueError):
     """The source deck is not the expected unsplit CONTACT.6 variant."""
@@ -30,6 +65,18 @@ def _replace_once(text: str, old: str, new: str, label: str) -> str:
     if count != 1:
         raise TransformError(f"{label}: expected one source match, found {count}")
     return text.replace(old, new, 1)
+
+
+def _literal_line_offsets(text: str, literal: str) -> list[int]:
+    """Return offsets of lines containing only ``literal`` plus whitespace."""
+
+    offsets: list[int] = []
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        if line.strip() == literal:
+            offsets.append(offset)
+        offset += len(line)
+    return offsets
 
 
 def split_deck(source: str, owner: str = "independent") -> str:
@@ -76,6 +123,67 @@ def split_deck(source: str, owner: str = "independent") -> str:
         owner_predicate = "run_m1_contact6"
     elif text.count('drc_shard == "grid"') != 1:
         raise TransformError("grid owner: expected one source declaration")
+
+    if owner == GRID_OWNER:
+        well_union_offsets = _literal_line_offsets(text, WELL_UNION_LITERAL)
+        if len(well_union_offsets) != 1:
+            raise TransformError(
+                "raw WELL grid fallback: expected one literal "
+                f"WELL union, found {len(well_union_offsets)}"
+            )
+        well_need_count = text.count(WELL_NEED_LINE)
+        if well_need_count != 1:
+            raise TransformError(
+                "raw WELL grid certificate: expected one source match, "
+                f"found {well_need_count}"
+            )
+        grid_assignment_count = text.count(GRID_ASSIGNMENT_LINE)
+        if grid_assignment_count != 1:
+            raise TransformError(
+                "raw WELL grid value: expected one source match, "
+                f"found {grid_assignment_count}"
+            )
+        if not (
+            text.index(WELL_NEED_LINE)
+            < well_union_offsets[0]
+            < text.index(GRID_ASSIGNMENT_LINE)
+        ):
+            raise TransformError(
+                "raw WELL grid fallback: literal WELL union must follow "
+                "need_well and precede the GRID section"
+            )
+
+        text = _replace_once(
+            text,
+            GRID_ASSIGNMENT_LINE,
+            "grid = grid_well_raw_grid\n",
+            "raw WELL grid value",
+        )
+        text = _replace_once(
+            text,
+            WELL_NEED_LINE,
+            GRID_WELL_CERTIFICATE,
+            "raw WELL grid certificate",
+        )
+
+        transformed_union_offsets = _literal_line_offsets(
+            text, WELL_UNION_LITERAL
+        )
+        certificate_end = text.index(
+            "# END KLAYOUT RAW WELL GRID CERTIFICATE\n"
+        )
+        transformed_grid = text.index("grid = grid_well_raw_grid\n")
+        if (
+            len(transformed_union_offsets) != 1
+            or not (
+                certificate_end
+                < transformed_union_offsets[0]
+                < transformed_grid
+            )
+        ):
+            raise TransformError(
+                "raw WELL grid fallback: generated fallback order is invalid"
+            )
 
     text = _replace_once(
         text,

@@ -162,6 +162,16 @@ public:
   bool merged_polygons_available () const;
   const DeepLayer &merged_deep_layer () const;
 
+  /**
+   *  @brief Proves that the merged union with another raw deep region is on-grid
+   *
+   *  This narrow, fail-closed certificate accepts only pristine merged-semantics
+   *  deep regions whose complete raw hierarchies contain grid-aligned
+   *  rectilinear polygons under lattice-preserving instances.  A false result
+   *  makes no statement and requires the normal union and grid check.
+   */
+  bool raw_union_grid_clean (const DeepRegion &other, db::Coord grid) const;
+
 protected:
   virtual void merged_semantics_changed ();
   virtual void min_coherence_changed ();

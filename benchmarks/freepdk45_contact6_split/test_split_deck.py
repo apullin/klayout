@@ -29,6 +29,11 @@ def source_deck(*, antenna_split: bool = False) -> str:
         "raise unless run_m1_enclosure || run_m1_width_space || "
         f"run_m1_via_class || {antenna_guard}\r\n"
         "run_contact6 = run_m1_width_space\r\n"
+        "need_well = (DRC &amp;&amp; "
+        "(run_well || run_active3 || run_active4)) || "
+        "(OFFGRID &amp;&amp; run_grid)\r\n"
+        "well = nwell.or(pwell) if need_well\r\n"
+        "grid = 2.5.nm\r\n"
         "if run_contact6\r\n"
         'cont.separation(poly, 35.nm, euclidian).output("CONTACT.6", '
         '"contact description")\r\n'
@@ -55,6 +60,7 @@ class SplitDeckTest(unittest.TestCase):
                     "run_m1_width_space || run_m1_contact6 || run_m1_via_class",
                     result,
                 )
+                self.assertNotIn("raw_union_grid_clean?", result)
                 self.assertLess(
                     result.index('.output("CONTACT.6"'),
                     result.index('.output("METAL1.1"'),
@@ -70,6 +76,33 @@ class SplitDeckTest(unittest.TestCase):
         self.assertIn("run_contact6 = run_grid", result)
         self.assertNotIn("run_m1_contact6", result)
         self.assertNotIn(f'drc_shard == "{CONTACT_SHARD}"', result)
+        self.assertIn(
+            "grid_well_raw_owner = OFFGRID &amp;&amp; run_grid "
+            "&amp;&amp; !run_well &amp;&amp; !run_active3 "
+            "&amp;&amp; !run_active4",
+            result,
+        )
+        self.assertIn(
+            "grid_well_raw_clean = "
+            "nwell.raw_union_grid_clean?(pwell, grid_well_raw_grid)",
+            result,
+        )
+        self.assertIn("grid_well_raw_grid = 2.5.nm", result)
+        self.assertIn("grid = grid_well_raw_grid", result)
+        self.assertNotIn("\ngrid = 2.5.nm\n", result)
+        self.assertIn(
+            "need_well = ((DRC &amp;&amp; "
+            "(run_well || run_active3 || run_active4)) || "
+            "(OFFGRID &amp;&amp; run_grid)) "
+            "&amp;&amp; !grid_well_raw_clean",
+            result,
+        )
+        self.assertIn("well = polygon_layer if grid_well_raw_clean", result)
+        self.assertEqual(result.count("well = nwell.or(pwell) if need_well"), 1)
+        self.assertLess(
+            result.index("raw_union_grid_clean?"),
+            result.index("well = nwell.or(pwell) if need_well"),
+        )
         self.assertLess(
             result.index('.output("CONTACT.6"'),
             result.index('.output("METAL1.1"'),
@@ -93,6 +126,49 @@ class SplitDeckTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(TransformError, "METAL1.2"):
             split_deck(source)
+
+    def test_grid_owner_rejects_a_missing_literal_well_path(self) -> None:
+        source = source_deck(antenna_split=True).replace(
+            "well = nwell.or(pwell) if need_well\r\n",
+            "",
+        )
+        with self.assertRaisesRegex(TransformError, "raw WELL grid fallback"):
+            split_deck(source, owner="grid")
+
+    def test_grid_owner_rejects_duplicate_literal_well_paths(self) -> None:
+        literal = "well = nwell.or(pwell) if need_well\r\n"
+        source = source_deck(antenna_split=True).replace(
+            literal,
+            literal + literal,
+        )
+        with self.assertRaisesRegex(
+            TransformError, "expected one literal WELL union, found 2"
+        ):
+            split_deck(source, owner="grid")
+
+    def test_grid_owner_rejects_a_misordered_literal_well_path(self) -> None:
+        need = (
+            "need_well = (DRC &amp;&amp; "
+            "(run_well || run_active3 || run_active4)) || "
+            "(OFFGRID &amp;&amp; run_grid)\r\n"
+        )
+        literal = "well = nwell.or(pwell) if need_well\r\n"
+        source = source_deck(antenna_split=True).replace(
+            need + literal,
+            literal + need,
+        )
+        with self.assertRaisesRegex(
+            TransformError, "must follow need_well and precede"
+        ):
+            split_deck(source, owner="grid")
+
+    def test_grid_owner_rejects_grid_value_drift(self) -> None:
+        source = source_deck(antenna_split=True).replace(
+            "grid = 2.5.nm\r\n",
+            "grid = 5.nm\r\n",
+        )
+        with self.assertRaisesRegex(TransformError, "raw WELL grid value"):
+            split_deck(source, owner="grid")
 
 
 if __name__ == "__main__":

@@ -3769,6 +3769,20 @@ CODE
       end
     end
 
+    # Internal, fail-closed CPU certificate for a merged union followed by an
+    # equal-axis grid check.  True means both pristine raw hierarchies are
+    # rectilinear and preserve the requested lattice, so their union cannot
+    # create an off-grid vertex.  False requires the literal union and check.
+    def raw_union_grid_clean?(other, grid)
+      @engine._context("raw_union_grid_clean?") do
+        check_is_layer(other)
+        requires_region
+        other.requires_region
+        self.data.raw_union_grid_clean?(
+          other.data, @engine._make_value(grid))
+      end
+    end
+
     # Internal, fail-closed acceleration hook for ACTIVE.3 before the WELL
     # union is constructed.  The receiver is pristine physical NWELL; PWELL
     # and ACTIVE are also pristine.  False requires the exact historical WELL

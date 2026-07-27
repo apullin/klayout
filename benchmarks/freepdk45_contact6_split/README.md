@@ -78,6 +78,32 @@ deliberately nonempty fixtures:
 - mixed hierarchy: 157 categories, seven cells, 1,587 items, semantic SHA-256
   `429d631ab89d9e0a54e4f6ed367223974b8caca564c461fda59ebda9dcbcd8d2`.
 
+## Qualified raw-WELL grid certificate
+
+The current grid-coalesced transform first asks the deep region engine whether
+the literal `nwell.or(pwell)` GRID result is provably empty from the two
+pristine raw hierarchy inputs.  The certificate accepts only complete
+orthogonal hierarchy whose transformed boundaries lie on the requested
+lattice.  Diagonal, off-grid, already-materialized, malformed, missing-API,
+exception, or otherwise uncertain inputs execute the retained literal WELL
+union and original GRID loop.  The transform requires exactly one correctly
+ordered literal fallback in both its source and generated deck.
+
+Two directed native tests, nine transform/source-drift tests, and a tiny
+runtime clean/fallback differential pass.  The adversarial fixtures cover an
+off-grid seam canceled by union and diagonal intersection vertices; neither
+may be certified from independent input vertices.
+
+A same-binary sequential 3+3 isolated grid-owner gate measured controls at
+33.35, 33.46, and 33.48 seconds and candidates at 26.82, 27.08, and 26.91
+seconds.  Means are **33.430 to 26.937 seconds: 6.493 real seconds / 19.42%
+less owner wall**.  Candidate telemetry proved the raw certificate, no literal
+WELL union, and one remaining built merge; controls proved the literal union
+and two built merges.  All six reports retained canonical shard SHA-256
+`05bdf0733e2cd7c9ccefda2c62c9e927538269320ee85eedebf87f5afceed89c`.
+This is an owner-only result pending the coordinated full gate.  Evidence:
+`.scratchpad/cuda-runs/grid-well-raw-cert-ab.AY03kS`.
+
 The qualified executable, CUDA backend, transformed deck, deck-bound
 manifest, and x2 input SHA-256 values are respectively:
 

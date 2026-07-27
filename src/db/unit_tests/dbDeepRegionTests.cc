@@ -1833,6 +1833,169 @@ TEST(deep_grid_check_early_empty_certificate)
   }
 }
 
+TEST(deep_raw_union_grid_clean_certificate)
+{
+  //  Two pristine Manhattan layers under a shared lattice-preserving
+  //  hierarchy prove that their merged union is on-grid without constructing
+  //  either merged input.
+  {
+    db::Layout ly;
+    db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+    db::Cell &child = ly.cell (ly.add_cell ("CHILD"));
+    unsigned int l1 = ly.insert_layer (db::LayerProperties (1, 0));
+    unsigned int l2 = ly.insert_layer (db::LayerProperties (2, 0));
+    child.shapes (l1).insert (db::Box (0, 0, 20, 20));
+    child.shapes (l2).insert (db::Box (10, 0, 30, 20));
+    top.insert (db::CellInstArray (
+      db::CellInst (child.cell_index ()),
+      db::Trans (1, true, db::Vector (100, 200)),
+      db::Vector (40, 0), db::Vector (0, 40), 2, 2
+    ));
+
+    db::DeepShapeStore dss;
+    db::Region first (db::RecursiveShapeIterator (ly, top, l1), dss);
+    db::Region second (db::RecursiveShapeIterator (ly, top, l2), dss);
+    const db::DeepRegion *first_deep =
+      dynamic_cast<const db::DeepRegion *> (first.delegate ());
+    const db::DeepRegion *second_deep =
+      dynamic_cast<const db::DeepRegion *> (second.delegate ());
+    EXPECT_EQ (first_deep != 0 && second_deep != 0, true);
+    EXPECT_EQ (
+      first_deep->raw_union_grid_clean (*second_deep, 10), true
+    );
+    EXPECT_EQ (first_deep->merged_polygons_available (), false);
+    EXPECT_EQ (second_deep->merged_polygons_available (), false);
+  }
+
+  //  The sufficient premise is deliberately stronger than an empty result:
+  //  an off-grid seam can disappear in the union.  That case must decline so
+  //  the caller executes the literal union and obtains its exact empty result.
+  {
+    db::Layout ly;
+    db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+    unsigned int l1 = ly.insert_layer (db::LayerProperties (1, 0));
+    unsigned int l2 = ly.insert_layer (db::LayerProperties (2, 0));
+    const db::Box first_box (0, 0, 11, 20);
+    const db::Box second_box (10, 0, 20, 20);
+    top.shapes (l1).insert (first_box);
+    top.shapes (l2).insert (second_box);
+
+    db::DeepShapeStore dss;
+    db::Region first (db::RecursiveShapeIterator (ly, top, l1), dss);
+    db::Region second (db::RecursiveShapeIterator (ly, top, l2), dss);
+    const db::DeepRegion *first_deep =
+      dynamic_cast<const db::DeepRegion *> (first.delegate ());
+    const db::DeepRegion *second_deep =
+      dynamic_cast<const db::DeepRegion *> (second.delegate ());
+    EXPECT_EQ (
+      first_deep->raw_union_grid_clean (*second_deep, 10), false
+    );
+
+    db::Region exact_union;
+    exact_union.insert (first_box);
+    exact_union.insert (second_box);
+    exact_union.merge ();
+    EXPECT_EQ (exact_union.grid_check (10, 10).empty (), true);
+  }
+
+  //  Individually on-grid diagonal polygons can intersect at off-grid
+  //  coordinates.  Rectilinearity is therefore part of the proof, not merely
+  //  a performance restriction.
+  {
+    db::Layout ly;
+    db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+    unsigned int l1 = ly.insert_layer (db::LayerProperties (1, 0));
+    unsigned int l2 = ly.insert_layer (db::LayerProperties (2, 0));
+    db::Point a_points[] = {
+      db::Point (0, 10), db::Point (10, 0),
+      db::Point (20, 10), db::Point (10, 20)
+    };
+    db::Point b_points[] = {
+      db::Point (10, 10), db::Point (20, 0),
+      db::Point (30, 10), db::Point (20, 20)
+    };
+    db::Polygon a, b;
+    a.assign_hull (
+      a_points, a_points + sizeof (a_points) / sizeof (a_points [0])
+    );
+    b.assign_hull (
+      b_points, b_points + sizeof (b_points) / sizeof (b_points [0])
+    );
+    top.shapes (l1).insert (a);
+    top.shapes (l2).insert (b);
+
+    db::DeepShapeStore dss;
+    db::Region first (db::RecursiveShapeIterator (ly, top, l1), dss);
+    db::Region second (db::RecursiveShapeIterator (ly, top, l2), dss);
+    const db::DeepRegion *first_deep =
+      dynamic_cast<const db::DeepRegion *> (first.delegate ());
+    const db::DeepRegion *second_deep =
+      dynamic_cast<const db::DeepRegion *> (second.delegate ());
+    EXPECT_EQ (
+      first_deep->raw_union_grid_clean (*second_deep, 10), false
+    );
+
+    db::Region exact_union;
+    exact_union.insert (a);
+    exact_union.insert (b);
+    exact_union.merge ();
+    EXPECT_EQ (exact_union.grid_check (10, 10).empty (), false);
+  }
+
+  //  Lattice preservation includes every occurrence translation.
+  {
+    db::Layout ly;
+    db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+    db::Cell &child = ly.cell (ly.add_cell ("CHILD"));
+    unsigned int l1 = ly.insert_layer (db::LayerProperties (1, 0));
+    unsigned int l2 = ly.insert_layer (db::LayerProperties (2, 0));
+    child.shapes (l1).insert (db::Box (0, 0, 20, 20));
+    child.shapes (l2).insert (db::Box (20, 0, 40, 20));
+    top.insert (db::CellInstArray (
+      db::CellInst (child.cell_index ()),
+      db::Trans (db::Vector (1, 0))
+    ));
+
+    db::DeepShapeStore dss;
+    db::Region first (db::RecursiveShapeIterator (ly, top, l1), dss);
+    db::Region second (db::RecursiveShapeIterator (ly, top, l2), dss);
+    const db::DeepRegion *first_deep =
+      dynamic_cast<const db::DeepRegion *> (first.delegate ());
+    const db::DeepRegion *second_deep =
+      dynamic_cast<const db::DeepRegion *> (second.delegate ());
+    EXPECT_EQ (
+      first_deep->raw_union_grid_clean (*second_deep, 10), false
+    );
+  }
+
+  //  Prior materialization and invalid grids are not raw certificates.
+  {
+    db::Layout ly;
+    db::Cell &top = ly.cell (ly.add_cell ("TOP"));
+    unsigned int l1 = ly.insert_layer (db::LayerProperties (1, 0));
+    unsigned int l2 = ly.insert_layer (db::LayerProperties (2, 0));
+    top.shapes (l1).insert (db::Box (0, 0, 20, 20));
+    top.shapes (l2).insert (db::Box (20, 0, 40, 20));
+
+    db::DeepShapeStore dss;
+    db::Region first (db::RecursiveShapeIterator (ly, top, l1), dss);
+    db::Region second (db::RecursiveShapeIterator (ly, top, l2), dss);
+    const db::DeepRegion *first_deep =
+      dynamic_cast<const db::DeepRegion *> (first.delegate ());
+    const db::DeepRegion *second_deep =
+      dynamic_cast<const db::DeepRegion *> (second.delegate ());
+    EXPECT_EQ (
+      first_deep->raw_union_grid_clean (*second_deep, 0), false
+    );
+
+    first.merge ();
+    first_deep = dynamic_cast<const db::DeepRegion *> (first.delegate ());
+    EXPECT_EQ (
+      first_deep->raw_union_grid_clean (*second_deep, 10), false
+    );
+  }
+}
+
 TEST(20_AngleCheck)
 {
   db::Layout ly;

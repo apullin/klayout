@@ -1858,6 +1858,24 @@ raw_hierarchy_is_on_grid_rectilinear (const db::DeepLayer &polygons, db::Coord g
   return true;
 }
 
+bool
+DeepRegion::raw_union_grid_clean (const DeepRegion &other, db::Coord grid) const
+{
+  //  If every boundary is Manhattan and every local vertex and occurrence
+  //  translation lies on the same lattice, intersections created by a union
+  //  can only combine an existing on-grid x coordinate with an existing
+  //  on-grid y coordinate.  Consequently the union cannot create an off-grid
+  //  vertex.  Do not infer this from two empty grid checks alone: diagonal
+  //  boundaries with individually on-grid vertices can intersect off-grid.
+  return
+    grid > 0 &&
+    merged_semantics () && other.merged_semantics () &&
+    ! merged_polygons_available () &&
+    ! other.merged_polygons_available () &&
+    raw_hierarchy_is_on_grid_rectilinear (deep_layer (), grid) &&
+    raw_hierarchy_is_on_grid_rectilinear (other.deep_layer (), grid);
+}
+
 EdgePairsDelegate *
 DeepRegion::grid_check (db::Coord gx, db::Coord gy) const
 {

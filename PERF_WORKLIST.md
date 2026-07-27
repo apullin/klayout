@@ -3175,6 +3175,39 @@ not just wall time.
         wall is rejected and excluded; evidence is retained at
         `.scratchpad/cuda-runs/antenna-prepared-census-ab.lRcxAa`.
 
+      - [x] **Bypass the grid owner's redundant WELL union with an exact raw
+        two-input lattice certificate:** the new deep-region predicate proves
+        the literal `nwell.or(pwell)` GRID result empty only for pristine
+        merged-semantics orthogonal hierarchy whose complete transformed
+        boundaries lie on the requested lattice.  Diagonals, off-grid
+        geometry or occurrences, prior materialization, malformed hierarchy,
+        invalid grids, missing APIs, exceptions, and any uncertain case retain
+        the literal WELL union and unchanged GRID loop.  The CONTACT.6
+        grid-owner transform authenticates exactly one correctly ordered
+        literal CPU fallback in both source and generated decks.
+
+        Two directed native tests, nine transform/source-drift tests, and a
+        tiny certified-versus-adversarial runtime differential pass.  The
+        adversarial cases include an off-grid seam canceled by union and two
+        on-grid diagonal inputs whose intersection creates off-grid vertices;
+        both decline to the exact CPU path.
+
+        A same-binary sequential 3+3 isolated grid-owner gate measured controls
+        at **33.35, 33.46, and 33.48 s** and candidates at **26.82, 27.08, and
+        26.91 s**.  Means are **33.430 to 26.937 s: 6.493 real seconds / 19.42%
+        less owner wall**.  Candidate telemetry proved one
+        `KLAYOUT_RAW_UNION_GRID_CERT outcome=certified-empty`, zero literal
+        union, and one remaining built merge; controls proved the literal
+        union and two built merges.  All six reports retained canonical shard
+        SHA-256
+        `05bdf0733e2cd7c9ccefda2c62c9e927538269320ee85eedebf87f5afceed89c`,
+        and every pinned artifact remained unchanged.  This is an isolated
+        owner result; the combined full gate remains open.  A postprocessing
+        awk quoting defect occurred only after all six accepted rows were
+        durable; a finalizer consumed those immutable rows and completed the
+        deferred hashes without rerunning a sample.  Evidence:
+        `.scratchpad/cuda-runs/grid-well-raw-cert-ab.AY03kS`.
+
       - [ ] **Extract the proven engine into a reusable `cuLayout` library:**
         after the live M1 width/spacing and implant/contact plans establish the
         second and third reusable compositions, separate canonical
