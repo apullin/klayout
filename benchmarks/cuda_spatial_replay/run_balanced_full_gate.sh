@@ -10,6 +10,7 @@ Usage:
     [--python PATH] [--timeout-seconds N] [--jobs 8..14] \
     [--split-lower-antenna] [--split-upper-antenna] \
     [--fuse-metal-antenna] \
+    [--with-antenna-m1-m4|--without-antenna-m1-m4] \
     [--split-implant-contact] [--split-active12] \
     [--without-contact4] \
     [--with-active3-well-union|--without-active3-well-union] \
@@ -36,6 +37,13 @@ intact IMPLANT.1-.5 and CONTACT.1-.5 blocks into separate owners.
 --split-active12 moves the intact ACTIVE.1/.2 block out of the upper-metal
 owner. CUDA resource limits remain fixed; the launcher may use 8 through 14
 process slots, never more slots than selected owners.
+
+--with-antenna-m1-m4 and --without-antenna-m1-m4 require
+--fuse-metal-antenna.  They retain the identical atomic fused-owner deck and
+toggle only the M1-through-M4 CUDA transaction at runtime.  A complete
+four-stage empty certificate emits all ten named empty antenna categories;
+every decline, exception, missing symbol, or disabled control executes the
+complete literal METAL1-through-METAL10 CPU chain.
 
 The manifest must be bound to the generated deck and selected owner set.
 Reference may be either a raw or generator-stripped XML .lyrdb report. The
@@ -154,6 +162,7 @@ jobs=8
 split_lower_antenna=0
 split_upper_antenna=0
 fuse_metal_antenna=0
+antenna_m1_m4=-1
 split_implant_contact=0
 split_active12=0
 
@@ -219,6 +228,18 @@ while (($#)); do
       ;;
     --fuse-metal-antenna)
       fuse_metal_antenna=1
+      shift
+      ;;
+    --with-antenna-m1-m4)
+      ((antenna_m1_m4 == -1)) ||
+        die "choose exactly one antenna M1-M4 runtime mode"
+      antenna_m1_m4=1
+      shift
+      ;;
+    --without-antenna-m1-m4)
+      ((antenna_m1_m4 == -1)) ||
+        die "choose exactly one antenna M1-M4 runtime mode"
+      antenna_m1_m4=0
       shift
       ;;
     --split-implant-contact)
@@ -371,6 +392,9 @@ if ((fuse_metal_antenna &&
       (split_lower_antenna || split_upper_antenna))); then
   die "--fuse-metal-antenna cannot be combined with antenna split modes"
 fi
+if ((antenna_m1_m4 >= 0 && !fuse_metal_antenna)); then
+  die "explicit antenna M1-M4 runtime mode requires --fuse-metal-antenna"
+fi
 selected_owner_count=$((
   10 + split_lower_antenna + split_upper_antenna +
   split_implant_contact + split_active12 - fuse_metal_antenna
@@ -480,6 +504,13 @@ if ((implant15 >= 0)); then
   implant15_env=(
     "KLAYOUT_CUDA_IMPLANT15=${implant15}"
     "KLAYOUT_CUDA_IMPLANT15_TELEMETRY=1"
+  )
+fi
+antenna_m1_m4_env=()
+if ((antenna_m1_m4 >= 0)); then
+  antenna_m1_m4_env=(
+    "KLAYOUT_CUDA_ANTENNA_M1_M4=${antenna_m1_m4}"
+    "KLAYOUT_CUDA_ANTENNA_M1_M4_TELEMETRY=1"
   )
 fi
 m2_rules_generator_args=()
@@ -736,6 +767,7 @@ set +e
       "${contact4_active_union_env[@]}" \
       "${implant12_env[@]}" \
       "${implant15_env[@]}" \
+      "${antenna_m1_m4_env[@]}" \
       "${poly34_env[@]}" \
       "${python}" "${runner}" \
         --klayout "${klayout}" \
@@ -926,6 +958,15 @@ elif ((implant12 == 0)) &&
        "CUDA IMPLANT.1/.2 transaction:" "${shard_dir}"; then
   die "IMPLANT.1/.2-off control unexpectedly invoked IMPLANT CUDA"
 fi
+if ((antenna_m1_m4 == 1)); then
+  require_telemetry \
+    "CUDA ANTENNA M1-M4 raw transaction: certified-empty" \
+    "raw antenna M1-M4 certified-empty"
+elif ((antenna_m1_m4 == 0)); then
+  require_telemetry \
+    "CUDA ANTENNA M1-M4 raw transaction: full-cpu-fallback" \
+    "raw antenna M1-M4-off full CPU fallback"
+fi
 if ((poly34 == 1)); then
   require_telemetry \
     "CUDA POLY.3/.4 transaction: certified-empty" \
@@ -948,7 +989,7 @@ if ! cmp -s -- "${reference_canonical}" "${report_canonical}"; then
 fi
 
 grep -R -nE --include='*.log' -- \
-  'CUDA ACTIVE\.3 exact resident WELL-union certificate:|CUDA ACTIVE\.3 exact WELL-union live lowering:|CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1\.1/M1\.2 raw-union exact live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M1 exact resident morphology certificate:|CUDA M1\.5-\.9 exact live lowering:|CUDA M1\.5-\.9 transaction:|CUDA M2 width/space empty certificate:|CUDA M2 width/space live lowering:|CUDA M2 exact union boundary:|CUDA M2 live flat operands:|CUDA M2 rules transaction:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA CONTACT\.4 fused ACTIVE-union empty certificate:|CUDA CONTACT\.4 fused ACTIVE-union live lowering:|CUDA CONTACT\.4 empty certificate:|CUDA CONTACT\.4 live lowering:|CUDA IMPLANT\.1-\.5 raw transaction:|CUDA IMPLANT\.1/\.2 transaction:|CUDA IMPLANT\.1/\.2 empty certificate:|CUDA IMPLANT\.1/\.2 live lowering:|CUDA POLY\.3/\.4 transaction:|CUDA POLY\.3/\.4 live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_REGION_MULTI |KLAYOUT_DEEP_EDGE_CERT ' \
+  'CUDA ACTIVE\.3 exact resident WELL-union certificate:|CUDA ACTIVE\.3 exact WELL-union live lowering:|CUDA ACTIVE\.3 empty certificate:|CUDA ACTIVE\.3 live lowering:|CUDA M1\.1/M1\.2 raw-union exact live lowering:|CUDA M1 width/space empty certificate:|CUDA M1 width/space live lowering:|CUDA M1 exact resident morphology certificate:|CUDA M1\.5-\.9 exact live lowering:|CUDA M1\.5-\.9 transaction:|CUDA M2 width/space empty certificate:|CUDA M2 width/space live lowering:|CUDA M2 exact union boundary:|CUDA M2 live flat operands:|CUDA M2 rules transaction:|CUDA M1 contact transaction:|CUDA M1 contact live lowering:|CUDA CONTACT\.4 fused ACTIVE-union empty certificate:|CUDA CONTACT\.4 fused ACTIVE-union live lowering:|CUDA CONTACT\.4 empty certificate:|CUDA CONTACT\.4 live lowering:|CUDA IMPLANT\.1-\.5 raw transaction:|CUDA IMPLANT\.1/\.2 transaction:|CUDA IMPLANT\.1/\.2 empty certificate:|CUDA IMPLANT\.1/\.2 live lowering:|CUDA ANTENNA M1-M4 raw transaction:|CUDA antenna M1-M4 transaction:|CUDA POLY\.3/\.4 transaction:|CUDA POLY\.3/\.4 live lowering:|CUDA VIA1 stack transaction:|CUDA VIA1 stack empty certificate:|CUDA VIA1 stack live lowering:|KLAYOUT_DEEP_REGION_MULTI |KLAYOUT_DEEP_EDGE_CERT ' \
   "${shard_dir}" >"${work}/cuda-telemetry.txt"
 
 grep -E \
@@ -990,4 +1031,4 @@ cat -- "${work}/launcher-summary.txt"
 cat -- "${work}/canonical-report-sha256.txt"
 cat -- "${work}/cuda-telemetry.txt"
 echo \
-  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} active3_well_union=${active3_well_union} contact4_active_union=${contact4_active_union} m1_base_width_space=${m1_base_width_space} m1_5_9=${m1_5_9} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} implant15=${implant15} poly34=${poly34} prune_poly2=${prune_poly2} split_lower_antenna=${split_lower_antenna} split_upper_antenna=${split_upper_antenna} split_implant_contact=${split_implant_contact} split_active12=${split_active12}"
+  "BALANCED_FULL_CUDA_GATE ok owners=${#shards[@]} jobs=${jobs} contact4=${contact4} active3_well_union=${active3_well_union} contact4_active_union=${contact4_active_union} m1_base_width_space=${m1_base_width_space} m1_5_9=${m1_5_9} m2_rules=${m2_rules} m2_width_space=${m2_width_space} implant12=${implant12} implant15=${implant15} antenna_m1_m4=${antenna_m1_m4} poly34=${poly34} prune_poly2=${prune_poly2} split_lower_antenna=${split_lower_antenna} split_upper_antenna=${split_upper_antenna} fuse_metal_antenna=${fuse_metal_antenna} split_implant_contact=${split_implant_contact} split_active12=${split_active12}"

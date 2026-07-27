@@ -295,6 +295,7 @@ class BalancedFullGateStaticTest(unittest.TestCase):
             "--split-lower-antenna",
             "--split-upper-antenna",
             "--fuse-metal-antenna",
+            "--with-antenna-m1-m4",
             "--split-implant-contact",
             "--split-active12",
             "--with-active3-well-union",
@@ -324,6 +325,59 @@ class BalancedFullGateStaticTest(unittest.TestCase):
                     "--fuse-metal-antenna cannot be combined",
                     completed.stderr,
                 )
+
+    def test_antenna_m1_m4_control_and_candidate_share_fused_deck(
+        self,
+    ) -> None:
+        self.assertIn(
+            '"KLAYOUT_CUDA_ANTENNA_M1_M4=${antenna_m1_m4}"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_CUDA_ANTENNA_M1_M4_TELEMETRY=1"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            "CUDA ANTENNA M1-M4 raw transaction: certified-empty",
+            self.launcher_text,
+        )
+        self.assertIn(
+            "CUDA ANTENNA M1-M4 raw transaction: full-cpu-fallback",
+            self.launcher_text,
+        )
+
+        for mode in (
+            "--with-antenna-m1-m4",
+            "--without-antenna-m1-m4",
+        ):
+            with self.subTest(mode=mode):
+                missing_fuse = self.run_preflight(mode)
+                self.assertEqual(missing_fuse.returncode, 2)
+                self.assertIn(
+                    "requires --fuse-metal-antenna",
+                    missing_fuse.stderr,
+                )
+
+                accepted = self.run_preflight(
+                    "--fuse-metal-antenna", mode
+                )
+                self.assertEqual(accepted.returncode, 2)
+                self.assertNotIn(
+                    "requires --fuse-metal-antenna",
+                    accepted.stderr,
+                )
+                self.assertIn("KLayout is not executable", accepted.stderr)
+
+        conflicting = self.run_preflight(
+            "--fuse-metal-antenna",
+            "--with-antenna-m1-m4",
+            "--without-antenna-m1-m4",
+        )
+        self.assertEqual(conflicting.returncode, 2)
+        self.assertIn(
+            "choose exactly one antenna M1-M4 runtime mode",
+            conflicting.stderr,
+        )
 
     def test_active3_well_union_control_and_candidate_share_one_deck(
         self,
