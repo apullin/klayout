@@ -81,6 +81,10 @@ void test_identical_singleton_class()
           std::vector<std::uint32_t>({3, 0, 1, 0}),
       "identical singleton representative weights");
   require(
+      result.owner_domains ==
+          std::vector<std::uint32_t>({0, 0, 0, 0}),
+      "identical singleton owner domains");
+  require(
       result.census.weighted_internal_pairs_by_relation[
           ac::relation_slot(0, 0)] == 3,
       "identical singleton relation weight");
@@ -111,6 +115,8 @@ void test_domain_and_diagonal_partition()
   require(
       result.parent_seeds ==
           std::vector<std::uint32_t>({0, 0, 2, 3}) &&
+          result.owner_domains ==
+              std::vector<std::uint32_t>({0, 0, 1, 1}) &&
           result.owner_multiplicities ==
               std::vector<std::uint32_t>({2, 0, 1, 1}) &&
           result.census.weighted_internal_pairs == 1,

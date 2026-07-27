@@ -194,6 +194,7 @@ Status build(
         ++result.census.exception_owners;
       }
     }
+    result.owner_domains = owner_domains;
     if (result.census.singleton_owners >
             config.limits.max_class_members ||
         rectangle_count - result.census.singleton_owners >
@@ -329,6 +330,7 @@ const char *status_string(Status status) noexcept
     return "invalid_configuration";
   case Status::malformed_input: return "malformed_input";
   case Status::capacity_exceeded: return "capacity_exceeded";
+  case Status::cuda_error: return "cuda_error";
   case Status::host_error: return "host_error";
   }
   return "unknown";

@@ -34,6 +34,37 @@ target_link_libraries(antenna_geometry_quotient_test PRIVATE
   antenna_geometry_quotient
 )
 
+add_library(antenna_geometry_quotient_gpu STATIC
+  antenna_geometry_quotient_gpu.cu
+)
+target_compile_options(antenna_geometry_quotient_gpu PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(antenna_geometry_quotient_gpu PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+  POSITION_INDEPENDENT_CODE ON
+)
+target_link_libraries(antenna_geometry_quotient_gpu PUBLIC
+  antenna_geometry_quotient
+)
+
+add_executable(antenna_geometry_quotient_gpu_test
+  antenna_geometry_quotient_gpu_test.cu
+)
+target_compile_options(antenna_geometry_quotient_gpu_test PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(antenna_geometry_quotient_gpu_test PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+)
+target_link_libraries(antenna_geometry_quotient_gpu_test PRIVATE
+  antenna_geometry_quotient_gpu
+)
+
 add_executable(antenna_geometry_quotient_capture_census
   antenna_geometry_quotient_capture_census.cc
   antenna_m1_m4_capture_file.cc
