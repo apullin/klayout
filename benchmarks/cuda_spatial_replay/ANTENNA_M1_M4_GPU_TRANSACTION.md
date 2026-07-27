@@ -309,6 +309,9 @@ Before production timing is booked:
   smoke, memcheck, and racecheck gates passed.  The isolated exact replay
   reduced wall from 216.98 to 10.32 seconds, removing 206.66 real seconds
   (95.2% less time); M2 evaluation fell to 19.5 ms and refinement to 258 ms.
+  Three additional isolated clean repeats measured 10.27, 10.37, and 10.32
+  seconds (10.32-second mean/median; 0.10-second range), all exact clean with
+  no fallback.
 - [x] Optimize the true root-cell refinement remainder: ACTIVE grid build,
   uncertain POLY/ACTIVE record generation, CUB key/area sort, and equal-key
   maximum-area accumulation.  Measure each phase independently before
