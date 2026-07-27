@@ -34,6 +34,20 @@ target_link_libraries(antenna_geometry_quotient_test PRIVATE
   antenna_geometry_quotient
 )
 
+add_executable(antenna_geometry_quotient_capture_census
+  antenna_geometry_quotient_capture_census.cc
+  antenna_m1_m4_capture_file.cc
+)
+target_include_directories(antenna_geometry_quotient_capture_census PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+target_compile_options(antenna_geometry_quotient_capture_census PRIVATE
+  -O3 -Wall -Wextra -Werror
+)
+target_link_libraries(antenna_geometry_quotient_capture_census PRIVATE
+  antenna_geometry_quotient
+)
+
 add_executable(cuda_spatial_replay spatial_replay.cu)
 target_compile_options(cuda_spatial_replay PRIVATE
   $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
