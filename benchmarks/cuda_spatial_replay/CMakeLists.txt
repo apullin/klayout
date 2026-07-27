@@ -56,6 +56,37 @@ target_link_libraries(antenna_connectivity_gpu_test PRIVATE
   antenna_connectivity_gpu
 )
 
+add_library(antenna_clean_certificate_gpu STATIC
+  antenna_clean_certificate_gpu.cu
+)
+target_compile_options(antenna_clean_certificate_gpu PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(antenna_clean_certificate_gpu PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+  POSITION_INDEPENDENT_CODE ON
+)
+target_link_libraries(antenna_clean_certificate_gpu PUBLIC
+  antenna_connectivity_gpu
+)
+
+add_executable(antenna_clean_certificate_gpu_test
+  antenna_clean_certificate_gpu_test.cu
+)
+target_compile_options(antenna_clean_certificate_gpu_test PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(antenna_clean_certificate_gpu_test PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+)
+target_link_libraries(antenna_clean_certificate_gpu_test PRIVATE
+  antenna_clean_certificate_gpu
+)
+
 add_executable(manhattan_union_replay
   manhattan_union_replay.cu
 )
@@ -156,6 +187,7 @@ set_target_properties(m2_via2_certificate PROPERTIES
 )
 
 add_library(klayout_cuda_spatial_backend SHARED
+  antenna_m1_m4_backend.cu
   m2_union_backend.cu
   poly34_backend.cu
   spatial_backend.cu
@@ -178,9 +210,105 @@ set_target_properties(klayout_cuda_spatial_backend PROPERTIES
   CUDA_VISIBILITY_PRESET hidden
 )
 target_link_libraries(klayout_cuda_spatial_backend PRIVATE
+  antenna_clean_certificate_gpu
+  antenna_connectivity_gpu
   contact4_union_resident_gpu
   manhattan_union_gpu_core
   m2_resident_morphology_gpu
+)
+
+add_executable(antenna_m1_m4_backend_smoke
+  antenna_m1_m4_backend.cu
+  antenna_m1_m4_backend_smoke.cu
+)
+target_include_directories(antenna_m1_m4_backend_smoke PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+target_compile_definitions(antenna_m1_m4_backend_smoke PRIVATE
+  KLAYOUT_CUDA_SPATIAL_BACKEND_BUILD
+)
+target_compile_options(antenna_m1_m4_backend_smoke PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(antenna_m1_m4_backend_smoke PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+)
+target_link_libraries(antenna_m1_m4_backend_smoke PRIVATE
+  antenna_clean_certificate_gpu
+  antenna_connectivity_gpu
+)
+
+set(KLAYOUT_ANTENNA_HOST_DB "" CACHE FILEPATH
+  "Optional libklayout_db containing the M1-M4 host result validator")
+set(KLAYOUT_ANTENNA_HOST_CXX_RUNTIME "" CACHE FILEPATH
+  "Optional matching libstdc++ for the host-validator library")
+if(KLAYOUT_ANTENNA_HOST_DB)
+  add_executable(antenna_m1_m4_host_acceptance
+    antenna_m1_m4_backend.cu
+    antenna_m1_m4_backend_smoke.cu
+  )
+  target_include_directories(antenna_m1_m4_host_acceptance PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/tl/tl
+  )
+  target_compile_definitions(antenna_m1_m4_host_acceptance PRIVATE
+    KLAYOUT_CUDA_SPATIAL_BACKEND_BUILD
+    KLAYOUT_ANTENNA_HOST_VALIDATOR=1
+  )
+  target_compile_options(antenna_m1_m4_host_acceptance PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+    $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+  )
+  set_target_properties(antenna_m1_m4_host_acceptance PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+  )
+  target_link_libraries(antenna_m1_m4_host_acceptance PRIVATE
+    antenna_clean_certificate_gpu
+    antenna_connectivity_gpu
+    ${KLAYOUT_ANTENNA_HOST_DB}
+  )
+  if(KLAYOUT_ANTENNA_HOST_CXX_RUNTIME)
+    target_link_libraries(antenna_m1_m4_host_acceptance PRIVATE
+      ${KLAYOUT_ANTENNA_HOST_CXX_RUNTIME}
+    )
+  endif()
+endif()
+
+add_library(klayout_cuda_antenna_m1_m4_capture SHARED
+  antenna_m1_m4_capture_file.cc
+  antenna_m1_m4_capture_backend.cc
+)
+target_include_directories(klayout_cuda_antenna_m1_m4_capture PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+target_compile_definitions(klayout_cuda_antenna_m1_m4_capture PRIVATE
+  KLAYOUT_CUDA_SPATIAL_BACKEND_BUILD
+)
+target_compile_options(klayout_cuda_antenna_m1_m4_capture PRIVATE
+  -O3 -Wall -Wextra -Werror
+)
+set_target_properties(klayout_cuda_antenna_m1_m4_capture PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+)
+target_link_libraries(klayout_cuda_antenna_m1_m4_capture PRIVATE
+  Threads::Threads
+)
+
+add_executable(antenna_m1_m4_capture_replay
+  antenna_m1_m4_capture_file.cc
+  antenna_m1_m4_capture_replay.cc
+)
+target_include_directories(antenna_m1_m4_capture_replay PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/db/db
+)
+target_compile_options(antenna_m1_m4_capture_replay PRIVATE
+  -O3 -Wall -Wextra -Werror
+)
+target_link_libraries(antenna_m1_m4_capture_replay PRIVATE
+  ${CMAKE_DL_LIBS}
 )
 
 add_executable(cuda_spatial_backend_smoke backend_smoke.cc)

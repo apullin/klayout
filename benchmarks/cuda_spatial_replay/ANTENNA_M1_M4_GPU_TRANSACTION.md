@@ -204,13 +204,15 @@ Before production timing is booked:
   bounded spatial census, and randomized CPU differential.
 - [ ] Extend the reference oracle through M4, including stage-local area and
   diode annotations.
-- [ ] Add the production ABI, loader, exact result validation, and GSI method.
+- [x] Add the production ABI, loader, exact result validation, and GSI method.
 - [x] Add the atomic deck fast path; retain all ten literal CPU rules in one
   fallback branch.
 - [ ] Pass focused hierarchy, transform, boundary, malformed-result, and
   injected-fallback gates.
 - [ ] Pass the clean production report and nonempty hierarchical fixture
   integrity gates.
+- [ ] Package the exact compact production capture and standalone replay for
+  the high-memory remote watershed.
 - [ ] Demonstrate an accounted peak within the 10,240-MiB qualification card,
   including caller staging and temporary sort/reduction storage.
 - [ ] Run matched repeated full-launch control/candidate trials and book only
