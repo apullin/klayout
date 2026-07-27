@@ -248,7 +248,7 @@ db::Point transform_point (
 }
 
 db::Polygon expand_polygon (
-  const CudaRawManhattanScene &scene,
+  const CudaAntennaM1DomainScene &scene,
   const CudaM1WidthSpaceContext &context,
   const CudaM1WidthSpacePolygon &record)
 {
@@ -278,17 +278,17 @@ void expand_domain (
   CudaAntennaM1Domain domain,
   std::vector<OraclePolygon> &output)
 {
-  const CudaRawManhattanScene &scene = capture.domains [domain];
+  const CudaAntennaM1DomainScene &scene = capture.domains [domain];
   if (scene.flat_polygon_count > output.max_size ()) {
     throw AntennaM1OracleDecline (
       "oracle domain exceeds its host vector capacity");
   }
   output.reserve (size_t (scene.flat_polygon_count));
   for (size_t context_id = 0;
-       context_id < scene.contexts.size (); ++context_id) {
+       context_id < capture.contexts.size (); ++context_id) {
     const CudaM1WidthSpaceContext &context =
-      scene.contexts [context_id];
-    const CudaM1WidthSpaceCell &cell =
+      capture.contexts [context_id];
+    const CudaAntennaM1DomainCell &cell =
       scene.cells [context.cell_id];
     for (uint32_t local = 0; local < cell.polygon_count; ++local) {
       const CudaM1WidthSpacePolygon &record =
@@ -301,7 +301,8 @@ void expand_domain (
         capture.context_parent_ids [context_id];
       occurrence.dense_cell_id = context.cell_id;
       occurrence.polygon_id = record.polygon_id;
-      occurrence.source_cell_index = cell.source_cell_index;
+      occurrence.source_cell_index =
+        capture.source_cell_indices [context.cell_id];
       occurrence.node_id = std::numeric_limits<uint64_t>::max ();
       output.push_back (occurrence);
     }
@@ -516,7 +517,7 @@ std::array<uint8_t, 32> digest_node_identities (
          nodes.begin (); node != nodes.end (); ++node) {
     const OraclePolygon &value = **node;
     const CudaM1WidthSpaceContext &context =
-      capture.domains [value.domain].contexts [value.context_id];
+      capture.contexts [value.context_id];
     sha.u32 (value.domain);
     sha.u32 (value.context_id);
     sha.u32 (value.context_parent_id);
