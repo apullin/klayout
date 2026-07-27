@@ -149,6 +149,13 @@ conservative peak in the result.  An unaccounted temporary, a peak above the
 request budget, or insufficient free memory declines the entire transaction
 to the literal CPU path.
 
+This qualification gate does not block the first end-to-end watershed.  A
+high-memory GPU (including a rented 96-GiB RTX Pro 6000) may run a simpler
+fully expanded implementation first to establish correctness, real wall time,
+and measured allocation frontiers.  Such a result is labeled a high-memory
+proof rather than a production qualification; the measured census then guides
+the later streaming rewrite needed to check off the 10-GiB gate.
+
 ## Atomic result contract
 
 The backend echoes every request identity, digest, capacity, count, and
