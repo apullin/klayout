@@ -318,10 +318,11 @@ Before production timing is booked:
   selecting the next kernel.  Fine telemetry now accounts for the complete
   258-ms M2 refinement, only 2.5% of the 10.32-second process wall; defer
   further kernel work unless a low-risk fusion appears.
-- [ ] Re-evaluate the banked exact geometry quotient now that certificate
-  contention is gone.  M1 plus M2 stages now total 3.86 seconds (37.4% of
-  process wall), so the previously sub-threshold connectivity reductions can
-  again clear the 5% whole-run gate.
+- [x] Re-evaluate the banked exact geometry quotient now that certificate
+  contention is gone.  Its exact production replay measured 8.707 seconds
+  versus the current 8.303-second setup baseline: 0.404 real seconds or 4.9%
+  more time.  Retain the side branch, but reject this version from the
+  production path.
 - [x] Reduce the 3.89-second request identity/setup path.  Opt-in
   `KLAYOUT_CUDA_ANTENNA_SETUP_TIMING` now partitions request validation,
   hierarchy validation/digest, all twelve domain lowerings, both capture
@@ -354,6 +355,16 @@ Before production timing is booked:
   the 8.74-second backend transaction.
 - [x] Demonstrate an accounted peak within the 10,240-MiB qualification card,
   including caller staging and temporary sort/reduction storage.
+- [x] Coordinate the fused antenna and resident-M1 transactions with bounded,
+  crash-safe cross-process device leases and fail-closed antenna pressure
+  admission.  The exact 11-owner/jobs-9 full screen completed in 50.080
+  seconds with no relevant fallback and the canonical report hash.  That is
+  8.591 seconds or 14.6% less time than the rejected 58.671-second delayed
+  fused schedule, but only 0.290 seconds or 0.6% less than the accepted
+  50.370-second split-owner result.  Book this as a resource/scheduling
+  correctness win, not a new whole-run speed record.  Telemetry showed M1
+  acquiring immediately, antenna waiting 1.410 seconds, and M1.5-M1.9
+  acquiring immediately after the preceding device phase.
 - [ ] Run matched repeated full-launch control/candidate trials and book only
   the measured real-seconds and percent reduction.
 - [ ] Re-profile the new roof and select the next largest contiguous target.

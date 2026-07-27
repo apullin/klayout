@@ -89,10 +89,10 @@ on and off controls.  When both M1 modes are selected, the launcher also
 serializes their owner processes under the same schedule: each candidate can
 consume roughly 8 GiB of the device and they must never overlap.  Thus the
 fully split 14-owner plan accepts at most 13 jobs with one explicit M1 mode or
-12 with both.  An explicitly selected fused antenna M1-M4 transaction is
-queued after those reserved M1 owners.  Its host lowering overlaps the tail
-of the first wave, while its large device allocation begins after the M1
-transactions have released the card.
+12 with both.  An explicitly selected fused antenna M1-M4 transaction starts
+in the first wave so its host lowering overlaps the other owners.  Its bounded
+device admission waits for a reserved M1 transaction to release sufficient
+GPU memory, then retries the resident transaction with the same exact capture.
 
 --with-m2-width-space and --without-m2-width-space preserve the same deck and
 toggle only the separately qualified METAL2.1/.2 runtime transaction.  The
@@ -514,6 +514,10 @@ if ((antenna_m1_m4 >= 0)); then
   antenna_m1_m4_env=(
     "KLAYOUT_CUDA_ANTENNA_M1_M4=${antenna_m1_m4}"
     "KLAYOUT_CUDA_ANTENNA_M1_M4_TELEMETRY=1"
+    "KLAYOUT_CUDA_ANTENNA_DEVICE_WAIT_MS=15000"
+    "KLAYOUT_CUDA_DEVICE_LEASE=1"
+    "KLAYOUT_CUDA_DEVICE_LEASE_WAIT_MS=20000"
+    "KLAYOUT_CUDA_DEVICE_LEASE_TELEMETRY=1"
   )
 fi
 m2_rules_generator_args=()
@@ -657,11 +661,6 @@ owner_suffix_post=(
   via1_upper_active12
   grid
 )
-delay_fused_metal_owner=0
-if ((fuse_metal_antenna && antenna_m1_m4 >= 0 &&
-    reserved_m1_owner_count > 0)); then
-  delay_fused_metal_owner=1
-fi
 if ((m1_base_width_space >= 0 && m1_5_9 >= 0)); then
   # Launch every non-M1 owner first.  The first freed slot starts base
   # width/space; the serialized set then holds M1.5-.9 until base completes.
@@ -680,9 +679,6 @@ elif ((m1_5_9 >= 0)); then
 else
   owner_suffix_post+=(m1_via_class antenna_feol)
 fi
-if ((delay_fused_metal_owner)); then
-  owner_suffix_post+=(antenna_m1_m4)
-fi
 serialized_shard_args=()
 if ((m1_base_width_space >= 0 && m1_5_9 >= 0)); then
   serialized_shard_args=(
@@ -696,9 +692,9 @@ if ((split_implant_contact)); then
 else
   shards+=("${owner_implant_joined[@]}")
 fi
-if ((fuse_metal_antenna && !delay_fused_metal_owner)); then
+if ((fuse_metal_antenna)); then
   shards+=("${owner_metal_fused[@]}")
-elif ((!fuse_metal_antenna)); then
+else
   if ((split_upper_antenna)); then
     shards+=("${owner_upper_split[@]}")
   else

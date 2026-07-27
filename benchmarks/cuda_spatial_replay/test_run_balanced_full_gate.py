@@ -44,9 +44,6 @@ class BalancedFullGateStaticTest(unittest.TestCase):
         m1_base_mode_explicit: bool = False,
         m1_5_9_mode_explicit: bool = False,
     ) -> tuple[str, ...]:
-        delay_fused_metal = fuse_metal and (
-            m1_base_mode_explicit or m1_5_9_mode_explicit
-        )
         if m1_base_mode_explicit and m1_5_9_mode_explicit:
             owner_prefix = ()
             dynamic_suffix = (
@@ -67,8 +64,6 @@ class BalancedFullGateStaticTest(unittest.TestCase):
         else:
             owner_prefix = self.shell_array("owner_prefix")
             dynamic_suffix = ("m1_via_class", "antenna_feol")
-        if delay_fused_metal:
-            dynamic_suffix += self.shell_array("owner_metal_fused")
         return (
             owner_prefix
             + self.shell_array(
@@ -77,9 +72,7 @@ class BalancedFullGateStaticTest(unittest.TestCase):
                 else "owner_implant_joined"
             )
             + (
-                ()
-                if delay_fused_metal
-                else self.shell_array("owner_metal_fused")
+                self.shell_array("owner_metal_fused")
                 if fuse_metal
                 else self.shell_array(
                     "owner_upper_split"
@@ -199,12 +192,13 @@ class BalancedFullGateStaticTest(unittest.TestCase):
                     m1_5_9_mode_explicit=m1_5_9_explicit,
                 )
 
-    def test_explicit_fused_metal_owner_is_delayed_behind_reserved_m1_wave(
+    def test_explicit_fused_metal_owner_starts_before_reserved_m1_wave(
         self,
     ) -> None:
         exact_plan = (
             "implant_contact",
             "contact",
+            "antenna_m1_m4",
             "m2_rules",
             "m1_enclosure",
             "active12",
@@ -213,7 +207,6 @@ class BalancedFullGateStaticTest(unittest.TestCase):
             "antenna_feol",
             "m1_width_space",
             "m1_via_class",
-            "antenna_m1_m4",
         )
         self._assert_owner_plan(
             exact_plan,
@@ -225,12 +218,10 @@ class BalancedFullGateStaticTest(unittest.TestCase):
             m1_base_mode_explicit=True,
             m1_5_9_mode_explicit=True,
         )
-        self.assertIn(
-            "if ((delay_fused_metal_owner)); then\n"
-            "  owner_suffix_post+=(antenna_m1_m4)\n"
-            "fi",
-            self.launcher_text,
-        )
+        self.assertNotIn("delay_fused_metal_owner", self.launcher_text)
+        self.assertEqual(exact_plan[:9].count("antenna_m1_m4"), 1)
+        self.assertNotIn("m1_width_space", exact_plan[:9])
+        self.assertNotIn("m1_via_class", exact_plan[:9])
 
     def test_fused_metal_owner_replaces_four_split_owners_exactly(
         self,
@@ -375,6 +366,22 @@ class BalancedFullGateStaticTest(unittest.TestCase):
         )
         self.assertIn(
             '"KLAYOUT_CUDA_ANTENNA_M1_M4_TELEMETRY=1"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_CUDA_ANTENNA_DEVICE_WAIT_MS=15000"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_CUDA_DEVICE_LEASE=1"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_CUDA_DEVICE_LEASE_WAIT_MS=20000"',
+            self.launcher_text,
+        )
+        self.assertIn(
+            '"KLAYOUT_CUDA_DEVICE_LEASE_TELEMETRY=1"',
             self.launcher_text,
         )
         self.assertIn(

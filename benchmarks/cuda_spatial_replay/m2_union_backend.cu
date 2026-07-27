@@ -13,6 +13,7 @@
 #include "dbCudaActive3Digest.h"
 #include "dbCudaSpatialApi.h"
 #include "contact4_union_resident.cuh"
+#include "cuda_device_phase_lease.h"
 #include "m1_width_space_exact_predicate.h"
 #include "m2_manhattan_decompose.h"
 #include "m2_resident_morphology_gpu.cuh"
@@ -5597,6 +5598,8 @@ int run_m1_morph_request(
     const LoweredScene lowered =
         validate_and_lower(raw, kM1RawDigestMagic);
     result->setup_ns = elapsed_ns(setup_begin, Clock::now());
+    klayout_cuda::DevicePhaseLease device_lease(
+        request->device, "m1_resident_morphology");
     if (request->opcode ==
         KLAYOUT_CUDA_SPATIAL_M1_RAW_MANHATTAN_M11_2_EMPTY) {
       return run_m1_base_width_space_request(

@@ -8,6 +8,7 @@
 #endif
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -250,6 +251,33 @@ void runtime_capacity_smoke()
       "runtime capacity exhaustion did not retain CPU fallback");
 }
 
+void bounded_device_admission_timeout_smoke()
+{
+  Fixture fixture;
+  fixture.request.capacity.max_device_bytes = 1;
+  require(
+      setenv(
+          "KLAYOUT_CUDA_ANTENNA_DEVICE_WAIT_MS", "25", 1) == 0,
+      "set bounded device-admission wait environment");
+  const auto begin = std::chrono::steady_clock::now();
+  Result result{};
+  const int status =
+      klayout_cuda_spatial_run_antenna_m1_m4_empty_v1(
+          &fixture.request, &result);
+  const auto elapsed =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - begin);
+  require(
+      unsetenv("KLAYOUT_CUDA_ANTENNA_DEVICE_WAIT_MS") == 0,
+      "clear bounded device-admission wait environment");
+  require(
+      status == KLAYOUT_CUDA_SPATIAL_FALLBACK &&
+          result.fallback_flags ==
+              KLAYOUT_CUDA_SPATIAL_FALLBACK_MEMBERSHIP_CAPACITY &&
+          elapsed.count() >= 20 && elapsed.count() < 2000,
+      "temporary device pressure did not wait boundedly then fail closed");
+}
+
 }  // namespace
 
 int main()
@@ -259,6 +287,7 @@ int main()
     tamper_smoke();
     malformed_hierarchy_smoke();
     runtime_capacity_smoke();
+    bounded_device_admission_timeout_smoke();
     std::cout << "antenna M1-M4 backend smoke: PASS\n";
     return 0;
   } catch (const std::exception &exception) {

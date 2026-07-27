@@ -15,6 +15,7 @@
 #include "antenna_clean_certificate_gpu.cuh"
 #include "antenna_connectivity_gpu.cuh"
 #include "antenna_factor_zero_diode_gpu.cuh"
+#include "cuda_device_phase_lease.h"
 #include "dbCudaActive3Digest.h"
 #include "dbCudaAntennaM4Evidence.h"
 #include "m2_manhattan_decompose.h"
@@ -90,13 +91,19 @@ class Decline : public std::runtime_error
 {
 public:
   Decline(std::uint32_t status, std::uint32_t fallback,
-          const std::string &message)
-      : std::runtime_error(message), status(status), fallback(fallback)
+          const std::string &message,
+          bool retryable_device_pressure = false,
+          std::uint64_t maximum_used_bytes_for_retry = 0)
+      : std::runtime_error(message), status(status), fallback(fallback),
+        retryable_device_pressure(retryable_device_pressure),
+        maximum_used_bytes_for_retry(maximum_used_bytes_for_retry)
   {
   }
 
   std::uint32_t status;
   std::uint32_t fallback;
+  bool retryable_device_pressure;
+  std::uint64_t maximum_used_bytes_for_retry;
 };
 
 [[noreturn]] void malformed(const std::string &message)
@@ -111,6 +118,16 @@ public:
                                KLAYOUT_CUDA_SPATIAL_FALLBACK_MEMBERSHIP_CAPACITY)
 {
   throw Decline(KLAYOUT_CUDA_SPATIAL_FALLBACK, flag, message);
+}
+
+[[noreturn]] void device_pressure(
+    const std::string &message,
+    std::uint64_t maximum_used_bytes_for_retry)
+{
+  throw Decline(
+      KLAYOUT_CUDA_SPATIAL_FALLBACK,
+      KLAYOUT_CUDA_SPATIAL_FALLBACK_MEMBERSHIP_CAPACITY,
+      message, true, maximum_used_bytes_for_retry);
 }
 
 [[noreturn]] void internal_decline(const std::string &message)
@@ -136,6 +153,37 @@ bool backend_phase_timing_enabled()
          !(value[0] == '0' && value[1] == '\0');
 }
 
+std::chrono::milliseconds device_admission_wait_budget()
+{
+  constexpr unsigned long long kMaximumWaitMilliseconds = 60000;
+  const char *value =
+      std::getenv("KLAYOUT_CUDA_ANTENNA_DEVICE_WAIT_MS");
+  if (!value || !*value) return std::chrono::milliseconds(0);
+  char *end = nullptr;
+  const unsigned long long parsed = std::strtoull(value, &end, 10);
+  if (end == value || !end || *end) {
+    return std::chrono::milliseconds(0);
+  }
+  return std::chrono::milliseconds(
+      std::min(parsed, kMaximumWaitMilliseconds));
+}
+
+void report_device_admission(
+    std::uint32_t retry_count, Clock::time_point begin,
+    const char *disposition)
+{
+  if (!retry_count) return;
+  const double milliseconds =
+      std::chrono::duration<double, std::milli>(
+          Clock::now() - begin)
+          .count();
+  std::fprintf(
+      stderr,
+      "KLAYOUT_CUDA_ANTENNA_ADMISSION retries=%u elapsed_ms=%.3f "
+      "disposition=%s\n",
+      retry_count, milliseconds, disposition);
+}
+
 void report_backend_phase(
     std::size_t stage, const char *phase,
     Clock::time_point begin)
@@ -154,15 +202,44 @@ void report_backend_phase(
       stage + 1, phase, milliseconds);
 }
 
+void query_device_memory(
+    std::uint64_t *total, std::uint64_t *used)
+{
+  std::size_t free_size = 0;
+  std::size_t total_size = 0;
+  cuda_require(
+      cudaMemGetInfo(&free_size, &total_size),
+      "query CUDA memory accounting");
+  *total = total_size;
+  *used = total_size - free_size;
+}
+
+bool device_usage_at_most(
+    int device, std::uint64_t maximum_used_bytes)
+{
+  cuda_require(
+      cudaSetDevice(device),
+      "select CUDA device while waiting for antenna admission");
+  std::uint64_t total = 0;
+  std::uint64_t used = 0;
+  query_device_memory(&total, &used);
+  return used <= maximum_used_bytes;
+}
+
 class DeviceMemoryAccount
 {
 public:
   explicit DeviceMemoryAccount(std::uint64_t cap) : m_cap(cap)
   {
-    query(&m_total, &m_baseline_used);
+    query_device_memory(&m_total, &m_baseline_used);
     m_peak_global_used = m_baseline_used;
-    if (!m_cap || m_baseline_used >= m_cap) {
-      capacity("CUDA device is already at the transaction memory cap");
+    if (!m_cap) {
+      capacity("CUDA transaction memory cap is zero");
+    }
+    if (m_baseline_used >= m_cap) {
+      device_pressure(
+          "CUDA device is already at the transaction memory cap",
+          m_cap - 1);
     }
   }
 
@@ -170,10 +247,15 @@ public:
   {
     std::uint64_t total = 0;
     std::uint64_t used = 0;
-    query(&total, &used);
-    if (total != m_total || used > m_cap ||
-        bytes > m_cap - used) {
+    query_device_memory(&total, &used);
+    if (total != m_total || bytes > m_cap) {
       capacity(std::string(what) + " exceeds the global device cap");
+    }
+    if (used > m_cap || bytes > m_cap - used) {
+      device_pressure(
+          std::string(what) +
+          " is blocked by concurrent CUDA device residency",
+          m_cap - bytes);
     }
     m_peak_global_used =
         std::max(m_peak_global_used, used + bytes);
@@ -183,7 +265,7 @@ public:
   {
     std::uint64_t total = 0;
     std::uint64_t used = 0;
-    query(&total, &used);
+    query_device_memory(&total, &used);
     if (total != m_total || used > m_cap) {
       capacity("observed CUDA residency exceeds the global device cap");
     }
@@ -198,7 +280,12 @@ public:
     const std::uint64_t global_peak =
         m_baseline_used + baseline_relative_peak;
     if (global_peak > m_cap) {
-      capacity("certificate peak exceeds the global device cap");
+      if (baseline_relative_peak > m_cap) {
+        capacity("certificate peak exceeds the global device cap");
+      }
+      device_pressure(
+          "certificate peak is blocked by concurrent CUDA device residency",
+          m_cap - baseline_relative_peak);
     }
     m_peak_global_used =
         std::max(m_peak_global_used, global_peak);
@@ -209,7 +296,7 @@ public:
   {
     std::uint64_t total = 0;
     std::uint64_t used = 0;
-    query(&total, &used);
+    query_device_memory(&total, &used);
     if (total != m_total || used > m_cap) {
       capacity("CUDA residency exceeds the global device cap");
     }
@@ -222,17 +309,6 @@ public:
   }
 
 private:
-  static void query(std::uint64_t *total, std::uint64_t *used)
-  {
-    std::size_t free_size = 0;
-    std::size_t total_size = 0;
-    cuda_require(
-        cudaMemGetInfo(&free_size, &total_size),
-        "query CUDA memory accounting");
-    *total = total_size;
-    *used = total_size - free_size;
-  }
-
   std::uint64_t m_cap = 0;
   std::uint64_t m_total = 0;
   std::uint64_t m_baseline_used = 0;
@@ -2832,8 +2908,58 @@ klayout_cuda_spatial_run_antenna_m1_m4_empty_v1(
     const std::uint64_t setup_ns =
         elapsed_ns(setup_begin, Clock::now());
     fill_result_echo(*request, result);
-    run_transaction(
-        *request, identity, setup_ns, total_begin, result);
+    klayout_cuda::DevicePhaseLease device_lease(
+        request->device, "antenna_m1_m4");
+    const Result result_echo = *result;
+    const std::chrono::milliseconds wait_budget =
+        device_admission_wait_budget();
+    const auto admission_begin = Clock::now();
+    const auto admission_deadline = admission_begin + wait_budget;
+    std::uint32_t retry_count = 0;
+    for (;;) {
+      *result = result_echo;
+      try {
+        run_transaction(
+            *request, identity, setup_ns, total_begin, result);
+        report_device_admission(
+            retry_count, admission_begin, "complete");
+        break;
+      } catch (const Decline &decline) {
+        if (!decline.retryable_device_pressure ||
+            wait_budget.count() == 0 ||
+            Clock::now() >= admission_deadline) {
+          report_device_admission(
+              retry_count, admission_begin, "fallback");
+          throw;
+        }
+        ++retry_count;
+        bool admitted = false;
+        for (;;) {
+          if (device_usage_at_most(
+                  request->device,
+                  decline.maximum_used_bytes_for_retry)) {
+            admitted = true;
+            break;
+          }
+          const auto now = Clock::now();
+          if (now >= admission_deadline) break;
+          const auto remaining = admission_deadline - now;
+          const auto poll =
+              std::min(
+                  remaining,
+                  std::chrono::duration_cast<Clock::duration>(
+                      std::chrono::milliseconds(100)));
+          if (poll > Clock::duration::zero()) {
+            std::this_thread::sleep_for(poll);
+          }
+        }
+        if (!admitted) {
+          report_device_admission(
+              retry_count, admission_begin, "fallback");
+          throw;
+        }
+      }
+    }
   } catch (const Decline &decline) {
     report_decline(result, decline);
   } catch (const std::exception &exception) {
