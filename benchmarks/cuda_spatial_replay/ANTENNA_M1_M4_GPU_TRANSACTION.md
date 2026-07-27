@@ -198,7 +198,7 @@ Before production timing is booked:
 - [x] Add the exact `antenna_m1_m4` CPU owner and balanced-launch scheduling
   mode without changing the default deck.
 - [x] Complete and test the compact shared-hierarchy twelve-domain capture.
-- [ ] Complete the reusable staged CUDA connectivity/DSU core and randomized
+- [x] Complete the reusable staged CUDA connectivity/DSU core and randomized
   CPU differential.
 - [ ] Extend the reference oracle through M4, including stage-local area and
   diode annotations.

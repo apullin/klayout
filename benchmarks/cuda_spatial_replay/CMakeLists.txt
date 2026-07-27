@@ -28,6 +28,34 @@ set_target_properties(cuda_spatial_replay PROPERTIES
   CUDA_RESOLVE_DEVICE_SYMBOLS OFF
 )
 
+add_library(antenna_connectivity_gpu STATIC
+  antenna_connectivity_gpu.cu
+)
+target_compile_options(antenna_connectivity_gpu PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(antenna_connectivity_gpu PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+  POSITION_INDEPENDENT_CODE ON
+)
+
+add_executable(antenna_connectivity_gpu_test
+  antenna_connectivity_gpu_test.cu
+)
+target_compile_options(antenna_connectivity_gpu_test PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3;-Wall;-Wextra>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3;--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra>
+)
+set_target_properties(antenna_connectivity_gpu_test PROPERTIES
+  CUDA_SEPARABLE_COMPILATION OFF
+  CUDA_RESOLVE_DEVICE_SYMBOLS OFF
+)
+target_link_libraries(antenna_connectivity_gpu_test PRIVATE
+  antenna_connectivity_gpu
+)
+
 add_executable(manhattan_union_replay
   manhattan_union_replay.cu
 )
